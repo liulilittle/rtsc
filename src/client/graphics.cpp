@@ -35,6 +35,98 @@ void GraphicsPipeline::Resize(uint16_t width, uint16_t height) {
     dirty_ = true;  // the fresh surface must be painted
 }
 
+void GraphicsPipeline::set_monitor_layout(
+    std::vector<proto::MonitorDef> monitors) {
+    monitors_ = std::move(monitors);
+    monitor_surfaces_.clear();
+    if (monitors_.empty()) {
+        // Single-monitor path: the surface is the whole desktop and the virtual
+        // desktop origin is (0,0).
+        origin_x_ = 0;
+        origin_y_ = 0;
+        return;
+    }
+
+    int min_l = 0, min_t = 0, max_r = 0, max_b = 0;
+    bool first = true;
+    for (const auto& m : monitors_) {
+        if (first) {
+            min_l = m.left;
+            min_t = m.top;
+            max_r = m.right;
+            max_b = m.bottom;
+            first = false;
+        } else {
+            min_l = std::min(min_l, m.left);
+            min_t = std::min(min_t, m.top);
+            max_r = std::max(max_r, m.right);
+            max_b = std::max(max_b, m.bottom);
+        }
+    }
+    origin_x_ = min_l;
+    origin_y_ = min_t;
+    const int vw = max_r - min_l + 1;
+    const int vh = max_b - min_t + 1;
+    if (vw <= 0 || vh <= 0) {
+        // A degenerate layout (no usable monitor) is treated as no layout.
+        monitors_.clear();
+        monitor_surfaces_.clear();
+        origin_x_ = 0;
+        origin_y_ = 0;
+        return;
+    }
+    surface_ = ui::Surface(static_cast<uint16_t>(vw), static_cast<uint16_t>(vh));
+    monitor_surfaces_.reserve(monitors_.size());
+    for (const auto& m : monitors_) {
+        monitor_surfaces_.emplace_back(static_cast<uint16_t>(m.width()),
+                                       static_cast<uint16_t>(m.height()));
+    }
+    dirty_ = true;  // the fresh virtual desktop must be painted
+}
+
+const proto::MonitorDef* GraphicsPipeline::monitor(size_t index) const {
+    if (index >= monitors_.size()) return nullptr;
+    return &monitors_[index];
+}
+
+ui::Surface* GraphicsPipeline::monitor_surface(size_t index) {
+    if (index >= monitor_surfaces_.size()) return nullptr;
+    return &monitor_surfaces_[index];
+}
+
+const ui::Surface* GraphicsPipeline::monitor_surface(size_t index) const {
+    if (index >= monitor_surfaces_.size()) return nullptr;
+    return &monitor_surfaces_[index];
+}
+
+int GraphicsPipeline::virtual_width() const noexcept {
+    return surface_.width();
+}
+
+int GraphicsPipeline::virtual_height() const noexcept {
+    return surface_.height();
+}
+
+void GraphicsPipeline::RenderMonitorTo(size_t index, ui::Surface& dst) const {
+    if (index >= monitors_.size()) return;
+    const proto::MonitorDef& m = monitors_[index];
+    const int sx = m.left - origin_x_;
+    const int sy = m.top - origin_y_;
+    // The monitor is always inside the virtual desktop, so the source rectangle
+    // is in range; only `dst` is clipped.
+    if (sx < 0 || sy < 0) return;
+    const int copy_w = std::min(static_cast<int>(dst.width()), m.width());
+    const int copy_h = std::min(static_cast<int>(dst.height()), m.height());
+    for (int y = 0; y < copy_h; ++y) {
+        const int srow = sy + y;
+        if (srow >= surface_.height()) break;
+        const uint8_t* s = surface_.data() +
+                           (static_cast<size_t>(srow) * surface_.width() + sx) * 4;
+        uint8_t* d = dst.data() + static_cast<size_t>(y) * dst.width() * 4;
+        std::memcpy(d, s, static_cast<size_t>(copy_w) * 4);
+    }
+}
+
 int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
     int drawn = 0;
     for (const auto& update : pdu.updates) {
@@ -162,8 +254,11 @@ bool GraphicsPipeline::ApplyBitmapRect(const proto::BitmapData& rect) {
     }
     if (st != proto::Status::Ok) return false;
 
+    // destLeft/destTop are virtual-desktop coordinates (relative to the primary
+    // monitor's top-left), so they are translated by the union origin before the
+    // blit. With no monitor layout the origin is (0,0) and this is a no-op.
     surface_.Blit(decoded.pixels.data(), decoded.width, decoded.height,
-                  rect.dest_left, rect.dest_top);
+                  rect.dest_left - origin_x_, rect.dest_top - origin_y_);
     return true;
 }
 

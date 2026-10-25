@@ -76,6 +76,13 @@ class Client {
     uint16_t desktop_height() const { return driver_.desktop_height(); }
     security::ConnectionDriver& driver() { return driver_; }
 
+    // The multi-monitor layout the server reported (Monitor Layout PDU,
+    // 2.2.12.1). Empty for a single-monitor session.
+    const std::vector<proto::MonitorDef>& monitors() const {
+        return driver_.monitors();
+    }
+    bool has_monitor_layout() const { return driver_.has_monitor_layout(); }
+
     // Session statistics for the Connection information dialog. NoteFrame() is
     // called by the front-end after each Present(). NoteInputSent() is called
     // right before an input PDU is written to the transport; the round-trip is

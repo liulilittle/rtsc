@@ -8,6 +8,7 @@
 #include "rtsc/proto/byte_order.h"
 #include "rtsc/proto/client_info.h"
 #include "rtsc/proto/mcs.h"
+#include "rtsc/proto/multimon.h"
 
 namespace rtsc::proto {
 
@@ -83,6 +84,16 @@ public:
         uint16_t supported_color_depths = 0x0007;
         uint16_t early_capability_flags = 0x0001;
         uint32_t connection_type = 0;
+
+        // Multi-monitor: the client's local monitor layout. When non-empty a
+        // Client Monitor Data (CS_MONITOR 0xC005) block is added to the Connect
+        // Initial so the server builds a multi-monitor session, and the CS_CORE
+        // desktop size is widened to the virtual desktop union. The caller
+        // normally fills this from the local display enumeration.
+        std::vector<MonitorDef> monitors;
+        // Advertise RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU so the server sends the
+        // Monitor Layout PDU (2.2.12.1). mstsc sets the same flag.
+        bool support_monitor_layout_pdu = true;
 
         // Client Network Data: channel names to request, in order.
         std::vector<std::string> channel_names;

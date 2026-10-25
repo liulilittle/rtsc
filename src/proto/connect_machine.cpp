@@ -21,6 +21,10 @@ constexpr uint16_t kScSecurity = 0x0C02;
 constexpr uint16_t kScNetwork = 0x0C03;
 constexpr uint16_t kScMcsMsgChannel = 0x0C04;
 
+// RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU ([MS-RDPBCGR] 2.2.1.3.2): the client
+// understands the Monitor Layout PDU (2.2.12.1).
+constexpr uint16_t kRnsUdCsSupportMonitorLayoutPdu = 0x0040;
+
 constexpr uint16_t kSasSequenceDel = 0xAA03;
 constexpr uint16_t kPostBeta2ColorDepth = 0xCA01;
 
@@ -43,10 +47,40 @@ void WriteFixedUtf16(ByteWriter& w, const std::string& utf8, size_t units) {
 // including serverSelectedProtocol.
 std::vector<uint8_t> BuildClientCoreData(const ConnectMachine::Config& c,
                                          uint32_t selected_protocol) {
+    // With a monitor layout the CS_CORE desktop size is the virtual desktop
+    // union, not a single monitor. mstsc does the same.
+    uint32_t desktop_width = c.desktop_width;
+    uint32_t desktop_height = c.desktop_height;
+    if (!c.monitors.empty()) {
+        int32_t min_l = 0, min_t = 0, max_r = 0, max_b = 0;
+        bool first = true;
+        for (const auto& m : c.monitors) {
+            if (first) {
+                min_l = m.left;
+                min_t = m.top;
+                max_r = m.right;
+                max_b = m.bottom;
+                first = false;
+            } else {
+                min_l = std::min(min_l, m.left);
+                min_t = std::min(min_t, m.top);
+                max_r = std::max(max_r, m.right);
+                max_b = std::max(max_b, m.bottom);
+            }
+        }
+        desktop_width = static_cast<uint32_t>(max_r - min_l + 1);
+        desktop_height = static_cast<uint32_t>(max_b - min_t + 1);
+    }
+    const uint16_t early_capability_flags =
+        static_cast<uint16_t>(c.early_capability_flags |
+                              (c.support_monitor_layout_pdu
+                                   ? kRnsUdCsSupportMonitorLayoutPdu
+                                   : 0));
+
     ByteWriter body;
     body.u32le(0x00080004);  // version: RDP 5.0
-    body.u16le(static_cast<uint16_t>(c.desktop_width));
-    body.u16le(static_cast<uint16_t>(c.desktop_height));
+    body.u16le(static_cast<uint16_t>(desktop_width));
+    body.u16le(static_cast<uint16_t>(desktop_height));
     body.u16le(static_cast<uint16_t>(c.color_depth));
     body.u16le(kSasSequenceDel);
     body.u32le(c.keyboard_layout);
@@ -61,7 +95,7 @@ std::vector<uint8_t> BuildClientCoreData(const ConnectMachine::Config& c,
     body.u32le(0);  // serialNumber
     body.u16le(c.high_color_depth);
     body.u16le(c.supported_color_depths);
-    body.u16le(c.early_capability_flags);
+    body.u16le(early_capability_flags);
     WriteFixedUtf16(body, std::string(), 32);  // clientDigProductId, 64 bytes
     body.u8(static_cast<uint8_t>(c.connection_type));
     body.u8(0);  // pad1octet
@@ -94,6 +128,15 @@ std::vector<uint8_t> BuildClientNetworkData(const ConnectMachine::Config& c) {
     ByteWriter out;
     GccUserData::write_block(out, kCsNetwork, body.data());
     return out.take();
+}
+
+// Client Monitor Data (TS_UD_CS_MONITOR, 0xC005). Empty when the client has no
+// monitor layout, so a single-monitor client sends no block at all.
+std::vector<uint8_t> BuildClientMonitorData(
+    const std::vector<MonitorDef>& monitors) {
+    ClientMonitorData data;
+    data.monitors = monitors;
+    return data.encode();
 }
 
 void Append(std::vector<uint8_t>& dst, const std::vector<uint8_t>& src) {
@@ -384,6 +427,10 @@ ConnectStep ConnectMachine::SendConnectInitial() {
         blocks.bytes(core.data(), core.size());
         blocks.bytes(sec.data(), sec.size());
         blocks.bytes(net.data(), net.size());
+        if (!config_.monitors.empty()) {
+            const auto mon = BuildClientMonitorData(config_.monitors);
+            blocks.bytes(mon.data(), mon.size());
+        }
     }
 
     GccUserData parsed;
