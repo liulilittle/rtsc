@@ -64,7 +64,10 @@ void usage() {
         "%s\n"
         "usage: rtsc_gui <host> [port] [domain] [user] [password] "
         "[width] [height] [backend] [zoom] [fit] [viewport_w] [viewport_h] "
-        "[multimon] [--frames N] [--seconds N]\n"
+        "[multimon] [--rdp] [--frames N] [--seconds N] [--input-probe]\n"
+        "  --rdp  request PROTOCOL_RDP (Standard RDP Security, RC4 data plane)\n"
+        "  --input-probe: queue one key and one mouse event after activation\n"
+        "  (automation only; headless loopback input check).\n"
         "  port defaults to 3389; width/height default to the desktop size the\n"
         "  server grants (1280x1024), so the default view is 1:1 lossless.\n"
         "  backend: headless | win32 | x11 | wayland (default: platform).\n"
@@ -82,15 +85,23 @@ void usage() {
 rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
                                             const std::string& domain,
                                             const std::string& user,
-                                            const std::string& password) {
+                                            const std::string& password,
+                                            bool standard_rdp) {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
-    mcfg.requested_protocols = rtsc::proto::kProtocolSsl |
-                               rtsc::proto::kProtocolHybrid |
-                               rtsc::proto::kProtocolHybridEx;
+    if (standard_rdp) {
+        mcfg.requested_protocols = rtsc::proto::kProtocolRdp;
+        // Advertise 40/128/56-bit Standard RDP Security. The server picks the
+        // strongest method and returns the matching RSA certificate.
+        mcfg.encryption_methods = 0x0000001B;
+    } else {
+        mcfg.requested_protocols = rtsc::proto::kProtocolSsl |
+                                   rtsc::proto::kProtocolHybrid |
+                                   rtsc::proto::kProtocolHybridEx;
+        mcfg.encryption_methods = 0;
+    }
     mcfg.client_name = "RTSC";
     mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
-    mcfg.encryption_methods = 0;
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -118,10 +129,20 @@ int main(int argc, char** argv) {
     // real session renders until the window is closed.
     long max_frames = 0;   // 0 = unlimited
     long max_seconds = 0;  // 0 = unlimited
+    bool standard_rdp = false;
+    bool input_probe = false;
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(argc));
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
+        if (std::strcmp(a, "--rdp") == 0) {
+            standard_rdp = true;
+            continue;
+        }
+        if (std::strcmp(a, "--input-probe") == 0) {
+            input_probe = true;
+            continue;
+        }
         if (std::strcmp(a, "--frames") == 0 && i + 1 < argc) {
             max_frames = std::atol(argv[++i]);
             continue;
@@ -174,9 +195,10 @@ int main(int argc, char** argv) {
     const bool multimon =
         args.size() >= 13 ? std::atoi(args[12].c_str()) != 0 : false;
 
-    std::printf("rtsc_gui: connecting to %s:%u (%ux%u)\n", host.c_str(),
+    std::printf("rtsc_gui: connecting to %s:%u (%ux%u, %s)\n", host.c_str(),
                 static_cast<unsigned>(port), static_cast<unsigned>(width),
-                static_cast<unsigned>(height));
+                static_cast<unsigned>(height),
+                standard_rdp ? "PROTOCOL_RDP" : "external security");
 
     std::string why;
     std::vector<std::unique_ptr<rtsc::ui::Window>> windows;
@@ -205,8 +227,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    rtsc::client::Client client(MakeDriver(host, domain, user, password), width,
-                                height);
+    rtsc::client::Client client(
+        MakeDriver(host, domain, user, password, standard_rdp), width, height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
     // the rendering. The default is 1:1 lossless: zoom 100% and fit off, so the
@@ -222,6 +244,8 @@ int main(int argc, char** argv) {
     // protocol.
     unsigned vc_rdpdr = 0;
     unsigned vc_cliprdr = 0;
+    unsigned input_sends = 0;
+    unsigned channel_sends = 0;
 
     // Audio output: decode the server's Wave2 PDUs and play them through the
     // platform backend. The handler only borrows the sink, which lives here.
@@ -236,18 +260,19 @@ int main(int argc, char** argv) {
         std::make_unique<rtsc::audio::NullAudioSink>();
 #endif
 
-    // Sends a complete channel message (CHANNEL_PDU_HEADER + rdpsnd PDU) on the
-    // rdpsnd static virtual channel, wrapped in MCS and the security layer.
+    // Sends a complete channel message (CHANNEL_PDU_HEADER + channel PDU) on a
+    // static virtual channel through the application data plane. The client
+    // picks the security model: TLS/CredSSP wraps the MCS frame in the TLS
+    // stream, Standard RDP Security puts it in MCS and applies RC4.
+    const auto send_channel = [&](uint16_t channel_id,
+                                  const std::vector<uint8_t>& message) {
+        std::string send_error;
+        if (client.SendChannelPdu(*transport, channel_id, message, send_error)) {
+            ++channel_sends;
+        }
+    };
     const auto send_rdpsnd = [&](const std::vector<uint8_t>& message) {
-        auto* sec = client.driver().security();
-        if (sec == nullptr) return;
-        const uint16_t user_channel =
-            client.driver().machine().state().user_channel_id;
-        if (user_channel == 0) return;
-        const auto mcs = rtsc::proto::McsSendData::build_request(
-            user_channel, kChannelRdpsnd, message);
-        const auto wire = sec->SendPdu(mcs);
-        if (!wire.empty()) transport->Write(wire.data(), wire.size());
+        send_channel(kChannelRdpsnd, message);
     };
 
     // Clipboard redirection (CLIPRDR): decode the cliprdr static virtual channel
@@ -259,18 +284,10 @@ int main(int argc, char** argv) {
         local_clipboard = std::make_unique<rtsc::clipboard::NullClipboard>();
     }
 
-    // Sends a complete channel message (CHANNEL_PDU_HEADER + cliprdr PDU) on the
-    // cliprdr static virtual channel, wrapped in MCS and the security layer.
+    // Clipboard redirection (CLIPRDR) sends through the same application
+    // data plane, so it works under both TLS and Standard RDP Security.
     const auto send_cliprdr = [&](const std::vector<uint8_t>& message) {
-        auto* sec = client.driver().security();
-        if (sec == nullptr) return;
-        const uint16_t user_channel =
-            client.driver().machine().state().user_channel_id;
-        if (user_channel == 0) return;
-        const auto mcs = rtsc::proto::McsSendData::build_request(
-            user_channel, kChannelCliprdr, message);
-        const auto wire = sec->SendPdu(mcs);
-        if (!wire.empty()) transport->Write(wire.data(), wire.size());
+        send_channel(kChannelCliprdr, message);
     };
 
     rtsc::channel::CliprdrClient cliprdr(local_clipboard.get(), send_cliprdr);
@@ -349,6 +366,18 @@ int main(int argc, char** argv) {
     // single-window and the multi-window layout.
     rtsc::ui::BindClipboardToWindows(
         windows, [&] { cliprdr.OnLocalClipboardChanged(); });
+    if (input_probe) {
+        rtsc::ui::InputEvent probe_key;
+        probe_key.kind = rtsc::ui::InputEvent::Kind::kKey;
+        probe_key.scancode = 0x1E;  // 'A'
+        windows[0]->PushEventForTest(probe_key);
+        rtsc::ui::InputEvent probe_move;
+        probe_move.kind = rtsc::ui::InputEvent::Kind::kMouseMove;
+        probe_move.x = 11;
+        probe_move.y = 13;
+        windows[0]->PushEventForTest(probe_move);
+        std::printf("input probe queued: key 0x1E, mouse (11,13)\n");
+    }
     std::printf("session active; desktop %ux%u; entering the render loop\n",
                 static_cast<unsigned>(client.desktop_width()),
                 static_cast<unsigned>(client.desktop_height()));
@@ -439,19 +468,18 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (consumed) continue;
-                const auto pdu = client.EncodeInput(ev);
-                // Post-active input is application data on the secured transport,
-                // so it must go through the security layer (TLS) like every other
-                // PDU; writing the raw Fast-Path bytes to the socket would
-                // corrupt the TLS stream.
-                auto* sec = client.driver().security();
-                const auto wire = sec != nullptr ? sec->SendPdu(pdu) : pdu;
-                if (!wire.empty() &&
-                    !transport->Write(wire.data(), wire.size())) {
-                    std::printf("input write failed\n");
+                // Post-active input is application data on the secured
+                // transport. SendInput lets the connection driver pick the
+                // framing: TLS/CredSSP sends the Fast-Path PDU unchanged,
+                // Standard RDP Security puts it in MCS and applies RC4.
+                std::string input_error;
+                if (!client.SendInput(*transport, ev, input_error)) {
+                    std::printf("input write failed: %s\n",
+                                input_error.c_str());
                     for (auto& w : windows) w->Close();
                     break;
                 }
+                ++input_sends;
             }
         }
 
@@ -572,6 +600,8 @@ int main(int argc, char** argv) {
 
     std::printf("virtual channel chunks: rdpdr=%u cliprdr=%u\n", vc_rdpdr,
                 vc_cliprdr);
+    std::printf("application sends: input=%u channel=%u\n", input_sends,
+                channel_sends);
     std::printf(
         "clipboard: long_names=%s remote_formats=%zu caps_sent=%u "
         "server_caps=%u remote_lists=%u local_lists=%u responses=%u "

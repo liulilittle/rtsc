@@ -84,6 +84,14 @@ class ConnectionDriver {
     // expects input inside MCS) and then RC4-encrypted when enabled.
     std::vector<uint8_t> SendApplicationPdu(const std::vector<uint8_t>& pdu);
 
+    // Wraps a static virtual channel message for the post-active data plane.
+    // `pdu` is the channel payload (CHANNEL_PDU_HEADER + channel PDU). Under
+    // both security models it is placed in an MCS Send Data Request on
+    // `channel_id`; under Standard RDP Security the request is then
+    // RC4-encrypted when enabled. Returns empty when the session is not ready.
+    std::vector<uint8_t> SendChannelPdu(uint16_t channel_id,
+                                        const std::vector<uint8_t>& pdu);
+
     // The handler receives each inbound PDU once the session is active (i.e.
     // after the capability exchange / connection finalization completed). The
     // graphics layer uses it to consume bitmap / pointer updates. This is the

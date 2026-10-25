@@ -360,6 +360,15 @@ target_link_libraries(rtsc_rdp_standard_security_tests PRIVATE
 target_include_directories(rtsc_rdp_standard_security_tests PRIVATE tests)
 add_test(NAME rdp_standard_security COMMAND rtsc_rdp_standard_security_tests)
 
+# GUI send path: input and static virtual channels through the application
+# data plane, against the in-tree server over PROTOCOL_RDP.
+add_executable(rtsc_gui_send_tests tests/test_gui_send.cpp)
+target_link_libraries(rtsc_gui_send_tests PRIVATE
+                      rtsc_client rtsc_security rtsc_server rtsc_net
+                      rtsc_proto rtsc_crypto rtsc_ui rtsc_util)
+target_include_directories(rtsc_gui_send_tests PRIVATE tests)
+add_test(NAME gui_send COMMAND rtsc_gui_send_tests)
+
 # Blocking TCP transport. Windows = Winsock; POSIX = POSIX sockets.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     add_library(rtsc_net STATIC src/net/winsock_transport.cpp)
@@ -569,6 +578,7 @@ if(MSVC)
     target_compile_options(rtsc_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdp_standard_security_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_gui_send_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_connect PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui PRIVATE /W4 /WX)
     if(WIN32)

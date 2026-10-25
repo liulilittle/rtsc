@@ -239,6 +239,24 @@ bool Client::SendPdu(net::Transport& transport,
     return true;
 }
 
+bool Client::SendInput(net::Transport& transport, const ui::InputEvent& ev,
+                       std::string& error) {
+    return SendPdu(transport, EncodeInput(ev), error);
+}
+
+bool Client::SendChannelPdu(net::Transport& transport, uint16_t channel_id,
+                            const std::vector<uint8_t>& pdu,
+                            std::string& error) {
+    if (pdu.empty()) return true;
+    const auto wire = driver_.SendChannelPdu(channel_id, pdu);
+    if (wire.empty()) return true;
+    if (!transport.Write(wire.data(), wire.size())) {
+        error = "channel write failed";
+        return false;
+    }
+    return true;
+}
+
 bool Client::SendCtrlAltDel(net::Transport& transport, std::string& error) {
     return SendPdu(transport, EncodeCtrlAltDel(), error);
 }

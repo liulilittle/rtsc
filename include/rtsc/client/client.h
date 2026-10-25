@@ -62,6 +62,18 @@ class Client {
     // Alt up, Ctrl up) in one PDU. mstsc triggers this from Ctrl+Alt+End.
     std::vector<uint8_t> EncodeCtrlAltDel() const;
 
+    // Sends an input event through the post-active application data plane
+    // (TLS or Standard RDP Security). Returns false with `error` set on a
+    // write failure.
+    bool SendInput(net::Transport& transport, const ui::InputEvent& ev,
+                   std::string& error);
+
+    // Sends a static virtual channel message (CHANNEL_PDU_HEADER + channel PDU)
+    // through the post-active application data plane. Returns false with
+    // `error` set on a write failure.
+    bool SendChannelPdu(net::Transport& transport, uint16_t channel_id,
+                        const std::vector<uint8_t>& pdu, std::string& error);
+
     // Sends the SAS over `transport` through the security layer. Returns false
     // with `error` set on a write failure.
     bool SendCtrlAltDel(net::Transport& transport, std::string& error);

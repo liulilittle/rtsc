@@ -393,4 +393,18 @@ std::vector<uint8_t> ConnectionDriver::SendApplicationPdu(
     return security_ ? security_->SendPdu(pdu) : pdu;
 }
 
+std::vector<uint8_t> ConnectionDriver::SendChannelPdu(
+    uint16_t channel_id, const std::vector<uint8_t>& pdu) {
+    if (pdu.empty() || channel_id == 0) return {};
+    const uint16_t user_channel = machine_.state().user_channel_id;
+    if (user_channel == 0) return {};
+    const auto framed =
+        proto::McsSendData::build_request(user_channel, channel_id, pdu);
+    if (framed.empty()) return {};
+    if (standard_rdp_) return standard_->SendPdu(framed);
+    // No security layer yet: writing the plaintext MCS frame would corrupt the
+    // TLS stream, so drop it instead (the caller sends only after active).
+    return security_ ? security_->SendPdu(framed) : std::vector<uint8_t>{};
+}
+
 }  // namespace rtsc::security

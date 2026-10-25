@@ -892,4 +892,35 @@ RTSC_TEST(client_register_channel_forwards_to_driver) {
     CHECK_EQ(vc_calls, 1);
 }
 
+// ---- ConnectionDriver: post-active application send path -------------------
+
+RTSC_TEST(connection_driver_sends_application_and_channel_pdus_over_tls) {
+    auto driver = MakeDriver();
+    CHECK(DriveToActive(driver));
+    CHECK(driver.session_active());
+    CHECK(driver.security_active());
+
+    // The input Fast-Path PDU is application data on the TLS stream: it is
+    // passed to the security layer unchanged (no MCS wrapper).
+    const std::vector<uint8_t> input = {0x40, 0x00, 0x01, 0x1E};
+    const auto input_wire = driver.SendApplicationPdu(input);
+    CHECK(!input_wire.empty());
+    CHECK(input_wire == input);
+
+    // A static virtual channel message is framed in an MCS Send Data Request
+    // on that channel id, then carried by the same TLS stream. The scripted
+    // TLS transport is the identity, so the MCS frame is directly parseable.
+    const std::vector<uint8_t> channel_message = {
+        0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0xAA, 0xBB, 0xCC, 0xDD};
+    const auto channel_wire = driver.SendChannelPdu(1005, channel_message);
+    CHECK(!channel_wire.empty());
+    rtsc::proto::McsSendData sd;
+    CHECK(rtsc::proto::McsSendData::parse(channel_wire.data(),
+                                          channel_wire.size(), sd) ==
+          rtsc::proto::Status::Ok);
+    CHECK_EQ(sd.channel_id, static_cast<uint16_t>(1005));
+    CHECK(sd.user_data == channel_message);
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_security_tests"); }

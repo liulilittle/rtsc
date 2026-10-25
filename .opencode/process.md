@@ -8635,3 +8635,56 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **结论**：**RDPDR 特性完整，审计通过 ✅**。
 - **[主代理]** 提交 WIP（缺口修复）到 master。
 - **在途**：提交 WIP。
+
+
+## 第326轮：**RDPDR 缺口修复团队结束报告（已闭合）**
+
+- **[修复代理]** `ses_e8ab6231fffeK9StwbwLwoUdex` 团队任务结束报告：RDPDR 未编译代码缺口修复**已闭合**（双审甲+乙复核通过并盖章）。
+  - 交付：`file_system.h`（:13 `<fstream>`、:91 `File::directory`）；`CMakeLists.txt`（:74-82 `rtsc_rdpdr` 库、:225-227 `rtsc_rdpdr_tests` 链接、:551-552 `/W4 /WX`）；`tests/test_rdpdr_client.cpp`（23 测试）。
+  - 验证：红 `cl` EXIT=2/6 errors → 绿 EXIT=0；build 0 warning；`ctest` 44/44；`rtsc_rdpdr_tests` 23/149/0。
+  - 指纹：CMakeLists.txt=d266c0847715817a / file_system.h=c5276f7b7cb8dc0b / test_rdpdr_client.cpp=519a9f39210486b5。
+  - 遗留/风险：① 并发写冲突已收敛（他方写重复目标已删除；若再写会破坏 configure → 建议协调）；② Debug C4702（`window_win32.cpp:372`，预存在，Release 干净）。
+- **主代理**：WIP 已提交 `ffcc4a9`；主树干净；build EXIT=0、`ctest` 44/44。
+- **在途**：无（RDPDR 完成）。
+
+
+## 第327轮：**RDPDR worktree 收口报告 → 代理无待办，解散**
+
+- **[RDPDR agent 收口]** `ses_e8bd904faffegAEJPi4Bhm7Zaq`（worktree `feat/rdpdr`，HEAD `17bdf7e`）：
+  - **已交付并被 HEAD 收录**：`src/proto/rdpdr.cpp`(7CB8C267FF62C6AF)、`include/rtsc/proto/rdpdr.h`(26B6B76DC9A8D990)、`src/channel/rdpdr_client.cpp`(C8E0550718BECE44)、`include/rtsc/channel/rdpdr_client.h`(73A2BC91723ED96D)、`src/rdpdr/file_system.cpp`(2695A6F4382C7661)、`include/rtsc/rdpdr/file_system.h`(513F4E41DFFF402E)、`tests/test_rdpdr.cpp`(B36CBDCCE73CCDED)。
+  - **proto 关键修复**：① `ByteWriter::bytes` 参数数（6 处）；② 所有 core `parse` 改「先判最小长度→NeedMoreData，后判 packet id→InvalidType」；③ `GENERAL_CAPS_SET` 尺寸 v1=32/v2=36（原 36/40 错）；④ `DR_CREATE_REQ` 固定部 +32（原 +28 错）。
+  - 绿证：`rtsc_rdpdr_tests` 5/19/0；`ctest` 40/40。
+  - **建议**：以主树工作树为 RDPDR 接线基准（proto 与主树逐字节一致，client/FS 草稿如与主树重复可弃）。
+- **[主代理]** 该代理**无进一步待办** → 收口解散（`manage_subagent delete`）。
+- **在途**：GUI 标准 RDP 输入/静态通道接线（`ses_e8a9a6056ffe07sSzxH4I038Ba`）。
+
+
+## 第328轮：**审计乙：GUI 标准 RDP 接线通过 ✅**（等甲）
+
+- **[审计乙]** GUI 标准 RDP 输入/静态通道接线 **复核通过 ✅**：
+  - **API ✅**：`connection_driver.cpp:396-405` `SendChannelPdu`（MCS Send Data Request + `standard_->SendPdu`/`security_->SendPdu`）；`client.cpp:233` `SendApplicationPdu`、`:242` `SendInput`、`:247` `SendChannelPdu`。
+  - **GUI ✅**：`main.cpp:267-290` 统一 `send_channel` → `client.SendChannelPdu`；`:476` `client.SendInput`；无 `driver().security()`/直接 MCS。
+  - **红→绿 ✅**：先加测试 → `SendInput`/`SendChannelPdu` 非 Client 成员（C2039）；旧 security() 路径在 PROTOCOL_RDP 下丢通道/输入绕过 MCS 失步。
+  - **C0 ✅**：`rtsc_gui_send_tests` 1/19/0；`rtsc_security_tests` 17/127/0；`ctest` 45/45；指纹全对。
+  - **风险（非阻断）**：GUI rdpdr 仍 receive-only；server 不发 rdpsnd（1006=0，同路径由 1004/1005+TLS 覆盖）；`--input-probe` 仅自动化；无 TLS 实网回环。
+- **待办**：等**审计甲**盖章 → GUI 接线双审完成 → 提交 WIP。
+- **在途**：GUI 接线双审（甲待复）。
+
+
+## 第329轮：**乙重复确认 GUI 接线盖章 ✅**（等甲）
+
+- **[审计乙]** 重复确认（与主代理交叉）：GUI 标准 RDP 输入/静态通道接线 **已复核并盖章 ✅**（修复正确性/红证/C0 全对；无缺陷）。
+- **待办**：等**审计甲**盖章 → GUI 接线双审完成 → 提交 WIP。
+- **在途**：GUI 接线双审（甲待复）。
+
+
+## 第330轮：**GUI 标准 RDP 接线双审盖章 ✅**（甲乙）
+
+- **[审计甲·最终定案]** GUI 标准 RDP 输入/静态通道接线 **双审盖章通过 ✅**（甲 + 乙 独立审计 + 交叉复核）：
+  - **修复正确性**：`connection_driver.h:92`/`.cpp:396` `SendChannelPdu`（MCS `build_request` + `standard_->SendPdu`/`security_->SendPdu`；未就绪返回空）；`client.h:68,74`/`.cpp:242,247` 薄封装；`main.cpp:270,476` 统一 `SendChannelPdu`/`SendInput`，**无 `driver().security()`/直接 MCS/直接 transport 写输入**；`--rdp`/`--input-probe` 已接线。
+  - **红→绿（有区分力）**：编译红（旧版 `SendInput`/`SendChannelPdu` 不存在 → C2039）；运行红（旧 `security()` 路径 PROTOCOL_RDP 下丢通道/输入）→ 绿。
+  - **实测**：`rtsc_gui_send_tests` 1/19/0；`rtsc_security_tests` 17/127/0；`cmake --build` EXIT=0/0 warning；`ctest` **45/45**；8 指纹全对。
+  - **非阻断观察（登记）**：① rdpdr receive-only；② server 不发 rdpsnd（1006=0，同路径由 1004/1005+TLS 覆盖）；③ `--input-probe` 仅自动化；④ 固定端口 3396；⑤ 无 TLS 实网回环；⑥ `process.md` 他方并发写。
+- **结论**：**GUI 标准 RDP 接线正确，PROTOCOL_RDP 与 TLS 路径均工作 ✅**。
+- **[主代理]** 提交 WIP（GUI 接线）到 master。
+- **在途**：提交 WIP。
