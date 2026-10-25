@@ -40,6 +40,7 @@ add_library(rtsc_proto STATIC
     src/proto/surface.cpp
     src/proto/cliprdr.cpp
     src/proto/drdynvc.cpp
+    src/proto/rdpusb.cpp
     src/proto/rdpdr.cpp
     src/proto/rdpsnd.cpp
     src/proto/rdp6.cpp
@@ -189,6 +190,26 @@ target_include_directories(rtsc_cliprdr_tests PRIVATE tests)
 add_executable(rtsc_drdynvc_tests tests/test_drdynvc.cpp)
 target_link_libraries(rtsc_drdynvc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_drdynvc_tests PRIVATE tests)
+
+# URBDRC (RemoteFX USB redirection) channel handler. Platform neutral: it
+# forwards TS_URB requests to an injected rtsc::usb::UsbDevice; the WinUSB
+# backend is the platform implementation (see src/usb/usb_win32.cpp).
+add_library(rtsc_urbrdc STATIC
+    src/channel/drdynvc_client.cpp
+    src/channel/rdpusb_client.cpp)
+target_include_directories(rtsc_urbrdc PUBLIC include)
+target_link_libraries(rtsc_urbrdc PUBLIC rtsc_proto)
+
+# Windows USB backend (SetupAPI enumeration + WinUSB transfers).
+if(WIN32)
+    add_library(rtsc_usb_win32 STATIC src/usb/usb_win32.cpp)
+    target_include_directories(rtsc_usb_win32 PUBLIC include)
+    target_link_libraries(rtsc_usb_win32 PUBLIC setupapi winusb)
+endif()
+
+add_executable(rtsc_rdpusb_tests tests/test_rdpusb.cpp)
+target_link_libraries(rtsc_rdpusb_tests PRIVATE rtsc_urbrdc rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpusb_tests PRIVATE tests)
 
 add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp)
 target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -432,6 +453,7 @@ add_test(NAME channel COMMAND rtsc_channel_tests)
 add_test(NAME surface COMMAND rtsc_surface_tests)
 add_test(NAME cliprdr COMMAND rtsc_cliprdr_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
+add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
 add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
 add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
@@ -478,6 +500,11 @@ if(MSVC)
     target_compile_options(rtsc_surface_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_cliprdr_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drdynvc_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpusb_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_urbrdc PRIVATE /W4 /WX)
+    if(WIN32)
+        target_compile_options(rtsc_usb_win32 PRIVATE /W4 /WX)
+    endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)
