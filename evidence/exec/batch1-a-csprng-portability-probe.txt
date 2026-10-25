@@ -1,0 +1,44 @@
+BATCH1-A CSPRNG PORTABILITY PROBE (WSL Ubuntu-24.04, g++ 13.3.0, glibc 2.39)
+==============================================================================
+
+[PROBE 1] Does -std=c++20 hide getrandom()?  <-- my earlier claim: YES
+  === g++ version ===
+  g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+  === glibc ===
+  ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+  === TEST A: -std=c++20 -Wall -Wextra -Werror -Wpedantic ===
+  exitA=0
+  === TEST B: -std=gnu++20 ===
+  exitB=0
+  === TEST C: -std=c++20 + -D_DEFAULT_SOURCE ===
+  exitC=0
+
+  RESULT: exitA=0 -> getrandom() COMPILES under -std=c++20 -Werror -Wpedantic.
+  MY EARLIER CLAIM IS FALSIFIED.
+
+[PROBE 2] Why? g++ predefines _GNU_SOURCE even with -std=c++20
+  g++ -std=c++20 -dM -E -x c++ /dev/null | grep GNU_SOURCE
+    #define _GNU_SOURCE 1
+  libstdc++ os_defines.h:43-44 defines it, so glibc features.h:231-238
+  sets _DEFAULT_SOURCE=1 -> __USE_MISC=1 -> getrandom declared.
+  Also verified: __STRICT_ANSI__=1 AND _DEFAULT_SOURCE=yes coexist.
+
+[PROBE 3] doc:3995-3999 sketch verbatim -> compiles (exit=0), but NO EINTR handling.
+
+[PROBE 4] My proposed full implementation: FIRST version FAILED to compile.
+  error: O_RDONLY / open / read / close were not declared in this scope
+  Cause: <fcntl.h> and <unistd.h> were inside #if !RTSC_HAVE_GETRANDOM,
+  but the ENOSYS fallback path still calls open/read/close.
+  FIX: include <fcntl.h> and <unistd.h> unconditionally.
+  After fix: exitA=0, nonzero=YES differ=YES (real CSPRNG output).
+
+[PROBE 5] Variant matrix after fix (all -Wall -Wextra -Werror -Wpedantic):
+  A  full getrandom path, -std=c++20 ............ exit 0, output random
+  B2 /dev/urandom-only path (guard forced 0) .... exit 0, output random
+  C  -std=c++17 ................................. exit 0
+  D  -O2 ........................................ exit 0
+  E  -fsanitize=address,undefined ............... exit 0, output random
+
+CONCLUSION: _DEFAULT_SOURCE is NOT required (libstdc++ supplies _GNU_SOURCE).
+Keeping the explicit define is harmless and guards against a non-libstdc++
+toolchain, but it must NOT be presented as a hard requirement.

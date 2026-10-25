@@ -1,0 +1,37 @@
+﻿=== c (credssp.cpp) : 22 distinct citations, file has 415 lines
+    41 | : credentials_(std::move(credentials)), version_(version) {
+    46 | nonce_.assign(kNonceSize, 0);
+    54 | step_ = Step::kFailed;
+    93 | if (!e.ok()) return Fail(e.status, "cannot decode TSRequest");
+    97 | if (req.has_error_code) {
+   123 | Error e = msg.Decode(challenge.nego_token.data(), challenge.nego_token.size());
+   176 | in.client_challenge.assign(nonce_.begin(), nonce_.begin() + 8);
+   191 | exported_session_key_.assign(nonce_.begin() + 8, nonce_.begin() + 24);
+   196 | signing_key_ = DeriveSigningKey(exported_session_key_, false);
+   228 | if (version_ >= kFirstHashVersion) {
+   229 | if (nonce_.size() != kNonceSize) {
+   234 | plain = server_public_key_;
+   241 | req.version = version_;
+   244 | if (version_ >= kFirstHashVersion) req.client_nonce = nonce_;
+   266 | if (version_ >= kFirstHashVersion) {
+   283 | if (plain != expected) {
+   300 | req.version = version_;
+   360 | ++recv_seq_;
+   364 | Bytes CredsspClient::MakeServerEchoForTest() const {
+   368 | if (version_ >= kFirstHashVersion) {
+   384 | const Bytes sign = DeriveSigningKey(exported_session_key_, true);
+   387 | Seal(seal, sign, recv_seq_, plain, s);
+
+=== t (test_credssp_sm.cpp) : 11 distinct citations, file has 505 lines
+   110 | CHECK(client.Start(out).ok());
+   128 | RTSC_TEST(step1_rejects_server_version_above_our_max) {
+   134 | bad.nego_token = FromHex("0011");
+   149 | client.SetServerPublicKeyForTest(FromHex("3006020101020101"));
+   283 | RTSC_TEST(step5_sends_authinfo_only) {
+   300 | step4.version = 6;
+   338 | echo[20] ^= 0xFF;  // corrupt the ciphertext
+   359 | CHECK(client.Start(out).ok());
+   381 | CHECK(client.Start(out).ok());
+   478 | RTSC_TEST(version_4_pubkeyauth_is_encrypted_public_key_not_hash) {
+   487 | challenge.version = 4;
+

@@ -1,0 +1,8 @@
+[1/2] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+FAILED: CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -MF CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o.d -o CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -c /mnt/f/rtsc/src/net/tls_schannel.cpp
+/mnt/f/rtsc/src/net/tls_schannel.cpp:29:10: fatal error: windows.h: No such file or directory
+   29 | #include <windows.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+ninja: build stopped: subcommand failed.

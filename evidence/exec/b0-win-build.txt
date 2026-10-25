@@ -1,0 +1,12 @@
+=== Windows build (cmd /c F:\rtsc\.tmp\build_tls.bat) ===
+--- FORCED RECOMPILE of the 3 batch-0 targets (objs deleted first)
+--- exit=0
+--- flags: /W4 /WX /permissive- /Zc:__cplusplus /utf-8 (CMakeLists.txt:13)
+--- expectation: all 3 TUs recompiled, 0 warnings, 0 errors
+
+[1/6] Building CXX object CMakeFiles\rtsc_tls.dir\src\net\tls_factory.cpp.obj
+[2/6] Building CXX object CMakeFiles\rtsc_tls_schannel.dir\src\net\tls_schannel.cpp.obj
+[3/6] Building CXX object CMakeFiles\rtsc_tls_tests.dir\tests\test_tls.cpp.obj
+[4/6] Linking CXX static library rtsc_tls_schannel.lib
+[5/6] Linking CXX static library rtsc_tls.lib
+[6/6] Linking CXX executable rtsc_tls_tests.exe

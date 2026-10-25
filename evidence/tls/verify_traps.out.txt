@@ -1,0 +1,33 @@
+=== TLS1.2 (legacy cred) ===
+  Acquire(cli, mode=0) -> 0x00000000
+  Acquire(srv, mode=0) -> 0x00000000
+  proto=0x00000800 cipher=0x6610 hdr=13 trl=16 maxmsg=16384 pending=0
+    [T4] alloc=63 wire=63 (hdr=13 data=34 trl=16) delta=0
+-- T1 buffer count floor --
+  nbuf=1 -> 0x80090308
+  nbuf=2 -> 0x80090308
+  nbuf=3 -> 0x80090308
+  nbuf=4 same record -> 0x00000000 (proves 1..3 consumed nothing)
+    [T4] alloc=63 wire=63 (hdr=13 data=34 trl=16) delta=0
+  nbuf=5 -> 0x00000000
+-- T2 EXTRA pointer aliasing --
+    [T4] alloc=63 wire=63 (hdr=13 data=34 trl=16) delta=0
+    [T4] alloc=63 wire=63 (hdr=13 data=34 trl=16) delta=0
+  st=0x00000000 extra=63 offset=63 inCallerRange=1 input=126
+-- T5 close_notify flag --
+  Acquire(cli, mode=0) -> 0x00000000
+  Acquire(srv, mode=0) -> 0x00000000
+  alloc=0: ctl=0x00000000 isc=0x00000000 out=0 first=00
+  Acquire(cli, mode=0) -> 0x00000000
+  Acquire(srv, mode=0) -> 0x00000000
+  alloc=1: ctl=0x00000000 isc=0x00000000 out=31 first=15
+=== TLS1.3 (SCH_CREDENTIALS, 1.0|1.1|1.2 disabled) ===
+  Acquire(cli, mode=1) -> 0x00000000
+  Acquire(srv, mode=1) -> 0x00000000
+  proto=0x00002000 cipher=0x6610 hdr=5 trl=44 maxmsg=16384
+    [T4] alloc=83 wire=56 (hdr=5 data=34 trl=17) delta=27
+-- T3 post-handshake ticket --
+  pending=103 17 03 03 00 62 37
+  client ISC(ticket bytes) -> 0x00000000 out=0
+  client Dec(ticket record) -> 0x80090330 extra=0
+RESULT=DONE

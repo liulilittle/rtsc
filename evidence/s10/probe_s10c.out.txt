@@ -1,0 +1,11 @@
+﻿S10 probe part 3: TLS 1.3 ticket coalescing
+  server ASC#1 -> 0x00090312, out=784
+  client ISC#2 -> status=1 consumed=784/784 out=158 complete=0
+  server ASC#2 -> 0x00000000, out=51
+  server final flight = 51 bytes, 2 record(s):
+    record[0]: type=20 (ChangeCipherSpec) len=6
+    record[1]: type=22 (Handshake) len=45
+  client ISC#3 -> status=0 consumed=51/51 complete=1
+  negotiated version = 0x0303
+  Receive(nullptr,0) -> status=1 plaintext=0 buffered=0
+  verdict: handshake_complete=1, channel usable=yes (tickets irrelevant to RDP)

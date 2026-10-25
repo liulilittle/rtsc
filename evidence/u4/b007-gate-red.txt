@@ -1,0 +1,47 @@
+CONFIGURE_EXIT=0
+BUILD_EXIT=1
+FAILED_COUNT=1
+WINDOWS_H_COUNT=2
+--- build log tail ---
+[1/61] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+FAILED: CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/.tmp/gate-regress2/include -I/mnt/f/rtsc/.tmp/gate-regress2/src/net -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -MF CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o.d -o CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -c /mnt/f/rtsc/.tmp/gate-regress2/src/net/tls_schannel.cpp
+/mnt/f/rtsc/.tmp/gate-regress2/src/net/tls_schannel.cpp:29:10: fatal error: windows.h: No such file or directory
+   29 | #include <windows.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+[2/61] Building CXX object CMakeFiles/rtsc_util.dir/src/util/crash_guard.cpp.o
+[3/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/byte_order.cpp.o
+[4/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/ber.cpp.o
+[5/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/tpkt.cpp.o
+[6/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/x224.cpp.o
+[7/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/rdp_neg.cpp.o
+[8/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/share.cpp.o
+[9/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connection_initiation.cpp.o
+[10/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs.cpp.o
+[11/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs_domain.cpp.o
+[12/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/client_info.cpp.o
+[13/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/framing.cpp.o
+[14/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/finalization.cpp.o
+[15/61] Building CXX object CMakeFiles/rtsc_crypto.dir/src/crypto/hash.cpp.o
+[16/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connect_machine.cpp.o
+[17/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/licensing.cpp.o
+[18/61] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/capabilities.cpp.o
+[19/61] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ts_request.cpp.o
+[20/61] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ntlm.cpp.o
+[21/61] Building CXX object CMakeFiles/rtsc_framing_tests.dir/tests/test_framing.cpp.o
+[22/61] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/credssp.cpp.o
+[23/61] Building CXX object CMakeFiles/rtsc_tests.dir/tests/test_connection_initiation.cpp.o
+[24/61] Building CXX object CMakeFiles/rtsc_ber_tests.dir/tests/test_ber.cpp.o
+[25/61] Building CXX object CMakeFiles/rtsc_client_info_tests.dir/tests/test_client_info.cpp.o
+[26/61] Building CXX object CMakeFiles/rtsc_share_tests.dir/tests/test_share.cpp.o
+[27/61] Building CXX object CMakeFiles/rtsc_mcs_tests.dir/tests/test_mcs.cpp.o
+[28/61] Building CXX object CMakeFiles/rtsc_mcs_domain_tests.dir/tests/test_mcs_domain.cpp.o
+[29/61] Building CXX object CMakeFiles/rtsc_finalization_tests.dir/tests/test_finalization.cpp.o
+[30/61] Building CXX object CMakeFiles/rtsc_crypto_tests.dir/tests/test_crypto.cpp.o
+[31/61] Building CXX object CMakeFiles/rtsc_connect_machine_tests.dir/tests/test_connect_machine.cpp.o
+[32/61] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+[33/61] Building CXX object CMakeFiles/rtsc_capabilities_tests.dir/tests/test_capabilities.cpp.o
+[34/61] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+ninja: build stopped: subcommand failed.
+LINUX GATE FAIL: FAILED=1 WINDOWS_H=2

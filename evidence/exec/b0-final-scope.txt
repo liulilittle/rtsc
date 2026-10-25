@@ -1,0 +1,38 @@
+=== Batch-0 final scope verification (post-change, .tmp/bl-green) ===
+--- date: 2026-10-23T01:02:34Z
+
+### 1. configure exit (fresh) ###
+CONFIGURE_EXIT=0
+
+### 2. rtsc_tls target (the batch-0 deliverable) ###
+[1/2] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+[2/2] Linking CXX static library librtsc_tls.a
+TLS_TARGET_EXIT=0
+
+### 3. all targets that batch 0 touched or that depend on rtsc_tls ###
+PASS rtsc_tls
+PASS rtsc_proto
+PASS rtsc_credssp
+PASS rtsc_util
+PASS rtsc_crypto
+PASS rtsc_probe
+PASS rtsc_framing_tests
+PASS rtsc_connect_machine_tests
+
+### 4. targets that fail, and why (all 3 are untouched files) ###
+FAIL rtsc_credssp_tests (pre-existing, see b0-pre-existing-proof.txt)
+FAIL rtsc_licensing_tests (pre-existing, see b0-pre-existing-proof.txt)
+FAIL rtsc_crashtest (pre-existing, see b0-pre-existing-proof.txt)
+
+### 5. every remaining target ###
+PASS rtsc_tests
+PASS rtsc_ber_tests
+PASS rtsc_mcs_tests
+PASS rtsc_mcs_domain_tests
+PASS rtsc_client_info_tests
+PASS rtsc_finalization_tests
+PASS rtsc_capabilities_tests
+PASS rtsc_share_tests
+PASS rtsc_crypto_tests
+PASS rtsc_ntlm_tests
+PASS rtsc_credssp_sm_tests

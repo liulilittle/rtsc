@@ -1,0 +1,53 @@
+=== 3 pre-existing Linux defects exposed once rtsc_tls stopped failing ===
+--- date: 2026-10-23T01:03:47Z
+--- toolchain: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+--- status: NOT FIXED (out of batch-0 scope; §19.2.2 says stop and report)
+
+### D-A  tests/test_credssp.cpp:50  unused helper under -Wunused-function ###
+tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+   50 | Bytes Str(const char* s) { return Bytes(s, s + std::char_traits<char>::length(s)); }
+      |       ^~~
+cc1plus: all warnings being treated as errors
+EXIT=1
+--- occurrences of Str in that file: 1 (declaration only)
+--- file mtime: 2026-10-22T22:08:48Z (predates batch 0)
+
+### D-B  tests/test_licensing.cpp:37,60  unused helpers under -Wunused-function ###
+tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+   60 | std::string ToHex(const std::vector<uint8_t>& v) {
+      |             ^~~~~
+tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+   37 | std::vector<uint8_t> AnsiBytes(const std::string& s) {
+      |                      ^~~~~~~~~
+cc1plus: all warnings being treated as errors
+EXIT=1
+--- file mtime: 2026-10-22T11:18:57Z (predates batch 0)
+
+### D-C  tools/rtsc_crashtest/main.cpp:30  std::terminate without <exception> ###
+tools/rtsc_crashtest/main.cpp: In function ‘void {anonymous}::CrashTerminate()’:
+tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                           ^~~~~~~~~
+tools/rtsc_crashtest/main.cpp:12:1: note: ‘std::terminate’ is defined in header ‘<exception>’; did you forget to ‘#include <exception>’?
+   11 | #include "rtsc/util/crash_guard.h"
+  +++ |+#include <exception>
+   12 | 
+tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                                        ^
+cc1plus: all warnings being treated as errors
+EXIT=1
+--- file mtime: 2026-10-22T07:57:45Z (predates batch 0)
+
+### Why MSVC does not see D-C: libstdc++ <string> does not pull <exception>,
+### MSVC's <string> does. Verified by D-C failing only on GCC.
+
+### Confirm none of the 3 files were touched by batch 0 ###
+tests/test_credssp.cpp mtime=2026-10-22T22:08:48Z
+tests/test_licensing.cpp mtime=2026-10-22T11:18:57Z
+tools/rtsc_crashtest/main.cpp mtime=2026-10-22T07:57:45Z
+batch-0 touched files:
+CMakeLists.txt mtime=2026-10-23T00:54:53Z
+src/net/tls_schannel.cpp mtime=2026-10-23T00:53:56Z
+src/net/tls_factory.cpp mtime=2026-10-23T00:53:45Z
+src/net/tls_schannel_internal.h mtime=2026-10-23T00:52:54Z

@@ -1,0 +1,27 @@
+=== probe_s24b.exe raw stdout ===
+--- exit=0
+--- probe: F:\rtsc\.tmp\probe_s24b\probe_s24b.cpp
+--- linked: rtsc_tls.lib + rtsc_tls_schannel.lib + rtsc_crypto.lib
+--- both libs required after batch 0 (see negative control in b0-s24b-red-baseline.txt)
+
+=== S24-b: is a red test constructible? ===
+
+--- PART 1: product, handshake complete, Shutdown() ---
+  status=0 native=0x00090312 out=201 closed=true
+  ASSERTION A: status != kOk ?  FAIL  <-- this is a RED test today
+  ASSERTION B: native_code != SEC_I_CONTINUE_NEEDED ?  FAIL  <-- also RED today
+
+--- PART 2: the mapping function, in isolation ---
+  MapShutdownStatus(SEC_I_CONTINUE_NEEDED=0x00090312) = 0
+  MapShutdownStatus(SEC_E_OK)                     = 0
+  MapShutdownStatus(SEC_E_UNSUPPORTED_FUNCTION)   = 5
+  ASSERTION C: MapShutdownStatus(CONTINUE_NEEDED) != kOk ?  FAIL  <-- RED today, GREEN after fixing only :431
+  ASSERTION D: MapShutdownStatus(SEC_E_OK) == kOk ?  PASS
+
+=== VERDICT ===
+ASSERTION C is an independent red test for S24-b:
+  * it fails on the current code (CONTINUE_NEEDED mapped to kOk)
+  * it passes when ONLY :431 is fixed, even if the token is still broken
+  * so S24-b IS separately catchable and IS a real defect
+The earlier claim 'no red test constructible' used the wrong test
+method: it tried to reach the arm through the product's happy path.

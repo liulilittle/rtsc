@@ -1,0 +1,770 @@
+[
+ {
+  "doc_line": 66,
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'max_chunk' not found near :215 nor :217"
+ },
+ {
+  "doc_line": 100,
+  "start": 241,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:241`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'TlsTransport::Receive' not found near :241 nor :243"
+ },
+ {
+  "doc_line": 161,
+  "start": 177,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:177`",
+  "verdict": "STALE",
+  "detail": "fragment 'kNeedMoreInput' is at ~:179, citation says :177"
+ },
+ {
+  "doc_line": 162,
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'kCertRejected' not found near :192 nor :194"
+ },
+ {
+  "doc_line": 163,
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "STALE",
+  "detail": "fragment 'kUnsupported' is at ~:181, citation says :179"
+ },
+ {
+  "doc_line": 491,
+  "start": 299,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:299`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_I_CONTEXT_EXPIRED' found near :299"
+ },
+ {
+  "doc_line": 492,
+  "start": 232,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:232`",
+  "verdict": "OK",
+  "detail": "fragment 'closed_' found near :232"
+ },
+ {
+  "doc_line": 493,
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "OK",
+  "detail": "fragment 'rx_buffer_' found near :242"
+ },
+ {
+  "doc_line": 494,
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :431"
+ },
+ {
+  "doc_line": 506,
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'rx_buffer_.size() < 5' not found near :242 nor :244"
+ },
+ {
+  "doc_line": 527,
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :431"
+ },
+ {
+  "doc_line": 545,
+  "start": 185,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:185`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_E_INVALID_TOKEN' found near :185"
+ },
+ {
+  "doc_line": 593,
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'tls::Error' not found near :192 nor :194"
+ },
+ {
+  "doc_line": 596,
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "STALE",
+  "detail": "fragment 'kUnsupported' is at ~:181, citation says :179"
+ },
+ {
+  "doc_line": 723,
+  "start": 135,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:135`",
+  "verdict": "STALE",
+  "detail": "fragment 'ISC_REQ_MANUAL_CRED_VALIDATION' is at ~:137, citation says :135"
+ },
+ {
+  "doc_line": 723,
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'kStrict' not found near :192 nor :194"
+ },
+ {
+  "doc_line": 723,
+  "start": 369,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:369`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'kStrict' not found near :369 nor :371"
+ },
+ {
+  "doc_line": 724,
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :431"
+ },
+ {
+  "doc_line": 725,
+  "start": 114,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:114`",
+  "verdict": "OK",
+  "detail": "fragment 'in_bufs' found near :114"
+ },
+ {
+  "doc_line": 731,
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "OK",
+  "detail": "fragment 'MaxChunk()' found near :215"
+ },
+ {
+  "doc_line": 781,
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_I_INCOMPLETE_CREDENTIALS' found near :179"
+ },
+ {
+  "doc_line": 782,
+  "start": 46,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:46`",
+  "verdict": "OK",
+  "detail": "fragment 'kMaxRecordPayload = 16384' found near :46"
+ },
+ {
+  "doc_line": 831,
+  "start": 169,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:169`",
+  "verdict": "OK",
+  "detail": "fragment 'consumed = in_size' found near :169"
+ },
+ {
+  "doc_line": 875,
+  "start": 369,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:369`",
+  "verdict": "OK",
+  "detail": "fragment 'PeerSubjectPublicKey' found near :369"
+ },
+ {
+  "doc_line": 876,
+  "start": 462,
+  "end": 475,
+  "raw": "`src/net/tls_schannel.cpp:462-475`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 897,
+  "start": 29,
+  "end": 32,
+  "raw": "`src/net/tls_schannel.cpp:29-32`",
+  "verdict": "OK",
+  "detail": "fragment '#include <windows.h>' found near :29"
+ },
+ {
+  "doc_line": 1527,
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'rx_buffer_.size() < 5' not found near :242 nor :244"
+ },
+ {
+  "doc_line": 1566,
+  "start": 169,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:169`",
+  "verdict": "OK",
+  "detail": "fragment 'consumed = in_size;' found near :169"
+ },
+ {
+  "doc_line": 1568,
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 1611,
+  "start": 241,
+  "end": 270,
+  "raw": "`tls_schannel.cpp:241-270`",
+  "verdict": "STALE",
+  "detail": "fragment 'rx_buffer_' is at ~:243, citation says :241"
+ },
+ {
+  "doc_line": 1662,
+  "start": 66,
+  "end": 73,
+  "raw": "`src/net/tls_schannel.cpp:66-73`",
+  "verdict": "OK",
+  "detail": "fragment 'ParseRecordHeader' found near :66"
+ },
+ {
+  "doc_line": 1795,
+  "start": 184,
+  "end": 187,
+  "raw": "`src/net/tls_schannel.cpp:184-187`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_E_ILLEGAL_MESSAGE' found near :184"
+ },
+ {
+  "doc_line": 1795,
+  "start": 51,
+  "end": null,
+  "raw": "`t:51`",
+  "verdict": "STALE",
+  "detail": "fragment 'Handshake' is at ~:53, citation says :51"
+ },
+ {
+  "doc_line": 1796,
+  "start": 135,
+  "end": 147,
+  "raw": "`src/net/tls_schannel.cpp:135-147`",
+  "verdict": "STALE",
+  "detail": "fragment 'ISC_REQ_MANUAL_CRED_VALIDATION' is at ~:137, citation says :135"
+ },
+ {
+  "doc_line": 1796,
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "OK",
+  "detail": "fragment 'FinishHandshake' found near :489"
+ },
+ {
+  "doc_line": 1796,
+  "start": 369,
+  "end": 382,
+  "raw": "`t:369-382`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'kStrict' not found near :369 nor :371"
+ },
+ {
+  "doc_line": 1797,
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "OK",
+  "detail": "fragment 'closed_' found near :430"
+ },
+ {
+  "doc_line": 1797,
+  "start": 232,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:232`",
+  "verdict": "OK",
+  "detail": "fragment 'closed_' found near :232"
+ },
+ {
+  "doc_line": 1798,
+  "start": 99,
+  "end": 199,
+  "raw": "`src/net/tls_schannel.cpp:99-199`",
+  "verdict": "OK",
+  "detail": "fragment 'Handshake' found near :99"
+ },
+ {
+  "doc_line": 1798,
+  "start": 66,
+  "end": 73,
+  "raw": "`t:66-73`",
+  "verdict": "OK",
+  "detail": "fragment 'ParseRecordHeader' found near :66"
+ },
+ {
+  "doc_line": 1804,
+  "start": 215,
+  "end": 222,
+  "raw": "`t:215-222`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'src/sec/security_layer.cpp' not found near :215 nor :217"
+ },
+ {
+  "doc_line": 1804,
+  "start": 215,
+  "end": 222,
+  "raw": "`tls_schannel.cpp:215-222`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'src/sec/security_layer.cpp' not found near :215 nor :217"
+ },
+ {
+  "doc_line": 1807,
+  "start": 467,
+  "end": 472,
+  "raw": "`src/net/tls_schannel.cpp:467-472`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 1807,
+  "start": 568,
+  "end": 575,
+  "raw": "`t:568-575`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 1809,
+  "start": 29,
+  "end": 32,
+  "raw": "`src/net/tls_schannel.cpp:29-32`",
+  "verdict": "OK",
+  "detail": "fragment 'windows.h' found near :29"
+ },
+ {
+  "doc_line": 1827,
+  "start": 184,
+  "end": null,
+  "raw": "`tls_schannel.cpp:184`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'Handshake' not found near :184 nor :186"
+ },
+ {
+  "doc_line": 1828,
+  "start": 135,
+  "end": 147,
+  "raw": "`tls_schannel.cpp:135-147`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'FinishHandshake' not found near :135 nor :137"
+ },
+ {
+  "doc_line": 1828,
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "OK",
+  "detail": "fragment 'FinishHandshake' found near :489"
+ },
+ {
+  "doc_line": 1834,
+  "start": 467,
+  "end": 472,
+  "raw": "`tls_schannel.cpp:467-472`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'ProtocolMask' not found near :467 nor :469"
+ },
+ {
+  "doc_line": 1896,
+  "start": 369,
+  "end": 382,
+  "raw": "`src/net/tls_schannel.cpp:369-382`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'tests/test_tls.cpp:826' not found near :369 nor :371"
+ },
+ {
+  "doc_line": 2042,
+  "start": 233,
+  "end": null,
+  "raw": "`t:233`",
+  "verdict": "STALE",
+  "detail": "fragment 'rx_buffer_' is at ~:235, citation says :233"
+ },
+ {
+  "doc_line": 2044,
+  "start": 568,
+  "end": 575,
+  "raw": "`t:568-575`",
+  "verdict": "OK",
+  "detail": "fragment 'EnforceVersionWindow' found near :568"
+ },
+ {
+  "doc_line": 2044,
+  "start": 172,
+  "end": null,
+  "raw": "`t:172`",
+  "verdict": "OK",
+  "detail": "fragment 'kInternal' found near :172"
+ },
+ {
+  "doc_line": 2050,
+  "start": 99,
+  "end": 199,
+  "raw": "`tls_schannel.cpp:99-199`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'credssp.cpp' not found near :99 nor :101"
+ },
+ {
+  "doc_line": 2050,
+  "start": 369,
+  "end": null,
+  "raw": "`t:369`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'credssp.cpp' not found near :369 nor :371"
+ },
+ {
+  "doc_line": 2083,
+  "start": 431,
+  "end": null,
+  "raw": "`tls_schannel.cpp:431`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :431"
+ },
+ {
+  "doc_line": 2083,
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :430"
+ },
+ {
+  "doc_line": 2083,
+  "start": 430,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:430`",
+  "verdict": "OK",
+  "detail": "fragment 'if (st == SEC_E_OK || st == SE' found near :430"
+ },
+ {
+  "doc_line": 2091,
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_E_OK' found near :431"
+ },
+ {
+  "doc_line": 2099,
+  "start": 29,
+  "end": 32,
+  "raw": "`t:29-32`",
+  "verdict": "MISMATCH",
+  "detail": "fragment '#if/#ifdef/#ifndef' not found near :29 nor :31"
+ },
+ {
+  "doc_line": 2443,
+  "start": 242,
+  "end": null,
+  "raw": "`t:242`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'kClosed' not found near :242 nor :244"
+ },
+ {
+  "doc_line": 2464,
+  "start": 433,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:433`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'src/credssp/credssp.cpp:46' not found near :433 nor :435"
+ },
+ {
+  "doc_line": 2473,
+  "start": 99,
+  "end": 199,
+  "raw": "`src/net/tls_schannel.cpp:99-199`",
+  "verdict": "MISMATCH",
+  "detail": "fragment ':467-472' not found near :99 nor :101"
+ },
+ {
+  "doc_line": 2676,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 2696,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 2761,
+  "start": 411,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:411`",
+  "verdict": "OK",
+  "detail": "fragment 'SecBuffer token{0, SECBUFFER_T' found near :411"
+ },
+ {
+  "doc_line": 2761,
+  "start": 291,
+  "end": null,
+  "raw": "`t:291`",
+  "verdict": "OK",
+  "detail": "fragment 'kProtocolError' found near :291"
+ },
+ {
+  "doc_line": 2814,
+  "start": 99,
+  "end": 199,
+  "raw": "`t:99-199`",
+  "verdict": "OK",
+  "detail": "fragment 'Handshake' found near :99"
+ },
+ {
+  "doc_line": 2814,
+  "start": 228,
+  "end": 343,
+  "raw": "`t:228-343`",
+  "verdict": "OK",
+  "detail": "fragment 'Receive' found near :228"
+ },
+ {
+  "doc_line": 2815,
+  "start": 233,
+  "end": null,
+  "raw": "`t:233`",
+  "verdict": "STALE",
+  "detail": "fragment 'rx_buffer_' is at ~:235, citation says :233"
+ },
+ {
+  "doc_line": 2830,
+  "start": 402,
+  "end": 434,
+  "raw": "`t:402-434`",
+  "verdict": "STALE",
+  "detail": "fragment 'shutdown_sent_' is at ~:404, citation says :402"
+ },
+ {
+  "doc_line": 2833,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 2876,
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'closed() = true' not found near :430 nor :432"
+ },
+ {
+  "doc_line": 2877,
+  "start": 404,
+  "end": null,
+  "raw": "`t:404`",
+  "verdict": "OK",
+  "detail": "fragment 'shutdown_sent_' found near :404"
+ },
+ {
+  "doc_line": 2882,
+  "start": 409,
+  "end": 433,
+  "raw": "`t:409-433`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 2887,
+  "start": 431,
+  "end": null,
+  "raw": "`t:431`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_I_CONTINUE_NEEDED' found near :431"
+ },
+ {
+  "doc_line": 2894,
+  "start": 431,
+  "end": null,
+  "raw": "`t:431`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'native_code' not found near :431 nor :433"
+ },
+ {
+  "doc_line": 2927,
+  "start": 411,
+  "end": 413,
+  "raw": "`src/net/tls_schannel.cpp:411-413`",
+  "verdict": "OK",
+  "detail": "fragment 'SecBuffer token{0, SECBUFFER_T' found near :411"
+ },
+ {
+  "doc_line": 2928,
+  "start": 431,
+  "end": 433,
+  "raw": "`src/net/tls_schannel.cpp:431-433`",
+  "verdict": "OK",
+  "detail": "fragment 'SEC_I_CONTINUE_NEEDED' found near :431"
+ },
+ {
+  "doc_line": 2929,
+  "start": 411,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:411`",
+  "verdict": "OK",
+  "detail": "fragment 'ApplyControlToken' found near :411"
+ },
+ {
+  "doc_line": 2943,
+  "start": 405,
+  "end": null,
+  "raw": "`t:405`",
+  "verdict": "OK",
+  "detail": "fragment 'have_ctx_' found near :405"
+ },
+ {
+  "doc_line": 2943,
+  "start": 409,
+  "end": 411,
+  "raw": "`t:409-411`",
+  "verdict": "OK",
+  "detail": "fragment 'have_ctx_' found near :409"
+ },
+ {
+  "doc_line": 2944,
+  "start": 419,
+  "end": 422,
+  "raw": "`t:419-422`",
+  "verdict": "MISMATCH",
+  "detail": "fragment '0x80090318' not found near :419 nor :421"
+ },
+ {
+  "doc_line": 3065,
+  "start": 433,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:433`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'rtsc_tls_tests' not found near :433 nor :435"
+ },
+ {
+  "doc_line": 3073,
+  "start": 735,
+  "end": 752,
+  "raw": "`src/net/tls_schannel.cpp:735-752`",
+  "verdict": "STALE",
+  "detail": "fragment 'src/net/tls_factory.cpp' is at ~:737, citation says :735"
+ },
+ {
+  "doc_line": 3075,
+  "start": 411,
+  "end": 413,
+  "raw": "`tls_schannel.cpp:411-413`",
+  "verdict": "OK",
+  "detail": "fragment 'SecBuffer token{0, SECBUFFER_T' found near :411"
+ },
+ {
+  "doc_line": 3162,
+  "start": 404,
+  "end": null,
+  "raw": "`t:404`",
+  "verdict": "OK",
+  "detail": "fragment 'shutdown_sent_' found near :404"
+ },
+ {
+  "doc_line": 3165,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "CreateTlsTransport now in tls_factory.cpp:2,22"
+ },
+ {
+  "doc_line": 4474,
+  "start": 435,
+  "end": null,
+  "raw": "`tls_schannel.cpp:435`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 5452,
+  "start": 429,
+  "end": null,
+  "raw": "`tls_schannel.cpp:429`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 5452,
+  "start": 429,
+  "end": null,
+  "raw": "`t:429`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ },
+ {
+  "doc_line": 5463,
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 't:NNN-MMM' not found near :489 nor :491"
+ },
+ {
+  "doc_line": 5463,
+  "start": 409,
+  "end": 411,
+  "raw": "`t:409-411`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 't:NNN-MMM' not found near :409 nor :411"
+ },
+ {
+  "doc_line": 5464,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MISMATCH",
+  "detail": "fragment 'tls_schannel.cpp:NNN-MMM' not found near :735 nor :737"
+ },
+ {
+  "doc_line": 5489,
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "OK",
+  "detail": "fragment 'const size_t chunk = MaxChunk(' found near :215"
+ },
+ {
+  "doc_line": 5501,
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "UNCHECKABLE",
+  "detail": "no quoted fragment on this line to compare against"
+ }
+]

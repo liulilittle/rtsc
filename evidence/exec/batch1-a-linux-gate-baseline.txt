@@ -1,0 +1,13 @@
+=== linux-build-gate.sh exists? ===
+-rwxrwxrwx 1 jay jay 3078 Oct 23 10:05 scripts/linux-build-gate.sh
+=== run gate (baseline, unmodified tree) ===
+CONFIGURE_EXIT=0
+BUILD_EXIT=0
+FAILED_COUNT=0
+WINDOWS_H_COUNT=0
+LIB_BYTES=254140
+FACTORY_SYMBOL=present
+CTEST_EXIT=0
+100% tests passed, 0 tests failed out of 15
+LINUX GATE PASS
+GATE_EXIT=0

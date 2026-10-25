@@ -1,0 +1,23 @@
+=== S0.7 duplicate-symbol verification (dumpbin, External-filtered) ===
+--- date: 2026-10-23 09:12:06 local
+--- preconditions: both libs must exist (checked first)
+
+PRECONDITION OK: rtsc_tls.lib (299,192 B, 2026-10-23 09:11:20)
+PRECONDITION OK: rtsc_tls_schannel.lib (799,446 B, 2026-10-23 09:11:20)
+
+=== counts ===
+facade  External CreateTlsTransport       = 1   (want 1)
+backend External CreateSchannelTransport = 1  (want 1)
+backend mentions CreateTlsTransport      = 0      (want 0)
+backend mentions EnumerateTlsBackends    = 0     (want 0)
+[why External matters] facade UNFILTERED CreateTlsTransport lines = 9 (Static noise)
+
+=== facade External line (verbatim) ===
+310 00000000 SECT6  notype ()    External     | ?CreateTlsTransport@tls@rtsc@@YA?AV?$unique_ptr@VTlsTransport@tls@rtsc@@U?$default_delete@VTlsTransport@tls@rtsc@@@std@@@std@@V?$basic_string_view@DU?$char_traits@D@std@@@4@AEBUConfig@12@AEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@4@@Z (class std::unique_ptr<class rtsc::tls::TlsTransport,struct std::default_delete<class rtsc::tls::TlsTransport> > __cdecl rtsc::tls::CreateTlsTransport(class std::basic_string_view<char,struct std::char_traits<char> >,struct rtsc::tls::Config const &,class std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> > &))
+
+=== backend External line (verbatim) ===
+6C9 00000000 SECT6  notype ()    External     | ?CreateSchannelTransport@tls@rtsc@@YA?AV?$unique_ptr@VTlsTransport@tls@rtsc@@U?$default_delete@VTlsTransport@tls@rtsc@@@std@@@std@@AEBUConfig@12@AEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@4@@Z (class std::unique_ptr<class rtsc::tls::TlsTransport,struct std::default_delete<class rtsc::tls::TlsTransport> > __cdecl rtsc::tls::CreateSchannelTransport(struct rtsc::tls::Config const &,class std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> > &))
+
+=== backend must NOT mention CreateTlsTransport: file content below (expect empty) ===
+
+S0.7 PASS

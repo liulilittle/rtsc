@@ -1,0 +1,103 @@
+$env:TEMP='F:\rtsc\.tmp'; $env:TMP='F:\rtsc\.tmp'
+$urls = @(
+ 'ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c',
+ 'ms-rdpbcgr/73d01865-2eae-407f-9b2c-87e31daac471',
+ 'ms-rdpbcgr/4b5d4c0d-a657-41e9-9c69-d58632f46d31',
+ 'ms-rdpbcgr/e13405c5-668b-4716-94b2-1c2654ca1ad4',
+ 'ms-rdpbcgr/768e12c4-7748-4005-b91d-790847e47025',
+ 'ms-rdpbcgr/463bd2eb-c3b1-4986-86b0-a240819d9088',
+ 'ms-rdpbcgr/a07abad1-38bb-4a1a-96c9-253e3d5440df',
+ 'ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db',
+ 'ms-rdpbcgr/d705c3b6-a392-4b32-9610-391f6af62323',
+ 'ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66',
+ 'ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48',
+ 'ms-rdpbcgr/7cc40be0-ceb0-4983-85d0-e08af4bec2a6',
+ 'ms-rdpbcgr/c21e61b5-82a5-4e95-a660-fa95328c2712',
+ 'ms-rdpbcgr/41dc6845-07dc-4af6-bc14-d8281acd4877',
+ 'ms-rdpbcgr/76670547-e35c-4b95-a242-5729a21b83f6',
+ 'ms-rdpbcgr/9f409c29-480c-4751-9665-510b8ffff294',
+ 'ms-rdpbcgr/101d40a7-56c0-40e1-bcb9-1475ff63cb9d',
+ 'ms-rdpbcgr/a5b9b9a6-5f67-4089-a95d-009bc8e25bfc',
+ 'ms-rdpbcgr/f6602bd5-355a-47fe-af56-3ba2a1692889',
+ 'ms-rdpbcgr/925e2c05-c13f-44b1-aa20-23082051fef9',
+ 'ms-rdpbcgr/b3bc76ae-9ee5-454f-b197-ede845ca69cc',
+ 'ms-rdpbcgr/8b6a830f-3dde-4a84-9250-21ffa7d2e342',
+ 'ms-rdpbcgr/8e292483-9b0f-43b9-be14-dc6cd07e1615',
+ 'ms-rdpbcgr/cae26830-263c-4c1e-97c2-b561faded3d9',
+ 'ms-rdpbcgr/412fa921-2faa-4f1b-ab5f-242cdabc04f9',
+ 'ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc',
+ 'ms-rdpbcgr/fadb6a2c-18fa-4fa7-a155-e970d9b1ac59',
+ 'ms-rdpbcgr/c7bf0bde-50e3-48e6-bd41-a296b8ff5b35',
+ 'ms-rdpbcgr/fc05c385-46c3-42cb-9ed2-c475a3990e0b',
+ 'ms-rdpbcgr/e0add8ac-1546-4091-85ba-0ea77f54f2c7',
+ 'ms-rdpbcgr/97ff3178-9999-4231-ae4c-1e8d10d0e219',
+ 'ms-rdpbcgr/75caa232-1929-41bb-9d59-6f8aad59ecf5',
+ 'ms-rdpbcgr/18b4ccdc-e5b0-43c4-a453-cfa8c9feb2a4',
+ 'ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89',
+ 'ms-rdpbcgr/41323437-c753-460e-8108-495a6fdd68a8',
+ 'ms-rdpbcgr/9132002f-f133-4a0f-ba2f-2dc48f1e7f93',
+ 'ms-rdpbcgr/aa953018-c0a8-4761-bb12-86586c2cd56a',
+ 'ms-rdpbcgr/17e80f50-d163-49de-a23b-fd6456aa472f',
+ 'ms-rdpbcgr/408b1878-9f6e-4106-8329-1af42219ba6a',
+ 'ms-rdpbcgr/86507fed-a0ee-4242-b802-237534a8f65e',
+ 'ms-rdpbcgr/8555a21b-8d23-475e-9a2c-a16f656158af',
+ 'ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133',
+ 'ms-rdpbcgr/a641797e-3179-4212-8447-fa2a39e19c7b',
+ 'ms-rdpbcgr/76c4dd59-7ba0-445d-a03c-885212ab80f6',
+ 'ms-rdpbcgr/089d362b-31eb-4a1a-b6fa-92fe61bb5dbf',
+ 'ms-rdpbcgr/68b5ee54-d0d5-4d65-8d81-e1c4025f7597',
+ 'ms-rdpbcgr/a1c4caa8-00ed-45bb-a06e-5177473766d3',
+ 'ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89',
+ 'ms-rdpbcgr/fc191c40-e688-4d5a-a550-6609cd5b8b59',
+ 'ms-rdpbcgr/7067da0d-e318-4464-88e8-b11509cf0bd9',
+ 'ms-rdpbcgr/e373575a-01e2-43a7-a6d8-e1952b83e787',
+ 'ms-rdpbcgr/7ba6ba81-e4f4-46a7-9062-2d57a821be26',
+ 'ms-rdpbcgr/b4e557f3-7540-46fc-815d-0c12299cf1ee',
+ 'ms-rdpbcgr/5186005a-36f5-4f5d-8c06-968f28e2d992',
+ 'ms-rdpbcgr/78e11b18-ec57-4f51-b8ae-2d43192db915',
+ 'ms-rdpbcgr/0108279d-cd8b-4975-993c-a5cb9ee0a888',
+ 'ms-rdpbcgr/dd59bea4-cfc7-49c0-9969-9e90341400e7',
+ 'ms-rdpbcgr/afc747de-b841-4304-a5e1-cc564236a0ef',
+ 'ms-rdpbcgr/4aed639a-9ac3-411d-add9-c5253308aa85',
+ 'ms-rdpbcgr/fa5ec7d9-a29d-477c-b234-b023bf6c5519',
+ 'ms-rdpbcgr/e3dddf9e-ddc7-4622-a0d4-cc1d68f1f1ac',
+ 'ms-rdpbcgr/b307d88b-167d-4e1a-9d41-3ae39d657239',
+ 'ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432',
+ 'ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee',
+ 'ms-rdpbcgr/18bdcc20-2ca8-4520-9073-65e52a1c6733',
+ 'ms-rdpbcgr/084026ea-8264-4315-ac66-c77dea02b0c1',
+ 'ms-rdpbcgr/54765b0a-39d4-4746-92c6-8914934023da',
+ 'ms-rdpbcgr/c60386e7-bf10-42bd-a9b8-70854e497935',
+ 'ms-rdpbcgr/a75f7a91-ac1a-4012-b7f6-80de38c26c2f',
+ 'ms-rdpbcgr/d8f1be0e-ca81-4caf-a494-3c161d21a7f2',
+ 'ms-rdpbcgr/f390586a-3fdd-4a96-bbe0-a31575e92056',
+ 'ms-rdpbcgr/e0027486-f99a-4f0f-991c-eda3963521c2',
+ 'ms-rdpbcgr/9d1e1e21-d8b4-4bfd-9caf-4b72ee91a713',
+ 'ms-rdpbcgr/4f94e123-970b-4242-8cf6-39820d8e3d35',
+ 'ms-rdpbcgr/2d122191-af10-4e36-a781-381e91c182b7',
+ 'ms-rdpegdi/745f2eee-d110-464c-8aca-06fc1814f6ad',
+ 'ms-rdpegdi/2b7c6946-3612-4291-95a8-03b7b1387eaf',
+ 'ms-rdpegdi/c7fff288-63db-4521-bbe5-77e060fb0780',
+ 'ms-rdpegdi/52635737-d144-4f47-9c88-b48ceaf3efb4',
+ 'ms-rdpegdi/f7328112-a3a4-45ea-9022-a28033912273',
+ 'ms-rdpegdi/cfe60222-9185-4ab4-ab06-b0ec6e2d174e',
+ 'ms-rdpegdi/73c1767c-f10e-4361-b980-f39e3c44f895',
+ 'ms-rdperp/36a25e21-25e1-4954-aae8-09aaf6715c79',
+ 'ms-rdperp/82ec7a69-f7e3-4294-830d-666178b35d15',
+ 'ms-rdprfx/e4d498fd-822b-408d-b8b3-1c216f21265b'
+)
+$ok=0; $bad=@()
+foreach ($u in $urls) {
+  $full = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/$u"
+  try {
+    $r = Invoke-WebRequest -Uri $full -UseBasicParsing -TimeoutSec 45 -Method Head
+    if ($r.StatusCode -eq 200) { $ok++ } else { $bad += "$($r.StatusCode) $u" }
+  } catch {
+    try {
+      $r = Invoke-WebRequest -Uri $full -UseBasicParsing -TimeoutSec 45
+      if ($r.StatusCode -eq 200) { $ok++ } else { $bad += "$($r.StatusCode) $u" }
+    } catch { $bad += "ERR $u" }
+  }
+}
+"checked=$($urls.Count) ok=$ok bad=$($bad.Count)"
+$bad | ForEach-Object { $_ }

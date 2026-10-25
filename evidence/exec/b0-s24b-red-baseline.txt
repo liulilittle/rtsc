@@ -1,0 +1,220 @@
+=== S24-b RED BASELINE, recorded at batch-0 completion ===
+
+PURPOSE
+  Batch 0 (S21) changed the library structure: the public factory
+  CreateTlsTransport moved into a new facade TU (src/net/tls_factory.cpp) and
+  the SChannel backend was renamed to CreateSchannelTransport and split into its
+  own static library. Because that restructure touched exactly the object that
+  S24-b lives in, this file records the state of S24-b AT BATCH-0 COMPLETION,
+  so batch 2 can prove "it was red before we fixed it" and not merely assert it.
+
+  THIS IS NOT A BATCH-0 LEFTOVER.
+  S24-b is a batch-2 (TLS backend) defect. Batch 0 neither fixes nor worsens it.
+  Batch 0's job was only: build on Linux + keep Windows byte-identical.
+
+--------------------------------------------------------------------------
+DEFECT UNDER RECORD
+--------------------------------------------------------------------------
+  S24-b = src/net/tls_schannel.cpp:431
+
+      if (st == SEC_E_OK || st == SEC_I_CONTINUE_NEEDED) {   // line 431
+          closed_ = true;
+          return MakeError(Status::kOk, st, "");             // line 433
+      }
+
+  During Shutdown, SEC_I_CONTINUE_NEEDED means "I started a renegotiation and
+  you must keep going", which is the OPPOSITE of "gracefully closed". Mapping it
+  to Status::kOk also sets closed_ = true, which short-circuits Receive and can
+  strand buffered plaintext (S9 compounds this).
+
+  The earlier audit claim was: "after fixing S24-a (the shutdown token) ISC
+  returns SEC_E_OK, so the SEC_I_CONTINUE_NEEDED arm is unreachable, therefore no
+  red test can be constructed, therefore S24-b is not separately catchable."
+  That reasoning asked "can the product reach this arm via its happy path"
+  instead of "is this mapping wrong". It is refuted below.
+
+--------------------------------------------------------------------------
+PART 1 — THE VIOLATION IS OBSERVABLE ON THE PRODUCT AS IT STANDS
+--------------------------------------------------------------------------
+  Probe: F:\rtsc\.tmp\probe_s24b\probe_s24b.cpp
+  Build: F:\rtsc\.tmp\probe_s24b\build.bat
+  Method: real SChannel server context (self-signed cert, TLS 1.2 only) driven
+          against the PRODUCT transport from rtsc_tls.lib / rtsc_tls_schannel.lib,
+          complete a real handshake, then call TlsTransport::Shutdown().
+
+  Verbatim output (run 2026-10-23 after batch 0, against post-batch-0 libs):
+
+    --- PART 1: product, handshake complete, Shutdown() ---
+      status=0 native=0x00090312 out=201 closed=true
+      ASSERTION A: status != kOk ?  FAIL  <-- this is a RED test today
+      ASSERTION B: native_code != SEC_I_CONTINUE_NEEDED ?  FAIL  <-- also RED today
+
+  Reading it:
+    status = 0            -> Status::kOk
+    native_code=0x00090312 -> SEC_I_CONTINUE_NEEDED
+    out=201               -> 201 bytes emitted (the renegotiation request)
+    closed=true           -> closed_ was set
+
+  So the product reports "closed successfully" while the native code says
+  "continue needed" and it emitted 201 bytes of renegotiation traffic. That is
+  the S24-b violation, live, on the real backend, with no test-only fixtures.
+
+  Note this run uses the UNFIXED shutdown token (S24-a is still unfixed at batch
+  0), which is why SEC_I_CONTINUE_NEEDED appears at all. That is fine: the red
+  baseline must be taken on the code as it is, not on a hypothetical.
+
+--------------------------------------------------------------------------
+PART 2 — THE DECISION IS SEPARATELY TESTABLE IN ISOLATION
+--------------------------------------------------------------------------
+  The same decision, extracted into MapShutdownStatus(), shows the mapping bug
+  independently of whether the token is fixed.
+
+  CORRECTION (audit A20-2, 2026-10-23): MapShutdownStatus() is NOT a verbatim
+  copy of the product. Its else-branch returns kProtocolError, whereas the real
+  product fallthrough (the "shutdown best effort" line) returns kOk. The probe
+  models the *decision under test* (does SEC_I_CONTINUE_NEEDED count as
+  success?) and deliberately picks the strict answer for the non-success path,
+  so that ASSERTION C isolates the one mapping being examined.
+
+  This does not change the verdict: the CONTINUE_NEEDED arm maps to kOk in both
+  the product and the probe, which is the defect. But the earlier wording
+  "verbatim" was inaccurate and is retracted here.
+
+  Library version used for PART 1: post-batch-0 build, UNFIXED S24-a
+  (token still empty), i.e. rtsc_tls.lib + rtsc_tls_schannel.lib as built at
+  ts=20261023-092309. closed=true in PART 1 is the unfixed product reading; a
+  shadow tree with S24-a fixed reports closed=false. Readers must not compare
+  PART 1 numbers across library versions.
+
+    --- PART 2: the mapping function, in isolation ---
+      MapShutdownStatus(SEC_I_CONTINUE_NEEDED=0x00090312) = 0
+      MapShutdownStatus(SEC_E_OK)                     = 0
+      MapShutdownStatus(SEC_E_UNSUPPORTED_FUNCTION)   = 5
+      ASSERTION C: MapShutdownStatus(CONTINUE_NEEDED) != kOk ?  FAIL  <-- RED today, GREEN after fixing only :431
+      ASSERTION D: MapShutdownStatus(SEC_E_OK) == kOk ?         PASS
+
+  ASSERTION C is the independent red test for S24-b:
+    * it FAILS on current code (CONTINUE_NEEDED -> kOk == 0);
+    * it PASSES when ONLY :431 is fixed, even if the shutdown token is still
+      broken (S24-a unfixed);
+    * therefore S24-b is separately catchable, and is a real defect, not an
+      artifact of S24-a.
+  ASSERTION D is the guard that the fix must not over-correct: SEC_E_OK must
+  still map to kOk.
+
+  PROBE EXIT CODE = 0 (the probe itself succeeds; the ASSERTION lines are the
+  payload — they report FAIL, which is the red we are recording).
+
+--------------------------------------------------------------------------
+REPRODUCTION (exact commands)
+--------------------------------------------------------------------------
+  cd F:\rtsc\.tmp\probe_s24b
+  build.bat
+  probe_s24b.exe
+
+  build.bat contents (ASCII):
+    call "...\vcvars64.bat"
+    cd /d F:\rtsc\.tmp\probe_s24b
+    cl /nologo /EHsc /std:c++20 /W4 /WX /utf-8 /MDd /I F:\rtsc\include
+       probe_s24b.cpp /link /LIBPATH:F:\rtsc\build\verify
+       rtsc_tls.lib rtsc_tls_schannel.lib rtsc_crypto.lib
+       secur32.lib crypt32.lib advapi32.lib
+
+  *** AFTER BATCH 0, BOTH TLS LIBS ARE REQUIRED. ***
+  rtsc_tls.lib now contains ONLY the facade (CreateTlsTransport /
+  EnumerateTlsBackends). CreateSchannelTransport lives in
+  rtsc_tls_schannel.lib. Linking only rtsc_tls.lib produces:
+
+    rtsc_tls.lib(tls_factory.cpp.obj) : error LNK2019: unresolved external
+      symbol "... CreateSchannelTransport(...)" referenced in function
+      "... CreateTlsTransport(...)"
+    probe_s24b.exe : fatal error LNK1120: 1 unresolved externals
+    NEGATIVE_CONTROL_EXIT=2
+
+  This negative control was actually run (build_negative.bat) and is recorded
+  here so batch 2 does not repeat the mistake: it is a consequence of the batch-0
+  factory split, and it is expected, not a defect.
+
+--------------------------------------------------------------------------
+HANDOFF TO BATCH 2
+--------------------------------------------------------------------------
+  Batch 2 must, for S24-b:
+    1. change :431 to test ONLY SEC_E_OK (drop the SEC_I_CONTINUE_NEEDED arm);
+    2. route the non-OK case to a non-kOk status (see audit-a §19.4 trap 2 for
+       the exact shape), keeping ASSERTION D green;
+    3. re-run this probe and require:
+         ASSERTION A: PASS
+         ASSERTION B: PASS
+         ASSERTION C: PASS
+         ASSERTION D: PASS
+    4. re-run this probe BEFORE the fix (it must still show the FAILs above) so
+       the red->green transition is on record.
+
+  Expected post-fix PART 2 (predicted, NOT yet observed — do not treat as
+  evidence until batch 2 actually runs it):
+    MapShutdownStatus(SEC_I_CONTINUE_NEEDED) = 5   (kProtocolError)
+    ASSERTION C: PASS
+
+--------------------------------------------------------------------------
+STATUS AT BATCH-0 COMPLETION
+--------------------------------------------------------------------------
+  S24-b                                   : STILL RED (as required — batch 2 owns it)
+  src/net/tls_schannel.cpp:431            : UNCHANGED by batch 0
+  probe built & run against batch-0 libs  : YES (both libs linked)
+  probe output matches the parent's run   : YES, byte-for-byte on all 4 assertions
+  batch 0 scope                           : untouched by this file; no batch-0
+                                            code was modified to produce it
+
+
+--------------------------------------------------------------------------
+VERBATIM PROBE OUTPUT (captured unedited to b0-s24b-probe-raw.txt)
+--------------------------------------------------------------------------
+probe_s24b.exe        2026-10-23 09:28:32  114688 B
+rtsc_tls.lib          2026-10-23 09:11:20  299192 B
+rtsc_tls_schannel.lib 2026-10-23 09:11:20  799446 B
+probe run exit code   0
+=== S24-b: is a red test constructible? ===
+
+--- PART 1: product, handshake complete, Shutdown() ---
+  status=0 native=0x00090312 out=201 closed=true
+  ASSERTION A: status != kOk ?  FAIL  <-- this is a RED test today
+  ASSERTION B: native_code != SEC_I_CONTINUE_NEEDED ?  FAIL  <-- also RED today
+
+--- PART 2: the mapping function, in isolation ---
+  MapShutdownStatus(SEC_I_CONTINUE_NEEDED=0x00090312) = 0
+  MapShutdownStatus(SEC_E_OK)                     = 0
+  MapShutdownStatus(SEC_E_UNSUPPORTED_FUNCTION)   = 5
+  ASSERTION C: MapShutdownStatus(CONTINUE_NEEDED) != kOk ?  FAIL  <-- RED today, GREEN after fixing only :431
+  ASSERTION D: MapShutdownStatus(SEC_E_OK) == kOk ?  PASS
+
+=== VERDICT ===
+ASSERTION C is an independent red test for S24-b:
+  * it fails on the current code (CONTINUE_NEEDED mapped to kOk)
+  * it passes when ONLY :431 is fixed, even if the token is still broken
+  * so S24-b IS separately catchable and IS a real defect
+The earlier claim 'no red test constructible' used the wrong test
+method: it tried to reach the arm through the product's happy path.
+
+--------------------------------------------------------------------------
+NEGATIVE CONTROL (actually run): omitting rtsc_tls_schannel.lib
+--------------------------------------------------------------------------
+build_negative.bat links ONLY rtsc_tls.lib, reproducing the parent first-
+attempt failure. Verbatim linker output (message bodies translated from the
+localised GBK text to English; the symbols are unchanged):
+
+  rtsc_tls.lib(tls_factory.cpp.obj) : error LNK2019: unresolved external
+    symbol "class std::unique_ptr<class rtsc::tls::TlsTransport,...>
+      __cdecl rtsc::tls::CreateSchannelTransport(struct rtsc::tls::Config
+      const &, class std::basic_string<char,...> &)" referenced in function
+    "class std::unique_ptr<class rtsc::tls::TlsTransport,...>
+      __cdecl rtsc::tls::CreateTlsTransport(class std::basic_string_view<
+      char,...>, struct rtsc::tls::Config const &,
+      class std::basic_string<char,...> &)"
+  probe_s24b.exe : fatal error LNK1120: 1 unresolved externals
+  NEGATIVE_CONTROL_EXIT=2
+
+Interpretation: EXPECTED consequence of the batch-0 factory split (the
+facade TU references the backend symbol), not a defect. Batch 2 must link
+BOTH libs. build_negative.bat is kept next to build.bat as the record.
+Note it DELETES probe_s24b.exe when it fails, so re-run build.bat afterwards;
+the probe output above was captured after exactly such a rebuild.

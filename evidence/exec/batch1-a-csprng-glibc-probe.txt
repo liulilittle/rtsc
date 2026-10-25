@@ -1,0 +1,10 @@
+=== g++ version ===
+g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+=== glibc ===
+ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+=== TEST A: -std=c++20 -Wall -Wextra -Werror -Wpedantic ===
+exitA=0
+=== TEST B: -std=gnu++20 ===
+exitB=0
+=== TEST C: -std=c++20 + -D_DEFAULT_SOURCE ===
+exitC=0

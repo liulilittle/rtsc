@@ -1,0 +1,54 @@
+CONFIGURE_EXIT=0
+BUILD_EXIT=1
+FAILED_COUNT=1
+WINDOWS_H_COUNT=2
+--- build log tail ---
+[1/60] Building CXX object CMakeFiles/rtsc_util.dir/src/util/crash_guard.cpp.o
+[2/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/x224.cpp.o
+[3/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/byte_order.cpp.o
+[4/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/ber.cpp.o
+[5/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/tpkt.cpp.o
+[6/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/rdp_neg.cpp.o
+[7/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/share.cpp.o
+[8/60] Linking CXX static library librtsc_util.a
+[9/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connection_initiation.cpp.o
+[10/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs.cpp.o
+[11/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs_domain.cpp.o
+[12/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/client_info.cpp.o
+[13/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/framing.cpp.o
+[14/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/finalization.cpp.o
+[15/60] Building CXX object CMakeFiles/rtsc_crypto.dir/src/crypto/hash.cpp.o
+[16/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ts_request.cpp.o
+[17/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/licensing.cpp.o
+[18/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connect_machine.cpp.o
+[19/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ntlm.cpp.o
+[20/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/capabilities.cpp.o
+[21/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/credssp.cpp.o
+[22/60] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+FAILED: CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/.tmp/vb-shadow/include -I/mnt/f/rtsc/.tmp/vb-shadow/src/net -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o -MF CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o.d -o CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o -c /mnt/f/rtsc/.tmp/vb-shadow/src/net/tls_factory.cpp
+In file included from /mnt/f/rtsc/.tmp/vb-shadow/src/net/tls_factory.cpp:18:
+/mnt/f/rtsc/.tmp/vb-shadow/src/net/tls_schannel_internal.h:4:10: fatal error: windows.h: No such file or directory
+    4 | #include <windows.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+[23/60] Building CXX object CMakeFiles/rtsc_framing_tests.dir/tests/test_framing.cpp.o
+[24/60] Building CXX object CMakeFiles/rtsc_tests.dir/tests/test_connection_initiation.cpp.o
+[25/60] Building CXX object CMakeFiles/rtsc_finalization_tests.dir/tests/test_finalization.cpp.o
+[26/60] Building CXX object CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+[27/60] Building CXX object CMakeFiles/rtsc_ber_tests.dir/tests/test_ber.cpp.o
+[28/60] Building CXX object CMakeFiles/rtsc_mcs_domain_tests.dir/tests/test_mcs_domain.cpp.o
+[29/60] Building CXX object CMakeFiles/rtsc_client_info_tests.dir/tests/test_client_info.cpp.o
+[30/60] Building CXX object CMakeFiles/rtsc_share_tests.dir/tests/test_share.cpp.o
+[31/60] Building CXX object CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+[32/60] Linking CXX static library librtsc_crypto.a
+[33/60] Building CXX object CMakeFiles/rtsc_connect_machine_tests.dir/tests/test_connect_machine.cpp.o
+[34/60] Building CXX object CMakeFiles/rtsc_crypto_tests.dir/tests/test_crypto.cpp.o
+[35/60] Building CXX object CMakeFiles/rtsc_mcs_tests.dir/tests/test_mcs.cpp.o
+[36/60] Building CXX object CMakeFiles/rtsc_capabilities_tests.dir/tests/test_capabilities.cpp.o
+[37/60] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+[38/60] Building CXX object CMakeFiles/rtsc_probe.dir/tools/rtsc_probe/main.cpp.o
+[39/60] Building CXX object CMakeFiles/rtsc_credssp_sm_tests.dir/tests/test_credssp_sm.cpp.o
+[40/60] Building CXX object CMakeFiles/rtsc_ntlm_tests.dir/tests/test_ntlm.cpp.o
+ninja: build stopped: subcommand failed.
+LINUX GATE FAIL: FAILED=1 WINDOWS_H=2

@@ -1,0 +1,21 @@
+﻿S10 probe part 4: is record-level pre-slicing a valid fix?
+
+=== F4: slicer, normal case (finished and app separate) ===
+  slicer(finished 51) -> used=51 complete=1 remaining=0
+  Receive(app 47) -> status=0 recovered="S10-PAYLOAD-MARKER"
+  F4 VERDICT: normal path STILL WORKS
+
+=== F1/F2: slicer on a coalesced blob ===
+  blob=98 (finished=51 + app=47)
+  slicer.Push -> status=0 used=51/98 complete=1 remaining=47
+  F1 VERDICT: boundary=51 (expected 51) -> EXACT
+  Receive(tail 47) -> status=0 plaintext=18
+  recovered="S10-PAYLOAD-MARKER"
+  F2 VERDICT: app data recovered = YES
+
+=== F3: slicer fed 1 byte at a time ===
+  after 98 bytes: used=51 complete=1 remaining=47
+  Receive(tail 47) -> status=0 recovered="S10-PAYLOAD-MARKER"
+  F3 VERDICT: boundary=51, app recovered=YES
+
+=== done ===

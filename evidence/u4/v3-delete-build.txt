@@ -1,0 +1,7 @@
+[1/7] Linking CXX static library librtsc_crypto.a
+[2/7] Building CXX object CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+[3/7] Linking CXX static library librtsc_credssp.a
+[4/7] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+[5/7] Linking CXX executable rtsc_credssp_tests
+[6/7] Linking CXX static library librtsc_proto.a
+[7/7] Linking CXX executable rtsc_licensing_tests

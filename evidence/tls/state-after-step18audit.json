@@ -1,0 +1,73 @@
+{
+  "files": {
+    "docs/spec/tls-backend.design-a.md": {
+      "bytes": 153606,
+      "exists": true,
+      "sha256": "ca7955d4deaed6e3a5fc9ad77b0140d5cc0a6c6e52452e638dd094369715f13f"
+    },
+    "evidence/tls/count_sec_refs.py": {
+      "bytes": 3818,
+      "exists": true,
+      "sha256": "b35d3373a4bd8ffa58eb5279d886a162c7e81bad8e1e298cb8f91529f4e16c45"
+    },
+    "evidence/tls/pseudo_lint.py": {
+      "bytes": 31547,
+      "exists": true,
+      "sha256": "74625a839289b0c4aef127edbef485c2a425f76e67c1393fda48ed7618cfc97e"
+    },
+    "evidence/tls/pseudo_lint_redtest.py": {
+      "bytes": 10141,
+      "exists": true,
+      "sha256": "f193db4730f8a0b8abf8cc5a7bf6d0af487b9b7fee88ed13495f396d25f8b7d6"
+    },
+    "evidence/tls/verify_elif_semantics.py": {
+      "bytes": 23116,
+      "exists": true,
+      "sha256": "dc5f13922103f82bcaeff9d94b2678489ca172b615efa3b4f031d37852fbe5b0"
+    },
+    "evidence/tls/verify_sideeffect_leaf.py": {
+      "bytes": 3616,
+      "exists": true,
+      "sha256": "5a162e634c7a19f86deea681377be7058ebed7a8affb4798682368c6690c7a13"
+    },
+    "verify.ps1": {
+      "bytes": 9968,
+      "exists": true,
+      "sha256": "8136601b359ece496ffc9db16b1fb270393eaa8d56a3b473ee017ea22d0e0189"
+    }
+  },
+  "metrics": {
+    "allow_no_snapshots_mentions": 0,
+    "anchor_semicolon_only_residual": 0,
+    "anchor_triple_count": 9,
+    "known_table_entries": 4,
+    "skip_bracket_mentions": 0,
+    "snapshot_dir_referenced": 1,
+    "tmp_design_a_copies": 0,
+    "write_warning_mentions": 2
+  },
+  "phase": "after",
+  "snapshots": {
+    "design-a.bak.md": {
+      "bytes": 92381,
+      "exists": true,
+      "sha256": "10b0f3bec05a9a69800a4938729a5a4cf028c042f463361b3e7beacaf53a3b2e"
+    },
+    "design-a.step7.snapshot.md": {
+      "bytes": 112779,
+      "exists": true,
+      "sha256": "ad392e0b669ab004a92ccef768504c132df87555de171603e1ad1cf67136d545"
+    },
+    "design-a.step7.v2.md": {
+      "bytes": 120397,
+      "exists": true,
+      "sha256": "66729ee085b00545aefae7815b9dc5a873af0fad31d4b418a1ddb0498c698e95"
+    },
+    "design-a.step8.base.md": {
+      "bytes": 135988,
+      "exists": true,
+      "sha256": "2eaf8060b19c151fa9aefc97d7bffd4debe7d943389cd3699e86cfbca7a59103"
+    }
+  },
+  "step": "18audit"
+}

@@ -1,0 +1,41 @@
+=== Windows regression AFTER S0.9 (4-line Linux fix) ===
+--- date: 2026-10-23 09:25:48 local
+--- S0.9 edits under test:
+---   tests/test_credssp.cpp:50            [[maybe_unused]] Bytes Str(...)
+---   tests/test_licensing.cpp:37          [[maybe_unused]] std::vector<uint8_t> AnsiBytes(...)
+---   tests/test_licensing.cpp:60          [[maybe_unused]] std::string ToHex(...)
+---   tools/rtsc_crashtest/main.cpp:9      #include <exception>
+--- purpose: prove [[maybe_unused]] changed NO behaviour
+
+--- build: cmd /c F:\rtsc\.tmp\build_tls.bat -> exit 0, 0 warnings (/W4 /WX)
+---   (recompiled exactly the 3 edited TUs + relinked them)
+
+=== rtsc_tls_tests (must still be exactly 26/139) ===
+26 tests, 139 checks, 0 failing tests, 0 failed checks
+TESTS_EXIT=0
+
+=== all rtsc_*_tests.exe (15 suites) ===
+rtsc_ber_tests.exe               32 tests, 166 checks, 0 failing tests, 0 failed checks
+rtsc_capabilities_tests.exe      35 tests, 218 checks, 0 failing tests, 0 failed checks
+rtsc_client_info_tests.exe       30 tests, 120 checks, 0 failing tests, 0 failed checks
+rtsc_connect_machine_tests.exe   26 tests, 115 checks, 0 failing tests, 0 failed checks
+rtsc_credssp_sm_tests.exe        15 tests, 92 checks, 0 failing tests, 0 failed checks
+rtsc_credssp_tests.exe           23 tests, 69 checks, 0 failing tests, 0 failed checks
+rtsc_crypto_tests.exe            25 tests, 66 checks, 0 failing tests, 0 failed checks
+rtsc_finalization_tests.exe      19 tests, 80 checks, 0 failing tests, 0 failed checks
+rtsc_framing_tests.exe           11 tests, 47 checks, 0 failing tests, 0 failed checks
+rtsc_licensing_tests.exe         47 tests, 175 checks, 0 failing tests, 0 failed checks
+rtsc_mcs_domain_tests.exe        39 tests, 151 checks, 0 failing tests, 0 failed checks
+rtsc_mcs_tests.exe               35 tests, 182 checks, 0 failing tests, 0 failed checks
+rtsc_ntlm_tests.exe              27 tests, 136 checks, 0 failing tests, 0 failed checks
+rtsc_share_tests.exe             34 tests, 171 checks, 0 failing tests, 0 failed checks
+rtsc_tls_tests.exe               26 tests, 139 checks, 0 failing tests, 0 failed checks
+
+SUITES_RUN=15
+FAILED_SUITES=0
+
+=== baseline comparison (audit 19.5.1 D2) ===
+tls            26/139  required 26/139  -> EXACT MATCH (string equality, no regex anchor)
+
+=== ctest ===
+100% tests passed, 0 tests failed out of 16

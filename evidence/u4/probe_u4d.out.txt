@@ -1,0 +1,24 @@
+﻿U4 probe part 4: genuine encrypted alert + type authentication
+
+=== S1/S2: raw client close_notify -> raw server DecryptMessage ===
+  handshake complete
+    ApplyControlToken -> 0x80090302 (SEC_E_UNSUPPORTED_FUNCTION)
+  client Shutdown -> 0x80090302 (SEC_E_UNSUPPORTED_FUNCTION), out=0
+  raw (0 bytes):
+  S2: no record produced, cannot measure
+
+=== S3: product TlsTransport::Shutdown record shape ===
+  Shutdown -> status=0 out=201
+  record: type=22 (Handshake) ver=0303 len=196 total=201
+  S3 ANSWER: the product emits a Handshake record (type 22)
+  raw (201 bytes): 16 03 03 00 C4 00 00 00 00 00 00 00 01 40 D3 AF 33 42 AB 0B CE B1 69 7E 34 BB 49 EE 60 19 69 51 B9 BE 5C AF 70 1E 2C DC 38 F8 D0 50 E7 9D F0 88 ...
+
+=== S4: is the TLS1.2 outer record type authenticated? ===
+    ApplyControlToken -> 0x80090302 (SEC_E_UNSUPPORTED_FUNCTION)
+  SETUP-FAIL: no record
+
+=== S5: hand-built plaintext alert post-handshake ===
+  Receive(plaintext alert) -> status=5 native=0x80090318 plain=0
+  S5 ANSWER: a plaintext alert after CCS is NOT accepted (status 5); TLS1.2 requires it to be encrypted
+
+=== done ===

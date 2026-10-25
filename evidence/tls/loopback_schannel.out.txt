@@ -1,0 +1,26 @@
+self-signed cert: 439 bytes DER
+  AcquireCredentialsHandle(client, mask=0x800) -> 0x00000000
+  AcquireCredentialsHandle(server, mask=0x400) -> 0x00000000
+  round 1: client -> 0x00090312, 169 bytes
+  round 1: server -> 0x00090312, 780 bytes
+  round 1: client -> 0x00090312, 158 bytes
+  round 2: server -> 0x00000000, 51 bytes
+  round 2: client -> 0x00000000, 0 bytes
+handshake OK, rounds=2
+-- negotiated --
+  client: protocol=0x00000800 cipher=0x6610 bits=256
+  client: stream sizes header=13 trailer=16 maxmsg=16384 block=16
+  server: protocol=0x00000400 cipher=0x6610 bits=256
+  server: stream sizes header=13 trailer=16 maxmsg=16384 block=16
+-- peer cert --
+  client REMOTE_CERT_CONTEXT -> 0x00000000
+  client sees server cert: 439 bytes, equals local=1
+  server REMOTE_CERT_CONTEXT -> 0x8009030E (no client cert expected)
+-- app data --
+  client EncryptMessage(36) -> 0x00000000, record=65
+  server DecryptMessage -> 0x00000000 plain=36 extra=0 match=1
+  server EncryptMessage(36) -> 0x00000000, record=65
+  client DecryptMessage -> 0x00000000 plain=36 extra=0 match=1
+  server DecryptMessage(2 records, 130 B) -> 0x00000000 extra=65
+  server DecryptMessage(truncated 10 B) -> 0x80090318 (want 0x80090318) OK
+RESULT=PASS

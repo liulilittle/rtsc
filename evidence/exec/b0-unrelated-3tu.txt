@@ -1,0 +1,46 @@
+=== Are the 3 failing TUs pre-existing failures? (v2, real -c) ===
+--- compiled standalone with the same flags CMakeLists.txt uses:
+---   -g -std=c++20 -Wall -Wextra -Werror -Wpedantic
+--- No CMake involved, so batch-0 CMake edits cannot be the cause.
+--- date: 2026-10-23T00:58:32Z
+
+### control: does the batch-0 file set compile on Linux? ###
+tls_factory.cpp EXIT=0
+
+### the 3 failing TUs ###
+=== tests/test_credssp.cpp ===
+tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+   50 | Bytes Str(const char* s) { return Bytes(s, s + std::char_traits<char>::length(s)); }
+      |       ^~~
+cc1plus: all warnings being treated as errors
+EXIT=1
+
+=== tests/test_licensing.cpp ===
+tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+   60 | std::string ToHex(const std::vector<uint8_t>& v) {
+      |             ^~~~~
+tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+   37 | std::vector<uint8_t> AnsiBytes(const std::string& s) {
+      |                      ^~~~~~~~~
+cc1plus: all warnings being treated as errors
+EXIT=1
+
+=== tools/rtsc_crashtest/main.cpp ===
+tools/rtsc_crashtest/main.cpp: In function ‘void {anonymous}::CrashTerminate()’:
+tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                           ^~~~~~~~~
+tools/rtsc_crashtest/main.cpp:12:1: note: ‘std::terminate’ is defined in header ‘<exception>’; did you forget to ‘#include <exception>’?
+   11 | #include "rtsc/util/crash_guard.h"
+  +++ |+#include <exception>
+   12 | 
+tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                                        ^
+cc1plus: all warnings being treated as errors
+EXIT=1
+
+### same 3 TUs with -Wno-unused-function (does the only error go away?) ###
+--- proves the failure is unused-function noise, not a real defect
+tests/test_credssp.cpp EXIT=0
+tests/test_licensing.cpp EXIT=0

@@ -1,0 +1,22 @@
+﻿S10 probe part 5: validate the proposed backend fix shape
+
+=== G3: fixed backend, normal path (separate) ===
+  Handshake(finished 51) -> status=0 consumed=51 complete=1
+  Receive(app 47) -> status=0 "S10-PAYLOAD-MARKER"
+  G3 VERDICT: normal path UNCHANGED
+
+=== G1/G2: fixed backend, coalesced 98B ===
+  combined = 51 (finished) + 47 (app) = 98
+  Handshake(98) -> status=0 consumed=98 complete=1 buffered=47
+  G1 VERDICT: consumed=98 (all absorbed, caller need not replay) -> PASS
+  Receive#0 -> status=0 plaintext=18 buffered=0
+  Receive#1 -> status=1 plaintext=0 buffered=0
+  recovered 18 bytes: "S10-PAYLOAD-MARKER"
+  G2 VERDICT: app data after fix = RECOVERED (fix works)
+
+=== G4: fixed backend, coalesced blob fed 1 byte at a time ===
+  after 98 bytes: consumed_total=98 complete=1
+  recovered "S10-PAYLOAD-MARKER"
+  G4 VERDICT: streaming input OK
+
+=== done ===

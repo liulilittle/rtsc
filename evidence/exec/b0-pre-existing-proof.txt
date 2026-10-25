@@ -1,0 +1,41 @@
+=== Proof: the 3 Linux failures predate batch 0 ===
+--- tree: pristine copy at .tmp/bl-pre-src, with S0.1 backups restored:
+---   CMakeLists.txt             <- .opencode/backups/CMakeLists.txt.20261023-085223
+---   src/net/tls_schannel.cpp   <- .opencode/backups/src_net_tls_schannel.cpp.20261023-085223
+--- The 3 offending TUs are copied verbatim (never modified by batch 0).
+--- date: 2026-10-23T01:10:15Z
+
+--- sanity: pre-change tree has tls_factory.cpp? ABSENT
+--- sanity: pre-change tls_schannel.cpp old factory hits: 1
+--- sanity: pre-change CMakeLists single rtsc_tls lib: 1
+
+=== configure the pre-change tree ===
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (2.1s)
+-- Generating done (0.3s)
+-- Build files have been written to: /mnt/f/rtsc/.tmp/bl-pre
+PRE_CONFIGURE_EXIT=0
+
+=== build the 3 offending targets in the PRE-change tree (full error text) ===
+--- target: rtsc_credssp_tests
+PRE-CHANGE FAIL  rtsc_credssp_tests
+      /mnt/f/rtsc/.tmp/bl-pre-src/tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+
+--- target: rtsc_licensing_tests
+PRE-CHANGE FAIL  rtsc_licensing_tests
+      /mnt/f/rtsc/.tmp/bl-pre-src/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+      /mnt/f/rtsc/.tmp/bl-pre-src/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+
+--- target: rtsc_crashtest
+PRE-CHANGE FAIL  rtsc_crashtest
+      /mnt/f/rtsc/.tmp/bl-pre-src/tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+      /mnt/f/rtsc/.tmp/bl-pre-src/tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+
+=== control: pre-change rtsc_tls must FAIL (this is the S21 red) ===
+PRE-CHANGE rtsc_tls FAILED as expected:
+      /mnt/f/rtsc/.tmp/bl-pre-src/src/net/tls_schannel.cpp:29:10: fatal error: windows.h: No such file or directory

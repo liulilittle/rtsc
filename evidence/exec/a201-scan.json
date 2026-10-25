@@ -1,0 +1,866 @@
+[
+ {
+  "doc_line": 66,
+  "form": "full",
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 100,
+  "form": "full",
+  "start": 241,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:241`",
+  "verdict": "STALE",
+  "detail": "backup[241] == current[243]"
+ },
+ {
+  "doc_line": 161,
+  "form": "full",
+  "start": 177,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:177`",
+  "verdict": "STALE",
+  "detail": "backup[177] == current[179]"
+ },
+ {
+  "doc_line": 162,
+  "form": "full",
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "STALE",
+  "detail": "backup[192] == current[194]"
+ },
+ {
+  "doc_line": 163,
+  "form": "full",
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "STALE",
+  "detail": "backup[179] == current[181]"
+ },
+ {
+  "doc_line": 491,
+  "form": "full",
+  "start": 299,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:299`",
+  "verdict": "STALE",
+  "detail": "backup[299] == current[301]"
+ },
+ {
+  "doc_line": 492,
+  "form": "full",
+  "start": 232,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:232`",
+  "verdict": "STALE",
+  "detail": "backup[232] == current[234]"
+ },
+ {
+  "doc_line": 493,
+  "form": "full",
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "STALE",
+  "detail": "backup[242] == current[244]"
+ },
+ {
+  "doc_line": 494,
+  "form": "full",
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 506,
+  "form": "full",
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "STALE",
+  "detail": "backup[242] == current[244]"
+ },
+ {
+  "doc_line": 527,
+  "form": "full",
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 545,
+  "form": "full",
+  "start": 185,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:185`",
+  "verdict": "STALE",
+  "detail": "backup[185] == current[187]"
+ },
+ {
+  "doc_line": 593,
+  "form": "full",
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "STALE",
+  "detail": "backup[192] == current[194]"
+ },
+ {
+  "doc_line": 596,
+  "form": "full",
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "STALE",
+  "detail": "backup[179] == current[181]"
+ },
+ {
+  "doc_line": 723,
+  "form": "full",
+  "start": 135,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:135`",
+  "verdict": "STALE",
+  "detail": "backup[135] == current[137]"
+ },
+ {
+  "doc_line": 723,
+  "form": "full",
+  "start": 192,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:192`",
+  "verdict": "STALE",
+  "detail": "backup[192] == current[194]"
+ },
+ {
+  "doc_line": 723,
+  "form": "full",
+  "start": 369,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:369`",
+  "verdict": "STALE",
+  "detail": "backup[369] == current[371]"
+ },
+ {
+  "doc_line": 724,
+  "form": "full",
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 725,
+  "form": "full",
+  "start": 114,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:114`",
+  "verdict": "STALE",
+  "detail": "backup[114] == current[116]"
+ },
+ {
+  "doc_line": 731,
+  "form": "full",
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 781,
+  "form": "full",
+  "start": 179,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:179`",
+  "verdict": "STALE",
+  "detail": "backup[179] == current[181]"
+ },
+ {
+  "doc_line": 782,
+  "form": "full",
+  "start": 46,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:46`",
+  "verdict": "STALE",
+  "detail": "backup[46] == current[48]"
+ },
+ {
+  "doc_line": 831,
+  "form": "full",
+  "start": 169,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:169`",
+  "verdict": "STALE",
+  "detail": "backup[169] == current[171]"
+ },
+ {
+  "doc_line": 875,
+  "form": "full",
+  "start": 369,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:369`",
+  "verdict": "STALE",
+  "detail": "backup[369] == current[371]"
+ },
+ {
+  "doc_line": 876,
+  "form": "full",
+  "start": 462,
+  "end": 475,
+  "raw": "`src/net/tls_schannel.cpp:462-475`",
+  "verdict": "STALE",
+  "detail": "backup[462] == current[464]"
+ },
+ {
+  "doc_line": 897,
+  "form": "full",
+  "start": 29,
+  "end": 32,
+  "raw": "`src/net/tls_schannel.cpp:29-32`",
+  "verdict": "OK",
+  "detail": "before insertion point, no shift"
+ },
+ {
+  "doc_line": 1527,
+  "form": "full",
+  "start": 242,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:242`",
+  "verdict": "STALE",
+  "detail": "backup[242] == current[244]"
+ },
+ {
+  "doc_line": 1566,
+  "form": "full",
+  "start": 169,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:169`",
+  "verdict": "STALE",
+  "detail": "backup[169] == current[171]"
+ },
+ {
+  "doc_line": 1568,
+  "form": "full",
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 1611,
+  "form": "full",
+  "start": 241,
+  "end": 270,
+  "raw": "`tls_schannel.cpp:241-270`",
+  "verdict": "STALE",
+  "detail": "backup[241] == current[243]"
+ },
+ {
+  "doc_line": 1662,
+  "form": "full",
+  "start": 66,
+  "end": 73,
+  "raw": "`src/net/tls_schannel.cpp:66-73`",
+  "verdict": "STALE",
+  "detail": "backup[66] == current[68]"
+ },
+ {
+  "doc_line": 1795,
+  "form": "short",
+  "start": 51,
+  "end": null,
+  "raw": "`t:51`",
+  "verdict": "STALE",
+  "detail": "backup[51] == current[53]"
+ },
+ {
+  "doc_line": 1795,
+  "form": "full",
+  "start": 184,
+  "end": 187,
+  "raw": "`src/net/tls_schannel.cpp:184-187`",
+  "verdict": "STALE",
+  "detail": "backup[184] == current[186]"
+ },
+ {
+  "doc_line": 1796,
+  "form": "short",
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "STALE",
+  "detail": "backup[489] == current[491]"
+ },
+ {
+  "doc_line": 1796,
+  "form": "short",
+  "start": 369,
+  "end": 382,
+  "raw": "`t:369-382`",
+  "verdict": "STALE",
+  "detail": "backup[369] == current[371]"
+ },
+ {
+  "doc_line": 1796,
+  "form": "full",
+  "start": 135,
+  "end": 147,
+  "raw": "`src/net/tls_schannel.cpp:135-147`",
+  "verdict": "STALE",
+  "detail": "backup[135] == current[137]"
+ },
+ {
+  "doc_line": 1797,
+  "form": "short",
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "STALE",
+  "detail": "backup[430] == current[432]"
+ },
+ {
+  "doc_line": 1797,
+  "form": "full",
+  "start": 232,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:232`",
+  "verdict": "STALE",
+  "detail": "backup[232] == current[234]"
+ },
+ {
+  "doc_line": 1798,
+  "form": "short",
+  "start": 66,
+  "end": 73,
+  "raw": "`t:66-73`",
+  "verdict": "STALE",
+  "detail": "backup[66] == current[68]"
+ },
+ {
+  "doc_line": 1798,
+  "form": "full",
+  "start": 99,
+  "end": 199,
+  "raw": "`src/net/tls_schannel.cpp:99-199`",
+  "verdict": "STALE",
+  "detail": "backup[99] == current[101]"
+ },
+ {
+  "doc_line": 1804,
+  "form": "short",
+  "start": 215,
+  "end": 222,
+  "raw": "`t:215-222`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 1804,
+  "form": "full",
+  "start": 215,
+  "end": 222,
+  "raw": "`tls_schannel.cpp:215-222`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 1807,
+  "form": "short",
+  "start": 568,
+  "end": 575,
+  "raw": "`t:568-575`",
+  "verdict": "STALE",
+  "detail": "backup[568] == current[570]"
+ },
+ {
+  "doc_line": 1807,
+  "form": "full",
+  "start": 467,
+  "end": 472,
+  "raw": "`src/net/tls_schannel.cpp:467-472`",
+  "verdict": "STALE",
+  "detail": "backup[467] == current[469]"
+ },
+ {
+  "doc_line": 1809,
+  "form": "full",
+  "start": 29,
+  "end": 32,
+  "raw": "`src/net/tls_schannel.cpp:29-32`",
+  "verdict": "OK",
+  "detail": "before insertion point, no shift"
+ },
+ {
+  "doc_line": 1827,
+  "form": "full",
+  "start": 184,
+  "end": null,
+  "raw": "`tls_schannel.cpp:184`",
+  "verdict": "STALE",
+  "detail": "backup[184] == current[186]"
+ },
+ {
+  "doc_line": 1828,
+  "form": "short",
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "STALE",
+  "detail": "backup[489] == current[491]"
+ },
+ {
+  "doc_line": 1828,
+  "form": "full",
+  "start": 135,
+  "end": 147,
+  "raw": "`tls_schannel.cpp:135-147`",
+  "verdict": "STALE",
+  "detail": "backup[135] == current[137]"
+ },
+ {
+  "doc_line": 1834,
+  "form": "full",
+  "start": 467,
+  "end": 472,
+  "raw": "`tls_schannel.cpp:467-472`",
+  "verdict": "STALE",
+  "detail": "backup[467] == current[469]"
+ },
+ {
+  "doc_line": 1896,
+  "form": "full",
+  "start": 369,
+  "end": 382,
+  "raw": "`src/net/tls_schannel.cpp:369-382`",
+  "verdict": "STALE",
+  "detail": "backup[369] == current[371]"
+ },
+ {
+  "doc_line": 2042,
+  "form": "short",
+  "start": 233,
+  "end": null,
+  "raw": "`t:233`",
+  "verdict": "STALE",
+  "detail": "backup[233] == current[235]"
+ },
+ {
+  "doc_line": 2044,
+  "form": "short",
+  "start": 568,
+  "end": 575,
+  "raw": "`t:568-575`",
+  "verdict": "STALE",
+  "detail": "backup[568] == current[570]"
+ },
+ {
+  "doc_line": 2044,
+  "form": "short",
+  "start": 172,
+  "end": null,
+  "raw": "`t:172`",
+  "verdict": "STALE",
+  "detail": "backup[172] == current[174]"
+ },
+ {
+  "doc_line": 2050,
+  "form": "short",
+  "start": 369,
+  "end": null,
+  "raw": "`t:369`",
+  "verdict": "STALE",
+  "detail": "backup[369] == current[371]"
+ },
+ {
+  "doc_line": 2050,
+  "form": "full",
+  "start": 99,
+  "end": 199,
+  "raw": "`tls_schannel.cpp:99-199`",
+  "verdict": "STALE",
+  "detail": "backup[99] == current[101]"
+ },
+ {
+  "doc_line": 2083,
+  "form": "short",
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "STALE",
+  "detail": "backup[430] == current[432]"
+ },
+ {
+  "doc_line": 2083,
+  "form": "full",
+  "start": 431,
+  "end": null,
+  "raw": "`tls_schannel.cpp:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 2083,
+  "form": "full",
+  "start": 430,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:430`",
+  "verdict": "STALE",
+  "detail": "backup[430] == current[432]"
+ },
+ {
+  "doc_line": 2091,
+  "form": "full",
+  "start": 431,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 2099,
+  "form": "short",
+  "start": 29,
+  "end": 32,
+  "raw": "`t:29-32`",
+  "verdict": "OK",
+  "detail": "before insertion point, no shift"
+ },
+ {
+  "doc_line": 2443,
+  "form": "short",
+  "start": 242,
+  "end": null,
+  "raw": "`t:242`",
+  "verdict": "STALE",
+  "detail": "backup[242] == current[244]"
+ },
+ {
+  "doc_line": 2464,
+  "form": "full",
+  "start": 433,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:433`",
+  "verdict": "STALE",
+  "detail": "backup[433] == current[435]"
+ },
+ {
+  "doc_line": 2473,
+  "form": "full",
+  "start": 99,
+  "end": 199,
+  "raw": "`src/net/tls_schannel.cpp:99-199`",
+  "verdict": "STALE",
+  "detail": "backup[99] == current[101]"
+ },
+ {
+  "doc_line": 2676,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 2696,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 2761,
+  "form": "short",
+  "start": 291,
+  "end": null,
+  "raw": "`t:291`",
+  "verdict": "STALE",
+  "detail": "backup[291] == current[293]"
+ },
+ {
+  "doc_line": 2761,
+  "form": "full",
+  "start": 411,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:411`",
+  "verdict": "STALE",
+  "detail": "backup[411] == current[413]"
+ },
+ {
+  "doc_line": 2814,
+  "form": "short",
+  "start": 99,
+  "end": 199,
+  "raw": "`t:99-199`",
+  "verdict": "STALE",
+  "detail": "backup[99] == current[101]"
+ },
+ {
+  "doc_line": 2814,
+  "form": "short",
+  "start": 228,
+  "end": 343,
+  "raw": "`t:228-343`",
+  "verdict": "STALE",
+  "detail": "backup[228] == current[230]"
+ },
+ {
+  "doc_line": 2815,
+  "form": "short",
+  "start": 233,
+  "end": null,
+  "raw": "`t:233`",
+  "verdict": "STALE",
+  "detail": "backup[233] == current[235]"
+ },
+ {
+  "doc_line": 2830,
+  "form": "short",
+  "start": 402,
+  "end": 434,
+  "raw": "`t:402-434`",
+  "verdict": "STALE",
+  "detail": "backup[402] == current[404]"
+ },
+ {
+  "doc_line": 2833,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 2876,
+  "form": "short",
+  "start": 430,
+  "end": null,
+  "raw": "`t:430`",
+  "verdict": "STALE",
+  "detail": "backup[430] == current[432]"
+ },
+ {
+  "doc_line": 2877,
+  "form": "short",
+  "start": 404,
+  "end": null,
+  "raw": "`t:404`",
+  "verdict": "STALE",
+  "detail": "backup[404] == current[406]"
+ },
+ {
+  "doc_line": 2882,
+  "form": "short",
+  "start": 409,
+  "end": 433,
+  "raw": "`t:409-433`",
+  "verdict": "STALE",
+  "detail": "backup[409] == current[411]"
+ },
+ {
+  "doc_line": 2887,
+  "form": "short",
+  "start": 431,
+  "end": null,
+  "raw": "`t:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 2894,
+  "form": "short",
+  "start": 431,
+  "end": null,
+  "raw": "`t:431`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 2927,
+  "form": "full",
+  "start": 411,
+  "end": 413,
+  "raw": "`src/net/tls_schannel.cpp:411-413`",
+  "verdict": "STALE",
+  "detail": "backup[411] == current[413]"
+ },
+ {
+  "doc_line": 2928,
+  "form": "full",
+  "start": 431,
+  "end": 433,
+  "raw": "`src/net/tls_schannel.cpp:431-433`",
+  "verdict": "STALE",
+  "detail": "backup[431] == current[433]"
+ },
+ {
+  "doc_line": 2929,
+  "form": "full",
+  "start": 411,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:411`",
+  "verdict": "STALE",
+  "detail": "backup[411] == current[413]"
+ },
+ {
+  "doc_line": 2943,
+  "form": "short",
+  "start": 405,
+  "end": null,
+  "raw": "`t:405`",
+  "verdict": "STALE",
+  "detail": "backup[405] == current[407]"
+ },
+ {
+  "doc_line": 2943,
+  "form": "short",
+  "start": 409,
+  "end": 411,
+  "raw": "`t:409-411`",
+  "verdict": "STALE",
+  "detail": "backup[409] == current[411]"
+ },
+ {
+  "doc_line": 2944,
+  "form": "short",
+  "start": 419,
+  "end": 422,
+  "raw": "`t:419-422`",
+  "verdict": "STALE",
+  "detail": "backup[419] == current[421]"
+ },
+ {
+  "doc_line": 3065,
+  "form": "full",
+  "start": 433,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:433`",
+  "verdict": "STALE",
+  "detail": "backup[433] == current[435]"
+ },
+ {
+  "doc_line": 3073,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`src/net/tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 3075,
+  "form": "full",
+  "start": 411,
+  "end": 413,
+  "raw": "`tls_schannel.cpp:411-413`",
+  "verdict": "STALE",
+  "detail": "backup[411] == current[413]"
+ },
+ {
+  "doc_line": 3162,
+  "form": "short",
+  "start": 404,
+  "end": null,
+  "raw": "`t:404`",
+  "verdict": "STALE",
+  "detail": "backup[404] == current[406]"
+ },
+ {
+  "doc_line": 3165,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 4474,
+  "form": "full",
+  "start": 435,
+  "end": null,
+  "raw": "`tls_schannel.cpp:435`",
+  "verdict": "STALE",
+  "detail": "backup[435] == current[437]"
+ },
+ {
+  "doc_line": 5452,
+  "form": "short",
+  "start": 429,
+  "end": null,
+  "raw": "`t:429`",
+  "verdict": "STALE",
+  "detail": "backup[429] == current[431]"
+ },
+ {
+  "doc_line": 5452,
+  "form": "full",
+  "start": 429,
+  "end": null,
+  "raw": "`tls_schannel.cpp:429`",
+  "verdict": "STALE",
+  "detail": "backup[429] == current[431]"
+ },
+ {
+  "doc_line": 5463,
+  "form": "short",
+  "start": 489,
+  "end": 507,
+  "raw": "`t:489-507`",
+  "verdict": "STALE",
+  "detail": "backup[489] == current[491]"
+ },
+ {
+  "doc_line": 5463,
+  "form": "short",
+  "start": 409,
+  "end": 411,
+  "raw": "`t:409-411`",
+  "verdict": "STALE",
+  "detail": "backup[409] == current[411]"
+ },
+ {
+  "doc_line": 5464,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ },
+ {
+  "doc_line": 5489,
+  "form": "full",
+  "start": 215,
+  "end": null,
+  "raw": "`src/net/tls_schannel.cpp:215`",
+  "verdict": "STALE",
+  "detail": "backup[215] == current[217]"
+ },
+ {
+  "doc_line": 5501,
+  "form": "full",
+  "start": 735,
+  "end": 752,
+  "raw": "`tls_schannel.cpp:735-752`",
+  "verdict": "MOVED",
+  "detail": "content now at tls_factory.cpp:22"
+ }
+]

@@ -1,0 +1,41 @@
+=== S1  nonce back to 32 zero bytes (pre-fix)  -> RED(OK) ===
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:531  Hex(k) != Hex(Bytes(16, 0))
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:531  Hex(k) != Hex(Bytes(16, 0))
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:535  Hex(k) != Hex(prev)
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:531  Hex(k) != Hex(Bytes(16, 0))
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:535  Hex(k) != Hex(prev)
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:531  Hex(k) != Hex(Bytes(16, 0))
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:535  Hex(k) != Hex(prev)
+    [ FAIL ] two_constructions_have_different_nonces
+    21 tests, 164 checks, 1 failing tests, 7 failed checks
+
+=== S5  delete the peer-version range check  -> RED(OK) ===
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:558  !e.ok()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:559  e.status == Status::kUnsupported
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:560  step3.empty()
+    [ FAIL ] version_below_min_is_rejected_with_valid_challenge
+    [ FAIL ] error_code_wins_over_bad_version
+    21 tests, 164 checks, 2 failing tests, 5 failed checks
+
+=== S6  delete the negotiated-version write-back  -> RED(OK) ===
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:601  req.version == 3
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:602  req.client_nonce.empty()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:603  req.pub_key_auth.size() == 16 + spk.size()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:604  c.version() == 3
+    [ FAIL ] server_version_is_echoed_back
+    21 tests, 164 checks, 1 failing tests, 4 failed checks
+
+=== S11  stop verifying the seal MAC (decrypt only, pre-fix)  -> RED(OK) ===
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:656  !e.ok()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:657  e.status == Status::kMalformed
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:658  step5.empty()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:659  !c.complete()
+    [ FAIL ] tampered_signature_checksum_is_rejected
+    21 tests, 164 checks, 1 failing tests, 4 failed checks
+
+=== S18  delete the empty-public-key guard  -> RED(OK) ===
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:702  !e.ok()
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:703  e.status == Status::kUnsupported
+      FAIL F:\rtsc\.tmp\audit-batch1\shadow\test_credssp_batch1.cpp:704  step3.empty()
+    [ FAIL ] start_without_public_key_fails
+    21 tests, 164 checks, 1 failing tests, 3 failed checks

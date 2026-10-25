@@ -1,0 +1,37 @@
+BATCH1-A INDEPENDENT LINUX VERIFICATION (audit A, real tree)
+==========================================================================
+WSL Ubuntu-24.04 / g++ 13.3.0 / glibc 2.39 / -std=c++20 -Wall -Wextra -Werror -Wpedantic
+Build: cmake -S /mnt/f/rtsc -B /tmp/b1lin -DCMAKE_BUILD_TYPE=Debug
+
+  === build & run SM tests on Linux (real tree) ===
+  CONFIG_EXIT=0
+  BUILD_EXIT=0
+  ERRORS=0
+  WINDOWS_H=0
+  [  OK  ] server_echo_version_does_not_downgrade
+  [ RUN  ] error_code_wins_over_bad_version
+  [  OK  ] error_code_wins_over_bad_version
+  
+  23 tests, 205 checks, 0 failing tests, 0 failed checks
+  TEST_EXIT=0
+
+[random_posix.cpp compiled into the Linux build]
+  === is random_posix.cpp compiled into the Linux build? ===
+  1
+  /tmp/b1lin/CMakeFiles/rtsc_crypto.dir/src/crypto/random_posix.cpp.o
+  === all 8 new cases individually OK on Linux ===
+  two_constructions_have_different_nonces => [  OK  ] two_constructions_have_different_nonces
+  version_below_min_is_rejected_with_valid_challenge => [  OK  ] version_below_min_is_rejected_with_valid_challenge
+  server_version_is_echoed_back => [  OK  ] server_version_is_echoed_back
+  tampered_signature_checksum_is_rejected => [  OK  ] tampered_signature_checksum_is_rejected
+  start_without_public_key_fails => [  OK  ] start_without_public_key_fails
+  client_nonce_does_not_disclose_session_key => [  OK  ] client_nonce_does_not_disclose_session_key
+  server_echo_version_does_not_downgrade => [  OK  ] server_echo_version_does_not_downgrade
+  error_code_wins_over_bad_version => [  OK  ] error_code_wins_over_bad_version
+
+[RandomBytes fail-closed boundary probe]
+  COMPILE_EXIT=0
+  n=0: ret=1 size=0
+  null,n=4: ret=0
+  n=16: ret=1 size=16 nonzero=251
+  RUN_EXIT=0

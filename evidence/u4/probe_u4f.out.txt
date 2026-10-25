@@ -1,0 +1,25 @@
+﻿U4 probe part 6: fatal alert reachability
+
+=== U1: force a server-side fatal alert ===
+  client record (31 bytes): 17 03 03 00 1A 00 00 00 00 00 00 00 01 8E 23 F3 ...
+  tampered 1 byte at offset 15
+  server DecryptMessage(tampered) -> 0x80090330 (SEC_E_DECRYPT_FAILURE), plaintext=31
+  server EmitQueuedAlert -> 0x00000000 (SEC_E_OK), out=33
+  U1 RECORD: type=22 (Handshake) len=28 total=33
+  raw alert (33 bytes): 16 03 03 00 1C 00 00 00 00 00 00 00 01 06 B3 72 51 30 89 F4 74 F2 E7 07 E9 38 3B 9D 9A 86 AD FE F2
+    sb[0]: type=7 cb=13
+    sb[1]: type=1 cb=0
+    sb[2]: type=6 cb=20
+    sb[3]: type=0 cb=0
+  client DecryptMessage(fatal alert) -> 0x00090321 (SEC_I_RENEGOTIATE)
+  plaintext=0
+  U1 ANSWER: fatal alert -> SEC_I_RENEGOTIATE (compare close_notify = SEC_I_CONTEXT_EXPIRED)
+
+=== U2: status comparison table ===
+  close_notify (level=1)      -> SEC_I_CONTEXT_EXPIRED  (0x00090317)
+  plaintext alert post-CCS    -> SEC_E_INCOMPLETE_MESSAGE (0x80090318)
+  tampered ciphertext         -> SEC_E_DECRYPT_FAILURE  (0x80090330)
+  type byte patched           -> SEC_E_DECRYPT_FAILURE  (0x80090330)
+  SEC_E_ILLEGAL_MESSAGE (0x80090326) was NEVER observed
+
+=== done ===

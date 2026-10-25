@@ -1,0 +1,180 @@
+{
+  "files": {
+    "audit report": {
+      "bytes": 399882,
+      "exists": true,
+      "lines": 6510,
+      "path": "docs/spec/tls-backend.consult-b.md",
+      "sha256": "d150c452c9406c3cb7e4ccde565a6d78d5148f86a94379c0d7a6c992c6e5fc38"
+    },
+    "bcgr source": {
+      "bytes": 4291,
+      "exists": true,
+      "lines": 125,
+      "path": "evidence/capabilities/bcgr-source.md",
+      "sha256": "f553b01b5315d3f4c07c4d7d93f23157696a0324619fd8efa7cd79ff4535fc47"
+    },
+    "design doc": {
+      "bytes": 153606,
+      "exists": true,
+      "lines": 1892,
+      "path": "docs/spec/tls-backend.design-a.md",
+      "sha256": "ca7955d4deaed6e3a5fc9ad77b0140d5cc0a6c6e52452e638dd094369715f13f"
+    },
+    "design doc B": {
+      "bytes": 45397,
+      "exists": true,
+      "lines": 565,
+      "path": "docs/spec/tls-backend.design-b.md",
+      "sha256": "3f7405abe62522677731ced8bd5213ef1ac509f9cfcd5fee3315ba3441a99e0b"
+    },
+    "gate: diff": {
+      "bytes": 3705,
+      "exists": true,
+      "lines": 99,
+      "path": "evidence/tls/diff_state.py",
+      "sha256": "72b27e07c64fa9a330aaf576b639c33ebd885639916c153f99667fa39818b0f4"
+    },
+    "gate: g13": {
+      "bytes": 8844,
+      "exists": true,
+      "lines": 237,
+      "path": "evidence/tls/verify_g13.py",
+      "sha256": "b043d3a941d947b17f79b0cd8e95c4476ef3067d6838bbd6664e08ec61f0bd19"
+    },
+    "gate: redtest": {
+      "bytes": 10141,
+      "exists": true,
+      "lines": 228,
+      "path": "evidence/tls/pseudo_lint_redtest.py",
+      "sha256": "f193db4730f8a0b8abf8cc5a7bf6d0af487b9b7fee88ed13495f396d25f8b7d6"
+    },
+    "gate: secrefs": {
+      "bytes": 3818,
+      "exists": true,
+      "lines": 111,
+      "path": "evidence/tls/count_sec_refs.py",
+      "sha256": "b35d3373a4bd8ffa58eb5279d886a162c7e81bad8e1e298cb8f91529f4e16c45"
+    },
+    "gate: semantics": {
+      "bytes": 23116,
+      "exists": true,
+      "lines": 539,
+      "path": "evidence/tls/verify_elif_semantics.py",
+      "sha256": "dc5f13922103f82bcaeff9d94b2678489ca172b615efa3b4f031d37852fbe5b0"
+    },
+    "gate: sideeffect": {
+      "bytes": 3616,
+      "exists": true,
+      "lines": 83,
+      "path": "evidence/tls/verify_sideeffect_leaf.py",
+      "sha256": "5a162e634c7a19f86deea681377be7058ebed7a8affb4798682368c6690c7a13"
+    },
+    "gate: state": {
+      "bytes": 10856,
+      "exists": true,
+      "lines": 287,
+      "path": "evidence/tls/state_snapshot.py",
+      "sha256": "b74df751e0efb53969bb59ccf065120fe58686fbba7d92a30eb6c1e9a6470665"
+    },
+    "gate: structure": {
+      "bytes": 31547,
+      "exists": true,
+      "lines": 755,
+      "path": "evidence/tls/pseudo_lint.py",
+      "sha256": "74625a839289b0c4aef127edbef485c2a425f76e67c1393fda48ed7618cfc97e"
+    },
+    "index": {
+      "bytes": 13348,
+      "exists": true,
+      "lines": 162,
+      "path": "evidence/tls/probes/INDEX.md",
+      "sha256": "8d8e7bee354b0e632495d7e23521f1fa59d5c7ff6fa805645c66b5ac6428af1a"
+    },
+    "probes readme": {
+      "bytes": 1308,
+      "exists": true,
+      "lines": 26,
+      "path": "evidence/tls/probes/README.md",
+      "sha256": "5d641ff095691e3b3c61f8d994de98004bfc767cfd698669a4ed15b0d6729db5"
+    },
+    "runner": {
+      "bytes": 10780,
+      "exists": true,
+      "lines": 224,
+      "path": "verify.ps1",
+      "sha256": "258811030b7a50cdf1a0590a42f546105e04d7db475d3d7c0f2d1c0f4f29a583"
+    },
+    "snap readme": {
+      "bytes": 1985,
+      "exists": true,
+      "lines": 42,
+      "path": "evidence/tls/snapshots/README.md",
+      "sha256": "34c13e3e9528b5739f4bf041ac6b60f9ea598232d2bdc0325bde6562853d9bab"
+    }
+  },
+  "gates": {
+    "S1_structure": {
+      "exit": 0,
+      "last_line": "TOTAL fail=0 warn=0"
+    },
+    "S2_redtest": {
+      "exit": 0,
+      "last_line": "ASSERT OK"
+    },
+    "S3_semantics": {
+      "exit": 0,
+      "last_line": "ASSERT OK"
+    },
+    "S4_regress": {
+      "exit": 0,
+      "last_line": "REGRESS OK（每个历史快照的已知缺陷都被检出，当前全绿）"
+    },
+    "S5_sideeffect": {
+      "exit": 0,
+      "last_line": "ASSERT OK（同行 `;` 与两行写法完全等价）"
+    },
+    "S6_secrefs": {
+      "exit": 0,
+      "last_line": "OK: 文档断言 (8, 13) == 口径 B (8, 13)"
+    },
+    "S7_g13": {
+      "exit": 0,
+      "last_line": "RESULT=PASS"
+    },
+    "S8_doclint": {
+      "exit": 0,
+      "last_line": "TOTAL fail=0 warn=0"
+    }
+  },
+  "snapshots": {
+    "design-a.bak.md": {
+      "bytes": 92381,
+      "exists": true,
+      "lines": 1139,
+      "path": "evidence/tls/snapshots/design-a.bak.md",
+      "sha256": "10b0f3bec05a9a69800a4938729a5a4cf028c042f463361b3e7beacaf53a3b2e"
+    },
+    "design-a.step7.snapshot.md": {
+      "bytes": 112779,
+      "exists": true,
+      "lines": 1392,
+      "path": "evidence/tls/snapshots/design-a.step7.snapshot.md",
+      "sha256": "ad392e0b669ab004a92ccef768504c132df87555de171603e1ad1cf67136d545"
+    },
+    "design-a.step7.v2.md": {
+      "bytes": 120397,
+      "exists": true,
+      "lines": 1464,
+      "path": "evidence/tls/snapshots/design-a.step7.v2.md",
+      "sha256": "66729ee085b00545aefae7815b9dc5a873af0fad31d4b418a1ddb0498c698e95"
+    },
+    "design-a.step8.base.md": {
+      "bytes": 135988,
+      "exists": true,
+      "lines": 1632,
+      "path": "evidence/tls/snapshots/design-a.step8.base.md",
+      "sha256": "2eaf8060b19c151fa9aefc97d7bffd4debe7d943389cd3699e86cfbca7a59103"
+    }
+  }
+}

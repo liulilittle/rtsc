@@ -1,0 +1,25 @@
+=== FULL build of the PRE-change tree (.tmp/bl-pre-src) ===
+--- tree: CMakeLists.txt + tls_schannel.cpp restored from S0.1 backups,
+---       batch-0 new files absent, the 3 offending TUs verbatim
+--- date: 2026-10-23T01:05:11Z
+
+PRE_CONFIGURE_EXIT=0
+FAILED: CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o 
+  fatal: windows.h: No such file or directory
+FAILED: CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o 
+  fatal: windows.h: No such file or directory
+FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o 
+/mnt/f/rtsc/.tmp/bl-pre-src/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+/mnt/f/rtsc/.tmp/bl-pre-src/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+ninja: build stopped: subcommand failed.
+PRE_FULL_BUILD_EXIT=1
+
+=== distinct failing object files (pre-change) ===
+CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+CMakeFiles/rtsc_credssp_sm_tests.dir/tests/test_credssp_sm.cpp.o
+CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+CMakeFiles/rtsc_ntlm_tests.dir/tests/test_ntlm.cpp.o
+CMakeFiles/rtsc_probe.dir/tools/rtsc_probe/main.cpp.o
+CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o

@@ -1,0 +1,122 @@
+ninja: no work to do.
+powershell.exe : BATCH0 TLS SUITE MISMATCH:
+???? ?:18 ??: 8
++ $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $tmpPs 2 ...
++        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (BATCH0 TLS SUITE MISMATCH::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[ RUN  ] status_has_exactly_six_terminal_values
+[  OK  ] status_has_exactly_six_terminal_values
+[ RUN  ] status_non_terminal_values_are_not_terminal
+[  OK  ] status_non_terminal_values_are_not_terminal
+[ RUN  ] closed_is_not_an_error_but_is_idempotent_like_one
+[  OK  ] closed_is_not_an_error_but_is_idempotent_like_one
+[ RUN  ] record_sizes_upper_bound_is_not_the_actual_length
+[  OK  ] record_sizes_upper_bound_is_not_the_actual_length
+[ RUN  ] factory_reports_unknown_backend
+[  OK  ] factory_reports_unknown_backend
+[ RUN  ] factory_enumerates_schannel
+[  OK  ] factory_enumerates_schannel
+[ RUN  ] handshake_completes_and_reports_negotiated_parameters
+[  OK  ] handshake_completes_and_reports_negotiated_parameters
+[ RUN  ] record_sizes_are_measured_not_assumed
+[  OK  ] record_sizes_are_measured_not_assumed
+[ RUN  ] boundary1_record_split_into_feeds_yields_needmoreinput_then_ok
+[  OK  ] boundary1_record_split_into_feeds_yields_needmoreinput_then_ok
+[ RUN  ] boundary2_two_records_in_one_call_are_concatenated
+[  OK  ] boundary2_two_records_in_one_call_are_concatenated
+[ RUN  ] boundary9_three_records_accumulate_without_losing_earlier_ones
+[  OK  ] boundary9_three_records_accumulate_without_losing_earlier_ones
+[ RUN  ] boundary3_trailing_partial_record_stays_buffered
+[  OK  ] boundary3_trailing_partial_record_stays_buffered
+[ RUN  ] boundary4_zero_length_record_is_ok_not_closed
+[  OK  ] boundary4_zero_length_record_is_ok_not_closed
+[ RUN  ] boundary8_empty_input_returns_needmoreinput_when_nothing_happened
+[  OK  ] boundary8_empty_input_returns_needmoreinput_when_nothing_happened
+[ RUN  ] boundary7_tampered_record_fails_and_leaves_plaintext_empty
+[  OK  ] boundary7_tampered_record_fails_and_leaves_plaintext_empty
+[ RUN  ] boundary11_terminal_error_is_idempotent
+[  OK  ] boundary11_terminal_error_is_idempotent
+[ RUN  ] boundary10_complete_record_reported_incomplete_is_protocol_error
+[  OK  ] boundary10_complete_record_reported_incomplete_is_protocol_error
+[ RUN  ] record_length_above_rfc_limit_is_protocol_error
+[  OK  ] record_length_above_rfc_limit_is_protocol_error
+[ RUN  ] extra_is_zero_because_records_are_pre_sliced
+[  OK  ] extra_is_zero_because_records_are_pre_sliced
+[ RUN  ] boundary12_pure_housekeeping_record_still_returns_ok
+[  OK  ] boundary12_pure_housekeeping_record_still_returns_ok
+[ RUN  ] max_out_is_soft_and_caller_can_drain
+[  OK  ] max_out_is_soft_and_caller_can_drain
+[ RUN  ] send_roundtrips_and_real_length_is_not_the_allocation_bound
+[  OK  ] send_roundtrips_and_real_length_is_not_the_allocation_bound
+[ RUN  ] send_splits_oversized_payload_instead_of_failing
+[  OK  ] send_splits_oversized_payload_instead_of_failing
+[ RUN  ] peer_keys_are_consistent_and_not_fixed_offset_slices
+[  OK  ] peer_keys_are_consistent_and_not_fixed_offset_slices
+[ RUN  ] shutdown_is_idempotent
+[  OK  ] shutdown_is_idempotent
+[ RUN  ] version_bounds_are_enforced_after_handshake
+[  OK  ] version_bounds_are_enforced_after_handshake
+26 tests, 139 checks, 0 failing tests, 0 failed checks
+???? F:\rtsc\.tmp\b0-accept.ps1:6 ??: 5
++     throw "BATCH0 TLS SUITE MISMATCH:`n$o"
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (BATCH0 TLS SUIT...failed checks
+:String) [], RuntimeException
+    + FullyQualifiedErrorId : BATCH0 TLS SUITE MISMATCH:
+[ RUN  ] status_has_exactly_six_terminal_values
+[  OK  ] status_has_exactly_six_terminal_values
+[ RUN  ] status_non_terminal_values_are_not_terminal
+[  OK  ] status_non_terminal_values_are_not_terminal
+[ RUN  ] closed_is_not_an_error_but_is_idempotent_like_one
+[  OK  ] closed_is_not_an_error_but_is_idempotent_like_one
+[ RUN  ] record_sizes_upper_bound_is_not_the_actual_length
+[  OK  ] record_sizes_upper_bound_is_not_the_actual_length
+[ RUN  ] factory_reports_unknown_backend
+[  OK  ] factory_reports_unknown_backend
+[ RUN  ] factory_enumerates_schannel
+[  OK  ] factory_enumerates_schannel
+[ RUN  ] handshake_completes_and_reports_negotiated_parameters
+[  OK  ] handshake_completes_and_reports_negotiated_parameters
+[ RUN  ] record_sizes_are_measured_not_assumed
+[  OK  ] record_sizes_are_measured_not_assumed
+[ RUN  ] boundary1_record_split_into_feeds_yields_needmoreinput_then_ok
+[  OK  ] boundary1_record_split_into_feeds_yields_needmoreinput_then_ok
+[ RUN  ] boundary2_two_records_in_one_call_are_concatenated
+[  OK  ] boundary2_two_records_in_one_call_are_concatenated
+[ RUN  ] boundary9_three_records_accumulate_without_losing_earlier_ones
+[  OK  ] boundary9_three_records_accumulate_without_losing_earlier_ones
+[ RUN  ] boundary3_trailing_partial_record_stays_buffered
+[  OK  ] boundary3_trailing_partial_record_stays_buffered
+[ RUN  ] boundary4_zero_length_record_is_ok_not_closed
+[  OK  ] boundary4_zero_length_record_is_ok_not_closed
+[ RUN  ] boundary8_empty_input_returns_needmoreinput_when_nothing_happened
+[  OK  ] boundary8_empty_input_returns_needmoreinput_when_nothing_happened
+[ RUN  ] boundary7_tampered_record_fails_and_leaves_plaintext_empty
+[  OK  ] boundary7_tampered_record_fails_and_leaves_plaintext_empty
+[ RUN  ] boundary11_terminal_error_is_idempotent
+[  OK  ] boundary11_terminal_error_is_idempotent
+[ RUN  ] boundary10_complete_record_reported_incomplete_is_protocol_error
+[  OK  ] boundary10_complete_record_reported_incomplete_is_protocol_error
+[ RUN  ] record_length_above_rfc_limit_is_protocol_error
+[  OK  ] record_length_above_rfc_limit_is_protocol_error
+[ RUN  ] extra_is_zero_because_records_are_pre_sliced
+[  OK  ] extra_is_zero_because_records_are_pre_sliced
+[ RUN  ] boundary12_pure_housekeeping_record_still_returns_ok
+[  OK  ] boundary12_pure_housekeeping_record_still_returns_ok
+[ RUN  ] max_out_is_soft_and_caller_can_drain
+[  OK  ] max_out_is_soft_and_caller_can_drain
+[ RUN  ] send_roundtrips_and_real_length_is_not_the_allocation_bound
+[  OK  ] send_roundtrips_and_real_length_is_not_the_allocation_bound
+[ RUN  ] send_splits_oversized_payload_instead_of_failing
+[  OK  ] send_splits_oversized_payload_instead_of_failing
+[ RUN  ] peer_keys_are_consistent_and_not_fixed_offset_slices
+[  OK  ] peer_keys_are_consistent_and_not_fixed_offset_slices
+[ RUN  ] shutdown_is_idempotent
+[  OK  ] shutdown_is_idempotent
+[ RUN  ] version_bounds_are_enforced_after_handshake
+[  OK  ] version_bounds_are_enforced_after_handshake
+26 tests, 139 checks, 0 failing tests, 0 failed checks
+ 
+

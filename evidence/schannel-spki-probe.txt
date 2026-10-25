@@ -1,0 +1,6 @@
+public key algorithm OID bytes = 1
+public key bit length = 2160, unused bits = 0
+SubjectPublicKeyInfo DER (294 bytes): 30 82 01 22 30 0d 06 09 2a 86 48 86 f7 0d 01 01 01 05 00 03 82 01 0f 00 30 82 01 0a 02 82 01 01 00 ce b5 bf 3f f9 d0 c0 3b a1 51 4d 06 d8 80 4c fb 21 10 e6 e4 05 45 02 dc 16 de b2 66 89 57 f5 6f 04 0a de 0e b5 fd e3 b5 74 e5 48 c8 9c 1a e4 1d 84 82 4a 24 2a e0 f1 6d db 7b 05 3a 9d 10 c4 92 b5 18 1f 4f 98 16 22 84 5a 11 5c 67 d7 5e 42 f0 4f 1d fe 3f 87 20 39 b3 08 85 11 ec 96 86 d7 a6 ff d9 07 2a 3b 0d 45 59 35 eb 70 18 ac 3f 81 fa ba 49 4a 06 22 c5 f7 d6 36 3d 5d 48 34 fa 0f b7 eb 50 cf 0d 56 4b 6e 67 15 7d ae 0e 29 be 40 17 9c aa b0 b0 49 c4 e7 d4 79 88 a4 f8 88 a6 cd 9a ee 88 58 8f 5e 0a f6 aa 5d 08 80 a9 55 ca c9 01 0f 72 56 67 78 f2 c4 b0 78 47 a7 c6 7f 9f bc d0 d7 aa b8 84 e4 be 13 a7 32 ac f5 80 e9 91 38 f4 9f 47 27 86 9d 0c fd ac f7 ad 1d 47 8e e4 f7 45 ce f5 dd a2 2b a7 c1 9b 4d 1e 4f ff 90 33 d4 40 9a ba 83 2b d1 62 f7 fd 45 22 e9 7a e8 a3 13 49 02 03 01 00 01
+SPKI found in certificate at offset 134
+SPKI verbatim-in-cert = YES
+SHA256(SPKI) (32 bytes): 78 b5 f2 6b 09 41 d4 fd 97 89 00 25 30 f1 eb 31 95 80 b0 6a 95 3e ef 63 62 ef 02 05 91 00 0f 3a

@@ -1,0 +1,30 @@
+=== PROPOSAL experiment: would 3 minimal edits make full build green? ===
+--- scratch tree: .tmp/bl-proposed-src (copy of current F:/rtsc)
+--- F:/rtsc source is NOT modified by this experiment.
+--- date: 2026-10-23T01:07:39Z
+
+--- copy sanity: batch-0 files present -> yes
+
+### Proposed edit 1/3: tests/test_credssp.cpp:50 mark the unused helper ###
+    [[maybe_unused]] Bytes Str(const char* s) { return Bytes(s, s + std::char_traits<char>::length(s)); }
+
+### Proposed edit 2/3: tests/test_licensing.cpp:37,60 mark the unused helpers ###
+    [[maybe_unused]] std::vector<uint8_t> AnsiBytes(const std::string& s) {
+    [[maybe_unused]] std::string ToHex(const std::vector<uint8_t>& v) {
+
+### Proposed edit 3/3: tools/rtsc_crashtest/main.cpp add <exception> ###
+    #include <cstdio>
+    #include <cstring>
+    #include <string>
+    #include <exception>
+    
+    #include "rtsc/util/crash_guard.h"
+
+### configure + FULL build of the scratch tree ###
+PROP_CONFIGURE_EXIT=0
+PROP_FULL_BUILD_EXIT=0
+--- FAILED lines (expect none):
+--- tail:
+    [58/60] Linking CXX executable rtsc_licensing_tests
+    [59/60] Linking CXX executable rtsc_capabilities_tests
+    [60/60] Linking CXX executable rtsc_connect_machine_tests

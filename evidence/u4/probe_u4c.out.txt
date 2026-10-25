@@ -1,0 +1,29 @@
+﻿U4 probe part 3: real alert delivery and status reachability
+
+=== R1/R2: proper close_notify ===
+    ApplyControlToken -> 0x80090302
+  server CloseNotify -> 0x80090302, out=0
+  raw bytes (0 bytes):
+    sb[0]: type=1 cb=0
+    sb[1]: type=0 cb=0
+    sb[2]: type=0 cb=0
+    sb[3]: type=0 cb=0
+  client DecryptMessage -> 0x80090308 (SEC_E_INVALID_TOKEN)
+  plaintext=0
+  R2 ANSWER: status=SEC_E_INVALID_TOKEN, description reachable=NO
+
+=== R3: close_notify through rtsc::tls::TlsTransport ===
+    ApplyControlToken -> 0x80090302
+  server close_notify = 0 bytes, type=0
+  Receive -> status=1 plaintext=0 buffered=0
+  last_error: status=1 native_code=0x00000000 msg=""
+  R3 ANSWER: transport maps close_notify to kNeedMoreInput, native_code=0x00000000
+
+=== R4: status reachability scan on the Receive path ===
+  plaintext alert 15 03 03 00 02 02 31   -> status=5 native=0x80090318 plain=0
+  alert with short len 2                 -> status=5 native=0x80090318 plain=0
+  garbage record type 0xFF               -> status=5 native=0x00000000 plain=0
+  oversize length                        -> status=5 native=0x00000000 plain=0
+  truncated 2-byte header                -> status=1 native=0x00000000 plain=0
+
+=== done ===

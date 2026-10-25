@@ -1,0 +1,47 @@
+[1/62] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+FAILED: CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/.tmp/audit-b0/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -MF CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o.d -o CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o -c /mnt/f/rtsc/.tmp/audit-b0/src/net/tls_schannel.cpp
+/mnt/f/rtsc/.tmp/audit-b0/src/net/tls_schannel.cpp:29:10: fatal error: windows.h: No such file or directory
+   29 | #include <windows.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+[2/62] Building CXX object CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o
+FAILED: CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/.tmp/audit-b0/tests -I/mnt/f/rtsc/.tmp/audit-b0/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o -MF CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o.d -o CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o -c /mnt/f/rtsc/.tmp/audit-b0/tests/test_tls.cpp
+/mnt/f/rtsc/.tmp/audit-b0/tests/test_tls.cpp:20:10: fatal error: windows.h: No such file or directory
+   20 | #include <windows.h>
+      |          ^~~~~~~~~~~
+compilation terminated.
+[3/62] Building CXX object CMakeFiles/rtsc_util.dir/src/util/crash_guard.cpp.o
+[4/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/byte_order.cpp.o
+[5/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/tpkt.cpp.o
+[6/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/rdp_neg.cpp.o
+[7/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/framing.cpp.o
+[8/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/share.cpp.o
+[9/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/ber.cpp.o
+[10/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/x224.cpp.o
+[11/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connection_initiation.cpp.o
+[12/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/client_info.cpp.o
+[13/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/finalization.cpp.o
+[14/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs.cpp.o
+[15/62] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ts_request.cpp.o
+[16/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs_domain.cpp.o
+[17/62] Building CXX object CMakeFiles/rtsc_crypto.dir/src/crypto/hash.cpp.o
+[18/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/licensing.cpp.o
+[19/62] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ntlm.cpp.o
+[20/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/capabilities.cpp.o
+[21/62] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connect_machine.cpp.o
+[22/62] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/credssp.cpp.o
+[23/62] Building CXX object CMakeFiles/rtsc_framing_tests.dir/tests/test_framing.cpp.o
+[24/62] Building CXX object CMakeFiles/rtsc_tests.dir/tests/test_connection_initiation.cpp.o
+[25/62] Building CXX object CMakeFiles/rtsc_share_tests.dir/tests/test_share.cpp.o
+[26/62] Building CXX object CMakeFiles/rtsc_client_info_tests.dir/tests/test_client_info.cpp.o
+[27/62] Building CXX object CMakeFiles/rtsc_finalization_tests.dir/tests/test_finalization.cpp.o
+[28/62] Building CXX object CMakeFiles/rtsc_mcs_domain_tests.dir/tests/test_mcs_domain.cpp.o
+[29/62] Building CXX object CMakeFiles/rtsc_ber_tests.dir/tests/test_ber.cpp.o
+[30/62] Building CXX object CMakeFiles/rtsc_crypto_tests.dir/tests/test_crypto.cpp.o
+[31/62] Building CXX object CMakeFiles/rtsc_connect_machine_tests.dir/tests/test_connect_machine.cpp.o
+[32/62] Building CXX object CMakeFiles/rtsc_mcs_tests.dir/tests/test_mcs.cpp.o
+[33/62] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+[34/62] Building CXX object CMakeFiles/rtsc_capabilities_tests.dir/tests/test_capabilities.cpp.o
+ninja: build stopped: subcommand failed.

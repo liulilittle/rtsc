@@ -1,0 +1,7 @@
+﻿nonce=0 exit=-1073740791 nonce=0 start_ok=1
+nonce=4 exit=-1073740791 nonce=4 start_ok=1
+nonce=16 exit=3 nonce=16 start_ok=1
+nonce=23 exit=3 nonce=23 start_ok=1
+nonce=24 exit=0 nonce=24 start_ok=1 step3_ok=0 status=3 msg='nonce must be 32 bytes' out=0
+nonce=31 exit=0 nonce=31 start_ok=1 step3_ok=0 status=3 msg='nonce must be 32 bytes' out=0
+nonce=32 exit=0 nonce=32 start_ok=1 step3_ok=1 status=0 msg='' out=389

@@ -1,0 +1,6 @@
+A count>data (F-12)          doc=OOB-READ-HEADER    off=24 len=4 end=24 | fix=ERR-header-oob
+B len>remaining (F-03)       doc=OOB-READ-BODY      off=0 len=200 end=8 | fix=ERR-body-oob
+C legal (green)              doc=OK                 off=24 len=0 end=24 | fix=OK
+D lcc=2 (F-13)               doc=ASSERT-FAIL        off=24 len=0 end=65534 | fix=ERR-lcc<4
+E trailing slack             doc=ASSERT-FAIL        off=24 len=0 end=32 | fix=ERR-trailing
+F len=0                      doc=ERR-len<4          off=0 len=0 end=24 | fix=ERR-len<4

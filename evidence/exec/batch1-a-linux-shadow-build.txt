@@ -1,0 +1,72 @@
+BATCH1-A LINUX SHADOW BUILD + CTEST (reference implementation applied)
+==============================================================================
+Shadow tree: F:/rtsc/.tmp/shadow_linux (copy of F:/rtsc, build artifacts excluded)
+Applied: random.h + random_posix.cpp + CMake rtsc_crypto split
+         + reference credssp.cpp + ts_request.h kInternal + credssp.h SetServerPublicKey
+Toolchain: WSL Ubuntu-24.04, g++ 13.3.0, glibc 2.39, -std=c++20 -Wall -Wextra -Werror -Wpedantic
+
+[BUILD]
+  === CONFIGURE ===
+  CONFIG_EXIT=0
+  -- Detecting CXX compile features
+  -- Detecting CXX compile features - done
+  -- Configuring done (2.0s)
+  -- Generating done (1.5s)
+  -- Build files have been written to: /mnt/f/rtsc/.tmp/shadow_linux/build_linux
+  === BUILD ===
+  BUILD_EXIT=0
+  FAILED_COUNT=0
+  WINDOWS_H_COUNT=0
+  --- first 40 errors ---
+
+[CTEST]
+  === CTEST ===
+  CTEST_EXIT=0
+   1/15 Test  #1: proto ............................   Passed    0.01 sec
+   2/15 Test  #2: ber ..............................   Passed    0.01 sec
+   3/15 Test  #3: mcs ..............................   Passed    0.01 sec
+   4/15 Test  #4: mcs_domain .......................   Passed    0.01 sec
+   5/15 Test  #5: client_info ......................   Passed    0.01 sec
+   6/15 Test  #6: connect_machine ..................   Passed    0.01 sec
+   7/15 Test  #7: framing ..........................   Passed    0.01 sec
+   8/15 Test  #8: crypto ...........................   Passed    0.01 sec
+   9/15 Test  #9: licensing ........................   Passed    0.01 sec
+  10/15 Test #10: share ............................   Passed    0.01 sec
+  11/15 Test #11: capabilities .....................   Passed    0.01 sec
+  12/15 Test #12: finalization .....................   Passed    0.01 sec
+  13/15 Test #13: credssp ..........................   Passed    0.01 sec
+  14/15 Test #14: ntlm .............................   Passed    0.01 sec
+  15/15 Test #15: credssp_sm .......................   Passed    0.01 sec
+  100% tests passed, 0 tests failed out of 15
+  === credssp_sm detail ===
+  [ RUN  ] step1_rejects_server_version_above_our_max
+  [  OK  ] step1_rejects_server_version_above_our_max
+  [ RUN  ] step3_carries_authenticate_pubkeyauth_and_nonce
+  [  OK  ] step3_carries_authenticate_pubkeyauth_and_nonce
+  [ RUN  ] step3_authenticate_carries_a_nonzero_mic
+  [  OK  ] step3_authenticate_carries_a_nonzero_mic
+  [ RUN  ] step3_pubkeyauth_hash_matches_independent_computation
+  [  OK  ] step3_pubkeyauth_hash_matches_independent_computation
+  [ RUN  ] binding_hash_matches_independent_value
+  [  OK  ] binding_hash_matches_independent_value
+  [ RUN  ] binding_hash_includes_magic_nul_and_nonce
+  [  OK  ] binding_hash_includes_magic_nul_and_nonce
+  [ RUN  ] step5_sends_authinfo_only
+  [  OK  ] step5_sends_authinfo_only
+  [ RUN  ] step5_rejects_wrong_server_echo
+  [  OK  ] step5_rejects_wrong_server_echo
+  [ RUN  ] error_code_aborts_with_server_status
+  [  OK  ] error_code_aborts_with_server_status
+  [ RUN  ] error_code_is_checked_before_any_token_processing
+  [  OK  ] error_code_is_checked_before_any_token_processing
+  [ RUN  ] unexpected_step_is_rejected
+  [  OK  ] unexpected_step_is_rejected
+  [ RUN  ] step4_response_without_pubkeyauth_is_rejected
+  [  OK  ] step4_response_without_pubkeyauth_is_rejected
+  [ RUN  ] authinfo_plaintext_is_tscredentials_with_credentials
+  [  OK  ] authinfo_plaintext_is_tscredentials_with_credentials
+  [ RUN  ] version_4_pubkeyauth_is_encrypted_public_key_not_hash
+  [  OK  ] version_4_pubkeyauth_is_encrypted_public_key_not_hash
+  
+  15 tests, 92 checks, 0 failing tests, 0 failed checks
+  SM_EXIT=0

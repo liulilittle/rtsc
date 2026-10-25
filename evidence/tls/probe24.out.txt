@@ -1,0 +1,14 @@
+﻿== server-initiated renegotiation, TLS1.2 ==
+  proto=0x0800
+  app data: 0x00000000
+  server ASC(no input, ALLOCATE) -> 0x00000000, 33 bytes
+  server flight (33 B): 16 03 03 00 1c 00 00 00 00 00
+  client DecryptMessage -> 0x00090321 (0x00090321 = SEC_I_RENEGOTIATE) data=0 extra=0
+  feeding 0 bytes of EXTRA into ISC
+  client ISC(reneg) -> 0x00090312, 197 bytes
+  server ASC(reneg flight) -> 0x00090312, 822 bytes
+  client ISC(final) -> 0x00090312, 206 bytes
+== server-initiated renegotiation, TLS1.3 ==
+  proto=0x2000
+  app data: 0x00000000
+  server ASC(no input, ALLOCATE) -> 0x00090360, 0 bytes

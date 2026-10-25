@@ -1,0 +1,615 @@
+=== S21 GREEN BASELINE (post-change) ===
+--- date: 2026-10-23T00:56:44Z
+--- cmake: cmake version 3.28.3
+--- ninja: 1.11.1
+--- cxx: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+--- uname: Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+
+=== STEP 1: configure ===
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (2.7s)
+-- Generating done (0.3s)
+-- Build files have been written to: /mnt/f/rtsc/.tmp/bl-green
+CONFIGURE_EXIT=0
+
+=== STEP 2: full build (cmake --build .tmp/bl-green) ===
+[1/60] Building CXX object CMakeFiles/rtsc_util.dir/src/util/crash_guard.cpp.o
+[2/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/rdp_neg.cpp.o
+[3/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/tpkt.cpp.o
+[4/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/x224.cpp.o
+[5/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/framing.cpp.o
+[6/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/byte_order.cpp.o
+[7/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/ber.cpp.o
+[8/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connection_initiation.cpp.o
+[9/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs_domain.cpp.o
+[10/60] Building CXX object CMakeFiles/rtsc_crypto.dir/src/crypto/hash.cpp.o
+[11/60] Linking CXX static library librtsc_util.a
+[12/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs.cpp.o
+[13/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/client_info.cpp.o
+[14/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/share.cpp.o
+[15/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/finalization.cpp.o
+[16/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ts_request.cpp.o
+[17/60] Building CXX object CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+FAILED: CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/tests -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o -MF CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o.d -o CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o -c /mnt/f/rtsc/tests/test_credssp.cpp
+/mnt/f/rtsc/tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+   50 | Bytes Str(const char* s) { return Bytes(s, s + std::char_traits<char>::length(s)); }
+      |       ^~~
+cc1plus: all warnings being treated as errors
+[18/60] Building CXX object CMakeFiles/rtsc_mcs_domain_tests.dir/tests/test_mcs_domain.cpp.o
+[19/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/licensing.cpp.o
+[20/60] Building CXX object CMakeFiles/rtsc_framing_tests.dir/tests/test_framing.cpp.o
+[21/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ntlm.cpp.o
+[22/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/capabilities.cpp.o
+[23/60] Building CXX object CMakeFiles/rtsc_finalization_tests.dir/tests/test_finalization.cpp.o
+[24/60] Building CXX object CMakeFiles/rtsc_share_tests.dir/tests/test_share.cpp.o
+[25/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/credssp.cpp.o
+[26/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connect_machine.cpp.o
+[27/60] Building CXX object CMakeFiles/rtsc_tests.dir/tests/test_connection_initiation.cpp.o
+[28/60] Building CXX object CMakeFiles/rtsc_client_info_tests.dir/tests/test_client_info.cpp.o
+[29/60] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/tests -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o -MF CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o.d -o CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o -c /mnt/f/rtsc/tests/test_licensing.cpp
+/mnt/f/rtsc/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+   60 | std::string ToHex(const std::vector<uint8_t>& v) {
+      |             ^~~~~
+/mnt/f/rtsc/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+   37 | std::vector<uint8_t> AnsiBytes(const std::string& s) {
+      |                      ^~~~~~~~~
+cc1plus: all warnings being treated as errors
+[30/60] Building CXX object CMakeFiles/rtsc_crypto_tests.dir/tests/test_crypto.cpp.o
+[31/60] Building CXX object CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+FAILED: CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o -MF CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o.d -o CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o -c /mnt/f/rtsc/tools/rtsc_crashtest/main.cpp
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp: In function ‘void {anonymous}::CrashTerminate()’:
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                           ^~~~~~~~~
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:12:1: note: ‘std::terminate’ is defined in header ‘<exception>’; did you forget to ‘#include <exception>’?
+   11 | #include "rtsc/util/crash_guard.h"
+  +++ |+#include <exception>
+   12 | 
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                                        ^
+cc1plus: all warnings being treated as errors
+[32/60] Linking CXX static library librtsc_crypto.a
+[33/60] Building CXX object CMakeFiles/rtsc_mcs_tests.dir/tests/test_mcs.cpp.o
+[34/60] Building CXX object CMakeFiles/rtsc_connect_machine_tests.dir/tests/test_connect_machine.cpp.o
+[35/60] Building CXX object CMakeFiles/rtsc_ber_tests.dir/tests/test_ber.cpp.o
+[36/60] Building CXX object CMakeFiles/rtsc_capabilities_tests.dir/tests/test_capabilities.cpp.o
+[37/60] Building CXX object CMakeFiles/rtsc_probe.dir/tools/rtsc_probe/main.cpp.o
+[38/60] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+[39/60] Building CXX object CMakeFiles/rtsc_credssp_sm_tests.dir/tests/test_credssp_sm.cpp.o
+[40/60] Building CXX object CMakeFiles/rtsc_ntlm_tests.dir/tests/test_ntlm.cpp.o
+ninja: build stopped: subcommand failed.
+GREEN_BUILD_EXIT=1
+
+=== STEP 3: what got built (tls artifacts) ===
+ls: cannot access '.tmp/bl-green/librtsc_tls*.a': No such file or directory
+
+=== STEP 4: ctest (informational) ===
+Test project /mnt/f/rtsc/.tmp/bl-green
+      Start  1: proto
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_tests
+ 1/15 Test  #1: proto ............................***Not Run   0.00 sec
+      Start  2: ber
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ber_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ber_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ber_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_ber_tests
+ 2/15 Test  #2: ber ..............................***Not Run   0.00 sec
+      Start  3: mcs
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_tests
+ 3/15 Test  #3: mcs ..............................***Not Run   0.00 sec
+      Start  4: mcs_domain
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_domain_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_domain_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_mcs_domain_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_mcs_domain_tests
+ 4/15 Test  #4: mcs_domain .......................***Not Run   0.00 sec
+      Start  5: client_info
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_client_info_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_client_info_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_client_info_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_client_info_tests
+ 5/15 Test  #5: client_info ......................***Not Run   0.00 sec
+      Start  6: connect_machine
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_connect_machine_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_connect_machine_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_connect_machine_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_connect_machine_tests
+ 6/15 Test  #6: connect_machine ..................***Not Run   0.00 sec
+      Start  7: framing
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_framing_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_framing_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_framing_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_framing_tests
+ 7/15 Test  #7: framing ..........................***Not Run   0.00 sec
+      Start  8: crypto
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_crypto_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_crypto_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_crypto_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_crypto_tests
+ 8/15 Test  #8: crypto ...........................***Not Run   0.00 sec
+      Start  9: licensing
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_licensing_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_licensing_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_licensing_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_licensing_tests
+ 9/15 Test  #9: licensing ........................***Not Run   0.00 sec
+      Start 10: share
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_share_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_share_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_share_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_share_tests
+10/15 Test #10: share ............................***Not Run   0.00 sec
+      Start 11: capabilities
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_capabilities_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_capabilities_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_capabilities_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_capabilities_tests
+11/15 Test #11: capabilities .....................***Not Run   0.00 sec
+      Start 12: finalization
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_finalization_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_finalization_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_finalization_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_finalization_tests
+12/15 Test #12: finalization .....................***Not Run   0.00 sec
+      Start 13: credssp
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_tests
+13/15 Test #13: credssp ..........................***Not Run   0.00 sec
+      Start 14: ntlm
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ntlm_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ntlm_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_ntlm_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_ntlm_tests
+14/15 Test #14: ntlm .............................***Not Run   0.00 sec
+      Start 15: credssp_sm
+Could not find executable /mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+Looked in the following places:
+/mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_sm_tests
+/mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Release/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Debug/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/MinSizeRel/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/RelWithDebInfo/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Deployment/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_sm_tests
+mnt/f/rtsc/.tmp/bl-green/Development/rtsc_credssp_sm_tests
+Unable to find executable: /mnt/f/rtsc/.tmp/bl-green/rtsc_credssp_sm_tests
+15/15 Test #15: credssp_sm .......................***Not Run   0.00 sec
+
+0% tests passed, 15 tests failed out of 15
+
+Total Test time (real) =   0.53 sec
+
+The following tests FAILED:
+	  1 - proto (Not Run)
+	  2 - ber (Not Run)
+	  3 - mcs (Not Run)
+	  4 - mcs_domain (Not Run)
+	  5 - client_info (Not Run)
+	  6 - connect_machine (Not Run)
+	  7 - framing (Not Run)
+	  8 - crypto (Not Run)
+	  9 - licensing (Not Run)
+	 10 - share (Not Run)
+	 11 - capabilities (Not Run)
+	 12 - finalization (Not Run)
+	 13 - credssp (Not Run)
+	 14 - ntlm (Not Run)
+	 15 - credssp_sm (Not Run)
+Errors while running CTest
+CTEST_EXIT=8

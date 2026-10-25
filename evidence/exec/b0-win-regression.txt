@@ -1,0 +1,23 @@
+=== Windows regression: all rtsc_*_tests.exe (post-batch-0) ===
+--- date: 2026-10-23 09:12:38 local
+--- baseline (audit 19.5.1 D2) must not be reduced:
+---   tls 26/139, credssp_sm 15/92, ntlm 27/136, credssp 23/69, framing 11/47, connect_machine 26/115
+
+rtsc_ber_tests.exe               32 tests, 166 checks, 0 failing tests, 0 failed checks
+rtsc_capabilities_tests.exe      35 tests, 218 checks, 0 failing tests, 0 failed checks
+rtsc_client_info_tests.exe       30 tests, 120 checks, 0 failing tests, 0 failed checks
+rtsc_connect_machine_tests.exe   26 tests, 115 checks, 0 failing tests, 0 failed checks
+rtsc_credssp_sm_tests.exe        15 tests, 92 checks, 0 failing tests, 0 failed checks
+rtsc_credssp_tests.exe           23 tests, 69 checks, 0 failing tests, 0 failed checks
+rtsc_crypto_tests.exe            25 tests, 66 checks, 0 failing tests, 0 failed checks
+rtsc_finalization_tests.exe      19 tests, 80 checks, 0 failing tests, 0 failed checks
+rtsc_framing_tests.exe           11 tests, 47 checks, 0 failing tests, 0 failed checks
+rtsc_licensing_tests.exe         47 tests, 175 checks, 0 failing tests, 0 failed checks
+rtsc_mcs_domain_tests.exe        39 tests, 151 checks, 0 failing tests, 0 failed checks
+rtsc_mcs_tests.exe               35 tests, 182 checks, 0 failing tests, 0 failed checks
+rtsc_ntlm_tests.exe              27 tests, 136 checks, 0 failing tests, 0 failed checks
+rtsc_share_tests.exe             34 tests, 171 checks, 0 failing tests, 0 failed checks
+rtsc_tls_tests.exe               26 tests, 139 checks, 0 failing tests, 0 failed checks
+
+SUITES_RUN=15
+FAILED_SUITES=0

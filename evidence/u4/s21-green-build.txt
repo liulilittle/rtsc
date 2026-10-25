@@ -1,0 +1,70 @@
+[1/60] Building CXX object CMakeFiles/rtsc_util.dir/src/util/crash_guard.cpp.o
+[2/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/byte_order.cpp.o
+[3/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/tpkt.cpp.o
+[4/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/x224.cpp.o
+[5/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/rdp_neg.cpp.o
+[6/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/share.cpp.o
+[7/60] Linking CXX static library librtsc_util.a
+[8/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/ber.cpp.o
+[9/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connection_initiation.cpp.o
+[10/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/framing.cpp.o
+[11/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/finalization.cpp.o
+[12/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs.cpp.o
+[13/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/mcs_domain.cpp.o
+[14/60] Building CXX object CMakeFiles/rtsc_crypto.dir/src/crypto/hash.cpp.o
+[15/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/client_info.cpp.o
+[16/60] Building CXX object CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+FAILED: CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/tests -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o -MF CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o.d -o CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o -c /mnt/f/rtsc/tests/test_credssp.cpp
+/mnt/f/rtsc/tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+   50 | Bytes Str(const char* s) { return Bytes(s, s + std::char_traits<char>::length(s)); }
+      |       ^~~
+cc1plus: all warnings being treated as errors
+[17/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ts_request.cpp.o
+[18/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/licensing.cpp.o
+[19/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/connect_machine.cpp.o
+[20/60] Building CXX object CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+FAILED: CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o -MF CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o.d -o CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o -c /mnt/f/rtsc/tools/rtsc_crashtest/main.cpp
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp: In function ‘void {anonymous}::CrashTerminate()’:
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                           ^~~~~~~~~
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:12:1: note: ‘std::terminate’ is defined in header ‘<exception>’; did you forget to ‘#include <exception>’?
+   11 | #include "rtsc/util/crash_guard.h"
+  +++ |+#include <exception>
+   12 | 
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+   30 | [[noreturn]] void CrashTerminate() { std::terminate(); }
+      |                                                        ^
+cc1plus: all warnings being treated as errors
+[21/60] Building CXX object CMakeFiles/rtsc_framing_tests.dir/tests/test_framing.cpp.o
+[22/60] Building CXX object CMakeFiles/rtsc_tests.dir/tests/test_connection_initiation.cpp.o
+[23/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/ntlm.cpp.o
+[24/60] Building CXX object CMakeFiles/rtsc_credssp.dir/src/credssp/credssp.cpp.o
+[25/60] Building CXX object CMakeFiles/rtsc_proto.dir/src/proto/capabilities.cpp.o
+[26/60] Building CXX object CMakeFiles/rtsc_client_info_tests.dir/tests/test_client_info.cpp.o
+[27/60] Building CXX object CMakeFiles/rtsc_finalization_tests.dir/tests/test_finalization.cpp.o
+[28/60] Linking CXX static library librtsc_crypto.a
+[29/60] Building CXX object CMakeFiles/rtsc_ber_tests.dir/tests/test_ber.cpp.o
+[30/60] Building CXX object CMakeFiles/rtsc_mcs_domain_tests.dir/tests/test_mcs_domain.cpp.o
+[31/60] Building CXX object CMakeFiles/rtsc_share_tests.dir/tests/test_share.cpp.o
+[32/60] Building CXX object CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o 
+/usr/bin/c++  -I/mnt/f/rtsc/tests -I/mnt/f/rtsc/include -g -std=c++20 -Wall -Wextra -Werror -Wpedantic -MD -MT CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o -MF CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o.d -o CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o -c /mnt/f/rtsc/tests/test_licensing.cpp
+/mnt/f/rtsc/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+   60 | std::string ToHex(const std::vector<uint8_t>& v) {
+      |             ^~~~~
+/mnt/f/rtsc/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+   37 | std::vector<uint8_t> AnsiBytes(const std::string& s) {
+      |                      ^~~~~~~~~
+cc1plus: all warnings being treated as errors
+[33/60] Building CXX object CMakeFiles/rtsc_probe.dir/tools/rtsc_probe/main.cpp.o
+[34/60] Building CXX object CMakeFiles/rtsc_crypto_tests.dir/tests/test_crypto.cpp.o
+[35/60] Building CXX object CMakeFiles/rtsc_mcs_tests.dir/tests/test_mcs.cpp.o
+[36/60] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+[37/60] Building CXX object CMakeFiles/rtsc_connect_machine_tests.dir/tests/test_connect_machine.cpp.o
+[38/60] Building CXX object CMakeFiles/rtsc_capabilities_tests.dir/tests/test_capabilities.cpp.o
+[39/60] Building CXX object CMakeFiles/rtsc_credssp_sm_tests.dir/tests/test_credssp_sm.cpp.o
+[40/60] Building CXX object CMakeFiles/rtsc_ntlm_tests.dir/tests/test_ntlm.cpp.o
+ninja: build stopped: subcommand failed.

@@ -1,0 +1,31 @@
+﻿brace_depth_final = 0 (0 = balanced)
+negative_depth_at = None
+
+PASS S1 random include
+PASS S1 RandomBytes for nonce
+PASS S1 zero-fill removed
+PASS D5 nonce guard present
+PASS D2 lower-bound inside branch
+PASS D2 upper bound NOT rejected
+PASS D1 min inside branch
+PASS D1 clamp absent
+PASS D1+D2 not before the branch
+PASS errorCode branch before version check
+PASS S18 guard
+PASS S18 setter in header
+PASS S18 test hook kept
+PASS utility include in header
+PASS S18 guard before D5 guard
+PASS D5 guard before token check
+PASS S11 recv signing key
+PASS S11 MAC mismatch
+PASS S11 version check
+PASS S11 seq check
+PASS S11 recv_seq after MAC
+PASS N-B1 exported NOT from nonce
+PASS N-B1 independent RandomBytes
+PASS N-B1 else branch kept
+PASS N-B1 failure is kInternal
+PASS Status::kInternal declared in ts_request.h
+
+ALL_STATIC_CHECKS_PASS = True

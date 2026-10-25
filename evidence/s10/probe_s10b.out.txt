@@ -1,0 +1,27 @@
+﻿S10 probe part 2: mechanism and fix feasibility
+
+=== M6: pre-slice by TLS record header ===
+  combined=98, records=3, finished=51, app=47
+    record[0]: type=20 len=6 at offset=0
+    record[1]: type=22 len=45 at offset=6
+    record[2]: type=23 len=47 at offset=51
+  feed record[0] (6 B, type=20) -> 0x00090312, out=0
+  feed record[1] (45 B, type=22) -> 0x00000000, out=0
+  handshake completes after exactly 51 bytes (expected 51)
+  remaining = 47 bytes (app record)
+  DecryptMessage(remaining) -> 0x00000000, plaintext=18
+  recovered="S10-PAYLOAD-MARKER" match=1
+  M6 VERDICT: pre-slice yields exact boundary=51, app recoverable=YES
+
+=== M7: garbage tail after Finished ===
+  finished=51 + garbage=20 = 71
+  ISC(finished+garbage) -> 0x00000000, cbBuffer 71 -> 71
+  M7 VERDICT: trailing garbage is SILENTLY IGNORED (no validation, no EXTRA report)
+
+=== M8: transport Handshake(combined), then Receive(nullptr,0) ===
+  Handshake(98) -> status=0 consumed=98 complete=1
+  Receive#0 -> status=1 plaintext=0 buffered_input=0
+  total recovered from transport alone = 0 bytes
+  M8 VERDICT: app data LOST (transport claims 98 consumed, keeps 0)
+
+=== done ===

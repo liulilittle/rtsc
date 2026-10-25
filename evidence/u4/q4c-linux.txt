@@ -1,0 +1,2 @@
+[1/2] Building CXX object CMakeFiles/rtsc_tls.dir/src/net/tls_factory.cpp.o
+[2/2] Linking CXX static library librtsc_tls.a

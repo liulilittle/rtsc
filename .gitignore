@@ -1,0 +1,30 @@
+# Build output
+/build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.vcxproj
+*.vcxproj.filters
+*.tlog
+*.recipe
+*.lastbuildstate
+CMakeCache.txt
+CMakeFiles/
+
+# Worktrees
+/.worktrees/
+
+# Backups
+/.opencode/backups/
+
+# Temp / logs
+*.log
+*.tmp
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

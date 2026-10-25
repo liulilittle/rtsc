@@ -1,0 +1,10 @@
+=== TLS1.3 ===
+  proto=0x00002000 cipher=0x6610
+  pending=103 bytes 17 03 03 00 62 54 18 82
+  DecryptMessage(pending) -> 0x00090321 data=0 extra=103 extraOffset=0
+  DecryptMessage(extra)   -> 0x80090317 data=103 extra=0
+=== TLS1.2 ===
+  proto=0x00000800 cipher=0x6610
+  pending=0 bytes
+  (no post-handshake bytes observed on this run)
+RESULT=DONE

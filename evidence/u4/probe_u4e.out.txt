@@ -1,0 +1,37 @@
+﻿U4 probe part 5: correct vs broken SCHANNEL_SHUTDOWN
+
+=== T1/T2/T3: CORRECT SCHANNEL_SHUTDOWN on the server ===
+    ApplyControlToken(correct) -> 0x00000000 (SEC_E_OK)
+  server CloseNotify(correct) -> 0x00000000 (SEC_E_OK), out=31
+  T1 RECORD: type=21 (Alert) len=26 total=31
+  raw (31 bytes): 15 03 03 00 1A 00 00 00 00 00 00 00 01 A5 E0 79 E4 B6 30 62 F6 38 31 E0 BD 12 DC 1E ED BD 21
+    sb[0]: type=1 cb=31 bytes=15 03 03 00 1A 00 00 00 
+    sb[1]: type=0 cb=0
+    sb[2]: type=0 cb=0
+    sb[3]: type=0 cb=0
+  T2 client DecryptMessage -> 0x00090317 (SEC_I_CONTEXT_EXPIRED)
+  plaintext=31 [15 03 03 00 1A 00 00 00 ]
+  T3 ALERT BYTES: level=21 description=3
+  T3 ANSWER: status=SEC_I_CONTEXT_EXPIRED, alert bytes reachable=YES
+
+=== T4: BROKEN (empty-token) ApplyControlToken on the server ===
+    ApplyControlToken(empty token) -> 0x80090302 (SEC_E_UNSUPPORTED_FUNCTION)
+  server CloseNotify(broken) -> 0x80090302 (SEC_E_UNSUPPORTED_FUNCTION), out=0
+  T4: NO RECORD PRODUCED (ApplyControlToken failed)
+  raw (0 bytes):
+  T4 ANSWER: empty-token ApplyControlToken -> SEC_E_UNSUPPORTED_FUNCTION
+
+=== T5: CORRECT SCHANNEL_SHUTDOWN on a client context ===
+  client ApplyControlToken(correct) -> 0x00000000 (SEC_E_OK)
+  client ISC(shutdown) -> 0x00000000 (SEC_E_OK)
+  out=31 bytes
+  T5 RECORD: type=21 (Alert) len=26 total=31
+  raw (31 bytes): 15 03 03 00 1A 00 00 00 00 00 00 00 01 15 9F 35 8B 84 C7 F8 E7 10 BE 14 43 3A 34 E7 18 CA 6A
+    sb[0]: type=1 cb=31 bytes=15 03 03 00 1A 00 00 00 
+    sb[1]: type=0 cb=0
+    sb[2]: type=0 cb=0
+    sb[3]: type=0 cb=0
+  server DecryptMessage -> 0x00090317 (SEC_I_CONTEXT_EXPIRED), plaintext=31
+  ALERT BYTES: level=21 description=3
+
+=== done ===

@@ -1,0 +1,29 @@
+=== Failure-set comparison: PRE-change vs POST-change (ninja -k 0) ===
+--- date: 2026-10-23T01:06:44Z
+--- extraction: only lines starting with 'FAILED:' (earlier v1 also matched
+---             compiler '-o CMakeFiles/...' args and over-reported; fixed here)
+
+### PRE-change: .tmp/bl-pre-src (S0.1 backups restored, batch-0 files absent) ###
+PRE_EXIT=1
+  PRE-FAIL   CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+  PRE-FAIL   CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+  PRE-FAIL   CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+  PRE-FAIL   CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+  PRE-FAIL   CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o
+
+### POST-change: current tree (.tmp/bl-green) ###
+POST_EXIT=1
+  POST-FAIL  CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+  POST-FAIL  CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+  POST-FAIL  CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+
+### DIFF ###
+--- FIXED by batch 0 (in PRE, gone in POST):
+  FIXED        CMakeFiles/rtsc_tls.dir/src/net/tls_schannel.cpp.o
+  FIXED        CMakeFiles/rtsc_tls_tests.dir/tests/test_tls.cpp.o
+--- REGRESSED by batch 0 (absent in PRE, present in POST):
+  (REGRESSED count = 0)
+--- PRE-EXISTING (present in both, untouched files):
+  PRE-EXISTING CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+  PRE-EXISTING CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+  PRE-EXISTING CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o

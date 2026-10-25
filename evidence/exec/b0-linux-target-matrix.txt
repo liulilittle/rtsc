@@ -1,0 +1,27 @@
+=== Linux per-target build matrix (post-batch-0) ===
+--- date: 2026-10-23T00:59:10Z
+--- cmake 3.28.3 / ninja 1.11.1 / (Ubuntu 13.3.0-6ubuntu2~24.04.1)
+
+PASS  rtsc_tls
+FAIL  rtsc_tls_schannel   <-- first error: unknown target 'rtsc_tls_schannel'
+PASS  rtsc_util
+PASS  rtsc_crypto
+PASS  rtsc_proto
+PASS  rtsc_credssp
+PASS  rtsc_tests
+PASS  rtsc_ber_tests
+PASS  rtsc_mcs_tests
+PASS  rtsc_mcs_domain_tests
+PASS  rtsc_client_info_tests
+PASS  rtsc_connect_machine_tests
+PASS  rtsc_finalization_tests
+PASS  rtsc_capabilities_tests
+PASS  rtsc_share_tests
+FAIL  rtsc_licensing_tests   <-- first error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not us
+PASS  rtsc_crypto_tests
+PASS  rtsc_framing_tests
+FAIL  rtsc_credssp_tests   <-- first error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unuse
+PASS  rtsc_ntlm_tests
+PASS  rtsc_credssp_sm_tests
+PASS  rtsc_probe
+FAIL  rtsc_crashtest   <-- first error: ‘terminate’ is not a member of ‘std’

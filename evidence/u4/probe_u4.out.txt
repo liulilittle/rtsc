@@ -1,0 +1,47 @@
+﻿U4 probe: SChannel behaviour on a peer TLS fatal alert
+
+--- Q3 close_notify vs fatal ---
+
+--- Q1 DecryptMessage path: alert(level=1, desc=0) (close_notify) ---
+  handshake complete; sending raw alert record
+  Receive(alert 7B) -> status=5, plaintext=0, buffered=0
+  last_error: status=5 native_code=0x80090318 msg="0x80090318"
+  Q1 ANSWER: status=5(kProtocolError) native_code=0x80090318 plaintext=0
+  description byte 0 reachable via native_code: NO
+
+--- Q1 DecryptMessage path: alert(level=2, desc=40) (handshake_failure) ---
+  handshake complete; sending raw alert record
+  Receive(alert 7B) -> status=5, plaintext=0, buffered=0
+  last_error: status=5 native_code=0x80090318 msg="0x80090318"
+  Q1 ANSWER: status=5(kProtocolError) native_code=0x80090318 plaintext=0
+  description byte 40 reachable via native_code: NO
+
+--- Q1 DecryptMessage path: alert(level=2, desc=49) (access_denied) ---
+  handshake complete; sending raw alert record
+  Receive(alert 7B) -> status=5, plaintext=0, buffered=0
+  last_error: status=5 native_code=0x80090318 msg="0x80090318"
+  Q1 ANSWER: status=5(kProtocolError) native_code=0x80090318 plaintext=0
+  description byte 49 reachable via native_code: NO
+
+--- Q1b raw DecryptMessage: alert(2,49) ---
+  raw ISC final -> 0x00000000
+  raw DecryptMessage(alert) -> 0x80090318 ((other))
+    sb[0]: type=4 cbBuffer=6 pv=000001A955EB6350 bytes=15 03 03 00 02 02 
+    sb[1]: type=4 cbBuffer=6 pv=0000000000000000
+    sb[2]: type=0 cbBuffer=0 pv=0000000000000000
+    sb[3]: type=0 cbBuffer=0 pv=0000000000000000
+  Q1b ANSWER: status=0x80090318((other)); alert bytes readable=NO (no DATA buffer)
+
+--- Q2 InitializeSecurityContext path ---
+  transport Handshake(alert) -> status=0 consumed=0 out=0
+  Q2 ANSWER(transport): alert is NOT routed to ISC after completion (short-circuit at t:105-108)
+  raw ISC(alert after completion) -> 0x00090312 (SEC_I_CONTINUE_NEEDED)
+  in cbBuffer=7 out cbBuffer=183
+
+--- Q4 alert + app data in one buffer ---
+  buffer = app(41) + alert(7) = 48
+  Receive(app+alert) -> status=5 plaintext=12 buffered=0
+  recovered="before-alert"
+  Q4 ANSWER: app data delivered BEFORE the alert is reported
+
+=== done ===

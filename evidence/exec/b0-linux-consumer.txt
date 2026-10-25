@@ -1,0 +1,18 @@
+=== Batch-0 Linux consumer probe (links the public API) ===
+--- date: 2026-10-23T00:59:49Z
+
+--- compile consumer (include/ only, no Windows headers) ---
+COMPILE_EXIT=0
+
+--- link against librtsc_tls.a ---
+LINK_EXIT=0
+
+--- run ---
+default_backend_null=1
+default_why=no TLS backend for this platform (SChannel is Windows only)
+schannel_null=1
+schannel_why=no TLS backend for this platform (SChannel is Windows only)
+bogus_null=1
+bogus_why=unknown TLS backend: bogus
+enumerated=0
+RUN_EXIT=0

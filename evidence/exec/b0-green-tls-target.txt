@@ -1,0 +1,22 @@
+=== BATCH0 SCOPE: Linux build of rtsc_tls target (post-change) ===
+--- date: 2026-10-23T00:57:44Z
+--- cmake: cmake version 3.28.3 / ninja 1.11.1 / g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+=== build --target rtsc_tls ===
+[1/1] Linking CXX static library librtsc_tls.a
+TLS_TARGET_BUILD_EXIT=0
+
+=== build --target rtsc_tls_api ===
+ninja: error: unknown target 'rtsc_tls_api'
+TLS_API_TARGET_EXIT=1
+
+=== artifacts ===
+-rwxrwxrwx 1 jay jay 254132 Oct 23 08:57 .tmp/bl-green/librtsc_tls.a
+
+=== symbols in librtsc_tls.a (nm) ===
+0000000000000000 T rtsc::tls::CreateTlsTransport(std::basic_string_view<char, std::char_traits<char> >, rtsc::tls::Config const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)
+0000000000000210 T rtsc::tls::EnumerateTlsBackends()
+NM_EXIT=0
+
+=== target list (tls related) ===
+rtsc_tls: phony

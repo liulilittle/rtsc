@@ -1,0 +1,19 @@
+﻿lines 1678 bytes 92876 FFFD 0
+
+PASS 8.2 D2 鍦ㄥ垎鏀唴
+PASS 8.2 min 鍦?D2 涔嬪悗
+PASS 8.2 涓よ€呴兘鍦?BuildStep3 涔嬪墠
+PASS 8.2 鏍囨敞 D2 涔熸敹绐?
+PASS 8.3 鏍囨敞宸叉敹绐?
+PASS 12.6 宸叉敼涓哄畾妗?
+PASS 12.6 绗?姝ersion=1 鏍囦负"涓庝慨澶嶅墠瀹屽叏涓€鑷?
+PASS 8.8 閿氱偣宸叉敼
+PASS 12.7 绗?2鏉″瓨鍦?
+PASS 12.1b 绐楀彛绛変环璇存槑
+PASS 12.8 闂ㄦ=21
+PASS 鏃犳棫闂ㄦ=20
+PASS 12.1b N-B1 鐢ㄤ緥鍚?
+PASS 12.3b 鏀剁獎鐢ㄤ緥鍚?
+PASS 13.6 宸茶褰曟渶缁堣〃鎬?
+
+ALL_CONSISTENT = True

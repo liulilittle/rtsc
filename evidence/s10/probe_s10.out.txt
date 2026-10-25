@@ -1,0 +1,44 @@
+﻿S10 probe: does Handshake drop app data sharing the final flight?
+
+=== M5: control (finished and app data in SEPARATE calls) ===
+  client ISC #1 -> kNeedMoreInput, out=165, consumed=0
+  server ASC #1 -> 0x00090312, out=782
+  client ISC #2 -> status=1, out=158, consumed=782/782
+  server ASC #2 -> 0x00000000, out=51 (this is CCS+Finished)
+  M5 Handshake(finished 51 B) -> status=0, consumed=51, complete=1
+  M5 Receive(app 47 B) -> status=0, plaintext=18
+  M5 recovered text = "S10-PAYLOAD-MARKER" (match=1)
+  M5 VERDICT: control path = WORKS
+
+=== M3/M4: rtsc::tls::TlsTransport (code under test) ===
+  client ISC #1 -> kNeedMoreInput, out=165, consumed=0
+  server ASC #1 -> 0x00090312, out=782
+  client ISC #2 -> status=1, out=158, consumed=782/782
+  server ASC #2 -> 0x00000000, out=51 (this is CCS+Finished)
+  combined = 51 (finished) + 47 (app) = 98 bytes
+  M3 Handshake(combined) -> status=0, consumed=98/98, handshake_complete=1, out=0
+  M3 VERDICT: consumed==in_size -> TRUE (no EXTRA accounting)
+  M4 Receive(nullptr,0) -> status=1, plaintext=0, buffered_input=0
+  M4 Receive(tail 47 B) -> status=0, plaintext=18
+  M4 recovered text = "S10-PAYLOAD-MARKER" (match=1)
+  M4 VERDICT: app data reachable = YES
+
+=== M1/M2: raw SSPI level ===
+  client ISC #1 -> kNeedMoreInput, out=165, consumed=0
+  server ASC #1 -> 0x00090312, out=782
+  client ISC #2 -> status=1, out=158, consumed=782/782
+  server ASC #2 -> 0x00000000, out=51 (this is CCS+Finished)
+  note: client transport is now waiting for the server final flight
+  server_final=51 bytes (CCS+Finished)
+  app ciphertext (47 bytes): 17 03 03 00 2A 00 00 00 00 00 00 00 01 8E 66 40 ...
+  combined buffer = 51 (finished) + 47 (app) = 98 bytes
+  [pair2] server ASC final -> 0x00000000, out=51
+  [pair2] combined = 51 + 47 = 98
+  M1 raw ISC(combined) -> 0x00000000
+  M1 in_bufs[0].cbBuffer: before=98 after=98 (in_size=98)
+  M1 VERDICT: SSPI reports EXTRA=NO (cbBuffer unchanged)
+  M2 DecryptMessage(empty) -> 0x80090308, plaintext=0
+  M2 DecryptMessage(tail 47 B) -> 0x00000000, plaintext=18
+  M2 recovered text = "S10-PAYLOAD-MARKER" (match=1)
+
+=== done ===

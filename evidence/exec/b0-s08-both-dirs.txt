@@ -1,0 +1,27 @@
+=== S0.8 on BOTH build dirs named in the brief/audit ===
+--- date: 2026-10-23T01:07:14Z
+
+### (a) .tmp/bl-red  (task brief's wording; configured pre-change) ###
+[0/1] Re-running CMake...
+FAILED: CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o 
+/mnt/f/rtsc/tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o 
+/mnt/f/rtsc/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+/mnt/f/rtsc/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+FAILED: CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o 
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+ninja: build stopped: subcommand failed.
+BL_RED_BUILD_EXIT=1
+
+### (b) .tmp/bl-green (audit §19.2.2 / §19.3.1 wording; configured post-change) ###
+FAILED: CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o 
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:43: error: ‘terminate’ is not a member of ‘std’
+/mnt/f/rtsc/tools/rtsc_crashtest/main.cpp:30:56: error: ‘noreturn’ function does return [-Werror]
+FAILED: CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o 
+/mnt/f/rtsc/tests/test_credssp.cpp:50:7: error: ‘{anonymous}::Bytes {anonymous}::Str(const char*)’ defined but not used [-Werror=unused-function]
+FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o 
+/mnt/f/rtsc/tests/test_licensing.cpp:60:13: error: ‘std::string {anonymous}::ToHex(const std::vector<unsigned char>&)’ defined but not used [-Werror=unused-function]
+/mnt/f/rtsc/tests/test_licensing.cpp:37:22: error: ‘std::vector<unsigned char> {anonymous}::AnsiBytes(const std::string&)’ defined but not used [-Werror=unused-function]
+ninja: build stopped: subcommand failed.
+BL_GREEN_BUILD_EXIT=1

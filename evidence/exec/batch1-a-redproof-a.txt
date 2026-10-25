@@ -1,0 +1,51 @@
+BATCH 1 RED-PROOF (audit A, isolated shadow tree)
+==============================================================================
+real tree credssp.cpp sha256 (before) = abb7313e47afd42fe0fffb328c6e49e117f047487b572ad69b6f4955d9ce428b
+shadow tree = F:\rtsc\.tmp\redproof_tree
+
+shadow credssp.cpp sha256 = abb7313e47afd42fe0fffb328c6e49e117f047487b572ad69b6f4955d9ce428b
+
+BASELINE (unmutated shadow): 23 tests, 205 checks, 0 failing
+  failing: (none)
+
+[RED-OK] S1    nonce back to a constant (pre-fix)
+        expect red: two_constructions_have_different_nonces
+        summary: 23 tests, 205 checks, 1 failing
+        failing: two_constructions_have_different_nonces
+[RED-OK] S5    remove the lower-bound version check
+        expect red: version_below_min_is_rejected_with_valid_challenge
+        summary: 23 tests, 205 checks, 2 failing
+        failing: version_below_min_is_rejected_with_valid_challenge, error_code_wins_over_bad_version
+[RED-OK] S6    remove the version write-back (min)
+        expect red: server_version_is_echoed_back
+        summary: 23 tests, 205 checks, 1 failing
+        failing: server_version_is_echoed_back
+[RED-OK] N-B1  exported key derived from nonce again
+        expect red: client_nonce_does_not_disclose_session_key
+        summary: 23 tests, 205 checks, 1 failing
+        failing: client_nonce_does_not_disclose_session_key
+[RED-OK] S11   remove the echo MAC comparison
+        expect red: tampered_signature_checksum_is_rejected
+        summary: 23 tests, 205 checks, 1 failing
+        failing: tampered_signature_checksum_is_rejected
+[RED-OK] S18   remove the public-key guard
+        expect red: start_without_public_key_fails
+        summary: 23 tests, 205 checks, 1 failing
+        failing: start_without_public_key_fails
+[RED-OK] R2    write the step-4 version back (unscoped)
+        expect red: server_echo_version_does_not_downgrade
+        summary: 23 tests, 205 checks, 1 failing
+        failing: server_echo_version_does_not_downgrade
+[RED-OK] D6    move the version check before the errorCode branch
+        expect red: error_code_wins_over_bad_version
+        summary: 23 tests, 205 checks, 1 failing
+        failing: error_code_wins_over_bad_version
+
+shadow restored: rebuild rc=0, 23 tests, 205 checks, 0 failing
+  failing: (none)
+
+real tree credssp.cpp sha256 (after)  = abb7313e47afd42fe0fffb328c6e49e117f047487b572ad69b6f4955d9ce428b
+real tree untouched = True
+
+==============================================================================
+mutations=8 red-proven=8 baseline_green=True verdict=PASS

@@ -1,0 +1,178 @@
+=== S21 GREEN BASELINE (post-batch-0) ===
+Generated: 2026-10-23 (Asia/Shanghai local, WSL UTC 01:0x)
+Toolchain: cmake 3.28.3 / ninja 1.11.1 / g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Platform:  WSL Ubuntu 24.04
+
+PURPOSE
+  This file answers one question for batch 0 (S21):
+    "Does F:/rtsc build on Linux now, and is the S21 error gone?"
+  It records BOTH answers honestly:
+    (A) the batch-0 deliverable target rtsc_tls : PASS
+    (B) the full-tree build cmake --build .tmp/bl-green : STILL FAILS,
+        but only on 3 translation units that batch 0 never touched and
+        that also failed BEFORE the change.
+
+RAW OUTPUTS (unmodified, for cross-checking)
+  b0-green-raw-build.txt          full-tree build, 34540 B, exit 1
+  b0-green-tls-target.txt         build --target rtsc_tls, exit 0
+  b0-linux-consumer.txt           link+run a real consumer of the public API
+  b0-failset-compare.txt          PRE vs POST failing-object sets
+  b0-pre-existing-proof.txt       the 3 failures reproduced on the PRE tree
+  b0-preexisting-defects.txt      root cause of each of the 3
+  b0-final-scope.txt              per-target matrix on the POST tree
+  b0-red.txt                      the S21 red baseline (pre-change)
+
+--------------------------------------------------------------------------
+(A) S21 IS FIXED — the error named in the red baseline no longer occurs
+--------------------------------------------------------------------------
+Red baseline (b0-red.txt, pre-change):
+  /mnt/f/rtsc/src/net/tls_schannel.cpp:29:10: fatal error: windows.h: No such file or directory
+  BUILD_EXIT=1
+
+Post-change, the same string is ABSENT from the full-tree build log:
+  grep -c 'windows.h' b0-green-raw-build.txt  ->  0
+and the batch-0 target itself builds and links on Linux:
+
+  $ cmake --build .tmp/bl-green --target rtsc_tls
+  [1/1] Linking CXX static library librtsc_tls.a
+  TLS_TARGET_BUILD_EXIT=0
+
+  $ ls -la .tmp/bl-green/librtsc_tls.a
+  -rwxrwxrwx 1 jay jay 254132 Oct 23 08:57 .tmp/bl-green/librtsc_tls.a
+
+  $ nm -C .tmp/bl-green/librtsc_tls.a | grep -E 'CreateTlsTransport|EnumerateTlsBackends'
+  0000000000000000 T rtsc::tls::CreateTlsTransport(std::basic_string_view<char,...>, rtsc::tls::Config const&, std::__cxx11::basic_string<char,...>&)
+  0000000000000210 T rtsc::tls::EnumerateTlsBackends()
+
+Linux consumer probe (b0-linux-consumer.txt) — proves the goal, not just the link:
+  COMPILE_EXIT=0
+  LINK_EXIT=0
+  default_backend_null=1
+  default_why=no TLS backend for this platform (SChannel is Windows only)
+  schannel_null=1
+  schannel_why=no TLS backend for this platform (SChannel is Windows only)
+  bogus_null=1
+  bogus_why=unknown TLS backend: bogus
+  enumerated=0
+  RUN_EXIT=0
+
+So on Linux the public API exists, links, and reports "no backend" at runtime
+instead of breaking the build — which is exactly what §19.2.1 requires.
+
+--------------------------------------------------------------------------
+(B) FULL-TREE BUILD IS STILL RED — on 3 pre-existing, untouched files
+--------------------------------------------------------------------------
+  $ cmake --build .tmp/bl-green
+  FAILED: CMakeFiles/rtsc_credssp_tests.dir/tests/test_credssp.cpp.o
+    tests/test_credssp.cpp:50:7: error: 'Str(const char*)' defined but not used [-Werror=unused-function]
+  FAILED: CMakeFiles/rtsc_licensing_tests.dir/tests/test_licensing.cpp.o
+    tests/test_licensing.cpp:60:13: error: 'ToHex(...)' defined but not used [-Werror=unused-function]
+    tests/test_licensing.cpp:37:22: error: 'AnsiBytes(...)' defined but not used [-Werror=unused-function]
+  FAILED: CMakeFiles/rtsc_crashtest.dir/tools/rtsc_crashtest/main.cpp.o
+    tools/rtsc_crashtest/main.cpp:30:43: error: 'terminate' is not a member of 'std'
+    tools/rtsc_crashtest/main.cpp:30:56: error: 'noreturn' function does return [-Werror]
+  ninja: build stopped: subcommand failed.
+  GREEN_BUILD_EXIT=1
+
+These 3 files were not modified by batch 0. Their mtimes (UTC) predate it:
+  tests/test_credssp.cpp        2026-10-22T22:08:48Z
+  tests/test_licensing.cpp      2026-10-22T11:18:57Z
+  tools/rtsc_crashtest/main.cpp 2026-10-22T07:57:45Z
+while batch-0 files are all 2026-10-23T00:5x:
+  src/net/tls_schannel_internal.h  00:52:54Z
+  src/net/tls_factory.cpp          00:53:45Z
+  src/net/tls_schannel.cpp         00:53:56Z
+  CMakeLists.txt                   00:54:53Z
+
+PROOF THEY PREDATE BATCH 0 (b0-pre-existing-proof.txt, b0-failset-compare.txt)
+  A scratch tree was built from the S0.1 backups (pre-change CMakeLists.txt and
+  pre-change tls_schannel.cpp, batch-0 new files absent), with the 3 offending
+  TUs copied verbatim. It fails on the SAME 3 TUs:
+
+    PRE-CHANGE FAIL  rtsc_credssp_tests
+    PRE-CHANGE FAIL  rtsc_licensing_tests
+    PRE-CHANGE FAIL  rtsc_crashtest
+    PRE-CHANGE rtsc_tls FAILED as expected: windows.h: No such file or directory
+
+  Failing-object set diff (ninja -k 0), PRE vs POST:
+    FIXED by batch 0        : rtsc_tls.cpp.o, rtsc_tls_tests.cpp.o
+    REGRESSED by batch 0    : (none)  count = 0
+    PRE-EXISTING (both)     : the 3 TUs above
+
+--------------------------------------------------------------------------
+ROOT CAUSE OF THE 3 (b0-preexisting-defects.txt) — NOT FIXED
+--------------------------------------------------------------------------
+  D-A  tests/test_credssp.cpp:50        helper Str() declared, used 0 times
+  D-B  tests/test_licensing.cpp:37,60   helpers AnsiBytes()/ToHex() used 0 times
+  D-C  tools/rtsc_crashtest/main.cpp:30 std::terminate() without <exception>
+
+  D-A/D-B only break under GCC's -Wunused-function (MSVC does not warn), and
+  D-C only breaks because libstdc++ <string> does not transitively include
+  <exception> (MSVC's does). Both are Windows-clean, Linux-red.
+  Per §19.2.2 ("other files report -Werror -> pre-existing, STOP and report"),
+  they were left untouched.
+
+  Feasibility only, run in a throwaway copy under .tmp (b0-proposal-scratch.txt),
+  the F:/rtsc source was NOT modified:
+    [[maybe_unused]] on the 3 helpers + #include <exception> in crashtest
+    -> PROP_CONFIGURE_EXIT=0, PROP_FULL_BUILD_EXIT=0, 0 FAILED lines
+    -> ctest: 100% tests passed, 0 tests failed out of 15
+  This shows a 4-line fix suffices, but applying it needs auditor approval
+  because it is outside batch 0's scope.
+
+--------------------------------------------------------------------------
+WINDOWS BEHAVIOUR IS UNCHANGED (the other half of the batch-0 goal)
+--------------------------------------------------------------------------
+  build:  cmd /c F:\rtsc\.tmp\build_tls.bat  ->  exit 0, 0 warnings, 0 errors
+          (b0-win-build.txt: the 3 batch-0 objs were DELETED first so the
+           compiler actually ran; log shows all 6 steps recompiled/relinked
+           under /W4 /WX /permissive- /Zc:__cplusplus /utf-8. A "no work to do"
+           run would have proven nothing about warnings.)
+  suite:  rtsc_tls_tests -> 26 tests, 139 checks, 0 failing tests, 0 failed checks
+          (b0-win-tls-tests.txt, exit 0; baseline §19.5.1 D2 is 26/139)
+  ctest:  16/16 passed (includes test #13 tls)
+  all 15 rtsc_*_tests.exe: 0 failing tests, 0 failed checks (b0-win-regression.txt)
+  symbols: S0.7 PASS — facade External CreateTlsTransport = 1,
+           backend External CreateSchannelTransport = 1,
+           backend mentions CreateTlsTransport = 0 (b0-win-symbols.txt)
+  tests/test_tls.cpp SHA256 identical to the S0.1 backup (not touched):
+           815bcfbb32fc4fa12553f49045b5ff73e503743d964b401adf2c75af3f2e8a0b
+
+--------------------------------------------------------------------------
+VERDICT (as of the S0.9 follow-up; see the SUPERSEDED note below)
+--------------------------------------------------------------------------
+  S21 (the batch-0 defect)          : FIXED — evidenced above
+  Windows byte-for-byte invariance  : HOLDS  — 26/139/0 unchanged
+  Linux full-tree build (S0.8/D5)   : RED AT THE TIME THIS FILE WAS WRITTEN,
+                                      on 3 pre-existing defects outside batch
+                                      0's scope. SUPERSEDED — see below.
+  Batch-0 acceptance criterion as written in §19.3.1 (full-tree BUILD_EXIT=0)
+  was NOT met when this file was written, and the cause was NOT batch 0.
+
+--------------------------------------------------------------------------
+SUPERSEDED BY S0.9 (parent adjudicated B1 = approve the fix)
+--------------------------------------------------------------------------
+  The parent ruled that the Linux full build passing IS part of batch 0's
+  acceptance criterion, so the 3 defects were fixed as batch-0 step S0.9
+  (4 lines: [[maybe_unused]] x3 + #include <exception> x1).
+
+  AFTER S0.9, the authoritative result is b0-green-full.txt:
+    CONFIGURE_EXIT=0
+    GREEN_BUILD_EXIT=0
+    FAILED_COUNT=0
+    WINDOWS_H_COUNT=0            (S21 error gone)
+    ctest: 100% tests passed, 0 tests failed out of 15
+    librtsc_tls.a built; CreateTlsTransport + EnumerateTlsBackends present
+    OVERALL=PASS
+
+  Windows re-verified after S0.9 in b0-win-after-s09.txt:
+    rtsc_tls_tests: 26 tests, 139 checks, 0 failing tests, 0 failed checks
+    all 15 rtsc_*_tests.exe: 0 failing, 0 failed
+    ctest 16/16 passed
+
+  Sections (A) and (B) above remain valid as the historical record of what the
+  tree looked like BEFORE S0.9, and as the proof that the 3 failures were
+  pre-existing rather than batch-0 regressions. Read them together with
+  b0-green-full.txt, not instead of it.
+
+  FINAL STATE OF BATCH 0: PASS.

@@ -1,0 +1,508 @@
+﻿cmake_minimum_required(VERSION 3.25)
+
+project(rtsc
+    VERSION 0.1.0
+    DESCRIPTION "RTSC - RDP client protocol stack (reverse-engineered from mstsc)"
+    LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    add_compile_options(/W4 /WX /permissive- /Zc:__cplusplus /utf-8)
+else()
+    add_compile_options(-Wall -Wextra -Werror -Wpedantic)
+endif()
+
+add_library(rtsc_proto STATIC
+    src/proto/byte_order.cpp
+    src/proto/ber.cpp
+    src/proto/tpkt.cpp
+    src/proto/x224.cpp
+    src/proto/rdp_neg.cpp
+    src/proto/connection_initiation.cpp
+    src/proto/mcs.cpp
+    src/proto/mcs_domain.cpp
+    src/proto/client_info.cpp
+    src/proto/connect_machine.cpp
+    src/proto/framing.cpp
+    src/proto/licensing.cpp
+    src/proto/share.cpp
+    src/proto/capabilities.cpp
+    src/proto/finalization.cpp
+    src/proto/session_setup.cpp
+    src/proto/licensing_machine.cpp
+    src/proto/input.cpp
+    src/proto/output.cpp
+    src/proto/bitmap.cpp
+    src/proto/channel.cpp
+    src/proto/surface.cpp
+    src/proto/cliprdr.cpp
+    src/proto/drdynvc.cpp
+    src/proto/rdpdr.cpp
+    src/proto/rdpsnd.cpp
+    src/proto/rdp6.cpp
+    src/proto/nsc.cpp
+    src/proto/orders.cpp
+    src/proto/rop.cpp
+    src/proto/secondary.cpp
+)
+target_include_directories(rtsc_proto PUBLIC include)
+target_link_libraries(rtsc_proto PUBLIC rtsc_crypto)
+
+# rdpsnd (audio output) virtual channel handler. Platform neutral: it decodes
+# the [MS-RDPEA] protocol and hands PCM to an injected AudioPlayer.
+add_library(rtsc_rdpsnd STATIC src/channel/rdpsnd_client.cpp)
+target_include_directories(rtsc_rdpsnd PUBLIC include)
+target_link_libraries(rtsc_rdpsnd PUBLIC rtsc_proto)
+
+# cliprdr (clipboard) virtual channel handler. Platform neutral: the handler
+# reads and writes the local clipboard through the rtsc::clipboard interface;
+# the Win32 backend is the platform implementation (user32).
+add_library(rtsc_cliprdr STATIC
+    src/channel/cliprdr_client.cpp
+    src/clipboard/clipboard.cpp)
+target_include_directories(rtsc_cliprdr PUBLIC include)
+target_link_libraries(rtsc_cliprdr PUBLIC rtsc_proto)
+if(WIN32)
+    target_link_libraries(rtsc_cliprdr PUBLIC user32)
+endif()
+
+# waveOut audio backend (Windows only).
+if(WIN32)
+    add_library(rtsc_audio STATIC src/audio/audio_win32.cpp)
+    target_include_directories(rtsc_audio PUBLIC include)
+    target_link_libraries(rtsc_audio PUBLIC winmm)
+endif()
+
+# Crash capture (minidump + symbolized text) shared by every executable.
+# The platform CSPRNG is a separate source per platform so neither file has to
+# carry the other platform's system headers (scripts/linux-build-gate.sh asserts
+# that windows.h never reaches the Linux build log). bcrypt is Windows-only.
+add_library(rtsc_crypto STATIC src/crypto/hash.cpp src/crypto/rdp_security.cpp)
+target_include_directories(rtsc_crypto PUBLIC include)
+if(WIN32)
+    target_sources(rtsc_crypto PRIVATE src/crypto/random_win.cpp src/crypto/rsa_win.cpp)
+    target_link_libraries(rtsc_crypto PUBLIC bcrypt)
+else()
+    target_sources(rtsc_crypto PRIVATE src/crypto/random_posix.cpp src/crypto/rsa_posix.cpp)
+endif()
+
+add_library(rtsc_util STATIC src/util/crash_guard.cpp)
+target_include_directories(rtsc_util PUBLIC include)
+if(MSVC)
+    target_link_libraries(rtsc_util PUBLIC dbghelp)
+endif()
+
+# TLS transport, three layers (S21 / M28).
+#   rtsc_tls_api       INTERFACE, platform neutral, header only.
+#   rtsc_tls_schannel  Windows only: the SChannel translation unit.
+#   rtsc_tls           facade with the public CreateTlsTransport; always built,
+#                      returns nullptr + reason on platforms with no backend.
+add_library(rtsc_tls_api INTERFACE)
+target_include_directories(rtsc_tls_api INTERFACE include)
+
+if(WIN32)
+    add_library(rtsc_tls_schannel STATIC src/net/tls_schannel.cpp)
+    target_link_libraries(rtsc_tls_schannel PUBLIC rtsc_tls_api)
+    target_link_libraries(rtsc_tls_schannel PUBLIC secur32 crypt32)
+endif()
+
+# OpenSSL backend for non-Windows platforms. Off by default (design-a D5: a
+# REQUIRED find_package would break configure on hosts without OpenSSL).
+option(RTSC_TLS_OPENSSL "Build the OpenSSL TLS backend (non-Windows)" OFF)
+if(NOT WIN32 AND RTSC_TLS_OPENSSL)
+    find_package(OpenSSL REQUIRED)
+    add_library(rtsc_tls_openssl STATIC src/net/tls_openssl.cpp)
+    target_link_libraries(rtsc_tls_openssl PUBLIC rtsc_tls_api)
+    target_link_libraries(rtsc_tls_openssl PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(rtsc_tls_openssl PUBLIC RTSC_TLS_OPENSSL=1)
+endif()
+
+add_library(rtsc_tls STATIC src/net/tls_factory.cpp)
+target_include_directories(rtsc_tls PUBLIC include)
+target_link_libraries(rtsc_tls PUBLIC rtsc_tls_api)
+target_include_directories(rtsc_tls PRIVATE src/net)
+if(WIN32)
+    target_link_libraries(rtsc_tls PUBLIC rtsc_tls_schannel)
+elseif(RTSC_TLS_OPENSSL)
+    target_link_libraries(rtsc_tls PUBLIC rtsc_tls_openssl)
+endif()
+
+add_executable(rtsc_tests tests/test_connection_initiation.cpp)
+target_link_libraries(rtsc_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_tests PRIVATE tests)
+
+add_executable(rtsc_ber_tests tests/test_ber.cpp)
+target_link_libraries(rtsc_ber_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_ber_tests PRIVATE tests)
+
+add_executable(rtsc_mcs_tests tests/test_mcs.cpp)
+target_link_libraries(rtsc_mcs_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_mcs_tests PRIVATE tests)
+
+add_executable(rtsc_mcs_domain_tests tests/test_mcs_domain.cpp)
+target_link_libraries(rtsc_mcs_domain_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_mcs_domain_tests PRIVATE tests)
+
+add_executable(rtsc_client_info_tests tests/test_client_info.cpp)
+target_link_libraries(rtsc_client_info_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_client_info_tests PRIVATE tests)
+
+add_executable(rtsc_connect_machine_tests tests/test_connect_machine.cpp)
+target_link_libraries(rtsc_connect_machine_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_connect_machine_tests PRIVATE tests)
+
+add_executable(rtsc_finalization_tests tests/test_finalization.cpp)
+target_link_libraries(rtsc_finalization_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_finalization_tests PRIVATE tests)
+
+add_executable(rtsc_session_setup_tests tests/test_session_setup.cpp)
+target_link_libraries(rtsc_session_setup_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_session_setup_tests PRIVATE tests)
+
+add_executable(rtsc_input_tests tests/test_input.cpp)
+target_link_libraries(rtsc_input_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_input_tests PRIVATE tests)
+
+add_executable(rtsc_output_tests tests/test_output.cpp)
+target_link_libraries(rtsc_output_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_output_tests PRIVATE tests)
+
+add_executable(rtsc_bitmap_tests tests/test_bitmap.cpp)
+target_link_libraries(rtsc_bitmap_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_bitmap_tests PRIVATE tests)
+
+add_executable(rtsc_channel_tests tests/test_channel.cpp)
+target_link_libraries(rtsc_channel_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_channel_tests PRIVATE tests)
+
+add_executable(rtsc_surface_tests tests/test_surface.cpp)
+target_link_libraries(rtsc_surface_tests PRIVATE rtsc_proto rtsc_crypto rtsc_ui rtsc_util)
+target_include_directories(rtsc_surface_tests PRIVATE tests)
+
+add_executable(rtsc_cliprdr_tests tests/test_cliprdr.cpp)
+target_link_libraries(rtsc_cliprdr_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_cliprdr_tests PRIVATE tests)
+
+add_executable(rtsc_drdynvc_tests tests/test_drdynvc.cpp)
+target_link_libraries(rtsc_drdynvc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_drdynvc_tests PRIVATE tests)
+
+add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp)
+target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpdr_tests PRIVATE tests)
+
+add_executable(rtsc_rdpsnd_tests tests/test_rdpsnd.cpp)
+target_link_libraries(rtsc_rdpsnd_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpsnd_tests PRIVATE tests)
+
+add_executable(rtsc_rdpsnd_client_tests tests/test_rdpsnd_client.cpp)
+target_link_libraries(rtsc_rdpsnd_client_tests PRIVATE rtsc_rdpsnd rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpsnd_client_tests PRIVATE tests)
+
+add_executable(rtsc_rdp6_tests tests/test_rdp6.cpp)
+target_link_libraries(rtsc_rdp6_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdp6_tests PRIVATE tests)
+
+add_executable(rtsc_nsc_tests tests/test_nsc.cpp)
+target_link_libraries(rtsc_nsc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_nsc_tests PRIVATE tests)
+
+add_executable(rtsc_orders_tests tests/test_orders.cpp tests/test_order_engine.cpp tests/test_secondary.cpp)
+target_link_libraries(rtsc_orders_tests PRIVATE rtsc_proto rtsc_render rtsc_crypto rtsc_util rtsc_client)
+target_include_directories(rtsc_orders_tests PRIVATE tests)
+
+add_executable(rtsc_rop_tests tests/test_rop.cpp)
+target_link_libraries(rtsc_rop_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rop_tests PRIVATE tests)
+
+add_executable(rtsc_ui_tests tests/test_ui.cpp)
+target_link_libraries(rtsc_ui_tests PRIVATE rtsc_ui rtsc_util)
+target_include_directories(rtsc_ui_tests PRIVATE tests)
+
+add_executable(rtsc_graphics_tests tests/test_graphics.cpp)
+target_link_libraries(rtsc_graphics_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
+target_include_directories(rtsc_graphics_tests PRIVATE tests)
+
+add_executable(rtsc_view_tests tests/test_view.cpp)
+target_link_libraries(rtsc_view_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
+target_include_directories(rtsc_view_tests PRIVATE tests)
+
+add_executable(rtsc_client_tests tests/test_client.cpp)
+target_link_libraries(rtsc_client_tests PRIVATE rtsc_client rtsc_security rtsc_net rtsc_proto rtsc_ui rtsc_util)
+target_include_directories(rtsc_client_tests PRIVATE tests)
+
+add_executable(rtsc_session_info_tests tests/test_session_info.cpp)
+target_link_libraries(rtsc_session_info_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
+target_include_directories(rtsc_session_info_tests PRIVATE tests)
+
+add_executable(rtsc_capabilities_tests tests/test_capabilities.cpp)
+target_link_libraries(rtsc_capabilities_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_capabilities_tests PRIVATE tests)
+
+add_executable(rtsc_share_tests tests/test_share.cpp)
+target_link_libraries(rtsc_share_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_share_tests PRIVATE tests)
+
+add_executable(rtsc_licensing_tests tests/test_licensing.cpp)
+target_link_libraries(rtsc_licensing_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_licensing_tests PRIVATE tests)
+
+add_executable(rtsc_licensing_machine_tests tests/test_licensing_machine.cpp)
+target_link_libraries(rtsc_licensing_machine_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_licensing_machine_tests PRIVATE tests)
+
+add_executable(rtsc_crypto_tests tests/test_crypto.cpp)
+target_link_libraries(rtsc_crypto_tests PRIVATE rtsc_crypto rtsc_util)
+target_include_directories(rtsc_crypto_tests PRIVATE tests)
+
+add_executable(rtsc_rsa_tests tests/test_rsa.cpp)
+target_link_libraries(rtsc_rsa_tests PRIVATE rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rsa_tests PRIVATE tests)
+
+add_executable(rtsc_rdp_security_tests tests/test_rdp_security.cpp)
+target_link_libraries(rtsc_rdp_security_tests PRIVATE rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdp_security_tests PRIVATE tests)
+
+add_executable(rtsc_framing_tests tests/test_framing.cpp)
+target_link_libraries(rtsc_framing_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_framing_tests PRIVATE tests)
+
+if(WIN32)
+    add_executable(rtsc_tls_tests tests/test_tls.cpp)
+    target_link_libraries(rtsc_tls_tests PRIVATE rtsc_tls rtsc_util)
+    target_include_directories(rtsc_tls_tests PRIVATE tests)
+endif()
+
+if(NOT WIN32 AND RTSC_TLS_OPENSSL)
+    add_executable(rtsc_tls_openssl_tests tests/test_tls_openssl.cpp)
+    target_link_libraries(rtsc_tls_openssl_tests PRIVATE rtsc_tls rtsc_util OpenSSL::SSL OpenSSL::Crypto)
+    target_include_directories(rtsc_tls_openssl_tests PRIVATE tests)
+endif()
+
+# CredSSP message layer. Platform neutral: it only needs the crypto primitives,
+# so it builds unchanged on Linux/Android/macOS.
+add_library(rtsc_credssp STATIC
+    src/credssp/ts_request.cpp
+    src/credssp/ntlm.cpp
+    src/credssp/credssp.cpp
+)
+target_include_directories(rtsc_credssp PUBLIC include)
+target_link_libraries(rtsc_credssp PUBLIC rtsc_crypto)
+
+add_executable(rtsc_credssp_tests tests/test_credssp.cpp)
+target_link_libraries(rtsc_credssp_tests PRIVATE rtsc_credssp rtsc_util)
+target_include_directories(rtsc_credssp_tests PRIVATE tests)
+
+add_executable(rtsc_ntlm_tests tests/test_ntlm.cpp)
+target_link_libraries(rtsc_ntlm_tests PRIVATE rtsc_credssp rtsc_util)
+target_include_directories(rtsc_ntlm_tests PRIVATE tests)
+
+add_executable(rtsc_credssp_sm_tests tests/test_credssp_sm.cpp)
+target_link_libraries(rtsc_credssp_sm_tests PRIVATE rtsc_credssp rtsc_util)
+target_include_directories(rtsc_credssp_sm_tests PRIVATE tests)
+
+add_library(rtsc_security STATIC src/security/security_layer.cpp src/security/connection_driver.cpp)
+target_include_directories(rtsc_security PUBLIC include)
+target_link_libraries(rtsc_security PUBLIC rtsc_tls rtsc_credssp rtsc_proto rtsc_crypto)
+
+add_executable(rtsc_security_tests tests/test_security_layer.cpp)
+target_link_libraries(rtsc_security_tests PRIVATE rtsc_security rtsc_tls rtsc_credssp rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_security_tests PRIVATE tests)
+
+add_test(NAME security COMMAND rtsc_security_tests)
+
+# Blocking TCP transport. Windows = Winsock; POSIX = POSIX sockets.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_library(rtsc_net STATIC src/net/winsock_transport.cpp)
+    target_include_directories(rtsc_net PUBLIC include)
+    target_link_libraries(rtsc_net PUBLIC ws2_32)
+else()
+    add_library(rtsc_net STATIC src/net/posix_transport.cpp)
+    target_include_directories(rtsc_net PUBLIC include)
+endif()
+
+add_library(rtsc_client STATIC src/client/graphics.cpp src/client/client.cpp src/client/view.cpp src/client/session_info.cpp)
+target_include_directories(rtsc_client PUBLIC include)
+target_link_libraries(rtsc_client PUBLIC rtsc_proto rtsc_render rtsc_ui rtsc_security rtsc_net)
+# RtlGetVersion (the connection-information dialog's local-OS field) lives in
+# ntdll.dll. GetVersionExW is the alternative but is deprecated and trips C4996,
+# which is fatal under /WX.
+if(WIN32)
+    target_link_libraries(rtsc_client PUBLIC ntdll)
+endif()
+
+# The security test also exercises the client's channel registration wrapper.
+target_link_libraries(rtsc_security_tests PRIVATE rtsc_client)
+
+add_library(rtsc_ui STATIC src/ui/surface.cpp src/ui/window.cpp)
+target_include_directories(rtsc_ui PUBLIC include)
+if(WIN32)
+    target_sources(rtsc_ui PRIVATE src/ui/window_win32.cpp)
+    target_include_directories(rtsc_ui PRIVATE src/ui)
+    target_link_libraries(rtsc_ui PUBLIC user32 gdi32)
+else()
+    # X11 backend. Off by default (a REQUIRED find_package would break configure
+    # on hosts without libX11).
+    option(RTSC_UI_X11 "Build the X11 window backend (non-Windows)" OFF)
+    if(RTSC_UI_X11)
+        find_package(X11 REQUIRED)
+        target_sources(rtsc_ui PRIVATE src/ui/window_x11.cpp)
+        target_include_directories(rtsc_ui PRIVATE src/ui)
+        target_link_libraries(rtsc_ui PUBLIC X11::X11)
+        target_compile_definitions(rtsc_ui PUBLIC RTSC_UI_X11=1)
+    endif()
+
+    option(RTSC_UI_WAYLAND "Build the Wayland window backend (non-Windows)" OFF)
+    if(RTSC_UI_WAYLAND)
+        # wayland-scanner emits a C translation unit; the project is CXX-only.
+        enable_language(C)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+        find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+        find_file(XDG_SHELL_XML xdg-shell.xml
+                  PATHS /usr/share/wayland-protocols/stable/xdg-shell REQUIRED)
+        set(WS_DIR ${CMAKE_CURRENT_BINARY_DIR}/wayland-protocols)
+        add_custom_command(
+            OUTPUT ${WS_DIR}/xdg-shell-client-protocol.h ${WS_DIR}/xdg-shell-protocol.c
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${WS_DIR}
+            COMMAND ${WAYLAND_SCANNER} client-header ${XDG_SHELL_XML}
+                    ${WS_DIR}/xdg-shell-client-protocol.h
+            COMMAND ${WAYLAND_SCANNER} private-code ${XDG_SHELL_XML}
+                    ${WS_DIR}/xdg-shell-protocol.c
+            DEPENDS ${XDG_SHELL_XML})
+        target_sources(rtsc_ui PRIVATE src/ui/window_wayland.cpp
+                                     ${WS_DIR}/xdg-shell-protocol.c)
+        target_include_directories(rtsc_ui PRIVATE src/ui ${WS_DIR}
+                                   ${WAYLAND_CLIENT_INCLUDE_DIRS})
+        target_link_libraries(rtsc_ui PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+        target_compile_definitions(rtsc_ui PUBLIC RTSC_UI_WAYLAND=1)
+    endif()
+endif()
+
+# Order application layer: the orders are decoded by rtsc::proto and applied to
+# a ui::Surface here. This keeps rtsc::proto free of any UI dependency.
+add_library(rtsc_render STATIC src/render/orders_apply.cpp src/render/order_engine.cpp)
+target_include_directories(rtsc_render PUBLIC include)
+target_link_libraries(rtsc_render PUBLIC rtsc_proto rtsc_ui)
+
+add_executable(rtsc_probe tools/rtsc_probe/main.cpp)
+target_link_libraries(rtsc_probe PRIVATE rtsc_proto rtsc_util)
+
+# Real-connection driver: ties the state machine and the security layer to a
+# TCP socket.
+add_executable(rtsc_connect tools/rtsc_connect/main.cpp)
+target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rtsc_util)
+
+# Full client: connection driver + graphics pipeline + window backend.
+add_executable(rtsc_gui tools/rtsc_gui/main.cpp)
+target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_proto rtsc_util)
+if(WIN32)
+    target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_audio)
+endif()
+
+# Crash-guard self test. Not registered with ctest: it intentionally terminates
+# the process, so verify.ps1 -CrashCheck drives it and asserts on the artifacts.
+add_executable(rtsc_crashtest tools/rtsc_crashtest/main.cpp)
+target_link_libraries(rtsc_crashtest PRIVATE rtsc_util)
+
+enable_testing()
+add_test(NAME proto COMMAND rtsc_tests)
+add_test(NAME ber COMMAND rtsc_ber_tests)
+add_test(NAME mcs COMMAND rtsc_mcs_tests)
+add_test(NAME mcs_domain COMMAND rtsc_mcs_domain_tests)
+add_test(NAME client_info COMMAND rtsc_client_info_tests)
+add_test(NAME connect_machine COMMAND rtsc_connect_machine_tests)
+add_test(NAME framing COMMAND rtsc_framing_tests)
+add_test(NAME crypto COMMAND rtsc_crypto_tests)
+add_test(NAME rsa COMMAND rtsc_rsa_tests)
+add_test(NAME rdp_security COMMAND rtsc_rdp_security_tests)
+add_test(NAME licensing COMMAND rtsc_licensing_tests)
+add_test(NAME licensing_machine COMMAND rtsc_licensing_machine_tests)
+add_test(NAME share COMMAND rtsc_share_tests)
+add_test(NAME capabilities COMMAND rtsc_capabilities_tests)
+add_test(NAME finalization COMMAND rtsc_finalization_tests)
+add_test(NAME session_setup COMMAND rtsc_session_setup_tests)
+add_test(NAME input COMMAND rtsc_input_tests)
+add_test(NAME output COMMAND rtsc_output_tests)
+add_test(NAME bitmap COMMAND rtsc_bitmap_tests)
+add_test(NAME channel COMMAND rtsc_channel_tests)
+add_test(NAME surface COMMAND rtsc_surface_tests)
+add_test(NAME cliprdr COMMAND rtsc_cliprdr_tests)
+add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
+add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
+add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
+add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
+add_test(NAME rdp6 COMMAND rtsc_rdp6_tests)
+add_test(NAME nsc COMMAND rtsc_nsc_tests)
+add_test(NAME orders COMMAND rtsc_orders_tests)
+add_test(NAME rop COMMAND rtsc_rop_tests)
+add_test(NAME ui COMMAND rtsc_ui_tests)
+add_test(NAME graphics COMMAND rtsc_graphics_tests)
+add_test(NAME view COMMAND rtsc_view_tests)
+add_test(NAME session_info COMMAND rtsc_session_info_tests)
+add_test(NAME client COMMAND rtsc_client_tests)
+if(WIN32)
+    add_test(NAME tls COMMAND rtsc_tls_tests)
+endif()
+if(NOT WIN32 AND RTSC_TLS_OPENSSL)
+    add_test(NAME tls_openssl COMMAND rtsc_tls_openssl_tests)
+endif()
+add_test(NAME credssp COMMAND rtsc_credssp_tests)
+add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
+add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
+
+if(MSVC)
+    target_compile_options(rtsc_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_ber_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_mcs_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_mcs_domain_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_client_info_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_connect_machine_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_framing_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_crypto_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rsa_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdp_security_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_licensing_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_licensing_machine_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_share_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_capabilities_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_finalization_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_session_setup_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_input_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_output_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_bitmap_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_channel_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_surface_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_cliprdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_drdynvc_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_cliprdr PRIVATE /W4 /WX)
+    if(WIN32)
+        target_compile_options(rtsc_audio PRIVATE /W4 /WX)
+        target_compile_options(rtsc_rdpsnd PRIVATE /W4 /WX)
+    endif()
+    target_compile_options(rtsc_rdp6_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_nsc_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_orders_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rop_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_render PRIVATE /W4 /WX)
+    target_compile_options(rtsc_ui_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_graphics_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_view_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_session_info_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_client_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_security_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_connect PRIVATE /W4 /WX)
+    target_compile_options(rtsc_gui PRIVATE /W4 /WX)
+    if(WIN32)
+        target_compile_options(rtsc_tls_tests PRIVATE /W4 /WX)
+    endif()
+    target_compile_options(rtsc_credssp_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_ntlm_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
+endif()

@@ -1,0 +1,16 @@
+﻿N1 probe: does D1 change boundary1/3/10 behaviour?
+
+=== baseline (current Handshake) ===
+  handshake converged in 2 rounds
+  [baseline] boundary1
+  [baseline] boundary3
+  [baseline] boundary10
+
+=== D1 wrapper ===
+  handshake converged in 2 rounds
+  [D1] boundary1
+  [D1] boundary3
+  [D1] boundary10
+
+checks=36 failures=0
+RESULT: D1 PRESERVES boundary1/3 behaviour

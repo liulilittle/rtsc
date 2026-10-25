@@ -1,0 +1,141 @@
+=== Batch 0 change manifest (no git in this repo; derived from backups + mtimes) ===
+
+BACKUP SET (S0.1), timestamp 20261023-085223:
+  CMakeLists.txt                            7514 B  2026-10-23 05:50:35
+  src_net_tls_schannel.cpp                 32552 B  2026-10-23 06:13:16
+  tests_test_tls.cpp                       34000 B  2026-10-23 04:44:15
+
+MODIFIED FILES (2) + NEW FILES (2):
+  1. CMakeLists.txt                        MODIFIED   (S0.5 a/b/c/d)
+  2. src/net/tls_schannel.cpp              MODIFIED   (S0.3)
+  3. src/net/tls_schannel_internal.h       NEW        (S0.2)
+  4. src/net/tls_factory.cpp               NEW        (S0.4)
+
+UNTOUCHED (proven):
+  tests/test_tls.cpp   SHA256 815bcfbb...e8a0b  == backup
+  tests/test_credssp.cpp, tests/test_licensing.cpp, tools/rtsc_crashtest/main.cpp
+    -> the 3 pre-existing Linux failures; mtimes predate this session
+  include/rtsc/net/tls.h  (public header: no change needed, mtime 2026-10-23 04:21)
+
+--- CMakeLists.txt diff vs backup ---
+=> # TLS transport, three layers (S21 / M28).
+=> #   rtsc_tls_api       INTERFACE, platform neutral, header only.
+=> #   rtsc_tls_schannel  Windows only: the SChannel translation unit.
+=> #   rtsc_tls           facade with the public CreateTlsTransport; always built,
+=> #                      returns nullptr + reason on platforms with no backend.
+=> add_library(rtsc_tls_api INTERFACE)
+=> target_include_directories(rtsc_tls_api INTERFACE include)
+=>     add_library(rtsc_tls_schannel STATIC src/net/tls_schannel.cpp)
+=>     target_link_libraries(rtsc_tls_schannel PUBLIC rtsc_tls_api)
+=>     target_link_libraries(rtsc_tls_schannel PUBLIC secur32 crypt32)
+=> add_library(rtsc_tls STATIC src/net/tls_factory.cpp)
+=> target_link_libraries(rtsc_tls PUBLIC rtsc_tls_api)
+=> target_include_directories(rtsc_tls PRIVATE src/net)
+=> if(WIN32)
+=>     target_link_libraries(rtsc_tls PUBLIC rtsc_tls_schannel)
+=> if(WIN32)
+=>     add_executable(rtsc_tls_tests tests/test_tls.cpp)
+=>     target_link_libraries(rtsc_tls_tests PRIVATE rtsc_tls rtsc_util)
+=>     target_include_directories(rtsc_tls_tests PRIVATE tests)
+=> endif()
+=> 
+=> if(WIN32)
+=>     add_test(NAME tls COMMAND rtsc_tls_tests)
+=> endif()
+=> 
+=>     if(WIN32)
+=>         target_compile_options(rtsc_tls_tests PRIVATE /W4 /WX)
+=>     endif()
+=> endif()
+<= # TLS transport. The public header is platform neutral; only the backend
+<= # translation unit is Windows specific. Other platforms get their own backend
+<= # (OpenSSL/BoringSSL) or none at all, and the protocol layer keeps compiling.
+<= add_library(rtsc_tls STATIC src/net/tls_schannel.cpp)
+<=     target_link_libraries(rtsc_tls PUBLIC secur32 crypt32)
+<= add_executable(rtsc_tls_tests tests/test_tls.cpp)
+<= target_link_libraries(rtsc_tls_tests PRIVATE rtsc_tls rtsc_util)
+<= target_include_directories(rtsc_tls_tests PRIVATE tests)
+<= add_test(NAME tls COMMAND rtsc_tls_tests)
+<=     target_compile_options(rtsc_tls_tests PRIVATE /W4 /WX)
+
+--- src/net/tls_schannel.cpp diff vs backup ---
+=> #include "tls_schannel_internal.h"
+=> // Renamed away from the old public factory name (S21): the facade owns the
+=> // public name so that non-Windows builds still define it.
+=> // See src/net/tls_factory.cpp.
+=> std::unique_ptr<TlsTransport> CreateSchannelTransport(const Config& config,
+=>                                                       std::string& why) {
+<= std::unique_ptr<TlsTransport> CreateTlsTransport(std::string_view backend,
+<=                                                 const Config& config,
+<=                                                 std::string& why) {
+<=     const bool want_schannel =
+<=         backend.empty() || backend == "schannel" || backend == "default";
+<=     if (!want_schannel) {
+<=         why = "unknown TLS backend: " + std::string(backend);
+<=         return nullptr;
+<=     }
+<= std::vector<BackendInfo> EnumerateTlsBackends() {
+<=     return {{"schannel", true, ""}};
+<= }
+--- spec self-inconsistencies found (reported, not silently "fixed") ---
+
+DISC-1  S0.2 verification says:
+          Select-String -Pattern 'windows'  -> should have no output
+        but the SAME step's mandated file content contains the comment
+          // Defined in tls_schannel.cpp (Windows only). Returns nullptr...
+        -> 'windows' DOES match, case-insensitively. Verified: 1 hit.
+        Resolution: implemented the file VERBATIM as S0.2 gives it.
+        The intent (no Windows headers) was verified separately:
+          grep for #include <(windows|schannel|sspi|wincrypt)> -> 0 hits
+          includes are only: memory, string, rtsc/net/tls.h
+
+DISC-2  S0.4 verification says:
+          Select-String -Pattern '_WIN32'  -> exactly 2 occurrences
+        but the SAME step's mandated file content has 3 #if defined(_WIN32):
+          line 12  (include tls_schannel_internal.h)
+          line 24  (Windows branch of CreateTlsTransport)
+          line 40  (Windows branch of EnumerateTlsBackends)
+        -> actual count is 3. Verified: 3.
+        Resolution: implemented VERBATIM (3). Functional behaviour is what
+        matters and is proven by b0-linux-consumer.txt (Linux: null + reason,
+        EnumerateTlsBackends -> 0) and by rtsc_tls_tests (Windows: 26/139).
+
+DISC-3  Section 19.3.1 acceptance script asserts:
+          $o -notmatch '^26 tests, 139 checks, 0 failing tests, 0 failed checks'
+        The ^ anchor can never match because rtsc_tls_tests.exe prints
+        per-test [ RUN ]/[ OK ] lines BEFORE the summary (b0-win-tls-tests.txt).
+        -> the official script throws BATCH0 TLS SUITE MISMATCH even though
+           the summary line is exactly correct. Verified: b0-acceptance-19.3.1.txt
+        Resolution: not "fixed" by editing the spec; the summary line is
+        asserted separately and passes. Flagged for the auditors.
+
+DISC-4  S0.8 / 19.3.1 name build dir .tmp/bl-green; the task brief names .tmp/bl-red.
+        Both were run (b0-s08-both-dirs.txt). Same result in both.
+
+DISC-5  Section 19.2.2 S0.5 says "wrap :105-107 in if(WIN32)" AND "(d) wrap :170".
+        After (a) rewrote :48-55 into 21 lines, the old line numbers shifted.
+        Applied by ANCHOR (target name + block content), not by line number.
+        Verified: all 5 rtsc_tls_tests references are inside if(WIN32)/if(MSVC).
+
+--------------------------------------------------------------------------
+S0.9 (approved by parent after B1 adjudication): 4-line Linux fix
+--------------------------------------------------------------------------
+Backup set: F:\rtsc\.opencode\backups\* .20261023-092309
+
+  1. tests/test_credssp.cpp:50      Bytes Str(...)          -> [[maybe_unused]] Bytes Str(...)
+  2. tests/test_licensing.cpp:37    std::vector<uint8_t> AnsiBytes(...) -> [[maybe_unused]] ...
+  3. tests/test_licensing.cpp:60    std::string ToHex(...)  -> [[maybe_unused]] std::string ToHex(...)
+  4. tools/rtsc_crashtest/main.cpp:9  + #include <exception>
+
+Rationale (parent, accepted): these are real Linux build failures, invisible
+on Windows only because MSVC <string> transitively includes <exception> and
+libstdc++ does not. Batch 0 acceptance requires the Linux full build to pass,
+so fixing them is batch-0 completion (S0.9), not scope creep.
+
+Diff vs 20261023-092309 backups: exactly 4 added lines, no deletions
+  tests/test_credssp.cpp    : 1 line changed (attribute prepended)
+  tests/test_licensing.cpp  : 2 lines changed (attribute prepended)
+  tools/rtsc_crashtest/main.cpp : 1 line added (#include <exception>)
+
+Effect: Linux full build GREEN (b0-green-full.txt), Windows 15 suites still
+GREEN with tls at exactly 26/139 (b0-win-after-s09.txt).

@@ -1,0 +1,150 @@
+{
+  "probe11.cpp": [
+    {
+      "conclusion": "只喂剩余 → `0x80090308`；喂累计 → OK",
+      "topic": "累计缓冲"
+    }
+  ],
+  "probe16.cpp": [
+    {
+      "conclusion": "`SP_PROT_TLS1_3_CLIENT` → cred `0x80090331`；`1.2\\|1.3` → `proto=0x0800`（静默降级）",
+      "topic": "TLS1.3 与 legacy cred"
+    }
+  ],
+  "probe18.cpp": [
+    {
+      "conclusion": "后续记录 `0x80090330`（TLS1.2/1.3 均如此）",
+      "topic": "丢 `EXTRA`"
+    }
+  ],
+  "probe19.cpp": [
+    {
+      "conclusion": "BCrypt 支持 MD4/RC4/MD5/SHA*/AES/3DES/ECDH_P256；HMAC-MD5 需 `HMAC_FLAG`",
+      "topic": "差分预言机"
+    }
+  ],
+  "probe20.cpp": [
+    {
+      "conclusion": "nbuf=1..3 → `0x80090308`；nbuf=4 → OK",
+      "topic": "4-SecBuffer 下限"
+    }
+  ],
+  "probe21.cpp": [
+    {
+      "conclusion": "TLS1.3 `hdr=5 trl=44` 但 `payload=16` 时实际线长 38",
+      "topic": "`cbTrailer` 是上界"
+    }
+  ],
+  "probe24.cpp": [
+    {
+      "conclusion": "TLS1.2 `SEC_I_RENEGOTIATE` → 197/822/206 字节多轮；TLS1.3 → `0x00090360`",
+      "topic": "重协商"
+    }
+  ],
+  "probe25.cpp": [
+    {
+      "conclusion": "TLS1.2 poisoned 10/10；TLS1.3 recovered 10/10",
+      "topic": "篡改记录"
+    }
+  ],
+  "probe26.cpp": [
+    {
+      "conclusion": "TLS1.2 poisoned 10/10；TLS1.3 recovered 10/10",
+      "topic": "篡改记录"
+    }
+  ],
+  "probe27.cpp": [
+    {
+      "conclusion": "nbuf=1..3 → `0x80090308`；nbuf=4 → OK",
+      "topic": "4-SecBuffer 下限"
+    },
+    {
+      "conclusion": "65528 字节 → 4 条记录，回读 `match=1`",
+      "topic": "分片"
+    }
+  ],
+  "probe29.cpp": [
+    {
+      "conclusion": "TLS1.2 = `0x009D TLS_RSA_WITH_AES_256_GCM_SHA384`；禁 RSA kex → `0xC030`",
+      "topic": "真实套件"
+    }
+  ],
+  "probe32.cpp": [
+    {
+      "conclusion": "`EncryptMessage(0)` OK；`ASC_REQ_MUTUAL_AUTH` → `0x00090320`",
+      "topic": "零长/双向认证"
+    }
+  ],
+  "probe34.cpp": [
+    {
+      "conclusion": "`SEC_I_RENEGOTIATE` + `EXTRA=103`（`16 03 03 00 62 04 ...` = NewSessionTicket）；`ISC` 后必须视为已消费",
+      "topic": "TLS1.3 票据"
+    }
+  ],
+  "probe35.cpp": [
+    {
+      "conclusion": "`PublicKey.pbData` 270 字节，verbatim 在 SPKI 偏移 24、证书偏移 134",
+      "topic": "SPKI 提取"
+    }
+  ],
+  "probe36.cpp": [
+    {
+      "conclusion": "1 字节时 `MISSING=12`；13 字节时 `MISSING=32`（总数 45）",
+      "topic": "`MISSING` 语义"
+    }
+  ],
+  "probe37.cpp": [
+    {
+      "conclusion": "`buf[3] type=5 cb=37 offsetFromStart=37 inInputRange=1`",
+      "topic": "`EXTRA` 别名"
+    }
+  ],
+  "probe38.cpp": [
+    {
+      "conclusion": "TLS1.2 = `0x009D TLS_RSA_WITH_AES_256_GCM_SHA384`；禁 RSA kex → `0xC030`",
+      "topic": "真实套件"
+    }
+  ],
+  "probe39.cpp": [
+    {
+      "conclusion": "`SEC_I_RENEGOTIATE` + `EXTRA=103`（`16 03 03 00 62 04 ...` = NewSessionTicket）；`ISC` 后必须视为已消费",
+      "topic": "TLS1.3 票据"
+    }
+  ],
+  "probe4.cpp": [
+    {
+      "conclusion": "无 `ALLOCATE_MEMORY` → `0x80090300`；有 → 24 字节，对端 `0x00090317`",
+      "topic": "close_notify"
+    }
+  ],
+  "probe40.cpp": [
+    {
+      "conclusion": "只给 `ISC_REQ_STREAM`（无论 null 还是空 desc）→ `0x80090300`；加 `ISC_REQ_ALLOCATE_MEMORY` → `0x00000000 out=24`",
+      "topic": "close_notify 标志隔离"
+    }
+  ],
+  "probe5.cpp": [
+    {
+      "conclusion": "无 manual → `0x80090325`；MANUAL → 成功但 `CERT_CHECK_RESULT=0x80090301`；DEFERRED → `hr=0x800B0109`",
+      "topic": "证书策略矩阵"
+    }
+  ],
+  "probe9.cpp": [
+    {
+      "conclusion": "`SP_PROT_TLS1_3_CLIENT` → cred `0x80090331`；`1.2\\|1.3` → `proto=0x0800`（静默降级）",
+      "topic": "TLS1.3 与 legacy cred"
+    }
+  ],
+  "tpkt_tls2.cpp": [
+    {
+      "conclusion": "密文喂 `TpktStream` → `NeedMoreData` + `dropped=2`；构造密文可被当作合法 PDU",
+      "topic": "两层混用"
+    }
+  ],
+  "tpkt_tls3.cpp": [
+    {
+      "conclusion": "密文喂 `TpktStream` → `NeedMoreData` + `dropped=2`；构造密文可被当作合法 PDU",
+      "topic": "两层混用"
+    }
+  ]
+}
