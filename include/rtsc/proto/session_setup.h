@@ -21,6 +21,7 @@
 
 #include "rtsc/proto/byte_order.h"
 #include "rtsc/proto/capabilities.h"
+#include "rtsc/proto/multimon.h"
 
 namespace rtsc::proto {
 
@@ -48,6 +49,11 @@ struct SessionSetupState {
     // size, but the server's answer is authoritative for a lossless 1:1 view.
     uint16_t desktop_width = 0;
     uint16_t desktop_height = 0;
+    // Multi-monitor layout reported by the server's optional Monitor Layout PDU
+    // (2.2.12.1). Empty until that PDU arrives; a single-monitor session never
+    // sends it, so the client keeps its single-surface path.
+    bool has_monitor_layout = false;
+    std::vector<MonitorDef> monitors;
     // Last Set Error Info PDU, if any (recorded but does not change the state).
     bool has_error_info = false;
     uint32_t error_info = 0;

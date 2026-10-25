@@ -13,6 +13,7 @@
 
 #include "rtsc/client/view.h"
 #include "rtsc/proto/bitmap.h"
+#include "rtsc/proto/multimon.h"
 #include "rtsc/proto/output.h"
 #include "rtsc/render/order_engine.h"
 #include "rtsc/ui/surface.h"
@@ -28,6 +29,32 @@ class GraphicsPipeline {
 
     uint16_t width() const noexcept { return surface_.width(); }
     uint16_t height() const noexcept { return surface_.height(); }
+
+    // ---- Multi-monitor -----------------------------------------------------
+
+    // Installs the server's monitor layout and rebuilds the pipeline for it:
+    // `surface()` becomes the virtual desktop (the union of all monitors) and
+    // one surface per monitor is created. An empty `monitors` restores the
+    // single-surface path. Any already-painted pixels are lost, like Resize().
+    void set_monitor_layout(std::vector<proto::MonitorDef> monitors);
+
+    size_t monitor_count() const noexcept { return monitors_.size(); }
+    const proto::MonitorDef* monitor(size_t index) const;
+    // The surface for monitor `index`, or nullptr when out of range / no layout.
+    ui::Surface* monitor_surface(size_t index);
+    const ui::Surface* monitor_surface(size_t index) const;
+
+    // The virtual desktop size (the union of all monitors) and the position of
+    // its top-left corner in the virtual desktop coordinate space. With no
+    // layout the origin is (0,0) and the size is the single surface's.
+    int virtual_width() const noexcept;
+    int virtual_height() const noexcept;
+    int origin_x() const noexcept { return origin_x_; }
+    int origin_y() const noexcept { return origin_y_; }
+
+    // Copies monitor `index`'s rectangle of the virtual desktop into `dst` at
+    // 1:1 (clipped to `dst`). This is what a per-monitor window presents.
+    void RenderMonitorTo(size_t index, ui::Surface& dst) const;
 
     // Recreates the surface at a new size (used when the server's Demand Active
     // reveals a desktop size that differs from the one the window was created
@@ -87,6 +114,12 @@ class GraphicsPipeline {
     render::OrderEngine order_engine_;
 
     ui::Surface surface_;
+    // Multi-monitor state. Empty for a single-monitor session; then
+    // monitor_surfaces_ is empty too and surface_ is the only surface.
+    std::vector<proto::MonitorDef> monitors_;
+    std::vector<ui::Surface> monitor_surfaces_;
+    int origin_x_ = 0;
+    int origin_y_ = 0;
     std::vector<uint8_t> palette_;
     bool dirty_ = true;  // the first frame must always be rendered
     bool has_pointer_ = false;

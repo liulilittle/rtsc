@@ -55,8 +55,11 @@ struct BitmapData {
     // bitmapLength counts both of them.
     static constexpr size_t kHeaderSize = 18;
 
-    uint16_t dest_left = 0;
-    uint16_t dest_top = 0;
+    // destLeft/destTop are signed 16-bit virtual-desktop coordinates: in a
+    // multi-monitor session a monitor above or left of the primary has a
+    // negative origin, and the destination can be negative too.
+    int16_t dest_left = 0;
+    int16_t dest_top = 0;
     uint16_t dest_right = 0;
     uint16_t dest_bottom = 0;
     uint16_t width = 0;

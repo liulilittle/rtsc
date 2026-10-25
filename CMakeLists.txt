@@ -30,6 +30,7 @@ add_library(rtsc_proto STATIC
     src/proto/licensing.cpp
     src/proto/share.cpp
     src/proto/capabilities.cpp
+    src/proto/multimon.cpp
     src/proto/finalization.cpp
     src/proto/session_setup.cpp
     src/proto/licensing_machine.cpp
@@ -242,6 +243,10 @@ add_executable(rtsc_capabilities_tests tests/test_capabilities.cpp)
 target_link_libraries(rtsc_capabilities_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_capabilities_tests PRIVATE tests)
 
+add_executable(rtsc_multimon_tests tests/test_multimon.cpp)
+target_link_libraries(rtsc_multimon_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
+target_include_directories(rtsc_multimon_tests PRIVATE tests)
+
 add_executable(rtsc_share_tests tests/test_share.cpp)
 target_link_libraries(rtsc_share_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_share_tests PRIVATE tests)
@@ -423,6 +428,7 @@ add_test(NAME licensing COMMAND rtsc_licensing_tests)
 add_test(NAME licensing_machine COMMAND rtsc_licensing_machine_tests)
 add_test(NAME share COMMAND rtsc_share_tests)
 add_test(NAME capabilities COMMAND rtsc_capabilities_tests)
+add_test(NAME multimon COMMAND rtsc_multimon_tests)
 add_test(NAME finalization COMMAND rtsc_finalization_tests)
 add_test(NAME session_setup COMMAND rtsc_session_setup_tests)
 add_test(NAME input COMMAND rtsc_input_tests)
@@ -469,6 +475,7 @@ if(MSVC)
     target_compile_options(rtsc_licensing_machine_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_share_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_capabilities_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_multimon_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_finalization_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_session_setup_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_input_tests PRIVATE /W4 /WX)

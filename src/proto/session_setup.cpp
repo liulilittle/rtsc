@@ -210,9 +210,21 @@ SessionStep SessionSetupMachine::HandleSharePdu(const uint8_t* data,
     switch (hdr.pdu_type2) {
         case ShareDataPduType::kSynchronize:
         case ShareDataPduType::kControl:
-        case ShareDataPduType::kMonitorLayout:
             // Recorded implicitly; no state change (12.2).
             return out;
+        case ShareDataPduType::kMonitorLayout: {
+            // The optional Monitor Layout PDU (2.2.12.1) arrives after the
+            // Demand Active PDU. It only records the session layout; it does not
+            // change the phase or trigger any reply (capabilities.md 12.2).
+            MonitorLayoutPdu layout;
+            if (MonitorLayoutPdu::parse_body(data + ShareDataHeader::kSize,
+                                             size - ShareDataHeader::kSize,
+                                             layout) == Status::Ok) {
+                state_.monitors = layout.monitors;
+                state_.has_monitor_layout = true;
+            }
+            return out;
+        }
         case ShareDataPduType::kSetErrorInfo: {
             // 2.2.5.1: share data header (18) + errorInfo (4) + errorInfoData.
             if (size >= ShareDataHeader::kSize + 4) {

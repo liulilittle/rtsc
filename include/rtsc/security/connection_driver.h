@@ -111,6 +111,16 @@ class ConnectionDriver {
         return static_cast<uint16_t>(machine_config_.desktop_height);
     }
 
+    // The multi-monitor layout the server reported (Monitor Layout PDU,
+    // 2.2.12.1). Empty for a single-monitor session.
+    const std::vector<proto::MonitorDef>& monitors() const {
+        static const std::vector<proto::MonitorDef> kEmpty;
+        return session_ != nullptr ? session_->state().monitors : kEmpty;
+    }
+    bool has_monitor_layout() const {
+        return session_ != nullptr && session_->state().has_monitor_layout;
+    }
+
  private:
     DriverStep Fail(const std::string& reason);
     // Runs the security handshake with the buffered ciphertext; returns the

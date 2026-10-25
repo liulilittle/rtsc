@@ -101,8 +101,11 @@ Status UpdateBitmapData::parse(const uint8_t* data, size_t size,
     for (uint16_t i = 0; i < out.number_rectangles; ++i) {
         if (r.remaining() < BitmapData::kHeaderSize) return Status::NeedMoreData;
         BitmapData bd;
-        r.u16le(bd.dest_left);
-        r.u16le(bd.dest_top);
+        uint16_t dest_left = 0, dest_top = 0;
+        r.u16le(dest_left);
+        r.u16le(dest_top);
+        bd.dest_left = static_cast<int16_t>(dest_left);
+        bd.dest_top = static_cast<int16_t>(dest_top);
         r.u16le(bd.dest_right);
         r.u16le(bd.dest_bottom);
         r.u16le(bd.width);

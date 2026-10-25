@@ -63,12 +63,14 @@ void usage() {
         "%s\n"
         "usage: rtsc_gui <host> [port] [domain] [user] [password] "
         "[width] [height] [backend] [zoom] [fit] [viewport_w] [viewport_h] "
-        "[--frames N] [--seconds N]\n"
+        "[multimon] [--frames N] [--seconds N]\n"
         "  port defaults to 3389; width/height default to the desktop size the\n"
         "  server grants (1280x1024), so the default view is 1:1 lossless.\n"
         "  backend: headless | win32 | x11 | wayland (default: platform).\n"
         "  zoom: 1.0 = 1:1 (the default). fit: 1 = fit to window.\n"
         "  viewport_w/h: force the window surface size (drives auto-resize).\n"
+        "  multimon: 1 = one window per monitor when the server reports a\n"
+        "  multi-monitor layout; 0 (default) = one span window for the union.\n"
         "  --frames N / --seconds N: bound the run (automation only). The default\n"
         "  is unlimited, so a real session renders until the window is closed.\n"
         "  In-session: wheel zooms, Ctrl+wheel zooms finely, Ctrl+1..4 select\n"
@@ -166,22 +168,30 @@ int main(int argc, char** argv) {
         args.size() >= 11 ? static_cast<uint16_t>(std::atoi(args[10].c_str())) : 0;
     const uint16_t viewport_h =
         args.size() >= 12 ? static_cast<uint16_t>(std::atoi(args[11].c_str())) : 0;
+    // Multi-monitor mode: one window per monitor. The default (0) is the
+    // single-window span mode, which shows the whole virtual desktop.
+    const bool multimon =
+        args.size() >= 13 ? std::atoi(args[12].c_str()) != 0 : false;
 
     std::printf("rtsc_gui: connecting to %s:%u (%ux%u)\n", host.c_str(),
                 static_cast<unsigned>(port), static_cast<unsigned>(width),
                 static_cast<unsigned>(height));
 
     std::string why;
-    auto window = rtsc::ui::CreateWindow(width, height, backend, why);
-    if (!window) {
-        std::printf("no window backend: %s\n", why.c_str());
-        return 1;
+    std::vector<std::unique_ptr<rtsc::ui::Window>> windows;
+    {
+        auto first = rtsc::ui::CreateWindow(width, height, backend, why);
+        if (!first) {
+            std::printf("no window backend: %s\n", why.c_str());
+            return 1;
+        }
+        std::printf("window backend: %s\n", first->backend_name());
+        windows.push_back(std::move(first));
     }
-    std::printf("window backend: %s\n", window->backend_name());
     if (viewport_w != 0 && viewport_h != 0) {
         // A forced viewport drives the same resize path WM_SIZE uses, which is
         // how auto-resize is exercised without a display (headless).
-        window->Resize(viewport_w, viewport_h);
+        windows[0]->Resize(viewport_w, viewport_h);
         std::printf("viewport forced to %ux%u\n",
                     static_cast<unsigned>(viewport_w),
                     static_cast<unsigned>(viewport_h));
@@ -291,10 +301,43 @@ int main(int argc, char** argv) {
     // desktop is painted.
     const uint16_t desk_w = client.desktop_width();
     const uint16_t desk_h = client.desktop_height();
-    if (desk_w != 0 && desk_h != 0 &&
-        (desk_w != window->surface().width() ||
-         desk_h != window->surface().height())) {
-        window->Resize(desk_w, desk_h);
+    const bool multi_window = multimon && client.has_monitor_layout();
+    if (client.has_monitor_layout()) {
+        // The server reported a multi-monitor session: the pipeline becomes a
+        // virtual desktop (the union of the monitors) plus one surface per
+        // monitor. Span mode shows the union in the single window; multi-window
+        // mode replaces the single window with one window per monitor.
+        const auto& monitors = client.monitors();
+        client.graphics().set_monitor_layout(monitors);
+        std::printf("monitor layout: %zu monitor(s)\n", monitors.size());
+        for (size_t i = 0; i < monitors.size(); ++i) {
+            std::printf("  monitor %zu: %dx%d at (%d,%d)%s\n", i,
+                        static_cast<unsigned>(monitors[i].width()),
+                        static_cast<unsigned>(monitors[i].height()),
+                        monitors[i].left, monitors[i].top,
+                        monitors[i].primary() ? " primary" : "");
+        }
+        if (multi_window) {
+            windows.clear();
+            for (const auto& m : monitors) {
+                auto w = rtsc::ui::CreateWindow(
+                    static_cast<uint16_t>(m.width()),
+                    static_cast<uint16_t>(m.height()), backend, why);
+                if (!w) {
+                    std::printf("no window backend: %s\n", why.c_str());
+                    return 1;
+                }
+                windows.push_back(std::move(w));
+            }
+        } else {
+            windows[0]->Resize(
+                static_cast<uint16_t>(client.graphics().virtual_width()),
+                static_cast<uint16_t>(client.graphics().virtual_height()));
+        }
+    } else if (desk_w != 0 && desk_h != 0 &&
+               (desk_w != windows[0]->surface().width() ||
+                desk_h != windows[0]->surface().height())) {
+        windows[0]->Resize(desk_w, desk_h);
         client.graphics().Resize(desk_w, desk_h);
         std::printf("desktop size %ux%u: window/surface resized from %ux%u\n",
                     static_cast<unsigned>(desk_w), static_cast<unsigned>(desk_h),
@@ -312,12 +355,19 @@ int main(int argc, char** argv) {
     unsigned fps_frames = 0;
     unsigned fps_renders = 0;
     bool view_dirty = true;  // the first frame must be rendered
-    int last_view_w = static_cast<int>(window->surface().width());
-    int last_view_h = static_cast<int>(window->surface().height());
+    int last_view_w = static_cast<int>(windows[0]->surface().width());
+    int last_view_h = static_cast<int>(windows[0]->surface().height());
     // At most ~60 FPS. A remote desktop rarely updates faster than that, and the
     // cap keeps a fast server from driving the render loop (and a core) to 100%.
     constexpr auto kMinFrameInterval = std::chrono::milliseconds(16);
-    while (!window->closed()) {
+    // True once every window is closed.
+    const auto all_closed = [&windows]() {
+        for (const auto& w : windows) {
+            if (!w->closed()) return false;
+        }
+        return true;
+    };
+    while (!all_closed()) {
         // Pump() waits at most kReadTimeoutMs for network data, so this loop
         // iterates several times a second even when the server is silent. That
         // is what keeps the Win32 window responsive: PollEvent() below runs
@@ -329,61 +379,85 @@ int main(int argc, char** argv) {
             break;
         }
 
-        rtsc::ui::InputEvent ev;
-        while (window->PollEvent(ev)) {
-            if (ev.kind == rtsc::ui::InputEvent::Kind::kClose) {
-                window->Close();
-                break;
-            }
-            // Client-side view controls first: a consumed event (wheel zoom,
-            // Ctrl+digit / menu preset) is never forwarded to the server.
-            if (rtsc::client::ApplyZoomInput(ev, zs)) {
-                client.graphics().set_zoom(zs.zoom);
-                client.graphics().set_fit(zs.fit);
-                view_dirty = true;
-                const std::string status = rtsc::client::ZoomStatusText(zs);
-                window->SetTitle(status);
-                std::printf("view: %s\n", status.c_str());
-                continue;
-            }
-            // While zoomed/fitted the local pointer must be mapped back to the
-            // remote desktop coordinate that is actually under it.
-            if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
-                ev.kind == rtsc::ui::InputEvent::Kind::kMouseButton ||
-                ev.kind == rtsc::ui::InputEvent::Kind::kMouseWheel) {
-                const auto vt = client.graphics().view_transform(
-                    static_cast<int>(window->surface().width()),
-                    static_cast<int>(window->surface().height()));
-                int rx = 0, ry = 0;
-                rtsc::client::MapViewportPoint(
-                    vt, static_cast<int>(client.surface().width()),
-                    static_cast<int>(client.surface().height()),
-                    static_cast<int>(ev.x), static_cast<int>(ev.y), rx, ry);
-                ev.x = static_cast<uint16_t>(rx);
-                ev.y = static_cast<uint16_t>(ry);
-            }
-            const auto pdu = client.EncodeInput(ev);
-            // Post-active input is application data on the secured transport, so
-            // it must go through the security layer (TLS) like every other PDU;
-            // writing the raw Fast-Path bytes to the socket would corrupt the
-            // TLS stream.
-            auto* sec = client.driver().security();
-            const auto wire = sec != nullptr ? sec->SendPdu(pdu) : pdu;
-            if (!wire.empty() &&
-                !transport->Write(wire.data(), wire.size())) {
-                std::printf("input write failed\n");
-                window->Close();
-                break;
+        for (size_t wi = 0; wi < windows.size(); ++wi) {
+            rtsc::ui::InputEvent ev;
+            while (windows[wi]->PollEvent(ev)) {
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kClose) {
+                    for (auto& w : windows) w->Close();
+                    break;
+                }
+                bool consumed = false;
+                if (multi_window) {
+                    // Each window is 1:1 with its monitor, so the local pointer
+                    // is offset into the virtual desktop coordinate space. There
+                    // is no zoom in this mode.
+                    if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
+                        ev.kind == rtsc::ui::InputEvent::Kind::kMouseButton ||
+                        ev.kind == rtsc::ui::InputEvent::Kind::kMouseWheel) {
+                        const auto& m = client.monitors()[wi];
+                        ev.x = static_cast<uint16_t>(static_cast<int>(ev.x) +
+                                                     m.left);
+                        ev.y = static_cast<uint16_t>(static_cast<int>(ev.y) +
+                                                     m.top);
+                    }
+                } else {
+                    // Client-side view controls first: a consumed event (wheel
+                    // zoom, Ctrl+digit / menu preset) is never forwarded to the
+                    // server.
+                    consumed = rtsc::client::ApplyZoomInput(ev, zs);
+                    if (consumed) {
+                        client.graphics().set_zoom(zs.zoom);
+                        client.graphics().set_fit(zs.fit);
+                        view_dirty = true;
+                        const std::string status = rtsc::client::ZoomStatusText(zs);
+                        windows[0]->SetTitle(status);
+                        std::printf("view: %s\n", status.c_str());
+                    } else if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
+                               ev.kind ==
+                                   rtsc::ui::InputEvent::Kind::kMouseButton ||
+                               ev.kind ==
+                                   rtsc::ui::InputEvent::Kind::kMouseWheel) {
+                        // While zoomed/fitted the local pointer must be mapped
+                        // back to the remote desktop coordinate under it.
+                        const auto vt = client.graphics().view_transform(
+                            static_cast<int>(windows[0]->surface().width()),
+                            static_cast<int>(windows[0]->surface().height()));
+                        int rx = 0, ry = 0;
+                        rtsc::client::MapViewportPoint(
+                            vt, static_cast<int>(client.surface().width()),
+                            static_cast<int>(client.surface().height()),
+                            static_cast<int>(ev.x), static_cast<int>(ev.y), rx,
+                            ry);
+                        ev.x = static_cast<uint16_t>(rx);
+                        ev.y = static_cast<uint16_t>(ry);
+                    }
+                }
+                if (consumed) continue;
+                const auto pdu = client.EncodeInput(ev);
+                // Post-active input is application data on the secured transport,
+                // so it must go through the security layer (TLS) like every other
+                // PDU; writing the raw Fast-Path bytes to the socket would
+                // corrupt the TLS stream.
+                auto* sec = client.driver().security();
+                const auto wire = sec != nullptr ? sec->SendPdu(pdu) : pdu;
+                if (!wire.empty() &&
+                    !transport->Write(wire.data(), wire.size())) {
+                    std::printf("input write failed\n");
+                    for (auto& w : windows) w->Close();
+                    break;
+                }
             }
         }
 
         // A window resize invalidates the current frame (the backend recreated
         // its surface), so the next render must repaint.
-        if (static_cast<int>(window->surface().width()) != last_view_w ||
-            static_cast<int>(window->surface().height()) != last_view_h) {
-            last_view_w = static_cast<int>(window->surface().width());
-            last_view_h = static_cast<int>(window->surface().height());
-            view_dirty = true;
+        for (const auto& w : windows) {
+            if (static_cast<int>(w->surface().width()) != last_view_w ||
+                static_cast<int>(w->surface().height()) != last_view_h) {
+                last_view_w = static_cast<int>(w->surface().width());
+                last_view_h = static_cast<int>(w->surface().height());
+                view_dirty = true;
+            }
         }
 
         // Render only when the surface or the view changed, and at most at
@@ -393,8 +467,15 @@ int main(int argc, char** argv) {
         if (view_dirty || client.graphics().dirty()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - last_render >= kMinFrameInterval) {
-                client.graphics().RenderTo(window->surface());
-                window->Present();
+                if (multi_window) {
+                    for (size_t i = 0; i < windows.size(); ++i) {
+                        client.graphics().RenderMonitorTo(i, windows[i]->surface());
+                        windows[i]->Present();
+                    }
+                } else {
+                    client.graphics().RenderTo(windows[0]->surface());
+                    windows[0]->Present();
+                }
                 client.graphics().clear_dirty();
                 view_dirty = false;
                 last_render = now;
@@ -461,7 +542,7 @@ int main(int argc, char** argv) {
             static_cast<size_t>(s.width()) * s.height(), remote.first,
             remote.second);
 
-        const auto& view = window->surface();
+        const auto& view = windows[0]->surface();
         const auto vt = client.graphics().view_transform(
             static_cast<int>(view.width()), static_cast<int>(view.height()));
         const auto scaled = count_non_black(view);
