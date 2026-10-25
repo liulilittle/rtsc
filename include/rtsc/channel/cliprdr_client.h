@@ -125,6 +125,15 @@ class CliprdrClient {
     uint32_t server_flags_ = 0;
     bool remote_sync_pending_ = false;
     uint32_t pending_format_ = 0;
+    // The local clipboard fingerprint after the last remote write: the data
+    // for `last_applied_format_` and the format list. One write can fire more
+    // than one WM_CLIPBOARDUPDATE, so the fingerprint recognises (and swallows)
+    // every event caused by our own write. `has_last_applied_` keeps the guard
+    // armed even for a zero-length write, which carries no data to compare.
+    bool has_last_applied_ = false;
+    uint32_t last_applied_format_ = 0;
+    std::vector<uint8_t> last_applied_data_;
+    std::vector<uint32_t> last_applied_formats_;
 
     std::vector<uint32_t> remote_formats_;
     std::string temp_directory_;

@@ -196,11 +196,17 @@ void CliprdrClient::OnFormatDataResponse(
     ++format_data_response_count_;
     const bool ok =
         (pdu.header.msg_flags & rtsc::proto::kClipResponseOk) != 0;
-    if (!ok || clipboard_ == nullptr || pdu.data.empty()) return;
+    if (!ok || clipboard_ == nullptr) return;
     // The response carries the data for the format that was requested. Applying
     // it fires WM_CLIPBOARDUPDATE, which OnLocalClipboardChanged swallows.
     remote_sync_pending_ = true;
+    last_applied_format_ = pending_format_;
+    last_applied_data_ = pdu.data;
     clipboard_->write(pending_format_, pdu.data);
+    last_applied_formats_ =
+        clipboard_ != nullptr ? clipboard_->formats()
+                              : std::vector<uint32_t>{};
+    has_last_applied_ = true;
 }
 
 void CliprdrClient::OnTempDirectory(const std::vector<uint8_t>& body) {
@@ -313,6 +319,24 @@ void CliprdrClient::OnLocalClipboardChanged() {
     if (remote_sync_pending_) {
         remote_sync_pending_ = false;
         return;
+    }
+    // A single SetClipboardData can fire more than one WM_CLIPBOARDUPDATE. If
+    // the local clipboard still holds the fingerprint of the write we applied,
+    // the event was caused by our own write and must not be echoed to the
+    // server. The guard stays armed until a genuinely different clipboard is
+    // observed; a failed read keeps it armed rather than risking an echo.
+    if (has_last_applied_ && clipboard_ != nullptr) {
+        std::vector<uint8_t> current;
+        if (!clipboard_->read(last_applied_format_, current)) {
+            return;
+        }
+        const bool same_data = current == last_applied_data_;
+        const bool same_formats =
+            clipboard_->formats() == last_applied_formats_;
+        if (same_data && same_formats) {
+            return;
+        }
+        has_last_applied_ = false;
     }
     if (!started_) return;
     SendFormatList();

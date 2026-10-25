@@ -30,8 +30,10 @@
 
 #include "connection_info_dialog_win32.h"
 #include "rtsc/audio/audio_sink.h"
-#include "rtsc/client/client.h"
+#include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/channel/rdpsnd_client.h"
+#include "rtsc/clipboard/clipboard.h"
+#include "rtsc/client/client.h"
 #include "rtsc/client/session_info.h"
 #include "rtsc/client/version.h"
 #include "rtsc/client/view.h"
@@ -204,8 +206,9 @@ int main(int argc, char** argv) {
     client.graphics().set_zoom(zs.zoom);
     client.graphics().set_fit(zs.fit);
 
-    // Record the static virtual channel chunks the server sends; rdpdr and
-    // cliprdr are not decoded yet, while rdpsnd runs the audio protocol.
+    // Record the static virtual channel chunks the server sends; rdpdr is not
+    // decoded, cliprdr runs the clipboard protocol, and rdpsnd runs the audio
+    // protocol.
     unsigned vc_rdpdr = 0;
     unsigned vc_cliprdr = 0;
 
@@ -236,11 +239,41 @@ int main(int argc, char** argv) {
         if (!wire.empty()) transport->Write(wire.data(), wire.size());
     };
 
+    // Clipboard redirection (CLIPRDR): decode the cliprdr static virtual channel
+    // and synchronise the local clipboard with the remote session. The handler
+    // only borrows the platform clipboard, which lives here.
+    std::unique_ptr<rtsc::clipboard::Clipboard> local_clipboard =
+        rtsc::clipboard::CreatePlatformClipboard();
+    if (!local_clipboard) {
+        local_clipboard = std::make_unique<rtsc::clipboard::NullClipboard>();
+    }
+
+    // Sends a complete channel message (CHANNEL_PDU_HEADER + cliprdr PDU) on the
+    // cliprdr static virtual channel, wrapped in MCS and the security layer.
+    const auto send_cliprdr = [&](const std::vector<uint8_t>& message) {
+        auto* sec = client.driver().security();
+        if (sec == nullptr) return;
+        const uint16_t user_channel =
+            client.driver().machine().state().user_channel_id;
+        if (user_channel == 0) return;
+        const auto mcs = rtsc::proto::McsSendData::build_request(
+            user_channel, kChannelCliprdr, message);
+        const auto wire = sec->SendPdu(mcs);
+        if (!wire.empty()) transport->Write(wire.data(), wire.size());
+    };
+
+    rtsc::channel::CliprdrClient cliprdr(local_clipboard.get(), send_cliprdr);
+    window->SetClipboardChangeCallback(
+        [&] { cliprdr.OnLocalClipboardChanged(); });
+
     rtsc::channel::RdpsndClient rdpsnd(audio_sink.get(), send_rdpsnd);
     client.RegisterChannel(kChannelRdpdr,
                            [&](const uint8_t*, size_t) { ++vc_rdpdr; });
     client.RegisterChannel(kChannelCliprdr,
-                           [&](const uint8_t*, size_t) { ++vc_cliprdr; });
+                           [&](const uint8_t* data, size_t size) {
+                               ++vc_cliprdr;
+                               cliprdr.OnChannelData(data, size);
+                           });
     client.RegisterChannel(kChannelRdpsnd,
                            [&](const uint8_t* data, size_t size) {
                                rdpsnd.OnChannelData(data, size);
@@ -249,6 +282,7 @@ int main(int argc, char** argv) {
         std::printf("connection failed: %s\n", error.c_str());
         return 1;
     }
+    cliprdr.Start();
 
     // Size the window and the surface to the desktop the server granted (the
     // Demand Active bitmap capability). This is what makes the default 1:1 view
@@ -451,6 +485,19 @@ int main(int argc, char** argv) {
 
     std::printf("virtual channel chunks: rdpdr=%u cliprdr=%u\n", vc_rdpdr,
                 vc_cliprdr);
+    std::printf(
+        "clipboard: long_names=%s remote_formats=%zu caps_sent=%u "
+        "server_caps=%u remote_lists=%u local_lists=%u responses=%u "
+        "data_req=%u data_resp_sent=%u data_resp=%u temp_dir=%s "
+        "locks=%u/%u\n",
+        cliprdr.long_format_names() ? "yes" : "no",
+        cliprdr.remote_formats().size(), cliprdr.clip_caps_count(),
+        cliprdr.server_caps_count(), cliprdr.remote_format_list_count(),
+        cliprdr.local_format_list_count(), cliprdr.format_list_response_count(),
+        cliprdr.format_data_request_count(),
+        cliprdr.format_data_response_sent_count(),
+        cliprdr.format_data_response_count(), cliprdr.temp_directory().c_str(),
+        cliprdr.lock_clipdata_count(), cliprdr.unlock_clipdata_count());
     const auto& audio_format = rdpsnd.selected_format();
     std::printf(
         "audio: server_formats=%u client_formats=%u quality_mode=%u wave2=%u "

@@ -121,6 +121,9 @@ class Win32Window final : public Window {
         }
         ShowWindow(hwnd_, SW_SHOW);
         UpdateWindow(hwnd_);
+        // Observe local clipboard changes (WM_CLIPBOARDUPDATE) so the CLIPRDR
+        // channel can push the new clipboard formats to the server.
+        AddClipboardFormatListener(hwnd_);
 
         // The title-bar system menu is the real one, extended with our items.
         BuildSystemMenu();
@@ -158,6 +161,10 @@ class Win32Window final : public Window {
     void SetViewMenuState(const ViewMenuState& state) override {
         view_state_ = state;
         UpdateMenuState();
+    }
+
+    void SetClipboardChangeCallback(std::function<void()> callback) override {
+        clipboard_callback_ = std::move(callback);
     }
 
     void SetFullscreen(bool on) override {
@@ -345,6 +352,10 @@ class Win32Window final : public Window {
                 events_.push_back(e);
                 return true;
             }
+            case WM_CLIPBOARDUPDATE: {
+                if (clipboard_callback_) clipboard_callback_();
+                return true;
+            }
             case WM_PAINT: {
                 PAINTSTRUCT ps;
                 HDC dc = BeginPaint(hwnd_, &ps);
@@ -524,6 +535,7 @@ class Win32Window final : public Window {
             mem_dc_ = nullptr;
         }
         if (hwnd_ != nullptr) {
+            RemoveClipboardFormatListener(hwnd_);
             DestroyWindow(hwnd_);
             hwnd_ = nullptr;
         }
@@ -571,6 +583,7 @@ class Win32Window final : public Window {
     HMENU zoom_menu_sys_ = nullptr;
     HMENU sys_menu_ = nullptr;     // the real system menu, extended
     ViewMenuState view_state_;
+    std::function<void()> clipboard_callback_;
     bool fullscreen_ = false;
     RECT saved_rect_{};
     LONG_PTR saved_style_ = 0;

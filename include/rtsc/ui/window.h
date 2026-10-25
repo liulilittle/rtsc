@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -181,6 +182,14 @@ class Window {
     // Publishes the view state the window uses to label and tick its menu
     // items (zoom percent, smart sizing, fullscreen, smart card).
     virtual void SetViewMenuState(const ViewMenuState& state) { (void)state; }
+
+    // Registers a callback invoked when the local clipboard changed (Win32:
+    // WM_CLIPBOARDUPDATE). The CLIPRDR channel handler uses it to push the new
+    // clipboard formats to the server. The default is a no-op so backends
+    // without a clipboard observer (headless, X11, Wayland) keep working.
+    virtual void SetClipboardChangeCallback(std::function<void()> callback) {
+        (void)callback;
+    }
 
     // The native window handle (HWND on Win32, Window on X11, ...) or nullptr.
     // The front-end uses it to parent a native dialog (the connection

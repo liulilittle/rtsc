@@ -7856,3 +7856,167 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - `ses_e8c01930fffelNAC8ozFX0wSgC`（**续做服务器基础层**）：实现 `src/server/` + `tests/test_server.cpp` + CMake + 本地回环；**禁止碰** proto/client/audio/channel。
   - `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`（**续做剪贴板通道**）：客户端静态 VC 注册 + 剪贴板同步 + GUI 接线；**禁止碰** server/audio/proto。
 - **并发控制**：两代理工作目录隔离（server vs client/channel）；剪贴板 agent 禁止碰 proto（避免与 server 冲突）。
+
+
+## 第255轮：**启用 git worktree 并行工作**（用户要求提速）
+
+- **[BASH: git rev-parse]** 工作区**非 git 仓库**（`fatal: not a git repository`，无 `.git`/`.gitignore`）。
+- **[write .gitignore + git init + commit]** 仓库已建：`.gitignore`（`build/`、`.worktrees/`、`.opencode/backups/`、`*.obj/exe/log`…）；
+  `git init` + 快照提交 `21860b2`（client+server+cliprdr in progress）→ `2adf30f`（移除临时 `upd_*.py`）。
+- **[git worktree add]** 3 个隔离 worktree：
+  - `F:/rtsc/.worktrees/rdpdr`（`feat/rdpdr`）
+  - `F:/rtsc/.worktrees/usb`（`feat/usb`）
+  - `F:/rtsc/.worktrees/multimon`（`feat/multimon`）
+  - `git worktree list` 确认 4 工作树（master + 3 feature）。
+- **[task 派发 ×3]**（各自 worktree，**目录隔离** → 消除并发写冲突）：
+  - `ses_e8bd904faffegAEJPi4Bhm7Zaq`（**驱动器重定向 RDPDR**，worktree `rdpdr`）；
+  - `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`（**USB 重定向**，worktree `usb`）；
+  - `ses_e8bd8b857ffeAN5irWxxtGV3qW`（**多显示器 multimon**，worktree `multimon`）。
+  - 各代理约束：只在 worktree 内写；禁止碰 server/audio/cliprdr/rdpdr（交叉）。
+- **主树（F:/rtsc）在途**：服务器基础层（`ses_e8c01930...`，进行中：正在看客户端协议配置以规划回环）+ 剪贴板通道接线（`ses_e8c0d16c...`）。
+- **收益**：4 条并行线（3 worktree + 1 主树）互不干扰；合并时按分支 cherry-pick/merge。
+
+
+## 第256轮：**CLIPRDR 通道完成 + 核验通过 + 派发双审**
+
+- **[子代理完成·核验]** `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`（CLIPRDR 客户端剪贴板通道 + 本地剪贴板同步）：
+  - 新增：`include/rtsc/clipboard/clipboard.h`、`src/clipboard/clipboard.cpp`、`include/rtsc/channel/cliprdr_client.h`、`src/channel/cliprdr_client.cpp`；
+  - 修改：`tests/test_cliprdr.cpp`（+12，共 19）、`CMakeLists.txt`、`include/rtsc/ui/window.h`、`src/ui/window_win32.cpp`、`tools/rtsc_gui/main.cpp`。
+  - **主代理核验**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R cliprdr` **Passed**；`ctest` **40/40**；文件存在（clipboard.cpp 2649、cliprdr_client.cpp 11445、cliprdr_client.h 6181、clipboard.h 2278）。
+  - **子代理绿证**：`rtsc_cliprdr_tests.exe` 19 tests/96 checks/0 失败；全目标重建 `/W4 /WX` 零警告零错误。
+  - **偏差（登记）**：未改 `src/proto/cliprdr.*`（该层 `CliprdrFormatList` 为简化模型 4B/条，与规范 short 36B/条不符 → **待后续修正**）；仅通告 `CB_USE_LONG_FORMAT_NAMES`；文件剪贴（`CB_FILECONTENTS_*`）未实现。
+- **[prompt 双审]**（W11）：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 审计乙 `ses_e9521c2ddffe46eT67qVc2vaH8` 独立审计（协议正确性/状态机完备/回环防护/TDD 红绿/配对律/C0）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、双审（甲+乙）。
+
+
+## 第257轮：**CLIPRDR 修订（回环抑制加固）核验 + 双重复核**
+
+- **[子代理修订]** `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`（响应审计乙）：
+  - `cliprdr_client.h`（SHA **6afc870fbe8dff42**）：+`last_applied_format_`/`last_applied_data_`；
+  - `cliprdr_client.cpp`（SHA **35df06c84aafd703**）：`OnFormatDataResponse` 记录所写数据；`OnLocalClipboardChanged` **内容比对**（本地仍==所写→吞，可连续吞多次；真实变化→清除并上报）；
+  - `tests/test_cliprdr.cpp`（SHA **901d03246b97f03e**）：+`cliprdr_client_remote_write_swallows_repeated_local_change`（连吞3次 + 真实变化上报）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R cliprdr` **Passed**；`ctest` **40/40**；三文件指纹一致（6afc870f…/35df06c8…/901d0324…）。
+- **[relay 双审]** 审计甲 + 审计乙：请**复核修订**（内容比对是否仍漏吞/误吞；连续吞多次后真实变化上报正确性）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 双重复核（甲+乙）。
+
+
+## 第258轮：**CLIPRDR 修订2（落实审计乙 3 边界）核验 + 双重复核**
+
+- **[子代理修订2]** `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`：
+  - `cliprdr_client.h`（SHA **eebb58ce6d271d64**）：+`has_last_applied_`/`last_applied_formats_`；
+  - `cliprdr_client.cpp`（SHA **b985e1a11a2ddc0b**）：① 读失败 → `if(!read(...)) return;`（保持 armed，不 clear/不上报）；② 独立 `has_last_applied_`（零长度写也 armed）；③ 记录 `last_applied_formats_`（data 与格式集合**同时**不同才 clear+SendFormatList）；
+  - `tests/test_cliprdr.cpp`（SHA **97044994310841ef**）：+2 边界探针（共 22 tests/107 checks）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R cliprdr` **Passed**；`ctest` **40/40**；指纹一致（eebb58ce…/b985e1a1…/97044994…）。
+- **[relay 双审]** 审计甲 + 乙：复核修订2（3 条边界是否真正闭合；是否引入新缺陷）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 双重复核（甲+乙）。
+
+
+## 第259轮：**审计甲复核通过（但针对修订1）→ 请复审修订2**
+
+- **[审计甲]** CLIPRDR 回环抑制加固 **复核通过 ✅**，指纹 `6AFC870FBE8DFF42`/`35DF06C84AAFD703`/`901D03246B97F03E`（=**修订1**）。
+  - 内容比对：`OnFormatDataResponse`(:194-210) 设 `last_applied_*`+`has_last_applied_`；`OnLocalClipboardChanged`(:318-343) 一次性 `remote_sync_pending_` → `has_last_applied_` 内容比对（读失败保持 armed 并 return；`current==data && formats==formats` → 吞；否则清并上报）→ **「只吞一次」风险已消除**。
+  - **3 条低风险边界（登记）**：
+    1. 读失败保持 armed → 持续失败则**漏吞**（有意，低）。
+    2. **零长度写**：`OnFormatDataResponse` 对 `pdu.data.empty()` **提前 return(:199)** → 不设 `has_last_applied_` → 空剪贴板写的 WM_CLIPBOARDUPDATE 不被吞 → **回环**；**且头注释(:127-129)与实现矛盾** ⚠️（注释/实现不符）。
+    3. 精确相等边界：真实变化数据==所写且格式集同 → 被吞（极端）。
+  - 协议/状态机/桥/C0 ✅（`rtsc_cliprdr_tests` 22 tests/107 checks/0；build 0 warning；`ctest -R cliprdr` Passed）。
+- **[主代理]** 甲审计的是**修订1**（当前为**修订2**：`eebb58ce…`/`b985e1a1…`/`97044994…`）→ **[relay 甲]** 请**复审修订2**（核 3 条边界是否闭合，尤其零长度写的提前 return 与注释不符）。
+- **待修（登记）**：`cliprdr_client.cpp` 头注释与实现不符（零长度写）；`OnFormatDataResponse` 对空 data 提前 return（是否致零长度写回环）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 双重复核（甲+乙）。
+
+
+## 第260轮：**裁定：CLIPRDR 零长度写必须实现 armed（去 :199 守卫）**
+
+- **[审计甲复审修订2]** 主体通过 ✅（内容比对/连续吞/格式集合/读失败 armed 均正确；C0 build 0 warning、`rtsc_cliprdr_tests` 22/107/0、`ctest` 40/40）。
+  - **边界2 零长度写 ❌ 未闭合**：`src/channel/cliprdr_client.cpp:199` 仍为 `if (!ok || clipboard_ == nullptr || pdu.data.empty()) return;` → 零长度写**不设 `has_last_applied_`/`remote_sync_pending_`** → 触发的 WM_CLIPBOARDUPDATE 不被吞 → 回环。
+  - **注释/实现不符**：`cliprdr_client.h:127-129` 称「`has_last_applied_` keeps the guard armed even for a zero-length write」，但 :199 提前 return 使其不可达。
+- **[主代理裁定]** **实现零长度写 armed**（不只改注释）：
+  1. 去掉 `:199` 的 `pdu.data.empty()` 守卫（`if (!ok || clipboard_ == nullptr) return;`）；
+  2. 零长度写走完整流程（`has_last_applied_=true` + 空 `last_applied_data_` + `last_applied_formats_` + `remote_sync_pending_`）；
+  3. `OnLocalClipboardChanged` 空数据比对成立（读失败保持 armed）；
+  4. 头注释与实现一致；
+  5. TDD 加「零长度写不致回环」探针；C0。
+- **[prompt 执行]** `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`（修零长度写回环）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 修复+乙复核。
+
+
+## 第261轮：**甲乙一致：CLIPRDR 边界2 未闭合 → 修复后重验 + 双审盖章**
+
+- **[审计甲 + 乙 一致]**：边界1（读失败 armed）✅、边界3（格式集合）✅、**边界2（零长度写）❌**。
+  - 乙**撤回**先前「3 条全闭合」，独立复核确认：`cliprdr_client.cpp:199` 实为 `if (!ok || clipboard_ == nullptr || pdu.data.empty()) return;`；零长度写在 :199 提前 return，**未执行** :202-209（不设 `remote_sync_pending_`/`last_applied_*`/`has_last_applied_`）→ WM_CLIPBOARDUPDATE 不被吞 → 边界2 未闭合。
+  - 头注释 `cliprdr_client.h:127-129` 与实现不符。
+  - **修法**：去掉 :199 的 `pdu.data.empty()` 守卫（零长度写也 arm `has_last_applied_`），或修正注释。
+- **[主代理]** 修复**已派发**（`ses_e8c0d16c7ffe4YmPX3fYBjOWpE`：去 :199 守卫 + 零长度写探针 + 头注释一致 + C0）。
+- **待办**：修复方落实后**重验**（重跑 `rtsc_cliprdr_tests` + `ctest` + 零长度写探针），再交双审盖章。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 修复。
+
+
+## 第262轮：**CLIPRDR 边界2 修复完成 + 核验 + 请双审盖章**
+
+- **[子代理修复]** `ses_e8c0d16c7ffe4YmPX3fYBjOWpE`：
+  - `src/channel/cliprdr_client.cpp`（SHA **185b57004f2801e2**）：`:199` 去掉 `pdu.data.empty()` 守卫 → `if (!ok || clipboard_ == nullptr) return;`；零长度写走完整流程；
+  - `tests/test_cliprdr.cpp`（SHA **9a769a2c529dedc5**）：+`cliprdr_client_zero_length_write_does_not_loop`；
+  - `cliprdr_client.h`（SHA **eebb58ce6d271d64**）：注释与实现一致。
+  - 红证：改前 `cliprdr_client_zero_length_write_does_not_loop` **FAIL**（`sent.size()==5, want 4`）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R cliprdr` **Passed**（23 tests/112 checks）；`ctest` **40/40**；指纹一致（185b5700…/eebb58ce…/9a769a2c…）。
+- **[relay 双审]** 甲 + 乙：复核边界2 是否真正闭合并**盖章**。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）、CLIPRDR 双审盖章（甲+乙）。
+
+
+## 第263轮：**CLIPRDR 通道双审盖章 ✅**（甲+乙一致）
+
+- **[审计乙盖章]** 边界2 闭合 ✅：`cliprdr_client.cpp:199` = `if (!ok || clipboard_ == nullptr) return;`（`pdu.data.empty()` 守卫已去除）→ 零长度写走完整流程并 arm `has_last_applied_`。指纹全对（`185b57004f2801e2`/`eebb58ce6d271d64`/`9a769a2c529dedc5`）；`rtsc_cliprdr_tests` **23/112/0**；`ctest` 40/40；`/W4 /WX` 零警告。
+- **[结论]** **三条边界（读失败 armed / 零长度写 armed / 格式集合同比）全部闭合 → CLIPRDR 通道双审盖章 ✅**（甲+乙一致）。
+- **CLIPRDR 特性完成**（编解码层 `src/proto/cliprdr.*` + 客户端通道 `src/channel/cliprdr_client.*` + 剪贴板桥 `src/clipboard/*` + GUI 接线 + 本地剪贴板同步）。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）。
+
+
+## 第264轮：**CLIPRDR 双审盖章完成 ✅**（甲乙）
+
+- **[审计甲盖章]** 边界2（零长度写）**已真正闭合 ✅**：`cliprdr_client.cpp:199` = `if (!ok || clipboard_ == nullptr) return;`（`pdu.data.empty()` 守卫已去除）；零长度写走完整流程(:202-209 arm `remote_sync_pending_`/`has_last_applied_`/空 `last_applied_data_`/`last_applied_formats_`)。`cliprdr_client.h:127-132` 注释与实现**现已一致**。
+  - 推演：`write(kCfUnicodeText,{})` → `OnLocalClipboardChanged` 先吞 `remote_sync_pending_`；`has_last_applied_` → `read` 返回 `{}` → `same_data=( {}=={} )` true → **吞** ✓；真实非空变化 `{0x42,0x00}` ≠ `{}` → 清 guard 并上报 ✓。
+  - 测试 `cliprdr_client_zero_length_write_does_not_loop`(:402-422) 断言「远程空写后自身 WM_CLIPBOARDUPDATE 不增加 sent；真实变化 +1 且为 FORMAT_LIST」✅ **有区分力**。
+  - C0：build EXIT=0/0 warning；`rtsc_cliprdr_tests` **23/112/0**；`ctest` 40/40；指纹全对（`185B57004F2801E2`/`EEBB58CE6D271D64`/`9A769A2C529DEDC5`）。
+- **[结论]** **CLIPRDR 三条边界全闭合 → 双审盖章 ✅**（甲+乙）。
+- **附注（非阻断，登记）**：FakeClipboard 的 `formats()` 返回测试设定的 `formats_`，不随 write 变化 → `last_applied_formats_` 路径靠 `cliprdr_client_remote_write_reports_when_format_set_changes` 覆盖；建议留意测试保真度。
+- **在途**：服务器基础层（主树）、RDPDR/USB/multimon（3 worktree）。
+
+
+## 第265轮：**多显示器 (multimon) 完成 + 核验 + 派发双审**
+
+- **[子代理完成]** `ses_e8bd8b857ffeAN5irWxxtGV3qW`（worktree `F:tsc\.worktrees\multimon`，`feat/multimon`）：
+  - 新增：`include/rtsc/proto/multimon.h`（`MonitorDef` TS_MONITOR_DEF 20B 有符号+flags PRIMARY；`ClientMonitorData` 0xC005；`MonitorLayoutPdu` 2.2.12.1 pduType2=0x37）、`src/proto/multimon.cpp`、`tests/test_multimon.cpp`（23 用例）；
+  - 接入：`connect_machine.cpp`（CS_MONITOR 块 + `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU=0x0040` + 虚拟桌面并集宽高）、`session_setup.cpp`（`has_monitor_layout` 记录，状态不变）、`connection_driver.h`/`client.h` 暴露；
+  - 多 surface：`graphics.cpp` `set_monitor_layout`/`RenderMonitorTo`、`ApplyBitmapRect` 用 `dest_left-origin_x_` 平移（负坐标）、`output.h` dest_left/dest_top 改 int16_t；
+  - GUI：`--multimon`（每显示器一窗口）+ 默认 span 单窗口。
+  - 红证：首跑 3 用例 FAIL（`kProtocolRdp` 未声明 + `monitor_layout_pdu_full_roundtrips` got 0 want 55 + wrong_pdu_type + capability flag）→ 绿：**23 tests/88 checks/0**；`ctest` **41/41**；`/W4 /WX` 零警告。
+- **[主代理核验]**（实跑 worktree）：`cmake --build` **EXIT=0**；`ctest -R multimon` **Passed**。
+- **[偏差/风险（登记）]**：
+  1. **Monitor Layout PDU 按规范**（`monitorCount(4)+monitorDefArray`，无 `supersedes`）实现，**非**任务字面描述 → 规范优先，正确。
+  2. worktree 基线落后主树 → 子代理修 `test_cliprdr.cpp` 两处**既有**缺陷（:129 enum `CHECK_EQ`、lock_unlock 复用 `body.take()`）——**test-only 最小修复**（需核实 + 考虑回移主树）。
+  3. GUI 多窗口路径无自动化覆盖；CS_MONITOR_EX(0xC008)/CS_MULTITRANSPORT 未实现；多窗口输入 1:1。
+- **[prompt 双审]** 审计甲 + 乙（worktree `feat/multimon`）。
+- **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 双审（甲+乙）。
+
+
+## 第266轮：**审计甲：multimon 协议层复核通过 ✅**
+
+- **[审计甲]**（worktree `feat/multimon`）：
+  - **协议 ✅**：`MonitorDef`(TS_MONITOR_DEF 20B 有符号 + flags PRIMARY=0x1)；`ClientMonitorData`(TS_UD_CS_MONITOR 0xC005，虚拟桌面 ≤32766、最小 200x200)；`MonitorLayoutPdu`(2.2.12.1 pduType2=0x37，体=`monitorCount(4)+monitorDefArray`，**无 supersedes** → 子代理按规范正确)；边界（count>16 拒绝、末尾字节拒绝、truncated 拒绝、空 layout 合法）。
+  - **接入 ✅**：`connect_machine.cpp:74-78` `earlyCapabilityFlags |= 0x0040`（仅当 support_monitor_layout_pdu）；`:54-72` CS_CORE desktop = **虚拟桌面并集宽高**；`BuildClientMonitorData`(:135) 无 monitors 不发块(:430-431)；`session_setup.cpp:215-224` kMonitorLayout → 记录布局**不改 state**。
+  - **多 surface ✅**：`graphics.cpp:38-85` set_monitor_layout（并集→origin=min、virtual=union、每显示器独立 surface）；`ApplyBitmapRect:260-261` `dest_left - origin_x_`（负坐标）；`output.h:61-62` dest_left/dest_top → **int16_t**。
+  - **TDD/C0 ✅**：23 用例先红后绿（红证 3 FAIL 有区分力）；worktree build EXIT=0/0 warning；`ctest` 41/41。
+  - **偏差核实**：test_cliprdr.cpp 两处修复**test-only 最小**（:129 enum `CHECK_EQ` → `CHECK`；:361 lock_unlock 复用 `take()` body → 重建 unlock body），**非削弱**；**「基线落后」在 commit 层不成立**（HEAD 2adf30f == 主树 HEAD）；GUI 多窗口无自动化覆盖；CS_MONITOR_EX(0xC008)/CS_MULTITRANSPORT 未实现；多窗口输入 1:1。
+  - **建议**：① 确认 GUI 多窗口（手动）；② CS_MONITOR_EX/multitransport 另立。
+- **待办**：等审计乙；合并 worktree 前回移 test_cliprdr.cpp 两处修复到主树（**核实**）。
+- **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 双审（乙待复）。
+
+
+## 第267轮：**multimon 双审盖章 ✅ + 改动未提交 → 派发合并**
+
+- **[双审盖章]** multimon **双审盖章 ✅**（甲+乙，无未决分歧）：协议层（MonitorDef 20B 有符号 / Client Monitor Data 0xC005 / MonitorLayoutPdu=monitorCount+array 无 supersedes / kMaxMonitors=16 / pduType2=0x37=55）+ 接入/多 surface（并集/origin/负坐标平移/output.h int16_t）。`rtsc_multimon_tests` **24/94/0**；`ctest` **41/41**；build 0 warning。
+- **[关键发现]** **`git diff master...feat/multimon` 为空** → multimon 改动**未提交**（worktree 工作区：13 改 + 3 新，含 `CMakeLists.txt`、`tests/test_cliprdr.cpp`、`tools/rtsc_gui/main.cpp`、`connect_machine.*`、`session_setup.*`、`graphics.*`、`output.*`、`connection_driver.h`、`client.h` + 新 `multimon.h/cpp`、`test_multimon.cpp`）。
+  - 主树改动也**未提交**（剪贴板：`cliprdr_client.*`、`CMakeLists.txt`、`window.*`、`rtsc_gui/main.cpp`、`test_cliprdr.cpp`）。
+  - `feat/rdpdr`（在途：rdpdr.*、rdpdr_client.*、rdpdr/）；`feat/usb`（起步：rdpusb.h）。
+- **[task 派发]** **合并 `feat/multimon` → master**（提交 worktree 改动 → 合并 → 解决冲突 → 重验 build/ctest → 双审合并）。
+- **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 合并。

@@ -103,6 +103,10 @@ class FakeClipboard final : public rtsc::clipboard::Clipboard {
  public:
     std::vector<uint32_t> formats() override { return formats_; }
     bool read(uint32_t format, std::vector<uint8_t>& out) override {
+        if (read_fails_) {
+            out.clear();
+            return false;
+        }
         auto it = data_.find(format);
         if (it == data_.end()) return false;
         out = it->second;
@@ -114,6 +118,7 @@ class FakeClipboard final : public rtsc::clipboard::Clipboard {
         return true;
     }
 
+    bool read_fails_ = false;
     std::vector<uint32_t> formats_;
     std::map<uint32_t, std::vector<uint8_t>> data_;
     unsigned write_count_ = 0;
@@ -126,7 +131,7 @@ CliprdrPdu DecodeChunk(const std::vector<uint8_t>& chunk) {
     CHECK_EQ(chunk.size() >= ChannelPduHeader::kSize, true);
     const uint8_t* p = chunk.data() + ChannelPduHeader::kSize;
     const size_t n = chunk.size() - ChannelPduHeader::kSize;
-    CHECK_EQ(CliprdrPdu::parse(p, n, pdu), Status::Ok);
+    CHECK(CliprdrPdu::parse(p, n, pdu) == Status::Ok);
     return pdu;
 }
 
@@ -330,6 +335,92 @@ RTSC_TEST(cliprdr_client_remote_write_swallows_local_change) {
     CHECK_EQ(sent.size(), after_request);
 }
 
+RTSC_TEST(cliprdr_client_remote_write_swallows_repeated_local_change) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    FeedServerCaps(client, 0);
+    client.Start();
+    const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
+    client.RequestRemoteFormat(kCfUnicodeText);
+    FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
+    const size_t after_write = sent.size();
+    // A single write can fire several WM_CLIPBOARDUPDATE events; every one
+    // caused by our own write must be swallowed.
+    client.OnLocalClipboardChanged();
+    client.OnLocalClipboardChanged();
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write);
+    // A genuinely different local clipboard is then reported.
+    clip.data_[kCfUnicodeText] = {0x42, 0x00, 0x00, 0x00};
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write + 1);
+    const CliprdrPdu list = DecodeChunk(sent.back());
+    CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
+}
+
+RTSC_TEST(cliprdr_client_remote_write_reports_when_format_set_changes) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    FeedServerCaps(client, 0);
+    client.Start();
+    const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
+    client.RequestRemoteFormat(kCfUnicodeText);
+    FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
+    const size_t after_write = sent.size();
+    client.OnLocalClipboardChanged();  // our own write: swallowed
+    CHECK_EQ(sent.size(), after_write);
+    // A genuinely different clipboard (a new format appears) is reported even
+    // when the previously written data is unchanged.
+    clip.formats_ = {kCfDib};
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write + 1);
+    const CliprdrPdu list = DecodeChunk(sent.back());
+    CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
+}
+
+RTSC_TEST(cliprdr_client_remote_write_keeps_guard_on_read_failure) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    FeedServerCaps(client, 0);
+    client.Start();
+    const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
+    client.RequestRemoteFormat(kCfUnicodeText);
+    FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
+    const size_t after_write = sent.size();
+    // If the clipboard cannot be read the guard must stay armed (no echo).
+    clip.read_fails_ = true;
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write);
+}
+
+RTSC_TEST(cliprdr_client_zero_length_write_does_not_loop) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    FeedServerCaps(client, 0);
+    client.Start();
+    // A remote zero-length write must still arm the guard.
+    client.RequestRemoteFormat(kCfUnicodeText);
+    FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, {});
+    const size_t after_write = sent.size();
+    // The WM_CLIPBOARDUPDATE from our own (empty) write is swallowed.
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write);
+    // A genuinely different non-empty clipboard is then reported.
+    clip.data_[kCfUnicodeText] = {0x42, 0x00};
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), after_write + 1);
+    const CliprdrPdu list = DecodeChunk(sent.back());
+    CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
+}
+
 RTSC_TEST(cliprdr_client_temp_directory_recorded) {
     FakeClipboard clip;
     std::vector<std::vector<uint8_t>> sent;
@@ -358,7 +449,9 @@ RTSC_TEST(cliprdr_client_lock_unlock_tracked) {
     FeedPdu(client, CliprdrMsgType::kLockClipData, 0, body.take());
     CHECK_EQ(client.locked_clipdata_id(), static_cast<uint32_t>(0x1234));
     CHECK_EQ(client.lock_clipdata_count(), static_cast<unsigned>(1));
-    FeedPdu(client, CliprdrMsgType::kUnlockClipData, 0, body.take());
+    ByteWriter unlock;
+    unlock.u32le(0x1234);
+    FeedPdu(client, CliprdrMsgType::kUnlockClipData, 0, unlock.take());
     CHECK_EQ(client.unlock_clipdata_count(), static_cast<unsigned>(1));
 }
 
