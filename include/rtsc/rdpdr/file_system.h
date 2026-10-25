@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <string>
@@ -75,6 +76,7 @@ class HostFileSystem final : public IFileSystem {
   struct File {
     std::fstream stream;
     bool is_directory = false;
+    std::string directory;
     std::vector<std::string> entries;
     size_t next_entry = 0;
   };

@@ -8468,3 +8468,170 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - **非阻断观察（登记）**：① WinUSB 后端仅编译+链接（无硬件/mstsc 实测）；② 多 DVC 编排建模；③ vendor/class/descriptor URB 未逐一实现（安全降级 kInvalidUrbFunction）；④ 合成 pipe/interface handle 为本地约定。
 - **[task 派发]** **合并 `feat/usb` → master**（提交 worktree → 合并 → 解决冲突 → 重验 → 双审合并）。
 - **在途**：USB 合并、RDPDR（全绿，待报告）。
+
+
+## 第311轮：**主树 WIP 已提交（424374d）→ 放行 USB 合并**
+
+- **[USB 合并受阻]** 合并代理 `ses_e8ae934edffeKMC2MCP3g9qJ5s`：worktree `feat/usb` 已提交 `e97c54e`（12 files, +4043/-2）；但主树有**未提交 WIP**（PROTOCOL_RDP + server base layer + GUI 剪贴板修复），`git merge` 拒绝（`CMakeLists.txt` 脏）；文本合并本身干净（`merge-tree` EXIT=0，无真实冲突）。
+- **[主代理处置]** 按选项 (a)：**提交主树 WIP** → `424374d feat: server base layer + client PROTOCOL_RDP (standard RDP security) + GUI clipboard bind fix`（15 files, +955/-85）；主树工作树**已干净**。
+  - WIP 内容均已双审盖章 ✅：服务器基础层、客户端 PROTOCOL_RDP、GUI 剪贴板回调修复。
+- **[prompt 放行]** 合并代理：继续执行 `git merge --no-ff feat/usb` → 解决冲突（保留双方）→ 重验 build/ctest → 报告。
+- **在途**：USB 合并（代理）、RDPDR（全绿，待报告）。
+
+
+## 第312轮：**USB 合并完成 + 核验 + 派发合并双审**
+
+- **[合并代理完成]** `ses_e8ae934edffeKMC2MCP3g9qJ5s`：
+  - `git log`：`18b6d5f merge: usb redirection`（双亲 `424374d` + `e97c54e`）。
+  - **无冲突**（ort 自动合并）：`CMakeLists.txt`（双方条目全保留）、`tests/test_cliprdr.cpp`（三方合并取主树版本）。
+  - 合并后 USB 文件与 `feat/usb` 提交内容逐字节一致（`git diff feat/usb HEAD -- <usb files>` 为空）。
+  - 绿证：`cmake --build` EXIT=0/0 warning；`ctest` **44/44**（含 rdpusb/rdp_standard_security/server/cliprdr/rdpdr）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest` **44/44**；`git log` 确认合并；工作树仅 `.opencode/process.md` 脏（协调文件）。
+- **[风险/登记]**：① 工作树 CRLF（`core.autocrlf=true`）→ 工作树 SHA256 与 LF blob 不同（仅换行差异）；② 继承已双审盖章的 USB 工作（WinUSB 仅编译+链接；多 DVC 编排建模；vendor/class/descriptor URB 安全降级；合成 handle 本地约定）。
+- **[prompt 双审]** 审计甲 + 乙（合并正确性 + 双方功能完整 + C0）。
+- **在途**：USB 合并双审（甲+乙）、RDPDR（全绿，待报告）。
+
+
+## 第313轮：**审计甲：USB 合并正确 ✅**（等乙）
+
+- **[审计甲·最终定案]** USB 重定向合并到 master **正确，审计通过 ✅**（HEAD `18b6d5f`）：
+  - **合并拓扑**：`18b6d5f` 双亲 = `424374d` + `e97c54e`。
+  - **无冲突**：全树冲突标记 = **0**。
+  - **USB 文件逐字节未受损**：`git diff e97c54e HEAD -- <11 USB 文件>` = 空；`test_rdpusb.cpp` blob sha1 三处同为 `15eb8746`。
+  - **主树功能未受损**：`git diff 424374d HEAD -- tests/test_cliprdr.cpp` = 空（保留三处 test-only 修复）。
+  - **CMakeLists 完整无重复**：USB + 主树条目全在；`add_test` 无重名。
+  - **实测**：`cmake --build` EXIT=0/0 warning；`ctest` **44/44**；`rtsc_rdpusb_tests` 45/192/0。
+  - **非阻断观察（登记）**：① **`test_rdpusb.cpp` 指纹报告有误**（合并代理报 `A960BA8839C19B35`，实测磁盘 = `7eeff70cd1f8c0c5`；**文件内容正确**，仅指纹数值报错）→ 建议核对哈希口径；② `tls_openssl` 注册但未运行（`if(NOT WIN32 AND RTSC_TLS_OPENSSL)` 默认 OFF，**既有设计**）。
+- **待办**：等**审计乙**盖章 → USB 合并双审完成。
+- **在途**：USB 合并双审（乙待复）、RDPDR（全绿，待报告）。
+
+
+## 第314轮：**USB 合并双审盖章 ✅**（甲乙）
+
+- **[审计乙]** USB 重定向合并到 master **内容正确 ✅**：
+  - 提交链 ✅：`18b6d5f merge: usb redirection`（双亲 `424374d` + `e97c54e`）。
+  - 内容一致 ✅：10 个 USB 文件主树 vs `feat/usb` 逐行 diff=0。
+  - `CMakeLists` ✅：双方条目齐全无重复；`test_cliprdr.cpp` 主树版本（9a769a2c529dedc5）。
+  - 主树功能未受损 ✅：`ctest` **44/44**（server/PROTOCOL_RDP/GUI 剪贴板修复均在）。
+  - **⚠️ 指纹偏差（非阻断）**：主树 USB 为 **CRLF**（仓库惯例），`feat/usb` worktree 为 **LF** → 内容相同但哈希不同；合并代理报的指纹是 worktree(LF) 值，与主树 CRLF 实际值不符；`test_rdpusb.cpp` 报 `A960BA8839C19B35` 与实际 `7EEFF70CD1F8C0C5` 亦不符（疑陈旧值）→ **指纹报告需绑定实际被审对象**。
+- **结论**：**USB 重定向合并到 master 双审盖章 ✅**。
+- **在途**：RDPDR（全绿，待报告→合并+双审）。
+- **登记**：指纹报告口径（CRLF/LF）——后续报告应注明哈希口径。
+
+
+## 第315轮：**审计甲修正观察项①（指纹归因）**
+
+- **[审计甲修正]** 对合并审计观察项①的修正（乙复核后共同确认）：
+  - **行尾根因**：`git config core.autocrlf=true`；主树 USB 文件磁盘为 **CRLF**，`feat/usb` worktree 为 **LF** → 合并代理报的指纹是 **worktree(LF)口径**，与主树磁盘(CRLF)值不同（CRLF/LF 差异，非内容差异）。
+  - **git blob(LF 归一)实测**：7 个 USB 文件中 **6 个**代理报值与 git blob 完全一致（rdpusb.h 6043b0dd / rdpusb.cpp c866be82 / drdynvc_client.cpp 9e66f6b6 / rdpusb_client.cpp 69145522 / usb_win32.cpp d8b2e65b / usb_win32.h 22f2b5c6）；**唯一错误**是 `test_rdpusb.cpp`（报 `a960ba8839c19b35`，实际 git blob = **`33d2fd5b1f37c1ba`**）。
+  - **文件内容正确**：`test_rdpusb.cpp` git blob sha1 三处同为 `15eb8746`，逐字节一致。
+- **结论不变**：**合并正确性通过**；观察项①修正为「`test_rdpusb.cpp` 指纹数值报错（唯一，疑陈旧/口径错），其余 6 个正确，内容无差异」——非阻断报告性瑕疵。
+- **在途**：RDPDR（全绿，待报告→合并+双审）。
+
+
+## 第316轮：**USB 合并指纹修正（主树 CRLF 实际字节）**
+
+- **[合并代理修正]** `ses_e8ae934edffeKMC2MCP3g9qJ5s`：主树 USB 文件为 **CRLF**（`core.autocrlf=true`，仓库惯例，与 multimon.cpp/server.cpp 一致）；先前报的是 LF blob 值（=worktree LF 值）。**修正后 = 主树实际字节 SHA256（前16）**：
+  - drdynvc_client.h 0CEE1A3FD5603B78 / rdpusb_client.h BF0F719376E9B4BC / rdpusb.h E393DAF12710EFA1 / rdpusb.cpp 417594F37FCDC725 / drdynvc_client.cpp 8DE3752C151008A0 / rdpusb_client.cpp 2A91286F4F935686 / test_rdpusb.cpp 7EEFF70CD1F8C0C5 / usb_win32.cpp 191E1A1BFA69A824 / usb_win32.h BEB672C6FDB75648 / usb_device.h 19F89DDCFF36C9C5
+  - LF blob 值供参考：rdpusb.h 6043B0DD / rdpusb.cpp C866BE82 / drdynvc_client.cpp 9E66F6B6 / rdpusb_client.cpp 69145522 / test_rdpusb.cpp A960BA88 / usb_win32.cpp D8B2E65B。
+- **内容一致性不变**：`git diff feat/usb HEAD -- <10 usb files>` = 空；合并提交 `18b6d5f`、build 0 warning、`ctest` 44/44 不变。
+- **登记**：后续指纹报告应注明口径（主树 CRLF 实际字节 vs git blob LF）。
+- **在途**：RDPDR（全绿，待报告→合并+双审）。
+
+
+## 第317轮：**RDPDR worktree 全绿 → 派发合并到 master**
+
+- **[核验]** RDPDR worktree（`feat/rdpdr`）：构建 EXIT=0、`ctest` **100%（40/40）**；文件：`src/channel/rdpdr_client.cpp`(15605)、`include/rtsc/channel/rdpdr_client.h`(5799)、`tests/test_rdpdr.cpp`(3026)、`src/proto/rdpdr.*`、`src/rdpdr/file_system.*`。
+- **[状态]** RDPDR agent（`ses_e8bd904faffegAEJPi4Bhm7Zaq`）idle（wrote 1792961122887，无完成报告）。
+- **[决策]** RDPDR 全绿但 agent 未报完成 → **派发合并**（同 USB 流程：提交 worktree → 合并 → 解决冲突 → 重验 → 双审）；若 agent 后续报完成，其报告作为补充。
+- **在途**：RDPDR 合并（新派发）。
+
+
+## 第318轮：**RDPDR 合并进度（核对 CMakeLists 计划）**
+
+- **[relay: ses_e8ac8f1c9ffeILn7z5SM07NjwW]** 尾部输出：`Let me check the coordination log for the RDPDR agent's plan regarding CMakeLists.` → **合并进行中**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：RDPDR 合并。
+
+
+## 第319轮：**RDPDR 合并疑似停滞 → 催办**
+
+- **[核验]** master 仍 `18b6d5f`（无 RDPDR 合并）；主树 build EXIT=0、`ctest` 44/44；工作树仅 `.opencode/process.md` 脏。
+- **[get_goal]** RDPDR 合并代理（`ses_e8ac8f1c9ffeILn7z5SM07NjwW`）idle（无 `wrote`）→ **疑似停滞**。
+- **[prompt 催办]** 合并代理：立即回复状态；提示 worktree 基线落后需先 `git merge master`/`rebase`；若无法继续明确报告（将改派）。
+- **在途**：RDPDR 合并（催办中）。
+
+
+## 第320轮：**RDPDR 合并完成 + 核验 + 派发合并双审（含未编译代码缺口）**
+
+- **[合并代理完成]** `ses_e8ac8f1c9ffeILn7z5SM07NjwW`：
+  - `git log`：`6a8f867 merge: drive redirection (RDPDR)`（双亲 `18b6d5f` + `17bdf7e`）。
+  - **无冲突**（ort 自动合并）：`CMakeLists.txt`（主树基线已含 rdpdr 条目 + 主树各条目全保留）、`tests/test_cliprdr.cpp`（取主树版本）。
+  - 绿证：`cmake --build` EXIT=0/0 warning；`ctest` **44/44**（含 rdpdr #28）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest` **44/44**；`git log` 确认合并。
+- **[⚠️ 关键缺口（合并代理 flag + 主代理核实）]**：`CMakeLists.txt` 仅引用 `src/proto/rdpdr.cpp`（:45），**未引用** `src/channel/rdpdr_client.cpp`、`src/rdpdr/file_system.cpp` → **未编译、未被 44/44 覆盖** → RDPDR 客户端处理器/文件系统桥为**未验证代码**。worktree `feat/rdpdr` 的 CMakeLists **实际未修改**（与任务描述不符）。
+- **[prompt 双审]** 审计甲 + 乙（合并正确性 + 未编译代码缺口评估）。
+- **在途**：RDPDR 合并双审（甲+乙）。
+- **待修（登记）**：补 `rtsc_rdpdr` 库条目（`rdpdr_client.cpp` + `file_system.cpp`）+ 测试。
+
+
+## 第321轮：**审计乙：RDPDR 合并内容正确 ✅ + 关键缺口（未编译死代码）→ 派发修复**
+
+- **[审计乙]** RDPDR 合并到 master **内容正确 ✅**：
+  - 提交链 ✅：`6a8f867`（双亲 `18b6d5f` + `17bdf7e`）。
+  - `CMakeLists` ✅：RDPDR 条目齐全无重复；`test_cliprdr.cpp` 主树版（9a769a2c529dedc5）。
+  - 指纹全对 ✅；**C0 ✅**：`ctest` 44/44。
+  - **⚠️ 关键缺口（严重度：高，功能级，非合并引入）**：`src/channel/rdpdr_client.cpp`、`src/rdpdr/file_system.cpp` **未被 CMakeLists 引用**（主树与 worktree 均如此）→ **未编译、未被 44/44 覆盖**；其头文件仅被自身 .cpp include → RDPDR 客户端处理器 + 文件系统桥为**未验证死代码**，RDPDR 特性不完整。建议接入 CMakeLists（rtsc_rdpdr 库）+ 补测试。
+- **[task 派发]** 修复缺口：新建 `rtsc_rdpdr` 库（`rdpdr_client.cpp` + `file_system.cpp`）+ `rtsc_rdpdr_tests` 链接 + TDD 补测。
+- **在途**：RDPDR 缺口修复（子代理）、RDPDR 合并双审（甲待复）。
+
+
+## 第322轮：**审计甲：RDPDR 合并 blocker（672 行不可编译死代码）→ 通知修复代理**
+
+- **[审计甲·定案]** RDPDR 合并 **内容正确 ✅**，但**阻断(blocker)**：
+  - `src/channel/rdpdr_client.cpp`(434)、`src/rdpdr/file_system.cpp`(238) 在 feat 父与主树 CMakeLists **均未引用**（仅 `src/proto/rdpdr.cpp` 入 `rtsc_proto`）→ 从未编译/未测；**且两文件不可编译**：
+    - [BASH: cl /c ...] **EXIT=2，6 错误**：`file_system.h(76) C2079`（缺 `#include <fstream>`）；`file_system.cpp(142,219) C2039`（`directory` 不是 `File` 成员）；`:174 C2737`（const 未初始化）；`:219 C2660`（`BuildDirectoryEntries` 签名不符）。
+    - **根因**：`file_system.h` 的 `struct File` 与 `file_system.cpp` 实现**不同源**。
+  - 合并正确性 ✅（无冲突、内容无损、指纹全对、build 0 warning、`ctest` 44/44）；但 **RDPDR 特性不完整且不可用**（672 行不可编译死代码）→ **blocker**。
+  - **建议修法**：①接通 + 修 `file_system.h`（补 `<fstream>`、`std::string directory;`）+ 修 `file_system.cpp:174` const + 补测试；②或移除未就绪文件，只留 `proto/rdpdr.*`。
+- **[relay 修复代理]** `ses_e8ab6231fffeK9StwbwLwoUdex`：补充审计证据（编译错误 + 根因），要求修复覆盖 ①-⑤。
+- **在途**：RDPDR 缺口修复（子代理，补充证据后）、RDPDR 合并双审（甲乙已一致：内容正确 + blocker）。
+
+
+## 第323轮：**RDPDR 缺口修复完成 + 核验 + 派发双审（含并发写协调）**
+
+- **[修复代理完成]** `ses_e8ab6231fffeK9StwbwLwoUdex`：
+  - `include/rtsc/rdpdr/file_system.h`：`:13` 补 `#include <fstream>`；`:79` `struct File` 补 `std::string directory;`（根因：头/实现不同源）。
+  - `CMakeLists.txt`：`:74-82` 新建 `rtsc_rdpdr` 库（`rdpdr_client.cpp` + `file_system.cpp`，链接 `rtsc_proto`）；`:225-227` `rtsc_rdpdr_tests` 链接；`:551-552` `/W4 /WX`。
+  - `tests/test_rdpdr_client.cpp`（新增，23 测试）。
+  - 红→绿：`cl /c ...` EXIT=2（6 错误）→ EXIT=0；build 0 warning；`ctest` **44/44**；`rtsc_rdpdr_tests` 23/149/0。
+  - 指纹：CMakeLists.txt d266c0847715817a / file_system.h c5276f7b7cb8dc0b / test_rdpdr_client.cpp 519a9f39210486b5。
+- **[主代理核验]**（实跑）：CMakeLists **单一 `rtsc_rdpdr`（无重复）**；build EXIT=0；`rdpdr` Passed；`ctest` **44/44**；指纹一致。
+- **[⚠️ 并发写冲突（代理自报）]**：他代理曾向 `CMakeLists.txt` 加**重复** `rtsc_rdpdr` 库 + `rtsc_rdpdr_client_tests` 目标 → `cmake configure` 失败（CMP0002）；代理已删除重复。**协调项**：确保他代理（疑为 RDPDR agent `ses_e8bd904faffegAEJPi4Bhm7Zaq`）**停止写 CMakeLists.txt**。
+- **[prompt 双审]** 审计甲 + 乙。
+- **在途**：RDPDR 缺口修复双审（甲+乙）。
+
+
+## 第324轮：**审计乙：RDPDR 缺口修复通过 ✅**（等甲）
+
+- **[审计乙]** RDPDR 未编译代码缺口修复 **通过 ✅**：
+  - **编译修复 ✅**：`file_system.h:13` 补 `#include <fstream>`、`:91` 补 `std::string directory;`（头/实现同源）。
+  - **红→绿有区分力 ✅**：改前独立复现 `cl /c ...` **EXIT=2，6 错误**；改后**同命令 EXIT=0，零 error 零 warning**。
+  - **CMakeLists ✅**：`rtsc_rdpdr` 库(:78-82) + `rtsc_rdpdr_tests`(:225-227) + `add_test rdpdr`(:498) + `/W4 /WX`(:551-552)；**无重复目标**（并发写冲突已收敛）。
+  - **TDD ✅**：`test_rdpdr_client.cpp` 23 测试（状态机 + 文件 I/O + HostFileSystem 桥）。
+  - **C0 ✅**：`rtsc_rdpdr_tests` 23/149/0；`ctest` 44/44；指纹全对。
+- **结论**：**RDPDR 特性 blocker 已闭合，通过 ✅**。
+- **待办**：等**审计甲**盖章 → RDPDR 缺口修复双审完成。
+- **在途**：RDPDR 缺口修复双审（甲待复）；并发写协调（已通知 RDPDR agent 停写 CMakeLists）。
+
+
+## 第325轮：**RDPDR 缺口修复双审盖章 ✅**（甲乙，blocker 闭合）
+
+- **[审计甲·最终定案]** RDPDR 未编译代码缺口修复 **双审盖章通过 ✅**（甲 + 乙 独立验证 + 交叉复核）：
+  - **修复正确性**：`cl /c ... file_system.cpp rdpdr_client.cpp` **EXIT=0/0 error**（修复前 EXIT=2/6 错误）；`file_system.h:13` 补 `#include <fstream>`、`:79` 补 `std::string directory;`（头/实现同源）；`CMakeLists.txt:78` `rtsc_rdpdr` 库、`:225` `rtsc_rdpdr_tests`、`:551-552` `/W4 /WX`；**无重复目标**（并发写冲突已收敛）。
+  - **实测**：`cmake configure` CMP0002=0；`cmake --build` EXIT=0/0 warning；`ctest` **44/44**；`rtsc_rdpdr_tests` **23/149/0**（= test_rdpdr 5 + test_rdpdr_client 18，单二进制共享 main）。
+  - **覆盖验证**：`test_rdpdr_client.cpp` include `rdpdr_client.h` + `file_system.h`，11 处引用 `HostFileSystem`/`IFileSystem` → **原 672 行死代码现已被编译 + 测试覆盖**。
+  - **非阻断观察（登记）**：① 并发写事件（他代理曾写重复目标致 CMP0002，已收敛；建议合并/构建串行化）；② `process.md` 脏（协调文件）；③ `test_rdpdr_client.cpp` 无独立 main（共用单二进制，设计选择）。
+- **结论**：**RDPDR 特性完整，审计通过 ✅**。
+- **[主代理]** 提交 WIP（缺口修复）到 master。
+- **在途**：提交 WIP。

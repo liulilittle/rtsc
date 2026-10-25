@@ -71,6 +71,16 @@ if(WIN32)
     target_link_libraries(rtsc_cliprdr PUBLIC user32)
 endif()
 
+# rdpdr (device redirection) virtual channel handler ([MS-RDPEFS]). Platform
+# neutral: it runs the drive redirection protocol and serves file I/O through
+# the rdpdr::IFileSystem seam; HostFileSystem is the host implementation
+# (std::fstream / std::filesystem).
+add_library(rtsc_rdpdr STATIC
+    src/channel/rdpdr_client.cpp
+    src/rdpdr/file_system.cpp)
+target_include_directories(rtsc_rdpdr PUBLIC include)
+target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto)
+
 # waveOut audio backend (Windows only).
 if(WIN32)
     add_library(rtsc_audio STATIC src/audio/audio_win32.cpp)
@@ -212,8 +222,8 @@ add_executable(rtsc_rdpusb_tests tests/test_rdpusb.cpp)
 target_link_libraries(rtsc_rdpusb_tests PRIVATE rtsc_urbrdc rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpusb_tests PRIVATE tests)
 
-add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp)
-target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp tests/test_rdpdr_client.cpp)
+target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpdr_tests PRIVATE tests)
 
 add_executable(rtsc_rdpsnd_tests tests/test_rdpsnd.cpp)
@@ -539,6 +549,7 @@ if(MSVC)
         target_compile_options(rtsc_usb_win32 PRIVATE /W4 /WX)
     endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpdr PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_cliprdr PRIVATE /W4 /WX)
