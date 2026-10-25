@@ -295,7 +295,7 @@ RTSC_TEST(cliprdr_client_format_data_response_writes_local) {
     client.RequestRemoteFormat(kCfUnicodeText);
     FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
 
-    CHECK_EQ(clip.data_[kCfUnicodeText], text);
+    CHECK(clip.data_[kCfUnicodeText] == text);
     CHECK_EQ(clip.write_count_, static_cast<unsigned>(1));
 }
 
@@ -343,7 +343,7 @@ RTSC_TEST(cliprdr_client_temp_directory_recorded) {
     body.u16le(0);
     FeedPdu(client, CliprdrMsgType::kTempDirectory, 0, body.take());
 
-    CHECK_EQ(client.temp_directory(), std::string("C:\\temp\\clipdata"));
+    CHECK(client.temp_directory() == std::string("C:\\temp\\clipdata"));
     CHECK_EQ(client.temp_directory_count(), static_cast<unsigned>(1));
 }
 
