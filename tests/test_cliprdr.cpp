@@ -126,7 +126,7 @@ CliprdrPdu DecodeChunk(const std::vector<uint8_t>& chunk) {
     CHECK_EQ(chunk.size() >= ChannelPduHeader::kSize, true);
     const uint8_t* p = chunk.data() + ChannelPduHeader::kSize;
     const size_t n = chunk.size() - ChannelPduHeader::kSize;
-    CHECK_EQ(CliprdrPdu::parse(p, n, pdu), Status::Ok);
+    CHECK(CliprdrPdu::parse(p, n, pdu) == Status::Ok);
     return pdu;
 }
 
@@ -358,7 +358,9 @@ RTSC_TEST(cliprdr_client_lock_unlock_tracked) {
     FeedPdu(client, CliprdrMsgType::kLockClipData, 0, body.take());
     CHECK_EQ(client.locked_clipdata_id(), static_cast<uint32_t>(0x1234));
     CHECK_EQ(client.lock_clipdata_count(), static_cast<unsigned>(1));
-    FeedPdu(client, CliprdrMsgType::kUnlockClipData, 0, body.take());
+    ByteWriter unlock;
+    unlock.u32le(0x1234);
+    FeedPdu(client, CliprdrMsgType::kUnlockClipData, 0, unlock.take());
     CHECK_EQ(client.unlock_clipdata_count(), static_cast<unsigned>(1));
 }
 
