@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
     };
 
     rtsc::channel::CliprdrClient cliprdr(local_clipboard.get(), send_cliprdr);
-    window->SetClipboardChangeCallback(
+    windows[0]->SetClipboardChangeCallback(
         [&] { cliprdr.OnLocalClipboardChanged(); });
 
     rtsc::channel::RdpsndClient rdpsnd(audio_sink.get(), send_rdpsnd);
