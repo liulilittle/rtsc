@@ -2,18 +2,23 @@
 // and the security layer.
 //
 // Usage:
-//   rtsc_connect <host> [port] [domain] [user] [password]
+//   rtsc_connect [--rdp] <host> [port] [domain] [user] [password]
 //
-// Without credentials the tool still runs the X.224 negotiation and starts the
-// external security handshake; it will fail at the server's NTLM challenge,
-// which is expected and reported. With credentials it can reach the Client Info
-// PDU. Nothing is logged that contains the password.
+// Without --rdp the tool requests external security (TLS / CredSSP). With
+// --rdp it requests PROTOCOL_RDP (Standard RDP Security): the MCS channel stays
+// plaintext, the Security Exchange uses RSA, and the licensing/data PDUs use
+// the RC4 SEC_ENCRYPT layer. In that mode the tool keeps reading until the
+// session is active and at least one graphics/data PDU has arrived, which is
+// the end-to-end loopback check against the in-tree server.
+//
+// Nothing is logged that contains the password.
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "rtsc/net/transport.h"
 #include "rtsc/proto/connect_machine.h"
@@ -28,7 +33,8 @@ constexpr const char* kVersion = "rtsc_connect 0.1.0";
 void usage() {
     std::printf(
         "%s\n"
-        "usage: rtsc_connect <host> [port] [domain] [user] [password]\n"
+        "usage: rtsc_connect [--rdp] <host> [port] [domain] [user] [password]\n"
+        "  --rdp  request PROTOCOL_RDP (Standard RDP Security, RC4 data plane)\n"
         "  port defaults to 3389; credentials are optional.\n",
         kVersion);
 }
@@ -44,19 +50,31 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     rtsc::util::InstallCrashGuard("rtsc_connect");
 
-    if (argc < 2) {
+    bool standard_rdp = false;
+    std::vector<std::string> args;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--rdp") == 0) {
+            standard_rdp = true;
+            continue;
+        }
+        args.emplace_back(argv[i]);
+    }
+    if (args.empty()) {
         usage();
         return 2;
     }
-    const std::string host = argv[1];
-    const uint16_t port =
-        argc >= 3 ? static_cast<uint16_t>(std::atoi(argv[2])) : 3389;
-    const std::string domain = argc >= 4 ? argv[3] : "";
-    const std::string user = argc >= 5 ? argv[4] : "";
-    const std::string password = argc >= 6 ? argv[5] : "";
 
-    std::printf("connecting to %s:%u\n", host.c_str(),
-                static_cast<unsigned>(port));
+    const std::string host = args[0];
+    const uint16_t port =
+        args.size() >= 2 ? static_cast<uint16_t>(std::atoi(args[1].c_str()))
+                         : 3389;
+    const std::string domain = args.size() >= 3 ? args[2] : "";
+    const std::string user = args.size() >= 4 ? args[3] : "";
+    const std::string password = args.size() >= 5 ? args[4] : "";
+
+    std::printf("connecting to %s:%u (%s)\n", host.c_str(),
+                static_cast<unsigned>(port),
+                standard_rdp ? "PROTOCOL_RDP" : "external security");
 
     std::string error;
     auto transport = rtsc::net::ConnectTcp(host, port, error);
@@ -67,12 +85,19 @@ int main(int argc, char** argv) {
 
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
-    mcfg.requested_protocols = rtsc::proto::kProtocolSsl |
-                               rtsc::proto::kProtocolHybrid |
-                               rtsc::proto::kProtocolHybridEx;
     mcfg.client_name = "RTSC";
     mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
-    mcfg.encryption_methods = 0;
+    if (standard_rdp) {
+        mcfg.requested_protocols = rtsc::proto::kProtocolRdp;
+        // Advertise 40/128/56-bit Standard RDP Security. The server picks the
+        // strongest method and returns the matching RSA certificate.
+        mcfg.encryption_methods = 0x0000001B;
+    } else {
+        mcfg.requested_protocols = rtsc::proto::kProtocolSsl |
+                                   rtsc::proto::kProtocolHybrid |
+                                   rtsc::proto::kProtocolHybridEx;
+        mcfg.encryption_methods = 0;
+    }
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -87,6 +112,13 @@ int main(int argc, char** argv) {
     scfg.credentials.password = password;
 
     rtsc::security::ConnectionDriver driver(mcfg, creds, scfg);
+    size_t session_pdus = 0;
+    size_t session_bytes = 0;
+    driver.SetSessionPduHandler([&](const std::vector<uint8_t>& pdu) {
+        ++session_pdus;
+        session_bytes += pdu.size();
+        std::printf("data PDU %zu: %zu bytes\n", session_pdus, pdu.size());
+    });
 
     auto step = driver.Start();
     if (!WriteAll(*transport, step.to_send)) {
@@ -100,9 +132,11 @@ int main(int argc, char** argv) {
     // A bounded read timeout is not a disconnect: keep waiting until the
     // wall-clock deadline, and only fail when the peer actually closes.
     int round = 0;
+    bool done_printed = false;
+    bool active = false;
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (round < 64) {
+    while (round < 256) {
         const int n = transport->Read(buf, sizeof(buf));
         if (n == rtsc::net::kReadTimeout) {
             if (std::chrono::steady_clock::now() >= deadline) {
@@ -130,8 +164,26 @@ int main(int argc, char** argv) {
             n, step.to_send.size(),
             rtsc::proto::to_string(driver.machine().state().phase),
             driver.machine().state().negotiated_protocol);
-        if (step.done) {
+
+        const bool negotiated_rdp =
+            driver.machine().state().negotiated_protocol ==
+            rtsc::proto::kProtocolRdp;
+        if (step.done && !done_printed) {
+            done_printed = true;
             std::printf("DONE: Client Info PDU sent\n");
+            if (!negotiated_rdp) {
+                // Historical behaviour for the external-security path: the
+                // tool's job ends once the post-handshake MCS sequence is up.
+                return 0;
+            }
+        }
+        if (step.active && !active) {
+            active = true;
+            std::printf("ACTIVE: session reached S4 (Font Map received)\n");
+        }
+        if (negotiated_rdp && active && session_pdus > 0) {
+            std::printf("LOOPBACK OK: active, %zu data PDUs, %zu bytes\n",
+                        session_pdus, session_bytes);
             return 0;
         }
     }

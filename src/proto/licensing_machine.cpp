@@ -144,12 +144,25 @@ LicenseStep LicensingMachine::HandleLicenseRequest(const LicensingPdu& pdu) {
     LicenseStep out;
     const ServerLicenseRequest& req = pdu.license_request;
 
-    RsaPublicKey rsa;
-    if (ExtractRsaPublicKey(req.server_certificate.data, rsa) != Status::Ok) {
+    // Prefer the certificate carried by the license request itself; fall back
+    // to the one from TS_UD_SC_SEC1 (the in-tree server puts the key only
+    // there).
+    std::vector<uint8_t> certificate = req.server_certificate.data;
+    if (certificate.empty()) certificate = config_.server_certificate;
+
+    crypto::RsaPublicKey key;
+    const bool have_key = !certificate.empty();
+    if (have_key) {
+        RsaPublicKey rsa;
+        if (ExtractRsaPublicKey(certificate, rsa) != Status::Ok) {
+            return Fail("cannot extract the server RSA public key from the "
+                        "license request certificate");
+        }
+        key = ToCryptoKey(rsa);
+    } else if (!config_.allow_missing_server_key) {
         return Fail("cannot extract the server RSA public key from the license "
                     "request certificate");
     }
-    const crypto::RsaPublicKey key = ToCryptoKey(rsa);
 
     if (premaster_.size() != kPremasterSize) {
         if (!crypto::RandomBytes(premaster_, kPremasterSize)) {
@@ -167,7 +180,8 @@ LicenseStep LicensingMachine::HandleLicenseRequest(const LicensingPdu& pdu) {
     }
 
     std::vector<uint8_t> encrypted;
-    if (!crypto::RdpRsaEncryptClientRandom(key, premaster_, encrypted)) {
+    if (have_key &&
+        !crypto::RdpRsaEncryptClientRandom(key, premaster_, encrypted)) {
         return Fail("RSA encryption of the premaster secret failed");
     }
 

@@ -227,10 +227,10 @@ std::vector<uint8_t> Client::EncodeCtrlAltDel() const {
 bool Client::SendPdu(net::Transport& transport,
                      const std::vector<uint8_t>& pdu, std::string& error) {
     if (pdu.empty()) return true;
-    // Post-active input is application data on the secured transport, so it must
-    // go through the security layer (TLS) like every other PDU.
-    auto* sec = driver_.security();
-    const auto wire = sec != nullptr ? sec->SendPdu(pdu) : pdu;
+    // Post-active input is application data on the secured transport. Under
+    // TLS the driver's security layer wraps it; under Standard RDP Security
+    // the driver puts it inside an MCS Send Data Request and applies RC4.
+    const auto wire = driver_.SendApplicationPdu(pdu);
     if (wire.empty()) return true;
     if (!transport.Write(wire.data(), wire.size())) {
         error = "input write failed";

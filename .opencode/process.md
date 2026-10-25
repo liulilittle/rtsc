@@ -8020,3 +8020,451 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - `feat/rdpdr`（在途：rdpdr.*、rdpdr_client.*、rdpdr/）；`feat/usb`（起步：rdpusb.h）。
 - **[task 派发]** **合并 `feat/multimon` → master**（提交 worktree 改动 → 合并 → 解决冲突 → 重验 build/ctest → 双审合并）。
 - **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 合并。
+
+
+## 第268轮：**multimon 合并完成 + 核验 + 派发合并双审**
+
+- **[合并代理完成]** `ses_e8bb42a3fffeG7S0mYqwUdfV5A`：
+  - 提交：`5f5c293`（剪贴板 8 文件）、`6b42a2d`（multimon 16 文件）、`805625f`（merge）、`2bd66d8`（合并修复）。
+  - **无文本冲突标记**（ort 自动合并）；**发现并修复一处静默语义冲突**：`tools/rtsc_gui/main.cpp` 剪贴板侧 `window->SetClipboardChangeCallback(...)` 与 multimon 的 `windows`（vector）重命名冲突 → 改为 `windows[0]->SetClipboardChangeCallback(...)`（指纹 974a5cf51483cf66）。
+  - `CMakeLists.txt`（指纹 0fb02c5b831f1f41）：双方条目全保留（cliprdr + rdpsnd + multimon）；`rtsc_gui` 链接 `rtsc_rdpsnd rtsc_audio rtsc_cliprdr`。
+  - `tests/test_cliprdr.cpp`（指纹 9a769a2c529dedc5）：主树版本（已含 multimon 的 2 处 test-only 修复）。
+  - `git log`：`2bd66d8 → 805625f → 6b42a2d → 5f5c293 → 2adf30f`；工作树**干净**。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -C Release` **41/41**（含 #16 multimon、#24 cliprdr）；`git status` 干净。
+- **[风险/登记]**：① GUI 多窗口路径无自动化覆盖；剪贴板回调仅挂 `windows[0]`（多窗口模式仅主窗口驱动本地剪贴板上报，符合 1:1 语义）；② CS_MONITOR_EX(0xC008)/CS_MULTITRANSPORT 未实现；多窗口输入 1:1；③ git 身份设为仓库级 `rtsc-agent`（未改 global）。
+- **[prompt 双审]** 审计甲 + 乙（合并正确性 + 双方功能完整 + C0）。
+- **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 合并双审（甲+乙）。
+
+
+## 第269轮：**审计乙：multimon 合并通过 ✅**（等甲）
+
+- **[审计乙]** multimon 合并到 master **复核通过 ✅**：
+  - 提交链 ✅：`5f5c293`(clipboard) → `6b42a2d`(multimon) → `805625f`(merge) → `2bd66d8`(merge fix)。
+  - **静默语义冲突修复 ✅**：`main.cpp:276` = `windows[0]->SetClipboardChangeCallback(`（剪贴板回调正确绑到主窗口）。
+  - **CMakeLists ✅**：双方条目齐全（cliprdr + rdpsnd + multimon），无重复。
+  - **指纹全对 ✅**：CMakeLists `0fb02c5b831f1f41` / main.cpp `974a5cf51483cf66` / test_cliprdr `9a769a2c529dedc5` / test_multimon `b4644de71c05c301` / multimon.cpp `ef614a54f330e1a0` / multimon.h `5ad9a6903390d89c`。
+- **待办**：等**审计甲**盖章 → 合并双审完成。
+- **在途**：服务器基础层（主树）、RDPDR/USB（2 worktree）、multimon 合并双审（甲待复）。
+
+
+## 第270轮：**核验 worktree 进度 + 服务器代理停滞催办**
+
+- **[get_goal]**：甲 `pending:true`（合并审计待复）；RDPDR `pending:true`（已写产物，报告待收）；USB `pending:true`（已写产物，报告待收）；服务器 `ses_e8c01930`（idle，wrote 但无 `src/server/`）。
+- **[worktree 核验]**：
+  - **RDPDR**（`feat/rdpdr`）：`src/rdpdr/file_system.cpp`(8764) + `include/rtsc/rdpdr/file_system.h`(3341) + `include/rtsc/channel/rdpdr_client.h`(5799) + `src/channel/rdpdr_client.cpp`(15605) + `src/proto/rdpdr.cpp`/`rdpdr.h` → **进展良好**。
+  - **USB**（`feat/usb`）：`include/rtsc/proto/rdpusb.h`(19279) + `include/rtsc/proto/drdynvc.h`(2301) + `src/proto/drdynvc.cpp`(2985) + `tests/test_drdynvc.cpp`(3923) + build `rtsc_drdynvc_tests.exe` → **进展良好**。
+  - **multimon**（`feat/multimon`）：已合并 master（`6b42a2d`）。
+- **[主树]**：`src/server/` **空**；仅 `include/rtsc/server/server.h`(6874, 01:20)；近 1h 无 server 写入 → **服务器基础层停滞**。
+- **[prompt 催办]** `ses_e8c01930fffelNAC8ozFX0wSgC`（服务器基础层续做；要求落盘 + 回环；阻塞即报）。
+- **在途**：服务器基础层（催办）、RDPDR/USB（2 worktree 在途）、multimon 合并双审（甲待复）。
+
+
+## 第271轮：**服务器基础层完成 + 核验 + 派发双审**
+
+- **[服务器代理完成]** `ses_e8c01930fffelNAC8ozFX0wSgC`（`src/server/`）：
+  - `src/server/server.cpp`（**1296 行** · SHA **DF34DAF07A20D54C**）：X.224 CRQ→CCF（+ negotiation failure）→ MCS（Connect Initial/Response+GCC/Attach User/Channel Join）→ Security Exchange（RSA 解密 + RC4）→ Client Info → Licensing（`LICENSE_ERROR_MESSAGE`/`STATUS_VALID_CLIENT`）→ Demand Active（全 capability sets）+ Confirm Active → Synchronize/Control/Font Map → **active**；输出 `SendFrame`（32bpp 分带）；输入 `ParseInputEvents`（fast-path 全事件）。
+  - `src/server/rsa_posix_stub.cpp`（73CBBA74E1009F1D，非 Win fail-closed）、`include/rtsc/server/server.h`（187 行 · F40C4F6B21B2AE1D）、`tests/test_server.cpp`（672 行 · 51E0E6F69B91655D，5 测试）、CMakeLists server 段（6BCE6BB81047EA04）。
+  - 红→绿 5 轮（IPv6 绑定、BER 最简、32B random、分带、updateType 双消费）。
+  - **多用户（D1）**：每 peer 独立 `RdpSession` + 独立线程；共享仅**不可变** config/只读 source/authenticator；无共享可变状态、无锁。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R server` **Passed**（5 tests）；`ctest` **42/42**；指纹一致（df34daf0…/51e0e6f6…/f40c4f6b…）。
+- **[回环]**：`server_interop_with_client_machine` 达 active + 收测试图案帧；真实客户端 `rtsc_connect` 止步「post-handshake data with no security layer」→ **客户端 `ConnectionDriver` 无 PROTOCOL_RDP 明文通路**（客户端侧缺口）。
+- **[缺口（登记）]**：① **增强安全**（TLS/CredSSP 服务端 + EUAR/EUAC）未实现（mstsc 默认 SSL/HYBRID）；② licensing 仅 RC4（无 L3）；③ 未用 multifragment-update。
+- **[prompt 双审]** 审计甲 + 乙（服务器基础层）。
+- **在途**：服务器基础层双审（甲+乙）、RDPDR/USB（2 worktree）、multimon 合并双审（甲待复）。
+
+
+## 第272轮：**审计乙：服务器基础层通过 ✅**（等甲）
+
+- **[审计乙]** RDP 服务器基础层 **复核通过 ✅**（无阻断缺陷）：
+  - **协议链 ✅**：X.224（含 RDP_NEG_FAILURE §2.2.1.2.2）→ MCS（Connect Initial/Response/GCC/Attach User/Channel Join）→ Security Exchange（RSA/RC4）→ Client Info → Licensing → Demand Active（§2.2.1.13.1）+ Confirm Active（§2.2.1.13.2）→ Synchronize/Control/Font Map → active。
+  - **状态机 ✅**：每阶段 fail-closed（任一失败即 return false）。
+  - **多用户(D1) ✅**：每 session 独立 `RdpSession`；共享仅 const config/只读 source/`std::function` 回调；无共享可变状态（`sessions_mu` 仅保护向量）。
+  - **输出/输入 ✅**：`SendFrame` 分带（MCS 16383 上限，overhead 18+4+20）；`ParseInputEvents` fast-path 全事件。
+  - **TDD ✅**：5 用例红→绿；**C0 ✅**：build 零警告；`ctest` 42/42；指纹全对。
+  - **常量 ✅**：SEC_ENCRYPT 0x0008 / SEC_EXCHANGE_PKT 0x0001 / SEC_INFO_PKT 0x0040 / SEC_LICENSE_PKT 0x0080 与规范一致。
+  - **缺口（登记，非缺陷）**：TLS/CredSSP 未实现（真实客户端止步 'post-handshake data with no security layer'，符合 server.h:65-70 设计声明）；licensing 无 L3；无 multifragment-update。
+- **待办**：等**审计甲**盖章 → 服务器基础层双审完成。
+- **在途**：服务器基础层双审（甲待复）、RDPDR/USB（2 worktree）、multimon 合并双审（甲待复）。
+
+
+## 第273轮：**审计甲：服务器基础层通过 ✅ + 发现合并引入 GUI 缺陷**
+
+- **[审计甲]** RDP 服务器基础层 **通过 ✅**（无阻断缺陷）：
+  - 协议链 ✅（X.224 含 RDP_NEG_FAILURE 0x05 合规范；MCS；Security Exchange RSA/RC4 交换方向；Licensing；Demand/Confirm Active；Finalization）。
+  - 状态机 ✅ fail-closed；**多用户(D1) ✅**（每 peer 独立 `RdpSession`+线程；共享仅 const config/只读 source/回调；唯一共享可变=会话注册表，由 **`sessions_mu`** 保护）。
+  - 输出/输入 ✅（`SendFrame` BGRX 底向上分带；`ParseInputEvents` fast-path 全事件）；TDD 5 红→绿；C0 build 0 warning、ctest 42/42。
+  - **【更正】** 子代理称「**无锁**」**不准确** —— 有 1 把 `sessions_mu`（仅注册表）→ 建议表述改「业务无锁，仅注册表 1 锁」。
+  - **【风险】** `source_`(DesktopSource) 被多会话**并发 `Capture()`**；若后端(GDI 抓屏)非线程安全会竞态 → 建议确认或每会话独立 source。
+- **[结论]** **服务器基础层双审盖章 ✅**（甲+乙）。
+- **【新发现·合并引入缺陷，GUI 层】** `tools/rtsc_gui/main.cpp:276` 剪贴板回调绑在 `windows[0]`（初始窗口），`:321 windows.clear()`（多窗口替换）销毁之 → **多窗口模式下本地剪贴板变化不再上报服务器**。**已核实**（读 :265-344）。
+- **[task 派发]** 修复 GUI 剪贴板回调绑定（移到窗口创建后 / 多窗口循环内绑定）。
+- **在途**：GUI 剪贴板回调修复、RDPDR/USB（2 worktree）、multimon 合并双审（甲待复）。
+
+
+## 第274轮：**审计乙确认 GUI 缺陷；修复已派发**
+
+- **[审计乙]** 服务器基础层通过 ✅；**交叉复核发现同一 GUI 缺陷**（与甲一致）：`main.cpp:276` 回调绑 `windows[0]`，`:320-331 windows.clear()` 销毁之，`:322-330` 新窗口未重设 → 多窗口模式 CLIPRDR 同步丢失（单窗口不受影响）。修复建议：改绑 `local_clipboard` 或新窗口重设。
+  - **风险（非阻断）**：`Run()` 每 peer 一线程，`source_->Capture()` 并发无锁 → 后端非线程安全即竞态。
+  - **更正**：服务器非"无锁"，有 1 把 `sessions_mu`（仅注册表）。
+- **[主代理]** 修复**已派发**（`ses_e8b7a24dcffeOytiQTQ0bJ6d80`）；已通知乙。
+- **在途**：GUI 剪贴板回调修复（子代理）、RDPDR/USB（2 worktree）、multimon 合并双审（甲已审/乙待盖章）。
+
+
+## 第275轮：**multimon 合并双审盖章 ✅**（甲乙一致）
+
+- **[审计乙]** multimon 合并 **结构正确性双审盖章 ✅**（与甲一致）：
+  - 提交链 ✅：`5f5c293`(clipboard) → `6b42a2d`(multimon) → `805625f`(merge) → `2bd66d8`(merge fix)。
+  - **静默语义冲突修复 ✅**（结构层面正确）：`main.cpp:276` `windows[0]->SetClipboardChangeCallback(`。
+  - **CMakeLists ✅**：双方条目齐全（cliprdr + rdpsnd + multimon），无重复；指纹全对。
+  - **附注**：该修复本身引入了**多窗口剪贴板回调回归**（已确认缺陷，正由 `ses_e8b7a24dcffeOytiQTQ0bJ6d80` 修复，修复后双审）。
+- **[结论]** **multimon 合并双审盖章 ✅**（甲乙）。
+- **在途**：GUI 剪贴板回调修复（子代理）、RDPDR/USB（2 worktree）。
+- **已登记**：① "无锁"更正（业务无锁，仅注册表 1 锁）；② `source_->Capture()` 并发无锁（风险，非阻断）；③ CS_MONITOR_EX/CS_MULTITRANSPORT 未实现；④ 客户端 PROTOCOL_RDP 明文通路 + 服务器增强安全。
+
+
+## 第276轮：**甲确认（无待办）——待 GUI 修复完成后双审**
+
+- **[审计甲]** 收到 ✅；同意派发修复（**方案 B**：回调绑定移到窗口创建之后，对**所有窗口**统一设置，覆盖单/多窗口）。
+  - 登记：① "无锁"更正（业务无锁，仅注册表 1 把 `sessions_mu`）；② `source_->Capture()` 并发无锁 → **风险（非阻断，有文档契约 `server.h:79`）**，建议后续确认后端线程安全或每会话独立 source。
+  - **待修复完成后**与乙双审（重点：多窗口模式剪贴板回调是否真正重设到每个窗口；单窗口不受影响；无新缺陷）。
+- **在途**：GUI 剪贴板回调修复（`ses_e8b7a24dcffeOytiQTQ0bJ6d80`）、RDPDR/USB（2 worktree）。
+- **已盖章**：剪贴板、multimon、服务器基础层。
+
+
+## 第277轮：**GUI 剪贴板回调修复完成 + 核验 + 派发双审**
+
+- **[修复代理完成]** `ses_e8b7a24dcffeOytiQTQ0bJ6d80`：
+  - `tools/rtsc_gui/main.cpp:350-351`：`rtsc::ui::BindClipboardToWindows(windows, [&]{ cliprdr.OnLocalClipboardChanged(); })`（置于多窗口重建 `:320-331` 之后；单/多窗口共用一次调用）；删除原 `:276-277` 早期绑定。
+  - `include/rtsc/ui/clipboard_bind.h`（新增）：遍历全部 live 窗口绑定（跳过 nullptr）。
+  - `tests/test_ui.cpp`（新增）：3 测试（单窗口绿 / 重建后全绑绿 / 重建前红证旧缺陷）。
+  - 指纹：main.cpp `a9278fdf19bbf1c1` / clipboard_bind.h `8d1cedbcc8ed428b` / test_ui.cpp `c1c6ed2437380789`。
+- **[主代理核验]**（实跑主树）：`cmake --build Release` **EXIT=0**；`ctest -R ui` **Passed**；`ctest` **42/42**；指纹一致；`main.cpp:350` 确认 `BindClipboardToWindows`。
+- **[风险/登记]**：① `cliprdr` 引用捕获（生命周期与改前一致）；② Win32 每 HWND 各自 listener（语义正确）；③ 端到端多显示器需真实服务器（未执行）；④ **预存在** Debug C4702（`window_win32.cpp:372`，非本次引入，Release 通过）。
+- **[prompt 双审]** 审计甲 + 乙（GUI 修复正确性）。
+- **在途**：GUI 修复双审（甲+乙）、RDPDR/USB（2 worktree）。
+
+
+## 第278轮：**审计乙：GUI 剪贴板回调修复双审盖章 ✅**（等甲）
+
+- **[审计乙]** GUI 多窗口剪贴板回调修复 **双审盖章 ✅**：
+  - 修复 ✅：`main.cpp:350-351` `BindClipboardToWindows(...)` 置于多窗口重建之后、渲染循环之前；原 `:276-277` 早期绑定已删。
+  - `clipboard_bind.h` ✅：遍历全部 live 窗口绑定（跳过 nullptr），可重建后重复调用。
+  - TDD ✅：3 用例，含红证 `clipboard_callback_bound_before_a_rebuild_is_lost`（fired=0 复现旧缺陷）。
+  - 指纹全对 ✅；`rtsc_ui_tests` **12/61/0**；`ctest` **42/42**；build EXIT=0 零警告。
+  - 风险登记：C4702（`/Od` 预存在非本次）、cliprdr 引用捕获、多窗口每 HWND 绑定、端到端需真实服务器。
+- **待办**：等**审计甲**盖章。
+- **在途**：GUI 修复双审（甲待复）、RDPDR/USB（2 worktree）。
+
+
+## 第279轮：**乙重复确认 GUI 修复盖章 ✅**（等甲）
+
+- **[审计乙]** 重复确认（与主代理交叉）：GUI 剪贴板回调修复 **双审盖章 ✅**（修复正确性/时序/红证/C0 全对；无缺陷）。
+- **待办**：等**审计甲**盖章 → GUI 修复双审完成。
+- **在途**：RDPDR/USB（2 worktree）。
+- **下一步**：客户端 PROTOCOL_RDP 明文通路 + 服务器增强安全（TLS/CredSSP）。
+
+
+## 第280轮：**GUI 修复团队结束报告（乙盖章 ✅）**
+
+- **[执行 AI]** `ses_e8b7a24dcffeOytiQTQ0bJ6d80` 团队任务结束报告：GUI 剪贴板回调多窗口修复完成，审计乙确认双审盖章 ✅。
+  - 修复：`main.cpp:350-351` `BindClipboardToWindows(...)` + `clipboard_bind.h`；原 `:276-277` 已删。
+  - TDD：`tests/test_ui.cpp` 3 例（含红证）；C0：build EXIT=0、`ctest` 42/42、`rtsc_ui_tests` 12/61/0。
+  - 指纹：main.cpp `A9278FDF19BBF1C1` / clipboard_bind.h `8D1CEDBCC8ED428B` / test_ui.cpp `C1C6ED2437380789`。
+  - 风险：预存在 C4702（`window_win32.cpp:372`，`/Od`，非本次引入）。
+- **待办**：等**审计甲**盖章 → GUI 修复双审完成。
+- **在途**：RDPDR/USB（2 worktree）。
+
+
+## 第281轮：**GUI 剪贴板回调修复双审盖章 ✅**（甲乙）+ 派发下一步
+
+- **[审计甲]** GUI 多窗口剪贴板回调修复 **复核通过 ✅**（与乙一致）：
+  - 修复正确性 ✅：`main.cpp:350-351` `BindClipboardToWindows(...)` 位于多窗口重建之后；`SetClipboardChangeCallback` 在 main.cpp 中 **0 次**（无重复/残留）；`clipboard_bind.h` 遍历全部 live 窗口（跳过 nullptr）；单窗口路径仍覆盖；时序正确。
+  - 红证有区分力 ✅：`clipboard_callback_bound_before_a_rebuild_is_lost` 真实复现旧缺陷（fired=0）；`bound_after_a_rebuild` 绿。
+  - C0 ✅：build EXIT=0/0 warning；`ctest` 42/42；`rtsc_ui_tests` 12/61/0；指纹全对（`A9278FDF19BBF1C1`/`8D1CEDBCC8ED428B`/`C1C6ED2437380789`）。
+  - 风险登记：cliprdr 引用捕获（安全）；Win32 每 HWND listener；预存在 Debug C4702（非本次）；端到端需真实服务器。
+- **结论**：**GUI 剪贴板回调修复双审盖章 ✅**。
+- **[task 派发]** **客户端 PROTOCOL_RDP 明文通路**（打通 rtsc_connect ↔ 服务器 → active）：`src/security/connection_driver.cpp`（PROTOCOL_RDP 无 SecurityLayer 的明文数据通路）+ `src/proto/connect_machine.cpp`（标准 RDP 安全声明）。
+- **在途**：客户端 PROTOCOL_RDP 通路（新）、RDPDR/USB（2 worktree）。
+
+
+## 第282轮：**客户端 PROTOCOL_RDP 通路完成 + 核验 + 派发双审**
+
+- **[执行 AI 完成]** `ses_e8b66bf89ffe94BX2HPFoLA8PL`（客户端 PROTOCOL_RDP 明文数据通路 / 标准 RDP 安全）：
+  - 新增：`include/rtsc/security/standard_rdp_security.h`（30e860fcb3360bf1，SC_SEC1/RSA Exchange/RC4+MAC/4096 换钥）、`src/security/standard_rdp_security.cpp`（7276f79e180f1b6e）、`tests/test_rdp_standard_security.cpp`（61b2bff77f2fe271，6 测试）。
+  - 修改：`src/security/connection_driver.cpp`（c07c5ba5bfed488d，PROTOCOL_RDP 明文 MCS/BeginPostClientInfo/CaptureServerSecurity/SendApplicationPdu）、`include/rtsc/crypto/rdp_security.h`（fa9afe3018434536，**128BIT=0x02/56BIT=0x08 修正**）、`src/proto/connect_machine.cpp`（删失败）、licensing_machine.*（SC_SEC1 证书 + opt-in 空 premaster）、`src/client/client.cpp`、`tools/rtsc_connect/main.cpp`（--rdp）、CMakeLists。
+  - 红证：`rtsc_rdp_security_tests` FAIL（k128Bit got 8 want 2；k56Bit got 2 want 8；rc4_key_len got 8）；`rtsc_connect_machine_tests` FAIL（PROTOCOL_RDP Client Info 被拒）。
+  - 绿证：`ctest` **43/43**；`/W4 /WX` 零警告；各套件 0 fail（security 16/118 未回归）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R 'rdp_standard_security|rdp_security|connect_machine'` **Passed**；`ctest` **43/43**；指纹一致。
+- **[回环]**：A（加密 RC4）`rtsc_connect --rdp` → **ACTIVE + 15417 字节帧**；B（明文，服务器回退 PROTOCOL_RDP）→ **ACTIVE + 15417 字节帧**；C（自动测试 5×0 失败）。
+- **[风险/登记]**：① **加密 fast-path 输出未解密**（本服务器只发 slow-path；真实服务器发加密 fast-path 则不渲染）；② 明文 License Request 空证书 + opt-in 空 premaster；③ `RdpEncryptionMethod` 数值语义修正（外部调用方需复核）；④ **`rtsc_gui` 输入/静态通道仍用 `driver().security()` → 标准 RDP 下 GUI 未接线**；⑤ FIPS fail-closed（不支持 3DES）。
+- **[prompt 双审]** 审计甲 + 乙。
+- **在途**：客户端 PROTOCOL_RDP 双审（甲+乙）、RDPDR/USB（2 worktree）。
+
+
+## 第283轮：**审计乙：客户端 PROTOCOL_RDP 通路通过 ✅**（等甲）
+
+- **[审计乙]** 客户端 PROTOCOL_RDP 明文数据通路 **复核通过 ✅**（无阻断缺陷）：
+  - **协议 ✅**：Security Exchange（`SEC_EXCHANGE_PKT`=0x0001，RSA+RC4）**先于** Client Info（`SEC_INFO_PKT` 明文）；后续 `SEC_ENCRYPT`(0x0008)+MAC；许可 `SEC_LICENSE_PKT`(0x0080)。
+  - **关键修正 ✅**：`rdp_security.h` `k128Bit=0x02`/`k56Bit=0x08`（原互换），与规范及服务端 `kMethod128/kMethod56` 一致。
+  - **状态机 ✅**：PROTOCOL_RDP 明文 MCS → CaptureServerSecurity → BuildSecurityExchange → Client Info 明文 → BeginPostClientInfo；fail-closed。
+  - **许可回退 ✅ 可接受**：license request 证书 → TS_UD_SC_SEC1；无证书且非 opt-in → Fail。
+  - **TDD ✅**：6/65、10/33、26/120（红→绿）；**回环 ✅**：加密+明文 → active + 15417B；5×0；**C0 ✅**：ctest 43/43；零警告；指纹全对。
+  - **风险（非阻断）**：① 加密 fast-path 输出未解密；② rtsc_gui 标准 RDP 输入/静态通道未接线；③ 明文许可 opt-in 空 premaster；④ `RdpEncryptionMethod` 数值修正；⑤ FIPS fail-closed/不支持 3DES。
+- **待办**：等**审计甲**盖章 → 客户端 PROTOCOL_RDP 双审完成。
+- **在途**：客户端 PROTOCOL_RDP 双审（甲待复）、RDPDR/USB（2 worktree）。
+
+
+## 第284轮：**修复 worktree 基线落后（test_cliprdr.cpp 两处 test-only 缺陷）**
+
+- **[发现]** worktree（`feat/usb`、`feat/rdpdr`）基线 `2adf30f` **落后主树**，`tests/test_cliprdr.cpp` 含两处**既有** test-only 缺陷（非本次引入）：
+  1. `:129` `CHECK_EQ(CliprdrPdu::parse(...), Status::Ok)`（enum 调 std::to_string 编译失败）→ 主树为 `CHECK(... == Status::Ok)`。
+  2. `:361` lock_unlock 复用已 `take()` 的 `body`（解锁体为空）→ 主树**重建** `ByteWriter unlock`。
+- **[修复]** 主代理对两 worktree 应用同款 test-only 最小修复（`edit`）：
+  - `feat/usb`：`:129` → `CHECK`；`:361` → 重建 unlock body → **构建 EXIT=0，`ctest` 40/40**（原 98% 1 失败）。
+  - `feat/rdpdr`：`:129` + `:361` 同款修复（该 worktree 无 build 目录，未构建）。
+- **[注意]** worktree 基线落后 → **合并前需先 `git merge master`（或 rebase）** 使基线一致，避免冲突。
+- **在途**：客户端 PROTOCOL_RDP 双审（甲待复）、RDPDR/USB（2 worktree）。
+
+
+## 第285轮：**RDPDR worktree 构建失败（ByteWriter::bytes 参数不符）→ prompt 修复**
+
+- **[发现]** RDPDR worktree（`feat/rdpdr`）首次构建失败：`src/proto/rdpdr.cpp` 多处 `ByteWriter::bytes(...)` 调用**参数不符**：
+  - 实际签名：`void ByteWriter::bytes(const uint8_t* p, size_t n)`（**2 参**，`include/rtsc/proto/byte_order.h:55`，主树与 worktree 一致）。
+  - RDPDR agent 调用：`w.bytes(set.encode())`（**1 参**，`:311`；另 `:386/:490/:517/:549/:568`）。
+  - 构建 `error C2660` ×6 → `ctest` 20%（32/40 失败，因构建失败）。
+- **[prompt 修复]** `ses_e8bd904faffegAEJPi4Bhm7Zaq`：改为 `w.bytes(set.encode().data(), set.encode().size())`（逐处核对 6 处）；勿改 `src/proto/rdpdr.*` 以外文件。
+- **[注意]** worktree 基线落后主树 → 合并前需 `git merge master`。
+- **在途**：RDPDR 修复（子代理）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第286轮：**RDPDR 进度（proto 库构建通过，写测试套件中）**
+
+- **[relay: ses_e8bd904faffegAEJPi4Bhm7Zaq]** 尾部输出：`Proto library builds clean. Now let me write the full test suite (extending tests/test_rdpdr.cpp).` → **bytes 修复完成，proto 库构建通过**；正在写完整测试套件。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：RDPDR（worktree）、USB（worktree 构建已修 40/40）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第287轮：**RDPDR worktree 测试失败（rdpdr_server_announce_rejects_wrong_packet_id）→ prompt 修复**
+
+- **[发现]** RDPDR worktree（`feat/rdpdr`）构建 **EXIT=0**（bytes 修复生效），但 `ctest` 98%（1 失败）：
+  - `Test #25 rdpdr`：`rdpdr_server_announce_rejects_wrong_packet_id` 失败 —— `tests/test_rdpdr.cpp:58` `RdpdrServerAnnounce::parse(b.data(), 11, a) == Status::NeedMoreData`（未得 NeedMoreData）。
+- **[prompt 修复]** `ses_e8bd904faffegAEJPi4Bhm7Zaq`：核对 parse 对 11 字节（不足）应返回 `NeedMoreData`（按 [MS-RDPDR] 2.2）；修实现或测试；`ctest` 须全绿。勿改 `src/proto/rdpdr.*` 以外文件。
+- **[状态]** USB worktree：`M tests/test_cliprdr.cpp`（我的修复）+ `?? rdpusb.h`（在途）。
+- **在途**：RDPDR（worktree 修复中）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第288轮：**RDPDR 进度（测试套件 + CMake 接线中）**
+
+- **[relay: ses_e8bd904faffegAEJPi4Bhm7Zaq]** 尾部输出：`Main has no RDPDR client work — it's genuinely my task. Let me complete it: write the test suite and wire CMake.` → **继续完成 RDPDR**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：RDPDR（worktree）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第289轮：**RDPDR worktree 全绿**
+
+- **[核验]** RDPDR worktree（`feat/rdpdr`）：`cmake --build Release` **EXIT=0**；`ctest` **100%（40/40）**；`ctest -R rdpdr` **Passed**。文件：`src/channel/rdpdr_client.cpp`(15605)、`include/rtsc/channel/rdpdr_client.h`(5799)、`tests/test_rdpdr.cpp`(3026)。
+- **[状态]** RDPDR agent（`ses_e8bd904faffegAEJPi4Bhm7Zaq`）idle（wrote 1792960579665）→ **测试失败已修**（`rdpdr_server_announce_rejects_wrong_packet_id` 全绿）；待其**完成报告**。
+- **[get_goal]** 甲 `pending:true`（标准 RDP 安全审计待复）；USB `pending:true`（在途）。
+- **在途**：RDPDR（worktree 全绿，待报告）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第290轮：**RDPDR worktree 全绿 → 请提交完成报告**
+
+- **[主代理]** RDPDR worktree（`feat/rdpdr`）实跑**全绿**（构建 EXIT=0、`ctest` 100%/40/40、`rdpdr` Passed）。
+- **[prompt]** `ses_e8bd904faffegAEJPi4Bhm7Zaq`：请提交**完成报告**（文件:行 + 红/绿证 + 回环证据 + 指纹 + 风险）；随后安排**合并 master + 双审**。
+- **在途**：RDPDR（待报告→合并+双审）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第291轮：**RDPDR 进度（写测试套件中）**
+
+- **[relay: ses_e8bd904faffegAEJPi4Bhm7Zaq]** 尾部输出：`Now the test suite:` → **继续写测试套件**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：RDPDR（worktree 全绿，待报告）、USB（worktree）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第292轮：**两 worktree 全绿**
+
+- **[核验]** RDPDR worktree（`feat/rdpdr`）：构建 EXIT=0、`ctest` **100%（40/40）**。USB worktree（`feat/usb`）：构建 EXIT=0、`ctest` **100%（40/40）**。
+- **[状态]** RDPDR agent（`ses_e8bd904faffegAEJPi4Bhm7Zaq`）idle（wrote 1792961122887）→ 待**完成报告**；USB agent（`ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`）`pending:true`（在途）。
+- **[get_goal]** 甲 `pending:true`（标准 RDP 安全审计待复）。
+- **在途**：RDPDR（全绿，待报告→合并+双审）、USB（全绿，在途）、客户端 PROTOCOL_RDP 双审（甲待复）。
+
+
+## 第293轮：**催办审计甲（标准 RDP 安全审计 pending）**
+
+- **[get_goal]** 甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` `pending:true`（标准 RDP 安全审计，多轮未复）；RDPDR `ses_e8bd904faffegAEJPi4Bhm7Zaq` idle（无报告）；USB `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa` `pending:true`。
+- **[relay 催办]** 甲：请尽快提交标准 RDP 安全审计结论（乙已通过 ✅）；遇工具/DB 错误立即报阻塞，勿静默。
+- **在途**：客户端 PROTOCOL_RDP 双审（甲催办中）、RDPDR（全绿，待报告）、USB（全绿，在途）。
+
+
+## 第294轮：**客户端 PROTOCOL_RDP 通路双审盖章 ✅**（甲乙）
+
+- **[审计甲]** 客户端 PROTOCOL_RDP 明文数据通路 **审计通过 ✅**（已提交乙交叉复核；乙此前已通过 → **双审盖章 ✅**）：
+  - 14 文件指纹核对一致；实测 `cmake --build` BUILD_EXIT=0、`ctest` **43/43**、`rtsc_rdp_standard_security_tests` **6/65/0**。
+  - **wire 值修正正确且全调用方一致**：`rdp_security.h:36-39`（40=0x01/128=0x02/56=0x08/FIPS=0x10）合 [MS-RDPBCGR] 2.2.1.4.3；`share.cpp:131-134`/`server.cpp:63-65`/`rdp_security.cpp:39-56,97-98` 无旧值残留。
+  - **协议顺序正确**：`connection_driver.cpp:116-135` 先发 Security Exchange（`SEC_EXCHANGE_PKT`）再发 Client Info（3.2.5.3.10→3.2.5.3.11）。
+  - **Client Info 明文合规**：带 `SEC_INFO_PKT` 不带 `SEC_ENCRYPT` ⇒ 规范允许（"can be encrypted"）。
+  - **状态机 fail-closed**：ParseServerSecurityData 拒截断；FIPS 不支持即拒；RSA 失败 fail-closed。
+  - **许可回退 opt-in**：`allow_missing_server_key` 默认 false（真机 fail-closed）。
+  - **非阻断观察（登记）**：① `server.h:56` `encryption_method=0x00000008` 注释误写 "128-bit"（**死字段**，server.cpp 未读）；② 加密 fast-path 未解密；③ 明文许可 opt-in；④ FIPS fail-closed。
+- **结论**：**客户端 PROTOCOL_RDP 明文数据通路（标准 RDP 安全）双审盖章 ✅**。
+- **在途**：RDPDR（全绿，待报告→合并+双审）、USB（全绿，在途）。
+
+
+## 第295轮：**客户端 PROTOCOL_RDP 双审盖章定案 ✅**（甲乙）
+
+- **[审计甲·最终定案]** 客户端 PROTOCOL_RDP 明文数据通路（标准 RDP 安全）**双审盖章通过 ✅**（甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8` 独立审计 + 交叉复核一致）：
+  - 14 文件指纹核对一致；实测 `cmake --build` BUILD_EXIT=0（零警告）、`ctest` **43/43**、`rtsc_rdp_standard_security_tests` **6/65/0**。
+  - wire 值修正全调用方一致；协议顺序正确（Security Exchange 先于 Client Info）；Client Info 明文合规（带 `SEC_INFO_PKT` 不带 `SEC_ENCRYPT`）；状态机 fail-closed；许可回退 opt-in；TDD 红→绿；回环互操作（加密+明文 → active + 帧）。
+  - **非阻断观察（登记）**：① `server.h:56` `encryption_method = 0x00000008; // 128-bit` 注释误标（0x08=56-bit；**死字段**，server.cpp 未读）→ **建议后续改注释/删字段**；② 加密 fast-path 未解密（in-tree 服务器只发 slow-path）；③ 明文许可 opt-in；④ FIPS fail-closed。
+- **定案**：可进入执行/集成阶段。
+- **在途**：RDPDR（全绿，待报告→合并+双审）、USB（全绿，在途）。
+- **待修（登记）**：`server.h:56` 注释/死字段（低优先）。
+
+
+## 第296轮：**两 worktree 全绿（复核）**
+
+- **[核验]** RDPDR worktree：构建 EXIT=0、`ctest` **100%（40/40）**；USB worktree：构建 EXIT=0、`ctest` **100%（40/40）**。
+- **[状态]** RDPDR agent（`ses_e8bd904faffegAEJPi4Bhm7Zaq`）idle（wrote 1792961122887，无完成报告）；USB agent（`ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`）`pending:true`（在途）。
+- **决策**：RDPDR 全绿但 agent 未报完成 → **暂不合并**（可能测试套件未完成：`tests/test_rdpdr.cpp` 仅 3026B）；待其完成报告。
+- **在途**：RDPDR（全绿，待报告→合并+双审）、USB（全绿，在途）。
+
+
+## 第297轮：**催办 USB 重定向 agent（pending 多轮无报告）**
+
+- **[get_goal]** USB agent（`ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`）`pending:true`，最后写入 1792950827597（已久）；RDPDR agent idle（无报告）。
+- **[prompt 催办]** USB agent：立即回复状态（完成→报告；进行中→进度；阻塞→阻塞点）。产物：`rdpusb.h`(19279)、`drdynvc.*`、`test_drdynvc.cpp`；`ctest` 40/40。
+- **在途**：RDPDR（全绿，待报告）、USB（全绿，催办中）。
+
+
+## 第298轮：**USB 重定向进度（约 55%，无阻塞）**
+
+- **[USB agent]** `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`：状态**进行中（约 55%）**，无阻塞。
+  - 已读齐 MS-RDPEUSB 权威结构（awakecoding OPN-RemoteDesktop RDPEUSB.opn + MS Learn）：`SHARED_MSG_HEADER`(12B)、RIM/`CHANNEL_CREATED`、`ADD_VIRTUAL_CHANNEL`/`ADD_DEVICE`/`RETRACT_DEVICE`、`REGISTER_REQUEST_CALLBACK`、`IO_CONTROL`/`INTERNAL_IO_CONTROL`、`TRANSFER_IN/OUT`、`URB_COMPLETION`/`NO_DATA`、`IOCONTROL_COMPLETION`、`TS_URB_HEADER`、全部 `TS_URB` 子结构与 `TS_URB_RESULT`、`USB_DEVICE_CAPABILITIES`(28B)。
+  - 已完成：worktree build 基线 + `rtsc_drdynvc_tests` 编译通过；`include/rtsc/proto/rdpusb.h`（全常量+全结构声明）。
+  - 进行中：正写 `src/proto/rdpusb.cpp`（编解码）。待办：rdpusb.cpp → test_rdpusb.cpp（红→绿）→ drdynvc_client → rdpusb_client（状态机）→ usb_win32 后端 → CMake+ctest。
+  - 约束遵守：未碰 cliprdr/rdpdr/server/audio；`test_cliprdr.cpp` 不动。
+- **在途**：RDPDR（全绿，待报告）、USB（进行中 55%）。
+
+
+## 第299轮：**USB 进度（写协议实现中）**
+
+- **[relay: ses_e8bd8ddb4ffeu25DbyxU5r4ZMa]** 尾部输出：`Now writing the protocol implementation.` → **正在写 `src/proto/rdpusb.cpp`**。
+- 处置：记录；等待（不中断、不轮询）。
+- **在途**：RDPDR（全绿，待报告）、USB（进行中）。
+
+
+## 第300轮：**USB 进度（rdpusb.cpp 尚未落盘）**
+
+- **[核验]** USB worktree（`feat/usb`）：`src/proto/rdpusb.cpp`、`tests/test_rdpusb.cpp` **尚未落盘**（agent 仍在写）；`rdpusb.h`(19279) 已写；`drdynvc.*`/`test_drdynvc.cpp` 已写；`ctest` 40/40。
+- **[get_goal]** RDPDR agent idle（无报告）；USB agent idle（wrote 1792950827597，最后写入已久）。
+- **在途**：RDPDR（全绿，待报告）、USB（进行中）。
+
+
+## 第301轮：**USB 疑似停滞 → 再次催办**
+
+- **[核验]** USB worktree（`feat/usb`）：`src/proto/rdpusb.cpp`、`tests/test_rdpusb.cpp` **仍未落盘**；`drdynvc.cpp`(2985)/`drdynvc.h`(2301) 已写；`ctest` 40/40（无新文件，计数未变）。
+- **[get_goal]** USB agent（`ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`）idle，最后写入 1792950827597（已久）→ **疑似停滞**。
+- **[prompt 催办]** USB agent：立即回复状态；若阻塞给证据；若无法继续明确报告（将改派）。
+- **在途**：RDPDR（全绿，待报告）、USB（疑似停滞，催办中）。
+
+
+## 第302轮：**宿主错误恢复 + USB agent 恢复响应**
+
+- **[宿主错误]** 证书验证错误（UnknownError: unknown certificate verification error）致回合异常终止，已自动恢复。
+- **[get_goal]** USB agent（`ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`）**busy**（响应催办，继续工作）；RDPDR agent idle（无报告）。
+- **[核验]** USB worktree：`rdpusb.cpp`/`test_rdpusb.cpp` 仍未落盘；`ctest` 40/40。
+- **在途**：RDPDR（全绿，待报告）、USB（busy，进行中）。
+
+
+## 第303轮：**USB 重定向完成 + 核验 + 派发双审**
+
+- **[USB agent 完成]** `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`（worktree `feat/usb`）：
+  - 新增：`include/rtsc/proto/rdpusb.h`（6043b0dd91648ad6，474 行）、`src/proto/rdpusb.cpp`（186c2a2ba9a2e272，828 行）、`drdynvc_client.{h,cpp}`、`rdpusb_client.{h,cpp}`（691455227dc51d82）、`include/rtsc/usb/usb_device.h`、`usb_win32.{h,cpp}`、`tests/test_rdpusb.cpp`（2de253847344dfce，884 行）、CMakeLists（+27）。
+  - 红证：先加测试目标未把 rdpusb.cpp 入 rtsc_proto → LNK2019 ×20+（红）；加入后绿。
+  - 绿证：`rtsc_rdpusb_tests` **41/180/0**；`ctest` **41/41**；build 0 warning。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R rdpusb` **Passed**；`ctest` **41/41**；指纹一致。
+- **[风险/登记]**：① WinUSB 后端仅编译+链接（无硬件/mstsc 实测）；② `ADD_VIRTUAL_CHANNEL` 多 DVC 编排建模（若 mstsc 由服务端发起 DVC 创建需校正）；③ vendor/class/descriptor URB 未逐一实现；④ 未写记忆四文件；未碰 server/audio/cliprdr/rdpdr。
+- **[prompt 双审]** 审计甲 + 乙（worktree `feat/usb`）。
+- **在途**：USB 双审（甲+乙）、RDPDR（全绿，待报告）。
+
+
+## 第304轮：**审计乙：USB 重定向 2 处协议偏差 → 派发修复**
+
+- **[审计乙]** USB 重定向（URBDRC + drdynvc）复核：**发现 2 处缺陷，需修复后重审**：
+  - **缺陷 1（中）**：`src/proto/rdpusb.cpp` `RdpUsbTsUsbdPipeInformation::parse` 用 `size < 16`；[MS-RDPEUSB] 2.2.9.1.3 = MaximumPacketSize(2)+Padding(2)+MaximumTransferSize(4)+PipeFlags(4) = **12B**（RESULT 侧守卫 `size<20` 与其 20B 一致）→ **请求侧应 12**；末尾 pipe 恰 12B 时解析失败。
+  - **缺陷 2（中）**：`src/channel/drdynvc_client.cpp:35-39` `Start()` 发 7B（cmd+version+prio+prio）；[MS-RDPEDYC] 2.2.1.1 要求 **cmd+Pad+Version**（Version@**offset2**）；`OnChannelData` CAPS 分支 `:69-71` 读 Version@offset1（应 offset2）；**且** `tests/test_rdpusb.cpp:618-621` 断言 7B/offset1 → **测试与实现同错**（非独立证据）。
+  - **通过项**：SHARED_MSG_HEADER Mask、TS_URB_HEADER/RESULT_HEADER、INTERFACE_INFORMATION(_RESULT) 偏移、PIPE_INFORMATION_RESULT(20B)、URB_COMPLETION 顺序、DYNVC Cmd 值、状态机、C0（ctest 41/41、41/180/0、指纹全对）。
+- **[prompt 修复]** USB agent：① `size<16`→`size<12` + 加 12B 测试；② `Start()` 加 Pad（8B）+ `OnChannelData` Version@offset2 + 修测试（独立取证）。
+- **在途**：USB 修复（子代理）、USB 双审（甲+乙，待修复后重审）、RDPDR（全绿，待报告）。
+
+
+## 第305轮：**USB 2 处缺陷修复 + 核验 + 请重审**
+
+- **[USB agent 修复]** `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`：
+  1. `src/proto/rdpusb.cpp` `RdpUsbTsUsbdPipeInformation::parse` `size<16`→**`size<12`**；
+  2. `src/channel/drdynvc_client.cpp` `Start()` 7B→**8B**（header+**Pad(0)**+Version+charges，[MS-RDPEDYC] 2.2.1.1）；`OnChannelData` CAPS 分支 `<7`→`<8`、Version **@offset2**。
+  - TDD 红→绿：先改测试 → 红（`drdynvc_start_sends_caps_request` got7 want8；`version got 512 want 2`；`rdpusb_pipe_information_exactly_12_bytes_parses` 失败；`rdpusb_select_configuration_without_descriptor_parses` 失败）→ 修实现 → 绿。
+  - 绿证：`rtsc_rdpusb_tests` **44/190/0**；`ctest` **41/41**；build 0 warning。
+  - 指纹：rdpusb.cpp `c866be823f8c6b67` / drdynvc_client.cpp `5a613dac460c4d45` / test_rdpusb.cpp `f8c4803d2d33a9b6`。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R rdpusb` **Passed**；`ctest` **41/41**；指纹一致。
+- **[relay 重审]** 审计甲 + 乙（2 处是否真正闭合；红证是否有区分力）。
+- **在途**：USB 重审（甲+乙）、RDPDR（全绿，待报告）。
+
+
+## 第306轮：**审计乙：USB 2 处缺陷重审闭合 ✅**（等甲）
+
+- **[审计乙]** USB 重定向 2 处缺陷 **重审闭合 ✅**：
+  - 缺陷 1 已修 ✅：`src/proto/rdpusb.cpp:240` pipe 守卫 `size<16`→**`size<12`**。
+  - 缺陷 2 已修 ✅：`src/channel/drdynvc_client.cpp:35-41` CAPS PDU → **8B**（cmd+Pad+Version@2）；`:71/:72` CAPS_RSP 解析 `<8`/Version@offset2。
+  - **红证有区分力 ✅**：测试改为独立证据（`drdynvc_caps_response_version_read_at_offset_2` 用原始字节；12B pipe / select_configuration_without_descriptor 用规范布局）。
+  - **其它 URB 子结构守卫全量复核 ✅**：PipeInformation 12、InterfaceInformation 12、SelectConfiguration 8、SelectInterface 4、PipeRequest 4、ControlTransfer 16、BulkOrInterrupt 8、ControlDescriptorRequest 4、ControlFeatureRequest 4、ControlGetStatusRequest 4、ControlVendorOrClassRequest 12、ControlGetInterfaceRequest 4 —— 均与规范一致。
+  - **C0 ✅**：`rtsc_rdpusb_tests` 44/190/0；`ctest` 41/41；build 0 warning；指纹全对。
+- **待办**：等**审计甲**盖章 → USB 双审完成 → 合并 master。
+- **在途**：USB 双审（甲待复）、RDPDR（全绿，待报告）。
+
+
+## 第307轮：**USB 缺陷② 已返修（规范 4B）+ 核验 + 请重审**
+
+- **[审计乙更正]** 乙**撤回**先前「已闭合」盖章：独立复核 `.tmp/MS-RDPEDYC.txt`（v20210407）→ `DYNVC_CAPS_VERSION1`(2.2.1.1.1) = cmd(1)+Pad(1)+Version(2) = **4B**；`DYNVC_CAPS_RSP`(2.2.1.2) = **4B**；PriorityCharge0..3 **仅 v2/v3**。原实现（5a613dac）出站 8B、入站 `size<8` → 规范 4B CAPS_RSP 被丢弃 → **blocker**。乙承认与执行者同错（只核 Pad/offset，未核总长）。
+- **[审计甲异议]** 甲早前已正式异议（缺陷② blocker，附可执行探针证据）。
+- **[USB agent 返修]** `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`：
+  - `src/channel/drdynvc_client.cpp`（指纹 **9e66f6b646da4421**）：`Start()` 发 **4B**（u8+u8+u16le）；`OnChannelData` CAPS 分支 **`<4`**、Version@offset2。
+  - `tests/test_rdpusb.cpp`（指纹 **7eeff70cd1f8c0c5**）：测试改用规范 4B。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R rdpusb` **Passed**；`ctest` **41/41**；`Start()` 确认 4B、守卫 `<4`。
+- **[relay 重审]** 审计甲 + 乙（缺陷②是否真正闭合）。
+- **在途**：USB 重审（甲+乙）、RDPDR（全绿，待报告）。
+
+
+## 第308轮：**USB 缺陷② 二次返修报告（与主代理核验一致）**
+
+- **[USB agent 二次返修]** `ses_e8bd8ddb4ffeu25DbyxU5r4ZMa`（甲/乙已趋同）：
+  - `src/channel/drdynvc_client.cpp`（指纹 **9e66f6b646da4421**）：`Start()` 8B→**4B**（header+Pad+Version，VERSION1 无 PriorityCharge）；`OnChannelData` CAPS `size<8`→**`<4`**、Version@offset2。
+  - `tests/test_rdpusb.cpp`（指纹 **7eeff70cd1f8c0c5**）：测试改规范 4B + 新增 VERSION2(12B 带 charges) 接受测试。
+  - 红→绿：红=喂规范 4B CAPS_RSP → version=0 且 ready=false；dvc.size=8≠4。绿=`rtsc_rdpusb_tests` **45/192/0**；`ctest` **41/41**；build 0 warning。
+  - 缺陷①（pipe 12B 守卫）保持通过。
+- **[主代理核验]**（实跑，与报告一致）：build EXIT=0、`rdpusb` Passed、`ctest` 41/41、`Start()` 4B、守卫 `<4`。
+- **[relay 重审]** 审计甲 + 乙（终审）。
+- **在途**：USB 终审（甲+乙）、RDPDR（全绿，待报告）。
+
+
+## 第309轮：**审计乙：USB 缺陷② 重审闭合 ✅**（等甲）
+
+- **[审计乙]** USB 缺陷② **重审闭合 ✅**：
+  - `src/channel/drdynvc_client.cpp`（指纹 **9e66f6b646da4421**）：`Start()` 出站 **4B**（cmd+Pad+Version，[MS-RDPEDYC] 2.2.1.1.1 VERSION1）；`OnChannelData` CAPS 守卫 **`<4`**、Version@offset2（v1 4B / v2 12B 均接受）。
+  - 测试改规范 4B + 新增 v2 12B 兼容用例；红证为原始字节、独立有区分力。
+  - 缺陷①（pipe 12B）保持通过。
+  - **C0 ✅**：`rtsc_rdpusb_tests` 45/192/0；`ctest` 41/41；build 0 warning；指纹全对。
+- **待办**：等**审计甲**盖章 → USB 双审完成 → 合并 master。
+- **在途**：USB 双审（甲待复）、RDPDR（全绿，待报告）。
+
+
+## 第310轮：**USB 重定向双审盖章定案 ✅**（甲乙，两轮交叉）+ 派发合并
+
+- **[审计甲·最终定案]** RDP USB 重定向（URBDRC + drdynvc）**双审盖章通过 ✅**（甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，独立审计 + **两轮交叉复核**）：
+  - **审计过程**：第 1 轮甲乙各发现 2 处缺陷（pipe 守卫 16→12；DYNVC CAPS 7B→8B）→ 执行者返修；甲复核发现缺陷②仅出站修对、入站仍违规（规范 VERSION1 CAPS = **4B**，charges 仅 v2/v3）→ **blocker**；甲对乙「盖章通过」正式异议 + 可执行证据；乙独立下载规范 PDF 逐字段复核后**承认失误、撤回盖章**；第 2 轮执行者按规范返修（出站 4B、入站 `<4`、v2 charges 可选尾部、测试改规范 4B 独立取证）→ 甲重跑探针 + 全量守卫扫描，乙确认 → **双方一致盖章**。
+  - **实测证据**（命令级）：`usb_probe` A) 12B pipe → Ok；B) CAPS_REQ bytes=**4**（`50 00 01 00`）；B) CAPS_RSP(4B, version=0x0001) → `client.version()=0x0001`；`cmake --build` EXIT=0/0 warning；`ctest` **41/41**；`rtsc_rdpusb_tests` **45/192/0**。
+  - **协议正确性**（逐字段）：SHARED_MSG_HEADER 12B、STREAM_ID_STUB/PROXY/NONE、ADD_VIRTUAL_CHANNEL/ADD_DEVICE/RETRACT_DEVICE/REGISTER_REQUEST_CALLBACK/IO_CONTROL/TRANSFER_IN/OUT/URB_COMPLETION/NO_DATA/IOCONTROL_COMPLETION 布局+FunctionId 全对；TS_USBD_PIPE_INFORMATION=**12B**、PIPE_INFORMATION_RESULT=20B、INTERFACE_INFORMATION(_RESULT)=12B/16B、TS_URB_HEADER=8B；USB_DEVICE_CAPABILITIES=28B；[MS-RDPEDYC] CAPS 出站 VERSION1=**4B**、入站 `<4` 兼容 v2/v3；状态机 Idle→CapabilityExchange→Ready→DeviceIo。
+  - **非阻断观察（登记）**：① WinUSB 后端仅编译+链接（无硬件/mstsc 实测）；② 多 DVC 编排建模；③ vendor/class/descriptor URB 未逐一实现（安全降级 kInvalidUrbFunction）；④ 合成 pipe/interface handle 为本地约定。
+- **[task 派发]** **合并 `feat/usb` → master**（提交 worktree → 合并 → 解决冲突 → 重验 → 双审合并）。
+- **在途**：USB 合并、RDPDR（全绿，待报告）。

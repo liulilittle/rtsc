@@ -519,10 +519,11 @@ RTSC_TEST(machine_message_channel_joined_when_server_assigns_one) {
 
 // ---- Guard rails ----------------------------------------------------------
 
-RTSC_TEST(machine_standard_rdp_with_encryption_is_rejected) {
-    // Standard RDP security with a non-zero encryption bitmap requires RC4 key
-    // exchange, which is not implemented yet: the machine must fail loudly
-    // rather than emit an unencrypted Client Info.
+RTSC_TEST(machine_standard_rdp_with_encryption_emits_plaintext_client_info) {
+    // The connection machine itself never encrypts: Standard RDP Security's
+    // Security Exchange and the RC4 data plane live in the security layer.
+    // With encryption negotiated it must therefore still emit the plaintext
+    // Client Info PDU (SEC_INFO_PKT only) instead of failing.
     ConnectMachine::Config cfg = MakeConfig();
     cfg.encryption_methods = 0x0000001B;
     ConnectMachine m(cfg, MakeCredentials());
@@ -532,9 +533,20 @@ RTSC_TEST(machine_standard_rdp_with_encryption_is_rejected) {
     Feed(m, hex(kAttachUserConfirm));
     const char* confirms[] = {kJoinConfirmUser, kJoinConfirmIo, kJoinConfirmVc1,
                               kJoinConfirmVc2, kJoinConfirmVc3};
-    for (int i = 0; i < 5; ++i) Feed(m, hex(confirms[i]));
-    CHECK(m.failed());
-    CHECK(m.state().error.find("encryption") != std::string::npos);
+    ConnectStep last;
+    for (int i = 0; i < 5; ++i) last = Feed(m, hex(confirms[i]));
+    CHECK(!m.failed());
+    CHECK(m.done());
+    CHECK(!last.output.empty());
+
+    McsSendData sd;
+    CHECK(McsSendData::parse(last.output.data(), last.output.size(), sd) ==
+          Status::Ok);
+    CHECK(sd.user_data.size() >= 4);
+    const uint16_t flags = static_cast<uint16_t>(sd.user_data[0]) |
+                           (static_cast<uint16_t>(sd.user_data[1]) << 8);
+    CHECK((flags & sec::kSecInfoPkt) != 0);
+    CHECK((flags & sec::kSecEncrypt) == 0);  // Client Info is sent in the clear
 }
 
 RTSC_TEST(machine_phase_names_are_stable) {

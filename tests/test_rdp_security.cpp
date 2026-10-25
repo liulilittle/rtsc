@@ -70,6 +70,35 @@ RTSC_TEST(rdp_session_keys_56bit_reduction) {
     CHECK(Hex(keys.mac_key) == "d17109ce48b0e903");
 }
 
+// The enum values are wire values from TS_UD_SC_SEC1.encryptionMethod
+// ([MS-RDPBCGR] 2.2.1.4.3): 40BIT=0x01, 128BIT=0x02, 56BIT=0x08, FIPS=0x10.
+// Passing the wire value straight into DeriveRdpSessionKeys is what both the
+// client and the server do, so these must match the specification exactly.
+RTSC_TEST(rdp_encryption_method_values_match_the_wire_format) {
+    // Volatile so the CHECK macro's condition is not a compile-time constant
+    // (MSVC /W4 warns C4127 on `if (constant)`).
+    volatile uint32_t wire40 = 0x00000001;
+    volatile uint32_t wire128 = 0x00000002;
+    volatile uint32_t wire56 = 0x00000008;
+    volatile uint32_t wire_fips = 0x00000010;
+    CHECK_EQ(static_cast<uint32_t>(rtsc::crypto::RdpEncryptionMethod::k40Bit),
+             wire40);
+    CHECK_EQ(static_cast<uint32_t>(rtsc::crypto::RdpEncryptionMethod::k128Bit),
+             wire128);
+    CHECK_EQ(static_cast<uint32_t>(rtsc::crypto::RdpEncryptionMethod::k56Bit),
+             wire56);
+    CHECK_EQ(static_cast<uint32_t>(rtsc::crypto::RdpEncryptionMethod::kFips),
+             wire_fips);
+
+    // A server that selects 128-bit sends 0x00000002 on the wire; that must
+    // yield a full 16-byte session key, not the 56-bit reduction.
+    const auto keys = rtsc::crypto::DeriveRdpSessionKeys(
+        ClientRandom(), ServerRandom(), 0x00000002u);
+    CHECK_EQ(keys.rc4_key_len, static_cast<size_t>(16));
+    CHECK_EQ(keys.mac_key.size(), static_cast<size_t>(16));
+    CHECK_EQ(keys.encrypt_key.size(), static_cast<size_t>(16));
+}
+
 RTSC_TEST(rdp_session_keys_reject_none_and_fips) {
     const auto none = rtsc::crypto::DeriveRdpSessionKeys(
         ClientRandom(), ServerRandom(),

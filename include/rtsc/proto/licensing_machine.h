@@ -63,6 +63,18 @@ class LicensingMachine {
         // Any stable 16 bytes works: the server only uses the HWID as an index
         // (licensing.md section 7).
         std::array<uint32_t, 4> hardware_id{};
+
+        // Standard RDP Security: the server certificate from TS_UD_SC_SEC1.
+        // Used when the SERVER_LICENSE_REQUEST carries no certificate of its
+        // own (the in-tree server keeps the key in the Connect Response).
+        std::vector<uint8_t> server_certificate;
+
+        // When true, a missing server certificate is not fatal: the reply is
+        // emitted with an empty encrypted premaster blob. This exists for the
+        // in-tree server, which omits the certificate when Standard RDP
+        // Security encryption is off and does not validate the reply. A real
+        // server always supplies a certificate, so this stays opt-in.
+        bool allow_missing_server_key = false;
     };
 
     explicit LicensingMachine(const Config& config);

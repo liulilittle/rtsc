@@ -26,11 +26,16 @@
 namespace rtsc::crypto {
 
 // encryptionMethod from TS_UD_SC_SEC1 ([MS-RDPBCGR] 2.2.1.4.3).
+//
+// These are the on-the-wire bit values, not arbitrary enum ordinals: the server
+// sends the chosen value in the Connect Response and both sides pass it
+// straight into DeriveRdpSessionKeys. 128BIT is 0x02 and 56BIT is 0x08; swapping
+// them silently selects the 56-bit key reduction and every MAC check fails.
 enum class RdpEncryptionMethod : uint32_t {
     kNone = 0x00000000,
     k40Bit = 0x00000001,
-    k56Bit = 0x00000002,
-    k128Bit = 0x00000008,
+    k128Bit = 0x00000002,
+    k56Bit = 0x00000008,
     kFips = 0x00000010,
 };
 

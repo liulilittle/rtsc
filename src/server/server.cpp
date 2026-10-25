@@ -1,0 +1,1296 @@
+﻿// RDP server role: the server half of the [MS-RDPBCGR] connection sequence.
+//
+// Reference: [MS-RDPBCGR] 1.3.1.1 / 3.2.5 / 3.3.5, [MS-RDPELE] 1.3, 2.2.
+//
+// This file implements include/rtsc/server/server.h. It is transport agnostic
+// below the net::Transport seam and free of any platform header, so it builds
+// unchanged on Windows and Linux (the Linux gate compiles it). Only the RSA
+// backend is Windows-only; when a keypair cannot be generated the server fails
+// closed to "no encryption" instead of serving with a broken key.
+//
+// Session isolation (D1): every accepted peer gets its own RdpSession with its
+// own X.224/MCS state, security state, capability sets and framebuffer. The
+// only objects shared between sessions are the immutable ServerConfig, the
+// DesktopSource pointer and the Authenticator, all read-only during a session.
+
+#include "rtsc/server/server.h"
+
+#include <array>
+#include <atomic>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "rtsc/crypto/hash.h"
+#include "rtsc/crypto/random.h"
+#include "rtsc/crypto/rdp_security.h"
+#include "rtsc/crypto/rsa_server.h"
+#include "rtsc/net/transport.h"
+#include "rtsc/proto/byte_order.h"
+#include "rtsc/proto/capabilities.h"
+#include "rtsc/proto/client_info.h"
+#include "rtsc/proto/connection_initiation.h"
+#include "rtsc/proto/finalization.h"
+#include "rtsc/proto/input.h"
+#include "rtsc/proto/licensing.h"
+#include "rtsc/proto/mcs.h"
+#include "rtsc/proto/share.h"
+#include "rtsc/proto/tpkt.h"
+#include "rtsc/proto/x224.h"
+
+namespace rtsc::server {
+
+namespace {
+
+using proto::ByteReader;
+using proto::ByteWriter;
+using proto::Status;
+
+// ---- GCC user data block types ([MS-RDPBCGR] 2.2.1.3.1 .. 2.2.1.4.3) --------
+constexpr uint16_t kCsCore = 0xC001;
+constexpr uint16_t kCsSecurity = 0xC002;
+constexpr uint16_t kCsNetwork = 0xC003;
+constexpr uint16_t kScCore = 0x0C01;
+constexpr uint16_t kScSecurity = 0x0C02;
+constexpr uint16_t kScNetwork = 0x0C03;
+
+// ---- Standard RDP security constants ([MS-RDPBCGR] 2.2.1.4.3, 5.3) ----------
+// encryptionMethods bits follow the specification, not the mislabeled
+// RdpEncryptionMethod enum: 40BIT=0x01, 128BIT=0x02, 56BIT=0x08, FIPS=0x10.
+constexpr uint32_t kMethod40 = 0x00000001;
+constexpr uint32_t kMethod128 = 0x00000002;
+constexpr uint32_t kMethod56 = 0x00000008;
+constexpr uint32_t kMethodFips = 0x00000010;
+constexpr uint32_t kLevelClientCompatible = 0x00000002;
+
+// Security header flags this server emits.
+constexpr uint16_t kSecEncrypt = 0x0008;
+constexpr uint16_t kSecInfoPkt = 0x0040;
+constexpr uint16_t kSecLicensePkt = 0x0080;
+
+// MCS channel identifiers. The I/O channel and the user channel are the two the
+// client joins; the server channel id is fixed by the specification.
+constexpr uint16_t kIoChannelId = 1003;
+constexpr uint16_t kUserChannelId = 1001;
+constexpr uint16_t kServerChannelId = 1002;
+constexpr uint16_t kFirstStaticChannelId = 1004;
+
+constexpr uint8_t kStreamLow = 0x01;
+constexpr size_t kReadChunk = 16384;
+
+// Writes a BER length determinant (short form, or the 0x81 / 0x82 long form).
+void WriteBerLength(ByteWriter& w, size_t len) {
+    if (len < 0x80) {
+        w.u8(static_cast<uint8_t>(len));
+    } else if (len <= 0xFF) {
+        w.u8(0x81);
+        w.u8(static_cast<uint8_t>(len));
+    } else {
+        w.u8(0x82);
+        w.u16be(static_cast<uint16_t>(len));
+    }
+}
+
+// ---- Server GCC user data blocks -------------------------------------------
+
+// Each helper returns the block payload; BuildConnectResponse wraps it with the
+// 4-byte TS_UD_HEADER.
+
+std::vector<uint8_t> BuildServerCoreBody(uint32_t client_requested_protocols) {
+    ByteWriter body;
+    body.u32le(0x00080004);  // RDP 5.0
+    body.u32le(client_requested_protocols);
+    return body.take();
+}
+
+// TS_UD_SC_SEC1. When method and level are both zero the serverRandomLen /
+// serverCertLen / serverRandom / serverCertificate fields MUST NOT be present.
+std::vector<uint8_t> BuildServerSecurityBody(uint32_t method, uint32_t level,
+                                             const std::vector<uint8_t>& random,
+                                             const std::vector<uint8_t>& cert) {
+    ByteWriter body;
+    body.u32le(method);
+    body.u32le(level);
+    if (method != 0 || level != 0) {
+        body.u32le(static_cast<uint32_t>(random.size()));
+        body.u32le(static_cast<uint32_t>(cert.size()));
+        if (!random.empty()) body.bytes(random.data(), random.size());
+        if (!cert.empty()) body.bytes(cert.data(), cert.size());
+    }
+    return body.take();
+}
+
+std::vector<uint8_t> BuildServerNetworkBody(uint16_t io_channel,
+                                            const std::vector<uint16_t>& channels) {
+    ByteWriter body;
+    body.u16le(io_channel);
+    body.u16le(static_cast<uint16_t>(channels.size()));
+    for (uint16_t id : channels) body.u16le(id);
+    if ((channels.size() & 1u) != 0) body.u16le(0);  // Pad when the count is odd.
+    return body.take();
+}
+
+// ---- X.224 -----------------------------------------------------------------
+
+std::vector<uint8_t> BuildX224Pdu(uint8_t code, const std::vector<uint8_t>& body) {
+    proto::X224Tpdu tpdu;
+    tpdu.code = code;
+    tpdu.source_reference = proto::X224Tpdu::kCcfSourceReference;
+    tpdu.length_indicator = static_cast<uint8_t>(proto::X224Tpdu::kSize + body.size());
+    const auto tpdu_bytes = tpdu.encode();
+
+    const size_t total = proto::TpktHeader::kSize + tpdu_bytes.size() + body.size();
+    proto::TpktHeader tpkt;
+    tpkt.length = static_cast<uint16_t>(total);
+
+    ByteWriter w;
+    const auto tpkt_bytes = tpkt.encode();
+    w.bytes(tpkt_bytes.data(), tpkt_bytes.size());
+    w.bytes(tpdu_bytes.data(), tpdu_bytes.size());
+    if (!body.empty()) w.bytes(body.data(), body.size());
+    return w.take();
+}
+
+// RDP_NEG_RSP: type(1) flags(1) length(2)=8 selectedProtocol(4).
+std::vector<uint8_t> BuildX224Confirm(uint32_t selected_protocol) {
+    ByteWriter b;
+    b.u8(static_cast<uint8_t>(proto::NegType::kResponse));
+    b.u8(0);  // flags
+    b.u16le(8);
+    b.u32le(selected_protocol);
+    return BuildX224Pdu(proto::X224Tpdu::kConnectionConfirm, b.take());
+}
+
+// RDP_NEG_FAILURE: type(1) flags(1) length(2)=8 failureCode(4).
+std::vector<uint8_t> BuildX224NegFailure(uint32_t failure_code) {
+    ByteWriter b;
+    b.u8(static_cast<uint8_t>(proto::NegType::kFailure));
+    b.u8(0);
+    b.u16le(8);
+    b.u32le(failure_code);
+    return BuildX224Pdu(proto::X224Tpdu::kConnectionConfirm, b.take());
+}
+
+// ---- MCS -------------------------------------------------------------------
+
+// Builds the TPKT-framed MCS Connect Response. The byte layout is the one the
+// client parser (McsConnectResponse::parse) walks, and it matches the annotated
+// [MS-RDPBCGR] 4.1.4 dump.
+std::vector<uint8_t> BuildConnectResponse(
+    const std::vector<proto::GccUserData::Block>& blocks) {
+    ByteWriter block_bytes;
+    for (const auto& b : blocks) proto::GccUserData::write_block(block_bytes, b.type, b.payload);
+    const size_t s = block_bytes.size();
+
+    // GCC Conference Create Response (T.124 ConnectData).
+    ByteWriter gcc;
+    static const uint8_t kOid[7] = {0x00, 0x05, 0x00, 0x14, 0x7C, 0x00, 0x01};
+    gcc.bytes(kOid, sizeof(kOid));
+    gcc.u8(0x2A);  // connectPDU length determinant (ignored by the client)
+    gcc.u8(0x14);  // CHOICE index 1 = conferenceCreateResponse
+    gcc.u8(0x76); gcc.u8(0x0A);  // nodeID
+    gcc.u8(0x01); gcc.u8(0x01);  // tag
+    gcc.u8(0x00);                 // result = rt-successful
+    gcc.u8(0x01);                 // UserData SET OF size = 1
+    gcc.u8(0xC0);                 // value present + h221NonStandard
+    gcc.u8(0x00);                 // h221 length - 4
+    gcc.u8(0x4D); gcc.u8(0x63); gcc.u8(0x44); gcc.u8(0x6E);  // "McDn"
+    if (s < 0x80) {
+        gcc.u8(static_cast<uint8_t>(s));
+    } else {
+        gcc.u8(static_cast<uint8_t>(0x80 | (s >> 8)));
+        gcc.u8(static_cast<uint8_t>(s & 0xFF));
+    }
+    gcc.bytes(block_bytes.data().data(), s);
+
+    // BER body: result, calledConnectId, domainParameters, userData.
+    ByteWriter body;
+    body.u8(0x0A); body.u8(0x01); body.u8(0x00);  // result ENUMERATED 0
+    body.u8(0x02); body.u8(0x01); body.u8(0x00);  // calledConnectId INTEGER 0
+    body.u8(0x30); body.u8(0x1A);                 // SEQUENCE, 26 bytes
+    static const uint8_t kDomain[26] = {
+        0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01,
+        0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xFF, 0xF8, 0x02,
+        0x01, 0x02};
+    body.bytes(kDomain, sizeof(kDomain));
+    body.u8(0x04);  // userData OCTET STRING
+    WriteBerLength(body, gcc.size());
+    body.bytes(gcc.data().data(), gcc.size());
+
+    const size_t body_len = body.size();
+    const size_t ber_len_size = body_len < 0x80 ? 1 : (body_len <= 0xFF ? 2 : 3);
+    const size_t total =
+        proto::TpktHeader::kSize + 3 + 2 + ber_len_size + body_len;  // 3 = X.224 Data
+    proto::TpktHeader tpkt;
+    tpkt.length = static_cast<uint16_t>(total);
+
+    ByteWriter w;
+    const auto tpkt_bytes = tpkt.encode();
+    w.bytes(tpkt_bytes.data(), tpkt_bytes.size());
+    w.u8(0x02); w.u8(0xF0); w.u8(0x80);
+    w.u8(proto::mcs::kTagConnectInitial);
+    w.u8(proto::mcs::kConnectResponseTagByte);
+    WriteBerLength(w, body_len);
+    w.bytes(body.data().data(), body.size());
+    return w.take();
+}
+
+// Wraps a DomainMCSPDU body in TPKT + X.224 Data (the MCS framing).
+std::vector<uint8_t> BuildMcsFrame(const std::vector<uint8_t>& body) {
+    const size_t total = proto::TpktHeader::kSize + 3 + body.size();
+    proto::TpktHeader tpkt;
+    tpkt.length = static_cast<uint16_t>(total);
+
+    ByteWriter w;
+    const auto tpkt_bytes = tpkt.encode();
+    w.bytes(tpkt_bytes.data(), tpkt_bytes.size());
+    w.u8(0x02); w.u8(0xF0); w.u8(0x80);
+    if (!body.empty()) w.bytes(body.data(), body.size());
+    return w.take();
+}
+
+// Attach User Confirm: octet0 = choice(11)<<2 | initiator-present(1), octet1 =
+// result, then the initiator UserId.
+std::vector<uint8_t> BuildAttachUserConfirm(uint16_t initiator) {
+    ByteWriter body;
+    body.u8(static_cast<uint8_t>((proto::mcs::kAttachUserConfirm << 2) | 0x02));
+    body.u8(0x00);
+    body.u16be(static_cast<uint16_t>(initiator - proto::mcs::kMinDynamicChannelId));
+    return BuildMcsFrame(body.take());
+}
+
+// Channel Join Confirm: result(0), initiator UserId, requested channel id, and
+// the granted channel id (always present and equal to the request).
+std::vector<uint8_t> BuildChannelJoinConfirm(uint16_t initiator, uint16_t requested,
+                                             uint16_t channel) {
+    ByteWriter body;
+    body.u8(static_cast<uint8_t>((proto::mcs::kChannelJoinConfirm << 2) | 0x02));
+    body.u8(0x00);
+    body.u16be(static_cast<uint16_t>(initiator - proto::mcs::kMinDynamicChannelId));
+    body.u16be(requested);
+    body.u16be(channel);
+    return BuildMcsFrame(body.take());
+}
+
+// Extracts the GCC user data blocks from a Connect Initial's T.124 ConnectData.
+bool ExtractGccBlocks(const std::vector<uint8_t>& gcc, proto::GccUserData& out) {
+    ByteReader r(gcc.data(), gcc.size());
+    if (!r.skip(7)) return false;  // t124Identifier
+    size_t declared = 0;
+    if (proto::mcs::decode_per_length(r, declared) != Status::Ok) return false;
+    if (!r.skip(8 + 4)) return false;  // CCrq header + "Duca"
+    size_t block_len = 0;
+    if (proto::mcs::decode_per_length(r, block_len) != Status::Ok) return false;
+    if (block_len > r.remaining()) return false;
+    return proto::GccUserData::parse(r.cursor(), block_len, out) == Status::Ok;
+}
+
+// ---- Server capability sets (Demand Active) --------------------------------
+
+std::vector<proto::CapabilitySet> BuildServerCapabilities(uint16_t width,
+                                                          uint16_t height,
+                                                          uint16_t depth) {
+    std::vector<proto::CapabilitySet> sets;
+
+    proto::GeneralCapabilitySet general;
+    general.os_major_type = 0x0001;  // Windows
+    general.os_minor_type = 0x0003;  // Windows NT
+    // Fast-path output is what this server actually sends.
+    general.extra_flags = proto::GeneralCapabilitySet::kFastpathOutputSupported;
+    sets.push_back(general.encode());
+
+    proto::BitmapCapabilitySet bitmap;
+    bitmap.preferred_bits_per_pixel = depth;
+    bitmap.desktop_width = width;
+    bitmap.desktop_height = height;
+    bitmap.bitmap_compression_flag = 1;      // MUST
+    bitmap.multiple_rectangle_support = 1;   // MUST
+    sets.push_back(bitmap.encode());
+
+    proto::OrderCapabilitySet order;
+    const size_t order_indices[] = {0x00, 0x01, 0x02};
+    for (size_t idx : order_indices) {
+        if (idx < order.order_support.size()) order.order_support[idx] = 1;
+    }
+    sets.push_back(order.encode());
+
+    proto::PointerCapabilitySet pointer;
+    pointer.color_pointer_cache_size = 32;
+    pointer.pointer_cache_size = 32;
+    sets.push_back(pointer.encode());
+
+    proto::ShareCapabilitySet share;
+    share.node_id = 0;
+    sets.push_back(share.encode());
+
+    proto::VirtualChannelCapabilitySet vc;
+    vc.flags = proto::VirtualChannelCapabilitySet::kNoComp;
+    sets.push_back(vc.encode());
+
+    proto::FontCapabilitySet font;
+    font.has_support_flags = true;
+    font.font_support_flags = proto::FontCapabilitySet::kFontSupportFontList;
+    sets.push_back(font.encode());
+
+    proto::InputCapabilitySet input;
+    sets.push_back(input.encode());
+
+    return sets;
+}
+
+// TS_DEMAND_ACTIVE_PDU. totalLength = 18 + sourceDescriptor + combinedCapabilities
+// (the capability sets themselves occupy combined - 4 bytes).
+std::vector<uint8_t> BuildDemandActive(uint16_t pdu_source, uint32_t share_id,
+                                       const std::string& source_descriptor,
+                                       const std::vector<proto::CapabilitySet>& sets,
+                                       uint32_t session_id) {
+    ByteWriter caps;
+    uint16_t count = 0;
+    uint16_t combined = 0;
+    proto::WriteCapabilitySets(caps, sets, count, combined);
+
+    const size_t src_len = source_descriptor.size();
+    const size_t total = 18 + src_len + combined;
+
+    ByteWriter w;
+    w.u16le(static_cast<uint16_t>(total));
+    w.u16le(static_cast<uint16_t>(
+        static_cast<uint16_t>(proto::SharePduType::kDemandActive) |
+        (proto::ShareControlHeader::kProtocolVersion << 4)));
+    w.u16le(pdu_source);
+    w.u32le(share_id);
+    w.u16le(static_cast<uint16_t>(src_len));
+    w.u16le(combined);
+    if (src_len != 0) {
+        w.bytes(reinterpret_cast<const uint8_t*>(source_descriptor.data()), src_len);
+    }
+    w.u16le(count);
+    w.u16le(0);  // pad2Octets
+    w.bytes(caps.data().data(), caps.size());
+    w.u32le(session_id);
+    return w.take();
+}
+
+// Encodes a horizontal band of a top-down RGBA framebuffer into an
+// uncompressed bottom-up BGRA bitmap rectangle (32bpp).
+std::vector<uint8_t> EncodeBitmapBand(uint16_t width, uint32_t src_y, uint16_t height,
+                                      const std::vector<uint8_t>& rgba) {
+    const size_t row = static_cast<size_t>(width) * 4;
+    std::vector<uint8_t> out(row * height);
+    for (uint32_t r = 0; r < height; ++r) {
+        const size_t src_row = (static_cast<size_t>(src_y) + r) * row;
+        const size_t dst_row = static_cast<size_t>(height - 1 - r) * row;  // bottom-up
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t s = src_row + static_cast<size_t>(x) * 4;
+            const size_t d = dst_row + static_cast<size_t>(x) * 4;
+            out[d + 0] = rgba[s + 2];  // B
+            out[d + 1] = rgba[s + 1];  // G
+            out[d + 2] = rgba[s + 0];  // R
+            out[d + 3] = rgba[s + 3];  // A
+        }
+    }
+    return out;
+}
+
+// TS_UPDATE_BITMAP_DATA for one band: updateType(2) + numberRectangles(2) +
+// TS_BITMAP_DATA (a single rectangle).
+std::vector<uint8_t> BuildBitmapBand(uint16_t width, uint16_t dest_y, uint16_t height,
+                                     const std::vector<uint8_t>& pixels) {
+    ByteWriter w;
+    w.u16le(0x0001);  // UPDATETYPE_BITMAP
+    w.u16le(1);       // numberRectangles
+    w.u16le(0);       // destLeft
+    w.u16le(dest_y);  // destTop
+    w.u16le(width);   // destRight
+    w.u16le(static_cast<uint16_t>(dest_y + height));  // destBottom
+    w.u16le(width);
+    w.u16le(height);
+    w.u16le(32);     // bitsPerPixel
+    w.u16le(0);       // flags: no compression, no compression header
+    w.u16le(static_cast<uint16_t>(pixels.size()));
+    w.bytes(pixels.data(), pixels.size());
+    return w.take();
+}
+
+// ---- Licensing -------------------------------------------------------------
+
+// SERVER_LICENSE_REQUEST body: serverRandom(32) + ProductInfo + keyExchangeAlg
+// blob + certificate blob + scope list. The certificate is empty here: the
+// public key travels in the Server Security Data instead.
+std::vector<uint8_t> BuildLicenseRequest(const std::vector<uint8_t>& server_random) {
+    ByteWriter w;
+    w.bytes(server_random.data(), server_random.size());
+
+    proto::ProductInfo product;
+    product.version = 0x00010000;  // Windows NT major.minor
+    const std::string company = "Microsoft Corporation";
+    const std::string product_id = "A02";
+    for (char c : company) product.company_name.push_back(static_cast<uint8_t>(c));
+    for (char c : product_id) product.product_id.push_back(static_cast<uint8_t>(c));
+    product.write(w);
+
+    proto::LicenseBlob key_list;
+    key_list.type = proto::LicenseBlobType::kKeyExchgAlg;
+    key_list.data = {0x01, 0x00, 0x00, 0x00};  // KEY_EXCHANGE_ALG_RSA
+    key_list.write(w);
+
+    proto::LicenseBlob cert;
+    cert.type = proto::LicenseBlobType::kCertificate;
+    cert.write(w);  // empty: the MCS Connect Response carries the public key
+
+    proto::ScopeList scopes;
+    const std::string scope = "DESCRIPTION";
+    scopes.scopes.push_back({scope.begin(), scope.end()});
+    scopes.write(w);
+
+    return w.take();
+}
+
+// LICENSE_ERROR_MESSAGE with STATUS_VALID_CLIENT + ST_NO_TRANSITION: the client
+// needs no license and the licensing phase is complete.
+std::vector<uint8_t> BuildLicenseError() {
+    proto::LicenseErrorMessage err;
+    err.error_code = static_cast<uint32_t>(proto::LicenseErrorCode::kStatusValidClient);
+    err.state_transition =
+        static_cast<uint32_t>(proto::LicenseStateTransition::kNoTransition);
+    return err.encode();
+}
+
+// ---- Session ---------------------------------------------------------------
+
+// One accepted peer. Owns its transport, its X.224/MCS state, its security
+// state, its capability sets and its framebuffer. Nothing mutable is shared
+// with another session: this is the D1 single-writer-per-session model.
+class RdpSession {
+ public:
+    RdpSession(std::unique_ptr<net::Transport> transport, const ServerConfig& config,
+               DesktopSource* source, Authenticator authenticator,
+               InputCallback input_callback, uint32_t session_id)
+        : transport_(std::move(transport)),
+          config_(config),
+          source_(source),
+          authenticator_(std::move(authenticator)),
+          input_callback_(std::move(input_callback)),
+          session_id_(session_id) {}
+
+    // Serves the connection until the peer disconnects or Stop() is called.
+    void Run() {
+        if (!DoX224()) return;
+        if (!DoConnectResponse()) return;
+        if (!DoChannelJoin()) return;
+        if (!DoSecurityAndClientInfo()) return;
+        if (!DoLicensing()) return;
+        if (!DoDemandActive()) return;
+        if (!DoFinalization()) return;
+        ActiveLoop();
+    }
+
+    // Unblocks a pending Read() so the session thread can exit. Safe to call
+    // from another thread.
+    void Stop() {
+        stop_requested_.store(true, std::memory_order_relaxed);
+        if (transport_) transport_->Close();
+    }
+
+    const Credentials& credentials() const { return credentials_; }
+    bool active() const { return active_; }
+
+ private:
+    // ---- transport helpers -------------------------------------------------
+    bool Send(const std::vector<uint8_t>& frame) {
+        return !frame.empty() && transport_->Write(frame.data(), frame.size());
+    }
+
+    bool ReadFrame(std::vector<uint8_t>& frame) {
+        if (has_pending_) {
+            frame = std::move(pending_);
+            has_pending_ = false;
+            return true;
+        }
+        for (;;) {
+            if (read_buf_.size() >= 2) {
+                if (read_buf_[0] != 0x03 || read_buf_[1] != 0x00) return false;
+                if (read_buf_.size() >= 4) {
+                    const size_t len = (static_cast<size_t>(read_buf_[2]) << 8) |
+                                       read_buf_[3];
+                    if (len < 4) return false;
+                    if (read_buf_.size() >= len) {
+                        const auto begin = read_buf_.begin();
+                        frame.assign(begin, begin + static_cast<std::ptrdiff_t>(len));
+                        read_buf_.erase(begin,
+                                        begin + static_cast<std::ptrdiff_t>(len));
+                        return true;
+                    }
+                }
+            }
+            uint8_t tmp[kReadChunk];
+            const int n = transport_->Read(tmp, sizeof(tmp));
+            if (n == net::kReadTimeout) {
+                if (stop_requested_.load(std::memory_order_relaxed)) return false;
+                continue;
+            }
+            if (n <= 0) return false;
+            read_buf_.insert(read_buf_.end(), tmp, tmp + static_cast<size_t>(n));
+        }
+    }
+
+    // Wraps a share PDU (or Demand Active) in an MCS Send Data Indication,
+    // applying the session RC4 layer when encryption is in effect.
+    bool SendRawUserData(const std::vector<uint8_t>& user_data) {
+        std::vector<uint8_t> ud = user_data;
+        if (encrypted_) {
+            ud = EncryptPayload(kSecEncrypt, user_data);
+            if (ud.empty()) return false;
+        }
+        const auto frame =
+            proto::McsSendData::build_indication(kServerChannelId, io_channel_, ud);
+        return !frame.empty() && Send(frame);
+    }
+
+    // A licensing PDU carries its own Basic security header (SEC_LICENSE_PKT),
+    // which the client's licensing machine expects; the session layer is applied
+    // on top when encryption is in effect.
+    bool SendLicensingPdu(const std::vector<uint8_t>& payload) {
+        ByteWriter sh;
+        sh.u16le(kSecLicensePkt);
+        sh.u16le(0);
+        std::vector<uint8_t> ud = sh.take();
+        ud.insert(ud.end(), payload.begin(), payload.end());
+        if (encrypted_) {
+            ud = EncryptPayload(kSecEncrypt, ud);
+            if (ud.empty()) return false;
+        }
+        const auto frame =
+            proto::McsSendData::build_indication(kServerChannelId, io_channel_, ud);
+        return !frame.empty() && Send(frame);
+    }
+
+    // ---- security header handling ------------------------------------------
+    std::vector<uint8_t> EncryptPayload(uint16_t flags,
+                                        const std::vector<uint8_t>& plain) {
+        std::vector<uint8_t> data = plain;
+        const auto mac = security_.Encrypt(data);
+        ByteWriter w;
+        w.u16le(flags);
+        w.u16le(0);
+        w.bytes(mac.data(), mac.size());
+        w.bytes(data.data(), data.size());
+        return w.take();
+    }
+
+    bool DecryptPayload(const std::vector<uint8_t>& in, std::vector<uint8_t>& out) {
+        if (in.size() < proto::SecurityHeader::kNonFipsSize) return false;
+        std::array<uint8_t, 8> mac{};
+        std::memcpy(mac.data(), in.data() + 4, mac.size());
+        out.assign(in.begin() + proto::SecurityHeader::kNonFipsSize, in.end());
+        return security_.Decrypt(out, mac);
+    }
+
+    // Applies the session RC4 layer to an inbound MCS userData when the session
+    // is encrypted and the PDU is marked SEC_ENCRYPT. The decrypted result is
+    // the plaintext PDU (still carrying its own Basic security header).
+    bool DecryptIfEncrypted(std::vector<uint8_t>& ud) {
+        if (!encrypted_ || ud.size() < 2) return true;
+        const uint16_t flags =
+            static_cast<uint16_t>(ud[0] | (ud[1] << 8));
+        if ((flags & kSecEncrypt) == 0) return true;
+        std::vector<uint8_t> plain;
+        if (!DecryptPayload(ud, plain)) return false;
+        ud = std::move(plain);
+        return true;
+    }
+
+    // Unwraps an inbound graphics / finalization PDU. Those carry a security
+    // header only when the session is encrypted.
+    bool UnwrapInbound(const std::vector<uint8_t>& user_data,
+                       std::vector<uint8_t>& out) {
+        if (encrypted_) return DecryptPayload(user_data, out);
+        out = user_data;
+        return true;
+    }
+
+    // ---- connection sequence -----------------------------------------------
+    bool DoX224() {
+        std::vector<uint8_t> frame;
+        if (!ReadFrame(frame)) return false;
+        proto::TpktHeader tpkt;
+        if (proto::TpktHeader::parse(frame.data(), frame.size(), tpkt) != Status::Ok) {
+            return false;
+        }
+        if (tpkt.length != frame.size()) return false;
+        const uint8_t* p = frame.data() + proto::TpktHeader::kSize;
+        const size_t n = frame.size() - proto::TpktHeader::kSize;
+        proto::X224Tpdu tpdu;
+        if (proto::X224Tpdu::parse(p, n, tpdu) != Status::Ok) return false;
+        if (tpdu.code != proto::X224Tpdu::kConnectionRequest) return false;
+
+        size_t off = proto::X224Tpdu::kSize;
+        // Optional cookie / routing token, terminated by CRLF.
+        if (off < n) {
+            size_t end = off;
+            while (end + 1 < n && !(p[end] == 0x0D && p[end + 1] == 0x0A)) ++end;
+            if (end + 1 < n) off = end + 2;
+        }
+        if (off + 8 <= n && p[off] == 0x01) {  // TYPE_RDP_NEG_REQ
+            requested_protocols_ = static_cast<uint32_t>(p[off + 4]) |
+                                   (static_cast<uint32_t>(p[off + 5]) << 8) |
+                                   (static_cast<uint32_t>(p[off + 6]) << 16) |
+                                   (static_cast<uint32_t>(p[off + 7]) << 24);
+        }
+
+        if (requested_protocols_ != 0 && config_.require_external_security) {
+            // This server implements Standard RDP Security only. A client that
+            // insists on external security is told so explicitly.
+            Send(BuildX224NegFailure(
+                static_cast<uint32_t>(proto::NegFailureCode::kHybridRequiredByServer)));
+            return false;
+        }
+        Send(BuildX224Confirm(0));
+        return true;
+    }
+
+    bool DoConnectResponse() {
+        std::vector<uint8_t> frame;
+        if (!ReadFrame(frame)) return false;
+        proto::McsConnectInitial ci;
+        if (proto::McsConnectInitial::parse(frame.data(), frame.size(), ci) !=
+            Status::Ok) {
+            return false;
+        }
+        proto::GccUserData user_data;
+        if (!ExtractGccBlocks(ci.gcc_conference_create_request, user_data)) {
+            return false;
+        }
+
+        if (const auto* core = user_data.find(kCsCore)) {
+            if (core->payload.size() >= 8) {
+                const uint16_t w =
+                    static_cast<uint16_t>(core->payload[4] | (core->payload[5] << 8));
+                const uint16_t h =
+                    static_cast<uint16_t>(core->payload[6] | (core->payload[7] << 8));
+                if (w != 0) client_desktop_width_ = w;
+                if (h != 0) client_desktop_height_ = h;
+            }
+        }
+
+        uint32_t methods = 0;
+        if (const auto* sec = user_data.find(kCsSecurity)) {
+            if (sec->payload.size() >= 4) {
+                methods = static_cast<uint32_t>(sec->payload[0]) |
+                          (static_cast<uint32_t>(sec->payload[1]) << 8) |
+                          (static_cast<uint32_t>(sec->payload[2]) << 16) |
+                          (static_cast<uint32_t>(sec->payload[3]) << 24);
+            }
+        }
+
+        if (const auto* net = user_data.find(kCsNetwork)) {
+            if (net->payload.size() >= 4) {
+                const uint16_t count =
+                    static_cast<uint16_t>(net->payload[0] | (net->payload[1] << 8));
+                requested_channels_.clear();
+                for (uint16_t i = 0; i < count; ++i) {
+                    requested_channels_.push_back(
+                        static_cast<uint16_t>(kFirstStaticChannelId + i));
+                }
+            }
+        }
+
+        // Pick the strongest method the client advertised.
+        chosen_method_ = 0;
+        if ((methods & kMethod128) != 0) {
+            chosen_method_ = kMethod128;
+        } else if ((methods & kMethod56) != 0) {
+            chosen_method_ = kMethod56;
+        } else if ((methods & kMethod40) != 0) {
+            chosen_method_ = kMethod40;
+        }
+        encryption_level_ = chosen_method_ != 0 ? kLevelClientCompatible : 0;
+
+        // The licensing Server License Request always carries a 32-byte random,
+        // whether or not Standard RDP Security encryption is in effect.
+        server_random_.resize(32);
+        if (!crypto::RandomBytes(server_random_, server_random_.size())) {
+            server_random_.clear();
+        }
+
+        if (chosen_method_ != 0 && !server_random_.empty() &&
+            rsa_.Generate(config_.rsa_bits)) {
+            cert_ = rsa_.BuildCertificate();
+        } else {
+            // Fail closed: no encryption rather than a broken key.
+            chosen_method_ = 0;
+            encryption_level_ = 0;
+        }
+
+        desktop_width_ = client_desktop_width_ != 0 ? client_desktop_width_
+                                                    : config_.desktop_width;
+        desktop_height_ = client_desktop_height_ != 0 ? client_desktop_height_
+                                                      : config_.desktop_height;
+
+        std::vector<proto::GccUserData::Block> blocks;
+        blocks.push_back({kScCore, BuildServerCoreBody(requested_protocols_)});
+        blocks.push_back({kScSecurity,
+                          BuildServerSecurityBody(chosen_method_, encryption_level_,
+                                                  server_random_, cert_)});
+        blocks.push_back(
+            {kScNetwork, BuildServerNetworkBody(kIoChannelId, requested_channels_)});
+
+        Send(BuildConnectResponse(blocks));
+        return true;
+    }
+
+    bool DoChannelJoin() {
+        // The client sends Erect Domain Request then Attach User Request.
+        bool sent_attach_confirm = false;
+        while (!sent_attach_confirm) {
+            std::vector<uint8_t> frame;
+            if (!ReadFrame(frame)) return false;
+            const uint8_t choice = McsChoice(frame);
+            if (choice == proto::mcs::kErectDomainRequest) continue;
+            if (choice == proto::mcs::kAttachUserRequest) {
+                Send(BuildAttachUserConfirm(kUserChannelId));
+                sent_attach_confirm = true;
+                continue;
+            }
+            return false;
+        }
+
+        // Channel Join Requests: the client joins its user channel, the I/O
+        // channel and every static virtual channel it asked for.
+        for (;;) {
+            std::vector<uint8_t> frame;
+            if (!ReadFrame(frame)) return false;
+            const uint8_t choice = McsChoice(frame);
+            if (choice != proto::mcs::kChannelJoinRequest) {
+                pending_ = std::move(frame);
+                has_pending_ = true;
+                return true;
+            }
+            proto::McsChannelJoinRequest req;
+            if (proto::McsChannelJoinRequest::parse(frame.data(), frame.size(), req) !=
+                Status::Ok) {
+                return false;
+            }
+            Send(BuildChannelJoinConfirm(req.initiator, req.channel_id, req.channel_id));
+        }
+    }
+
+    static uint8_t McsChoice(const std::vector<uint8_t>& frame) {
+        if (frame.size() < proto::TpktHeader::kSize + 4) return 0xFF;
+        return static_cast<uint8_t>(
+            frame[proto::TpktHeader::kSize + 3] >> 2);
+    }
+
+    bool DoSecurityAndClientInfo() {
+        // Security Exchange first (when encryption is on), then Client Info.
+        for (;;) {
+            std::vector<uint8_t> frame;
+            if (!ReadFrame(frame)) return false;
+            proto::McsSendData sd;
+            if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+                return false;
+            }
+            std::vector<uint8_t> ud = sd.user_data;
+            if (!DecryptIfEncrypted(ud)) return false;
+            if (ud.size() < 2) return false;
+            const uint16_t flags =
+                static_cast<uint16_t>(ud[0] | (ud[1] << 8));
+
+            if ((flags & 0x0001) != 0) {  // SEC_EXCHANGE_PKT
+                if (!HandleSecurityExchange(ud)) return false;
+                continue;
+            }
+            if ((flags & kSecInfoPkt) != 0) {  // SEC_INFO_PKT
+                return HandleClientInfo(ud);
+            }
+            return false;
+        }
+    }
+
+    bool HandleSecurityExchange(const std::vector<uint8_t>& payload) {
+        proto::SecurityExchangePdu pdu;
+        if (proto::SecurityExchangePdu::parse(payload.data(), payload.size(), pdu) !=
+            Status::Ok) {
+            return false;
+        }
+        std::vector<uint8_t> client_random;
+        if (!rsa_.DecryptClientRandom(pdu.encrypted_client_random, client_random)) {
+            return false;
+        }
+
+        crypto::RdpSessionKeys keys =
+            crypto::DeriveRdpSessionKeys(client_random, server_random_, chosen_method_);
+        if (keys.encrypt_key.empty()) return false;
+
+        // DeriveRdpSessionKeys is written from the client's point of view: its
+        // encrypt_key is the client-to-server key. Swap the two directions so the
+        // context's send stream is the server-to-client key.
+        crypto::RdpSessionKeys server_keys = keys;
+        server_keys.encrypt_key = keys.decrypt_key;
+        server_keys.decrypt_key = keys.encrypt_key;
+        security_.Init(server_keys);
+        encrypted_ = true;
+        return true;
+    }
+
+    bool HandleClientInfo(const std::vector<uint8_t>& payload) {
+        proto::ClientInfoPdu ci;
+        if (proto::ClientInfoPdu::parse(payload.data(), payload.size(), ci) != Status::Ok) {
+            return false;
+        }
+        credentials_.domain = ci.info.domain;
+        credentials_.user_name = ci.info.user_name;
+        credentials_.password = ci.info.password;
+        credentials_.alternate_shell = ci.info.alternate_shell;
+        credentials_.working_dir = ci.info.working_dir;
+
+        if (!config_.accept_any_credentials && authenticator_) {
+            return authenticator_(credentials_);
+        }
+        return true;
+    }
+
+    bool DoLicensing() {
+        // Server License Request, then accept the client's reply with
+        // STATUS_VALID_CLIENT (no CAL is issued).
+        if (!SendLicensingPdu(
+                proto::LicensingPdu::Encode(proto::LicenseMessageType::kLicenseRequest,
+                                            BuildLicenseRequest(server_random_)))) {
+            return false;
+        }
+        std::vector<uint8_t> frame;
+        if (!ReadFrame(frame)) return false;
+        proto::McsSendData sd;
+        if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+            return false;
+        }
+        std::vector<uint8_t> ud = sd.user_data;
+        if (!DecryptIfEncrypted(ud)) return false;
+        // The reply is a New License Request / License Info; its contents are
+        // not needed because no CAL is issued.
+        return SendLicensingPdu(
+            proto::LicensingPdu::Encode(proto::LicenseMessageType::kErrorAlert,
+                                        BuildLicenseError()));
+    }
+
+    bool DoDemandActive() {
+        share_id_ = session_id_ * 0x01000000u + 0x12345678u;
+        const auto caps =
+            BuildServerCapabilities(desktop_width_, desktop_height_, config_.color_depth);
+        const auto da = BuildDemandActive(kServerChannelId, share_id_, "RTSC", caps,
+                                        session_id_);
+        if (!SendRawUserData(da)) return false;
+
+        bool got_confirm = false;
+        bool got_font_list = false;
+        while (!got_font_list) {
+            std::vector<uint8_t> frame;
+            if (!ReadFrame(frame)) return false;
+            proto::McsSendData sd;
+            if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+                return false;
+            }
+            std::vector<uint8_t> payload;
+            if (!UnwrapInbound(sd.user_data, payload)) return false;
+            if (payload.size() < 6) return false;
+
+            const uint16_t pdu_type =
+                static_cast<uint16_t>(payload[2] | (payload[3] << 8)) & 0x000F;
+            if (pdu_type == static_cast<uint16_t>(proto::SharePduType::kConfirmActive)) {
+                proto::ConfirmActivePdu ca;
+                if (proto::ConfirmActivePdu::parse(payload.data(), payload.size(), ca) !=
+                    Status::Ok) {
+                    return false;
+                }
+                got_confirm = true;
+                continue;
+            }
+            // A PDUTYPE_DATAPDU: pduType2 sits at offset 14 of the share header.
+            if (payload.size() > 14 &&
+                payload[14] == static_cast<uint8_t>(proto::ShareDataPduType::kFontList)) {
+                got_font_list = true;
+            }
+        }
+        return got_confirm;
+    }
+
+    bool DoFinalization() {
+        // Server Synchronize -> Control(Cooperate) -> Control(GrantedControl) ->
+        // Font Map, in that order.
+        {
+            ByteWriter p;
+            p.u16le(1);  // messageType = SYNC
+            p.u16le(0);  // targetUser (ignored)
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kSynchronize, p.take());
+            if (!SendRawUserData(share)) return false;
+        }
+        {
+            ByteWriter p;
+            p.u16le(0x0004);  // CTRLCOOPERATE
+            p.u16le(0);
+            p.u32le(0);
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kControl, p.take());
+            if (!SendRawUserData(share)) return false;
+        }
+        {
+            ByteWriter p;
+            p.u16le(0x0002);  // CTRLGRANTCONTROLLED
+            p.u16le(kUserChannelId);
+            p.u32le(kServerChannelId);
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kControl, p.take());
+            if (!SendRawUserData(share)) return false;
+        }
+        {
+            ByteWriter p;
+            p.u16le(0);        // numberEntries
+            p.u16le(0);        // totalNumEntries
+            p.u16le(0x0003);   // mapFlags = first | last
+            p.u16le(0x0004);   // entrySize
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kFontMap, p.take());
+            if (!SendRawUserData(share)) return false;
+        }
+        active_ = true;
+        return true;
+    }
+
+    bool SendFrame() {
+        if (!source_) return false;
+        std::vector<uint8_t> rgba;
+        if (!source_->Capture(desktop_width_, desktop_height_, rgba)) return false;
+        const size_t need = static_cast<size_t>(desktop_width_) * desktop_height_ * 4;
+        if (rgba.size() < need) return false;
+
+        const size_t row_bytes = static_cast<size_t>(desktop_width_) * 4;
+        // An MCS Send Data userData is capped at 16383 bytes; reserve the share
+        // data header (18) + update header (4) + bitmap header (20) so the band
+        // always fits. A desktop larger than one band is sent as several
+        // horizontal bands, which the client composites by destination.
+        const size_t overhead = 18 + 4 + 20;
+        const size_t max_rows =
+            proto::mcs::kMaxSendDataUserData > overhead + row_bytes
+                ? (proto::mcs::kMaxSendDataUserData - overhead) / row_bytes
+                : 1;
+        const uint16_t band = static_cast<uint16_t>(max_rows);
+
+        for (uint16_t y = 0; y < desktop_height_; y += band) {
+            const uint32_t remaining = static_cast<uint32_t>(desktop_height_) - y;
+            const uint16_t h = static_cast<uint16_t>(std::min<uint32_t>(band, remaining));
+            const auto pixels = EncodeBitmapBand(desktop_width_, y, h, rgba);
+            const auto bitmap = BuildBitmapBand(desktop_width_, y, h, pixels);
+            // TS_GRAPHICS_UPDATE = updateType + TS_UPDATE_BITMAP_DATA, and
+            // TS_UPDATE_BITMAP_DATA repeats the updateType (the client parser
+            // consumes one and then expects the other).
+            ByteWriter payload;
+            payload.u16le(0x0001);  // TS_GRAPHICS_UPDATE.updateType
+            payload.bytes(bitmap.data(), bitmap.size());
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow, proto::ShareDataPduType::kUpdate,
+                payload.take());
+            if (!SendRawUserData(share)) return false;
+        }
+        return true;
+    }
+
+    void ActiveLoop() {
+        SendFrame();
+        std::vector<uint8_t> frame;
+        while (!stop_requested_.load(std::memory_order_relaxed)) {
+            if (!ReadFrame(frame)) break;
+            proto::McsSendData sd;
+            if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+                continue;
+            }
+            std::vector<uint8_t> payload;
+            if (!UnwrapInbound(sd.user_data, payload)) continue;
+            HandleInputPdu(payload);
+        }
+    }
+
+    void HandleInputPdu(const std::vector<uint8_t>& payload) {
+        if (payload.empty()) return;
+        if ((payload[0] & 0x03) != 0x00) return;  // slow-path: not an input PDU
+        proto::FastPathPdu fp;
+        if (proto::FastPathPdu::parse(payload.data(), payload.size(), true, fp) !=
+            Status::Ok) {
+            return;
+        }
+        ParseInputEvents(fp);
+    }
+
+    void ParseInputEvents(const proto::FastPathPdu& fp) {
+        const uint8_t* p = fp.body.data();
+        const size_t n = fp.body.size();
+        size_t pos = 0;
+        if (fp.header.count_or_reserved == 0) pos = 1;  // extended numEvents byte
+        while (pos < n) {
+            const uint8_t h = p[pos++];
+            const uint8_t code = static_cast<uint8_t>(h >> 5);
+            const uint8_t flags = static_cast<uint8_t>(h & 0x1F);
+            InputEvent ev;
+            switch (static_cast<proto::FastPathInputEventCode>(code)) {
+                case proto::FastPathInputEventCode::kScancode: {
+                    if (pos + 1 > n) return;
+                    ev.kind = InputEvent::Kind::kKey;
+                    ev.scancode = p[pos++];
+                    ev.release = (flags & proto::kKbdRelease) != 0;
+                    ev.extended = (flags & proto::kKbdExtended) != 0;
+                    break;
+                }
+                case proto::FastPathInputEventCode::kUnicode: {
+                    if (pos + 2 > n) return;
+                    ev.kind = InputEvent::Kind::kUnicode;
+                    ev.unicode_code =
+                        static_cast<uint16_t>(p[pos] | (p[pos + 1] << 8));
+                    pos += 2;
+                    ev.release = (flags & proto::kKbdRelease) != 0;
+                    break;
+                }
+                case proto::FastPathInputEventCode::kMouse:
+                case proto::FastPathInputEventCode::kMouseX: {
+                    if (pos + 6 > n) return;
+                    const uint16_t pf =
+                        static_cast<uint16_t>(p[pos] | (p[pos + 1] << 8));
+                    ev.x = static_cast<uint16_t>(p[pos + 2] | (p[pos + 3] << 8));
+                    ev.y = static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8));
+                    pos += 6;
+                    ev.kind = InputEvent::Kind::kMouse;
+                    if ((pf & proto::kPtrWheel) != 0) {
+                        ev.kind = InputEvent::Kind::kWheel;
+                        const uint16_t rot =
+                            static_cast<uint16_t>(pf & proto::kPtrWheelRotationMask);
+                        ev.wheel_delta = static_cast<int16_t>(rot);
+                        if ((pf & proto::kPtrWheelNegative) != 0) {
+                            ev.wheel_delta = static_cast<int16_t>(-ev.wheel_delta);
+                        }
+                    }
+                    if ((pf & proto::kPtrDown) != 0) {
+                        ev.button_down = true;
+                        if ((pf & proto::kPtrButton3) != 0) ev.button = 3;
+                        else if ((pf & proto::kPtrButton2) != 0) ev.button = 2;
+                        else if ((pf & proto::kPtrButton1) != 0) ev.button = 1;
+                    }
+                    break;
+                }
+                case proto::FastPathInputEventCode::kSync:
+                    ev.kind = InputEvent::Kind::kSync;
+                    ev.sync_flags = flags;
+                    break;
+                case proto::FastPathInputEventCode::kMouseRel:
+                    if (pos + 6 > n) return;
+                    pos += 6;
+                    break;
+                case proto::FastPathInputEventCode::kQoeTimestamp:
+                    if (pos + 4 > n) return;
+                    pos += 4;
+                    break;
+                default:
+                    return;
+            }
+            if (input_callback_) input_callback_(ev);
+        }
+    }
+
+    std::unique_ptr<net::Transport> transport_;
+    ServerConfig config_;
+    DesktopSource* source_ = nullptr;
+    Authenticator authenticator_;
+    InputCallback input_callback_;
+    uint32_t session_id_ = 0;
+
+    std::vector<uint8_t> read_buf_;
+    std::vector<uint8_t> pending_;
+    bool has_pending_ = false;
+    std::atomic<bool> stop_requested_{false};
+
+    uint32_t requested_protocols_ = 0;
+    uint16_t client_desktop_width_ = 0;
+    uint16_t client_desktop_height_ = 0;
+    uint16_t desktop_width_ = 0;
+    uint16_t desktop_height_ = 0;
+    std::vector<uint16_t> requested_channels_;
+    uint16_t io_channel_ = kIoChannelId;
+
+    uint32_t chosen_method_ = 0;
+    uint32_t encryption_level_ = 0;
+    std::vector<uint8_t> server_random_;
+    std::vector<uint8_t> cert_;
+    crypto::RsaServerKeyPair rsa_;
+    crypto::RdpSecurityContext security_;
+    bool encrypted_ = false;
+
+    uint32_t share_id_ = 0;
+    bool active_ = false;
+    Credentials credentials_;
+};
+
+}  // namespace
+
+// ---- RdpServer -------------------------------------------------------------
+
+struct RdpServer::Impl {
+    explicit Impl(const ServerConfig& config) : config(config) {}
+
+    ServerConfig config;
+    std::unique_ptr<net::Listener> listener;
+    std::atomic<bool> running{false};
+    std::mutex sessions_mu;
+    std::vector<RdpSession*> sessions;
+    std::vector<std::thread> threads;
+    std::atomic<size_t> session_count{0};
+};
+
+RdpServer::RdpServer(const ServerConfig& config)
+    : impl_(std::make_unique<Impl>(config)), config_(config) {}
+
+RdpServer::~RdpServer() { Stop(); }
+
+void RdpServer::SetDesktopSource(DesktopSource* source) { source_ = source; }
+
+void RdpServer::SetAuthenticator(Authenticator auth) {
+    authenticator_ = std::move(auth);
+}
+
+void RdpServer::SetInputCallback(InputCallback cb) {
+    input_callback_ = std::move(cb);
+}
+
+bool RdpServer::Start(std::string& error) {
+    if (impl_->listener) return true;
+    std::string why;
+    impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
+    if (!impl_->listener) {
+        error = why;
+        last_error_ = why;
+        return false;
+    }
+    return true;
+}
+
+void RdpServer::Run() {
+    if (!impl_->listener) {
+        std::string why;
+        impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
+        if (!impl_->listener) {
+            last_error_ = why;
+            return;
+        }
+    }
+    impl_->running.store(true, std::memory_order_relaxed);
+    while (impl_->running.load(std::memory_order_relaxed)) {
+        auto transport = impl_->listener->Accept();
+        if (!transport) break;
+
+        // Spawn under the sessions lock so Stop() either sees the session (and
+        // stops it) or the loop has already exited.
+        std::lock_guard<std::mutex> lock(impl_->sessions_mu);
+        if (!impl_->running.load(std::memory_order_relaxed)) break;
+        auto* session = new RdpSession(std::move(transport), config_, source_,
+                                       authenticator_, input_callback_, 0);
+        std::thread t([session]() {
+            session->Run();
+            session->Stop();
+        });
+        impl_->sessions.push_back(session);
+        impl_->threads.push_back(std::move(t));
+        impl_->session_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+bool RdpServer::ServeOne() {
+    if (!impl_->listener) {
+        std::string why;
+        impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
+        if (!impl_->listener) {
+            last_error_ = why;
+            return false;
+        }
+    }
+    auto transport = impl_->listener->Accept();
+    if (!transport) return false;
+    RdpSession session(std::move(transport), config_, source_, authenticator_,
+                       input_callback_, 0);
+    session.Run();
+    return true;
+}
+
+void RdpServer::Stop() {
+    impl_->running.store(false, std::memory_order_relaxed);
+    if (impl_->listener) impl_->listener->Close();
+
+    std::vector<RdpSession*> sessions;
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lock(impl_->sessions_mu);
+        sessions = impl_->sessions;
+        threads = std::move(impl_->threads);
+        impl_->sessions.clear();
+    }
+    for (RdpSession* s : sessions) s->Stop();
+    for (std::thread& t : threads) {
+        if (t.joinable()) t.join();
+    }
+    for (RdpSession* s : sessions) delete s;
+}
+
+size_t RdpServer::session_count() const {
+    return impl_->session_count.load(std::memory_order_relaxed);
+}
+
+// ---- Test pattern ----------------------------------------------------------
+
+namespace {
+
+class TestPatternSource : public DesktopSource {
+ public:
+    bool Capture(uint16_t width, uint16_t height,
+                 std::vector<uint8_t>& rgba) override {
+        rgba.assign(static_cast<size_t>(width) * height * 4, 0);
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                const size_t i = (static_cast<size_t>(y) * width + x) * 4;
+                rgba[i + 0] = static_cast<uint8_t>(x & 0xFF);
+                rgba[i + 1] = static_cast<uint8_t>(y & 0xFF);
+                rgba[i + 2] = static_cast<uint8_t>((x + y) & 0xFF);
+                rgba[i + 3] = 0xFF;
+            }
+        }
+        // A bright border so the frame is immediately recognisable.
+        for (uint32_t x = 0; x < width; ++x) {
+            SetPixel(rgba, width, x, 0, 255, 255, 255);
+            SetPixel(rgba, width, x, height - 1, 255, 255, 255);
+        }
+        for (uint32_t y = 0; y < height; ++y) {
+            SetPixel(rgba, width, 0, y, 255, 255, 255);
+            SetPixel(rgba, width, width - 1, y, 255, 255, 255);
+        }
+        return true;
+    }
+
+ private:
+    static void SetPixel(std::vector<uint8_t>& rgba, uint16_t width, uint32_t x,
+                         uint32_t y, uint8_t r, uint8_t g, uint8_t b) {
+        const size_t i = (static_cast<size_t>(y) * width + x) * 4;
+        rgba[i + 0] = r;
+        rgba[i + 1] = g;
+        rgba[i + 2] = b;
+        rgba[i + 3] = 255;
+    }
+};
+
+}  // namespace
+
+std::unique_ptr<DesktopSource> MakeTestPatternSource() {
+    return std::make_unique<TestPatternSource>();
+}
+
+}  // namespace rtsc::server

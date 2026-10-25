@@ -196,13 +196,10 @@ ConnectStep ConnectMachine::SendChannelJoin() {
         // All channels joined: emit the Client Info PDU.
         ClientInfoPdu pdu;
         pdu.security_flags = sec::kSecInfoPkt;
-        if (state_.negotiated_protocol == kProtocolRdp) {
-            if (config_.encryption_methods != 0) {
-                Fail("standard RDP security encryption is not implemented");
-                s.needs_input = false;
-                return s;
-            }
-        }
+        // The Client Info PDU itself is always plaintext under Standard RDP
+        // Security (only the later licensing/data PDUs carry SEC_ENCRYPT), so
+        // the connection machine does not need the RC4 keys. The security
+        // layer wraps the post-Client-Info traffic.
         pdu.info.code_page = 0x0409;  // en-US language id (Unicode mode)
         pdu.info.flags = info::kMouse | info::kUnicode | info::kDisableCtrlAltDel |
                          info::kMaximizeShell | info::kLogonNotify;

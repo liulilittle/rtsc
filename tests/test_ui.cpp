@@ -1,15 +1,58 @@
 // UI surface and window abstraction.
 
+#include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/surface.h"
 #include "rtsc/ui/window.h"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "test_framework.h"
 #include "test_main.h"
 
 using namespace rtsc::ui;
+
+namespace {
+
+// A Window that records its clipboard callback so a test can prove which
+// windows the GUI bound it to (the headless backend discards the callback).
+class RecordingWindow final : public Window {
+  public:
+    RecordingWindow(int width, int height)
+        : surface_(static_cast<uint16_t>(width),
+                   static_cast<uint16_t>(height)) {}
+
+    Surface& surface() override { return surface_; }
+    void Present() override {}
+    bool PollEvent(InputEvent&) override { return false; }
+    void Close() override { closed_ = true; }
+    bool closed() const override { return closed_; }
+    const char* backend_name() const override { return "recording"; }
+    void PushEventForTest(const InputEvent&) override {}
+
+    void SetClipboardChangeCallback(std::function<void()> callback) override {
+        clipboard_callback_ = std::move(callback);
+        ++bind_count_;
+    }
+
+    // Fires the callback exactly as WM_CLIPBOARDUPDATE would.
+    void FireClipboardChange() {
+        if (clipboard_callback_) clipboard_callback_();
+    }
+
+    size_t bind_count() const { return bind_count_; }
+
+  private:
+    Surface surface_;
+    std::function<void()> clipboard_callback_;
+    bool closed_ = false;
+    size_t bind_count_ = 0;
+};
+
+}  // namespace
 
 RTSC_TEST(surface_fill_and_get_pixel) {
     Surface s(4, 3);
@@ -186,6 +229,59 @@ RTSC_TEST(window_wayland_backend_creates_a_window_or_reports_why) {
     w->Close();
     CHECK(w->closed());
 #endif
+}
+
+RTSC_TEST(clipboard_callback_binds_to_the_single_window) {
+    std::vector<std::unique_ptr<Window>> windows;
+    windows.push_back(std::make_unique<RecordingWindow>(1280, 1024));
+
+    int fired = 0;
+    BindClipboardToWindows(windows, [&] { ++fired; });
+
+    CHECK_EQ(static_cast<RecordingWindow*>(windows[0].get())->bind_count(),
+             static_cast<size_t>(1));
+    static_cast<RecordingWindow*>(windows[0].get())->FireClipboardChange();
+    CHECK_EQ(fired, 1);
+}
+
+RTSC_TEST(clipboard_callback_binds_to_every_window_after_a_rebuild) {
+    // The multi-monitor path: the initial window is destroyed and one window per
+    // monitor is created. The GUI binds after this rebuild, so every live window
+    // must carry the callback.
+    std::vector<std::unique_ptr<Window>> windows;
+    windows.push_back(std::make_unique<RecordingWindow>(1280, 1024));
+
+    int fired = 0;
+    BindClipboardToWindows(windows, [&] { ++fired; });
+
+    windows.clear();
+    windows.push_back(std::make_unique<RecordingWindow>(1920, 1080));
+    windows.push_back(std::make_unique<RecordingWindow>(1920, 1080));
+    BindClipboardToWindows(windows, [&] { ++fired; });
+
+    for (const auto& w : windows) {
+        CHECK_EQ(static_cast<const RecordingWindow*>(w.get())->bind_count(),
+                 static_cast<size_t>(1));
+        static_cast<RecordingWindow*>(w.get())->FireClipboardChange();
+    }
+    CHECK_EQ(fired, 2);
+}
+
+RTSC_TEST(clipboard_callback_bound_before_a_rebuild_is_lost) {
+    // RED (the defect this fixes): binding to windows[0] and then rebuilding the
+    // window set leaves the live windows without a callback. This is why the
+    // GUI binds after the rebuild, not before.
+    std::vector<std::unique_ptr<Window>> windows;
+    windows.push_back(std::make_unique<RecordingWindow>(1280, 1024));
+
+    int fired = 0;
+    BindClipboardToWindows(windows, [&] { ++fired; });
+
+    windows.clear();
+    windows.push_back(std::make_unique<RecordingWindow>(1920, 1080));
+    static_cast<RecordingWindow*>(windows[0].get())->FireClipboardChange();
+
+    CHECK_EQ(fired, 0);  // the rebuilt window never received the callback
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }

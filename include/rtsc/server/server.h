@@ -62,6 +62,13 @@ struct ServerConfig {
     // before an account database is wired in.
     bool accept_any_credentials = true;
 
+    // When true, a client that requests external security (SSL / HYBRID / ...)
+    // is answered with RDP_NEG_FAILURE. When false (the default) the server
+    // falls back to Standard RDP Security, which is the only security it
+    // implements in this milestone, so that a peer which only wants TLS can
+    // still be served (or rejected by its own policy).
+    bool require_external_security = false;
+
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.
     uint32_t session_id = 0;

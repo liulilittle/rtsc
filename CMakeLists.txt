@@ -309,7 +309,7 @@ add_executable(rtsc_credssp_sm_tests tests/test_credssp_sm.cpp)
 target_link_libraries(rtsc_credssp_sm_tests PRIVATE rtsc_credssp rtsc_util)
 target_include_directories(rtsc_credssp_sm_tests PRIVATE tests)
 
-add_library(rtsc_security STATIC src/security/security_layer.cpp src/security/connection_driver.cpp)
+add_library(rtsc_security STATIC src/security/security_layer.cpp src/security/standard_rdp_security.cpp src/security/connection_driver.cpp)
 target_include_directories(rtsc_security PUBLIC include)
 target_link_libraries(rtsc_security PUBLIC rtsc_tls rtsc_credssp rtsc_proto rtsc_crypto)
 
@@ -318,6 +318,16 @@ target_link_libraries(rtsc_security_tests PRIVATE rtsc_security rtsc_tls rtsc_cr
 target_include_directories(rtsc_security_tests PRIVATE tests)
 
 add_test(NAME security COMMAND rtsc_security_tests)
+
+# Standard RDP Security (PROTOCOL_RDP): unit tests for the RC4 data plane plus
+# an end-to-end loopback against the in-tree RDP server.
+add_executable(rtsc_rdp_standard_security_tests
+               tests/test_rdp_standard_security.cpp)
+target_link_libraries(rtsc_rdp_standard_security_tests PRIVATE
+                      rtsc_security rtsc_server rtsc_client rtsc_net
+                      rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdp_standard_security_tests PRIVATE tests)
+add_test(NAME rdp_standard_security COMMAND rtsc_rdp_standard_security_tests)
 
 # Blocking TCP transport. Windows = Winsock; POSIX = POSIX sockets.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -413,6 +423,21 @@ endif()
 add_executable(rtsc_crashtest tools/rtsc_crashtest/main.cpp)
 target_link_libraries(rtsc_crashtest PRIVATE rtsc_util)
 
+# RDP server role (Standard RDP Security, [MS-RDPBCGR] 3.3). Platform neutral:
+# it only needs the proto/crypto/net seams. The RSA backend is Windows-only
+# (rsa_server.cpp); rsa_posix_stub.cpp fails closed where there is no backend,
+# so the server degrades to "no encryption" rather than a broken key.
+add_library(rtsc_server STATIC
+    src/server/server.cpp
+    src/server/rsa_posix_stub.cpp
+    src/crypto/rsa_server.cpp)
+target_include_directories(rtsc_server PUBLIC include)
+target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net)
+
+add_executable(rtsc_server_tests tests/test_server.cpp)
+target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
+target_include_directories(rtsc_server_tests PRIVATE tests)
+
 enable_testing()
 add_test(NAME proto COMMAND rtsc_tests)
 add_test(NAME ber COMMAND rtsc_ber_tests)
@@ -459,6 +484,7 @@ endif()
 add_test(NAME credssp COMMAND rtsc_credssp_tests)
 add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
+add_test(NAME server COMMAND rtsc_server_tests)
 
 if(MSVC)
     target_compile_options(rtsc_tests PRIVATE /W4 /WX)
@@ -504,6 +530,7 @@ if(MSVC)
     target_compile_options(rtsc_session_info_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_security_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdp_standard_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_connect PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui PRIVATE /W4 /WX)
     if(WIN32)
@@ -512,4 +539,6 @@ if(MSVC)
     target_compile_options(rtsc_credssp_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_ntlm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
 endif()

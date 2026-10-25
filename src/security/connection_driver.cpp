@@ -7,6 +7,8 @@
 #include <cstring>
 #include <utility>
 
+#include "rtsc/proto/rdp_neg.h"
+
 namespace rtsc::security {
 
 namespace {
@@ -66,8 +68,17 @@ DriverStep ConnectionDriver::Start() {
 }
 
 DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
-    // ---- plaintext negotiation (X.224 Connection Confirm) -------------------
-    if (machine_.state().phase == ConnectPhase::kAwaitNegotiation) {
+    const ConnectPhase phase = machine_.state().phase;
+
+    // ---- plaintext phase ---------------------------------------------------
+    // X.224 is always plaintext. Under Standard RDP Security (PROTOCOL_RDP)
+    // the whole MCS handshake is plaintext too; it ends only after the Client
+    // Info PDU has been emitted. Under TLS this branch stops at the Connection
+    // Confirm and the security layer takes over.
+    const bool plaintext_connect =
+        phase == ConnectPhase::kAwaitNegotiation ||
+        (standard_rdp_ && !client_info_sent_ && phase != ConnectPhase::kFailed);
+    if (plaintext_connect) {
         if (data != nullptr && size > 0) {
             plain_buf_.insert(plain_buf_.end(), data, data + size);
         }
@@ -77,10 +88,52 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
         for (;;) {
             const size_t len = TpktFrameLength(plain_buf_, start);
             if (len == 0) break;
-            const auto step = machine_.OnData(
-                plain_buf_.data() + start, len);
-            Append(out.to_send, step.output);
+
+            // The Connect Response carries TS_UD_SC_SEC1, which is the only
+            // place the server random and RSA certificate appear for Standard
+            // RDP Security.
+            if (standard_rdp_ &&
+                machine_.state().phase == ConnectPhase::kAwaitConnectResponse) {
+                std::string why;
+                const std::vector<uint8_t> frame(
+                    plain_buf_.begin() + static_cast<ptrdiff_t>(start),
+                    plain_buf_.begin() + static_cast<ptrdiff_t>(start + len));
+                if (!CaptureServerSecurity(frame, why)) return Fail(why);
+            }
+
+            const auto step = machine_.OnData(plain_buf_.data() + start, len);
             start += len;
+
+            // The Connection Confirm selects the security model. The machine
+            // has already produced the MCS Connect Initial for PROTOCOL_RDP.
+            if (machine_.state().phase != ConnectPhase::kAwaitNegotiation &&
+                !standard_rdp_ &&
+                machine_.state().negotiated_protocol == proto::kProtocolRdp) {
+                standard_rdp_ = true;
+                standard_ = std::make_unique<StandardRdpSecurity>();
+            }
+
+            if (!client_info_sent_ && standard_rdp_ && machine_.done()) {
+                // Security Exchange precedes Client Info, and Client Info
+                // itself stays plaintext (SEC_INFO_PKT only).
+                if (standard_->encryption_enabled()) {
+                    std::string why;
+                    const auto exchange = standard_->BuildSecurityExchange(
+                        machine_.state().user_channel_id,
+                        machine_.state().io_channel_id, why);
+                    if (exchange.empty()) {
+                        return Fail(
+                            "cannot build the Security Exchange PDU: " + why);
+                    }
+                    Append(out.to_send, exchange);
+                }
+                Append(out.to_send, step.output);
+                BeginPostClientInfo(out);
+                // Anything after this frame belongs to the post-connect data
+                // plane; leave it in plain_buf_ for the leftover hand-off.
+                break;
+            }
+            Append(out.to_send, step.output);
         }
         if (start > 0) {
             plain_buf_.erase(plain_buf_.begin(),
@@ -89,7 +142,8 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
 
         if (machine_.failed()) return Fail(machine_.state().error);
 
-        if (machine_.state().phase == ConnectPhase::kAwaitExternalSecurity) {
+        if (!standard_rdp_ &&
+            machine_.state().phase == ConnectPhase::kAwaitExternalSecurity) {
             std::string why;
             security_ = SecurityLayer::Create(security_config_, why);
             if (!security_) return Fail("cannot create the security layer: " + why);
@@ -101,6 +155,21 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
             Append(kick.to_send, out.to_send);
             return kick;
         }
+
+        // Bytes after the last connect frame already belong to the encrypted
+        // data plane (the server may pipeline its License Request). Hand them
+        // to the Standard RDP Security framer now that licensing_ exists.
+        if (standard_rdp_ && client_info_sent_ && !plain_buf_.empty()) {
+            const std::vector<uint8_t> leftover = std::move(plain_buf_);
+            plain_buf_.clear();
+            const auto frames =
+                standard_->ReceivePdu(leftover.data(), leftover.size());
+            if (standard_->failed()) return Fail(standard_->error());
+            for (const auto& f : frames) {
+                RoutePostConnect(f, out);
+                if (out.failed) return out;
+            }
+        }
         return out;
     }
 
@@ -109,44 +178,26 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
         return DriveSecurity(data, size);
     }
 
-    // ---- post-handshake data plane (everything is encrypted) ----------------
+    // ---- post-handshake data plane -----------------------------------------
     DriverStep out;
-    if (!security_) return Fail("post-handshake data with no security layer");
+    std::vector<std::vector<uint8_t>> frames;
+    if (standard_rdp_) {
+        frames = standard_->ReceivePdu(data, size);
+        if (standard_->failed()) return Fail(standard_->error());
+    } else {
+        if (!security_) return Fail("post-handshake data with no security layer");
+        frames = security_->ReceivePdu(data, size);
+    }
 
-    const auto frames = security_->ReceivePdu(data, size);
     for (const auto& f : frames) {
         if (!client_info_sent_) {
             const auto step = machine_.OnData(f.data(), f.size());
-            if (!step.output.empty()) {
-                Append(out.to_send, security_->SendPdu(step.output));
-            }
+            if (!step.output.empty()) AppendOutbound(step.output, out);
+            if (out.failed) return out;
             if (machine_.failed()) return Fail(machine_.state().error);
             if (machine_.done()) {
                 // The Client Info PDU has been sent; the licensing phase begins.
-                client_info_sent_ = true;
-                out.done = true;
-                // Latch the I/O channel id parsed from the Server Network Data
-                // block; post-active routing compares each inbound PDU against
-                // it to tell graphics data from static virtual channel data.
-                io_channel_id_ = machine_.state().io_channel_id;
-
-                proto::LicensingMachine::Config lc;
-                lc.user_channel_id = machine_.state().user_channel_id;
-                lc.io_channel_id = machine_.state().io_channel_id;
-                lc.user_name = credentials_.user_name;
-                lc.machine_name = machine_config_.client_name;
-                licensing_ = std::make_unique<proto::LicensingMachine>(lc);
-                licensing_->Start();
-
-                proto::SessionSetupMachine::Config sc;
-                sc.user_channel_id = machine_.state().user_channel_id;
-                sc.io_channel_id = machine_.state().io_channel_id;
-                sc.desktop_width =
-                    static_cast<uint16_t>(machine_config_.desktop_width);
-                sc.desktop_height =
-                    static_cast<uint16_t>(machine_config_.desktop_height);
-                session_ = std::make_unique<proto::SessionSetupMachine>(sc);
-                session_->Start();
+                BeginPostClientInfo(out);
             }
             continue;
         }
@@ -154,6 +205,77 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
         if (out.failed) return out;
     }
     return out;
+}
+
+void ConnectionDriver::BeginPostClientInfo(DriverStep& out) {
+    if (client_info_sent_) return;
+    client_info_sent_ = true;
+    out.done = true;
+    // Latch the I/O channel id parsed from the Server Network Data block;
+    // post-active routing compares each inbound PDU against it to tell
+    // graphics data from static virtual channel data.
+    io_channel_id_ = machine_.state().io_channel_id;
+
+    proto::LicensingMachine::Config lc;
+    lc.user_channel_id = machine_.state().user_channel_id;
+    lc.io_channel_id = machine_.state().io_channel_id;
+    lc.user_name = credentials_.user_name;
+    lc.machine_name = machine_config_.client_name;
+    if (standard_rdp_) {
+        // The in-tree server carries the RSA key only in TS_UD_SC_SEC1, and
+        // omits it entirely when encryption is off. The fallback keeps the
+        // plaintext Standard RDP Security path usable against that server.
+        lc.server_certificate = standard_->server_certificate();
+        lc.allow_missing_server_key = true;
+    }
+    licensing_ = std::make_unique<proto::LicensingMachine>(lc);
+    licensing_->Start();
+
+    proto::SessionSetupMachine::Config sc;
+    sc.user_channel_id = machine_.state().user_channel_id;
+    sc.io_channel_id = machine_.state().io_channel_id;
+    sc.desktop_width = static_cast<uint16_t>(machine_config_.desktop_width);
+    sc.desktop_height = static_cast<uint16_t>(machine_config_.desktop_height);
+    session_ = std::make_unique<proto::SessionSetupMachine>(sc);
+    session_->Start();
+}
+
+void ConnectionDriver::AppendOutbound(const std::vector<uint8_t>& pdu,
+                                      DriverStep& out) {
+    if (standard_rdp_) {
+        Append(out.to_send, standard_->SendPdu(pdu));
+        if (standard_->failed()) {
+            out.failed = true;
+            out.error = standard_->error();
+        }
+        return;
+    }
+    if (security_) Append(out.to_send, security_->SendPdu(pdu));
+}
+
+bool ConnectionDriver::CaptureServerSecurity(const std::vector<uint8_t>& frame,
+                                             std::string& why) {
+    if (!standard_ || standard_->configured()) return true;
+
+    proto::McsConnectResponse rsp;
+    if (proto::McsConnectResponse::parse(frame.data(), frame.size(), rsp) !=
+        proto::Status::Ok) {
+        why = "malformed MCS Connect Response";
+        return false;
+    }
+    const auto* sec = rsp.user_data.find(
+        static_cast<uint16_t>(proto::GccUserDataBlock::kScSecurity));
+    if (sec == nullptr) {
+        why = "Server Security Data (TS_UD_SC_SEC1) is missing";
+        return false;
+    }
+
+    StandardRdpSecurity::ServerSecurityData data;
+    if (!StandardRdpSecurity::ParseServerSecurityData(
+            sec->payload.data(), sec->payload.size(), data, why)) {
+        return false;
+    }
+    return standard_->Configure(data, why);
 }
 
 void ConnectionDriver::RoutePostConnect(const std::vector<uint8_t>& pdu,
@@ -208,7 +330,8 @@ void ConnectionDriver::RoutePostConnect(const std::vector<uint8_t>& pdu,
         if (!is_licensing) return;  // not ours yet
         const auto ls = licensing_->OnPdu(pdu.data(), pdu.size());
         for (const auto& p : ls.to_send) {
-            Append(out.to_send, security_->SendPdu(p));
+            AppendOutbound(p, out);
+            if (out.failed) return;
         }
         if (ls.failed) {
             out.failed = true;
@@ -220,7 +343,8 @@ void ConnectionDriver::RoutePostConnect(const std::vector<uint8_t>& pdu,
     if (!session_) return;
     const auto ss = session_->OnPdu(pdu.data(), pdu.size());
     for (const auto& p : ss.to_send) {
-        Append(out.to_send, security_->SendPdu(p));
+        AppendOutbound(p, out);
+        if (out.failed) return;
     }
     if (ss.failed) {
         out.failed = true;
@@ -253,6 +377,20 @@ DriverStep ConnectionDriver::DriveSecurity(const uint8_t* data, size_t size) {
         Append(out.to_send, security_->SendPdu(step.output));
     }
     return out;
+}
+
+std::vector<uint8_t> ConnectionDriver::SendApplicationPdu(
+    const std::vector<uint8_t>& pdu) {
+    if (standard_rdp_) {
+        if (pdu.empty()) return {};
+        const uint16_t user_channel = machine_.state().user_channel_id;
+        if (user_channel == 0 || io_channel_id_ == 0) return {};
+        const auto framed = proto::McsSendData::build_request(
+            user_channel, io_channel_id_, pdu);
+        if (framed.empty()) return {};
+        return standard_->SendPdu(framed);
+    }
+    return security_ ? security_->SendPdu(pdu) : pdu;
 }
 
 }  // namespace rtsc::security

@@ -41,6 +41,7 @@
 #include "rtsc/proto/connect_machine.h"
 #include "rtsc/proto/rdp_neg.h"
 #include "rtsc/security/connection_driver.h"
+#include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
 #include "rtsc/util/crash_guard.h"
 
@@ -273,8 +274,6 @@ int main(int argc, char** argv) {
     };
 
     rtsc::channel::CliprdrClient cliprdr(local_clipboard.get(), send_cliprdr);
-    windows[0]->SetClipboardChangeCallback(
-        [&] { cliprdr.OnLocalClipboardChanged(); });
 
     rtsc::channel::RdpsndClient rdpsnd(audio_sink.get(), send_rdpsnd);
     client.RegisterChannel(kChannelRdpdr,
@@ -343,6 +342,13 @@ int main(int argc, char** argv) {
                     static_cast<unsigned>(desk_w), static_cast<unsigned>(desk_h),
                     static_cast<unsigned>(width), static_cast<unsigned>(height));
     }
+    // Attach the clipboard observer to the final window set. This must run
+    // after the multi-monitor rebuild above: that path destroys the initial
+    // window and creates one per monitor, so binding earlier (to windows[0])
+    // would leave the live windows without a callback. One call covers both the
+    // single-window and the multi-window layout.
+    rtsc::ui::BindClipboardToWindows(
+        windows, [&] { cliprdr.OnLocalClipboardChanged(); });
     std::printf("session active; desktop %ux%u; entering the render loop\n",
                 static_cast<unsigned>(client.desktop_width()),
                 static_cast<unsigned>(client.desktop_height()));

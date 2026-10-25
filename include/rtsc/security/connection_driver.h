@@ -31,6 +31,7 @@
 #include "rtsc/proto/licensing_machine.h"
 #include "rtsc/proto/session_setup.h"
 #include "rtsc/security/security_layer.h"
+#include "rtsc/security/standard_rdp_security.h"
 
 namespace rtsc::security {
 
@@ -70,6 +71,18 @@ class ConnectionDriver {
     SecurityLayer* security() { return security_.get(); }
     bool security_active() const { return security_ != nullptr; }
     const std::string& phase_name() const;
+
+    // Standard RDP Security (PROTOCOL_RDP) is selected instead of the external
+    // TLS/CredSSP security layer. Exposed for diagnostics and tests.
+    bool standard_rdp() const { return standard_rdp_; }
+    StandardRdpSecurity* standard_security() { return standard_.get(); }
+
+    // Wraps an application-level PDU for the post-active data plane (e.g. a
+    // Fast-Path input PDU). Under TLS the PDU goes through the security layer
+    // unchanged, matching the historical behaviour. Under Standard RDP
+    // Security it is placed in an MCS Send Data Request (the in-tree server
+    // expects input inside MCS) and then RC4-encrypted when enabled.
+    std::vector<uint8_t> SendApplicationPdu(const std::vector<uint8_t>& pdu);
 
     // The handler receives each inbound PDU once the session is active (i.e.
     // after the capability exchange / connection finalization completed). The
@@ -128,6 +141,13 @@ class ConnectionDriver {
     DriverStep DriveSecurity(const uint8_t* data, size_t size);
     // Routes a post-Client-Info PDU to the licensing / session setup machine.
     void RoutePostConnect(const std::vector<uint8_t>& pdu, DriverStep& out);
+    // Emits a post-connect PDU through whichever data plane is active.
+    void AppendOutbound(const std::vector<uint8_t>& pdu, DriverStep& out);
+    // Creates the licensing/session machines after Client Info was sent.
+    void BeginPostClientInfo(DriverStep& out);
+    // Parses TS_UD_SC_SEC1 out of an MCS Connect Response.
+    bool CaptureServerSecurity(const std::vector<uint8_t>& frame,
+                               std::string& why);
 
     proto::ConnectMachine machine_;
     proto::ConnectMachine::Config machine_config_;
@@ -135,6 +155,11 @@ class ConnectionDriver {
     std::unique_ptr<SecurityLayer> security_;
     std::unique_ptr<tls::TlsTransport> tls_for_test_;
     proto::ConnectMachine::Credentials credentials_;
+
+    // Standard RDP Security (PROTOCOL_RDP) data plane. Mutually exclusive with
+    // security_ (TLS/CredSSP).
+    bool standard_rdp_ = false;
+    std::unique_ptr<StandardRdpSecurity> standard_;
 
     // Post-Client-Info phase.
     std::unique_ptr<proto::LicensingMachine> licensing_;
