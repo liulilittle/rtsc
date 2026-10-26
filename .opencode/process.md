@@ -9941,3 +9941,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 工作树 diff **+279/-34**；`cmake --build` EXIT=0；`ctest` 51/51；`server-fix.log` 2 次 `session accepted`（无 active）。
 - **[处置]** 催办收口报告（mstsc 是否到达 active + 修复内容 + 构建/ctest/Linux 门禁）。
 - **在途**：mstsc MCS 交接修复（实网验证中）。
+
+
+## 第480轮：**收口报告（0x1204/0x706 已消除，卡 licensing 0x808）→ 授权诊断**
+
+- **[收口报告 ses_e878558e8ffeL3341W4gsKduOU]**：
+  - 修复：HYBRID_EX 选择（`server.cpp:672-699`）；EUAR 条件化（`server_security_layer.{h:57-62,cpp:220-236}` + 客户端 `security_layer.{h:30-35,cpp:274-290}` + `connection_driver.cpp:147-151/361-390`）；Server Security Data 外部安全下 method=0/level=0/无证书（`server.cpp:811-820`）；licensing（`server.cpp:426-470/975-1080` + `rsa_server.{h,cpp}` + `rsa_posix_stub.cpp` + `licensing.{h,cpp}`）；新增测试 5 个。
+  - 构建/测试：build EXIT=0/0 warning；ctest **51/51**；Linux 门禁 **PASS**。
+  - **真实 mstsc**：已处理 GUI 对话框；服务器日志 `session accepted (count=1)`；mstsc 报 **0x808（disconnectReasonLicensingFailed）**，未达 active。
+  - 进展：**0x1204 已消除**、**0x706 已消除**；现卡 licensing。
+- **[主代理核验]** fprintf = 0；build EXIT=0；ctest 51/51。
+- **[授权]** 继续诊断 licensing 0x808：临时插桩（用后还原）+ TLS 密文抓包；核对 License Request 格式 / premaster 解密 / Platform Challenge MAC / License Info 处理；定位根因 → 修复 → mstsc 重跑验证 → 构建/ctest/Linux 门禁 → 插桩还原。
+- **在途**：mstsc licensing 诊断（授权中）。
