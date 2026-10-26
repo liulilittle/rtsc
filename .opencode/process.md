@@ -9245,3 +9245,22 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - （注：报告 §3.1 canonical run 值 raw 4.238ms/236fps 与执行者消息 4.323ms/231.3fps 略有差异，报告称含多次独立运行方差——待审计核对。）
 - **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须重跑 `rtsc_bench.exe` 核对报告数值 + 核验 CMakeLists 未改产品逻辑。
 - **在途**：性能基准双审（甲+乙）、server-sec（CredSSP 修复）。
+
+
+## 第398轮：**审计乙性能基准通过（附一处数值观察）**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：ctest 49/49；重跑 4 次（raw 4.478–5.395ms、rle 8.658–8.897、rdp6-argb 5.679–6.083、aycocg 6.987–7.729、nsc 6.433–7.009、round-trip 0.760–1.058、end-to-end 5.289–6.424）；git diff 仅新增 rtsc_bench；方法论正确；限制如实声明。
+- **[主代理观察]** 乙称「报告值全部落在观测 min/max 区间内」，但所列 **raw 4.478–5.395ms vs 报告 4.323ms** —— 4.323 **低于**观测区间下限 4.478，与「全部落在区间内」矛盾；且报告 §3.1 canonical 值 4.238ms 又不同。→ 数值为**环境相关的多次运行值**，差异小（~3.5%），但「全部落在区间内」的表述不严谨，已独立重跑核对。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：性能基准双审（乙✅/甲待）、server-sec（CredSSP 修复）。
+
+
+## 第399轮：**主代理独立重跑 rtsc_bench（跨运行方差观察）**
+
+- **[BASH: .\build\Release\rtsc_bench.exe]** 主代理独立重跑（2026-10-26）：
+  - raw-32bpp 5.627ms/177.7fps；rle-16bpp 9.429ms/106.1fps；rdp6-argb 5.661ms/176.7fps；rdp6-aycocg 6.829ms/146.4fps；nsc-aycocg-cs 6.570ms/152.2fps。
+  - 回环 round-trip 0.806ms（min 0.766/max 0.843）；端到端 5.617ms/178.0fps；CPU 100.0%。
+- **[观察]** 同一二进制跨运行 raw 从 4.238ms（报告 §3.1）→ 4.323ms（执行者消息）→ 4.478–5.395ms（乙 4 次）→ 5.627ms（主代理）= **约 33% 跨运行方差**；单次内 30 次中位数 stddev 仅 0.245–0.668ms。
+  - 结论（各路径 >60fps、CPU 单核满载）**不受影响**；但「canonical 数值」**不可复现**，报告宜更显著声明跨运行方差（现仅 §3.2 列）。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：性能基准双审（乙✅/甲待）、server-sec（CredSSP 修复）。
