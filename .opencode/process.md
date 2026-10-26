@@ -9763,3 +9763,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[裁定]** 工具+证据有效；**根因诊断有误，需修正后再作为定案依据**。
 - **[派发]** 修正 `evidence/mstsc/REPORT.md` §4.3（改为 2 TSRequest + EUAR，聚焦 post-CredSSP MCS 衔接）。
 - **在途**：mstsc 报告修正。
+
+
+## 第456轮：**mstsc 报告修正中**
+
+- **[主代理核验]** 执行者 `ses_e884b1ba0ffeM39k5d6IHiW4bq` **busy**（`pending:true`），正修正 `evidence/mstsc/REPORT.md`（mtime 21:14:08，8395B）。
+- **判定**：修正中，非完成报告；不催、不重派，等待其收口。
+- **在途**：mstsc 报告修正。
