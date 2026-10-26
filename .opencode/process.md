@@ -9933,3 +9933,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** `cmake --build` **EXIT=0**；`ctest -C Release` **51/51**；`evidence/mstsc/server-fix.log` 现有 **2 次 `session accepted`**（count=1、count=2），**无 active**。
 - **[处置]** 催办 mstsc 是否到达 active 并渲染（附截图）+ 修复内容 + 构建/ctest/Linux 门禁。
 - **在途**：mstsc MCS 交接修复（实网验证中）。
+
+
+## 第479轮：**修复代理再次静默死亡 → 催办**
+
+- **[异常]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` 再次判定**静默死亡**（已发一次唤醒）；get_goal 确认其 **busy**（`pending:true`，wrote 1793041528141）。
+- **[核验]** 工作树 diff **+279/-34**；`cmake --build` EXIT=0；`ctest` 51/51；`server-fix.log` 2 次 `session accepted`（无 active）。
+- **[处置]** 催办收口报告（mstsc 是否到达 active + 修复内容 + 构建/ctest/Linux 门禁）。
+- **在途**：mstsc MCS 交接修复（实网验证中）。
