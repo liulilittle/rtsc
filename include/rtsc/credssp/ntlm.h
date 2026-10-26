@@ -85,6 +85,12 @@ struct ChallengeMessage {
     std::array<uint8_t, 8> server_challenge{};
     std::string target_name;
     std::vector<AvPair> av_pairs;
+    // NTLM version (written only when flags carries NTLMSSP_NEGOTIATE_VERSION).
+    // A zero version while the flag is set is what a real client rejects.
+    uint8_t version_major = 0x0A;
+    uint8_t version_minor = 0x00;
+    uint16_t version_build = 0x4563;
+    uint8_t version_revision = 0x0F;
 
     Error Encode(Bytes& out) const;
     Error Decode(const uint8_t* data, size_t size);

@@ -71,7 +71,6 @@ Error CredsspServer::OnClientMessage(const uint8_t* data, size_t size, Bytes& ou
     TsRequest req;
     Error e = req.Decode(data, size);
     if (!e.ok()) return Fail(e.status, "cannot decode TSRequest");
-
     switch (state_) {
         case State::kAwaitNegotiate: {
             e = BuildChallenge(req, out);
@@ -122,7 +121,10 @@ Error CredsspServer::BuildChallenge(const TsRequest& req, Bytes& out) {
                             ntlm_flag::kAlwaysSign | ntlm_flag::kExtendedSessionSecurity |
                             ntlm_flag::kTargetInfo | ntlm_flag::kVersion |
                             ntlm_flag::k128 | ntlm_flag::kKeyExch);
-    msg.flags |= ntlm_flag::kKeyExch | ntlm_flag::k128;
+    // kTargetInfo is always set because the CHALLENGE carries an AV list; a
+    // list without the flag is inconsistent and a real client rejects it.
+    // k56 is deliberately left out so the 56-bit sealing-key path is not taken.
+    msg.flags |= ntlm_flag::kKeyExch | ntlm_flag::k128 | ntlm_flag::kTargetInfo;
     msg.server_challenge = server_challenge_;
     msg.target_name = nb_domain;
     msg.av_pairs.clear();

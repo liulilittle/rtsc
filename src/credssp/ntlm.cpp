@@ -186,7 +186,15 @@ Error ChallengeMessage::Encode(Bytes& out) const {
     off += target.size();
     WriteSecBuf(out.data() + 40, avs.size(), static_cast<uint32_t>(off));
     out.insert(out.end(), avs.begin(), avs.end());
-    // Version field at 48..55 is left zero when NEGOTIATE_VERSION is not set.
+    // The version field is only meaningful when NTLMSSP_NEGOTIATE_VERSION is set.
+    // A real client rejects a CHALLENGE that advertises the flag but carries a
+    // zero version, so the field is written whenever the flag is present.
+    if ((flags & ntlm_flag::kVersion) != 0) {
+        out[48] = version_major;
+        out[49] = version_minor;
+        StoreLe16(out.data() + 50, version_build);
+        out[55] = version_revision;
+    }
     return Ok();
 }
 
