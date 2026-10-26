@@ -9953,3 +9953,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** fprintf = 0；build EXIT=0；ctest 51/51。
 - **[授权]** 继续诊断 licensing 0x808：临时插桩（用后还原）+ TLS 密文抓包；核对 License Request 格式 / premaster 解密 / Platform Challenge MAC / License Info 处理；定位根因 → 修复 → mstsc 重跑验证 → 构建/ctest/Linux 门禁 → 插桩还原。
 - **在途**：mstsc licensing 诊断（授权中）。
+
+
+## 第481轮：**修复代理 idle（server-fix.log 仅 listening）→ 催办 licensing 诊断**
+
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`，wrote 1793042613046）；`evidence/mstsc/server-fix.log` 现仅 `listening on 0.0.0.0:3390`（**无 session accepted**）；diff **+290/-34**。
+- **[处置]** 催办 licensing 0x808 诊断结果（根因 + 修复 + mstsc 重跑 + 构建/ctest/Linux 门禁 + 插桩还原）。
+- **在途**：mstsc licensing 诊断（授权中）。
