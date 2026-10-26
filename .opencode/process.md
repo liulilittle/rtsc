@@ -9850,3 +9850,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 工作树保留其改动 **+113/-25**（`security_layer.{h,cpp}`、`server_security_layer.{h,cpp}`、`connection_driver.cpp`、`server.cpp` + 3 测试）；`cmake --build` EXIT=0；`ctest` 51/51。
 - **[处置]** get_goal 确认状态；若未终结则 prompt 续做，若终结则评估并上报用户、经 task 新开代理续做。
 - **在途**：mstsc MCS 交接修复。
+
+
+## 第468轮：**根因定位正确（HYBRID_EX）→ 催办还原调试 + mstsc 验证**
+
+- **[用户反馈]** 「RDP服务器这么难的吗？一直没有解决问题」「大哥一直搞不对啊」——对长期未收敛表示不满。
+- **[主代理核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` busy；`src/server/server.cpp` diff 显示**真实根因修复**：
+  - mstsc 请求 `requestedProtocols=0x0B`（含 `PROTOCOL_HYBRID_EX=0x8`）；
+  - 原服务器选 `kProtocolHybrid(0x2)` 却仍发 EUAR → mstsc 报 **0x1204**；
+  - **修复**：`requested_protocols_ & kProtocolHybridEx` → `selected_protocol_ = kProtocolHybridEx; credssp_required_ = true; euar_required_ = true;`。
+  - 但 diff 中仍含**调试 `std::fprintf(stderr, "[dbg] ...")`**（待还原）。
+- **[处置]** 催办：还原调试 fprintf + 保留 HYBRID_EX 修复 + **真实 mstsc 重跑验证**（到达 active 并渲染）+ 构建/ctest/Linux 门禁。
+- **在途**：mstsc MCS 交接修复（收口中）。
