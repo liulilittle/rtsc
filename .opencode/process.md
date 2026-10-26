@@ -9770,3 +9770,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 执行者 `ses_e884b1ba0ffeM39k5d6IHiW4bq` **busy**（`pending:true`），正修正 `evidence/mstsc/REPORT.md`（mtime 21:14:08，8395B）。
 - **判定**：修正中，非完成报告；不催、不重派，等待其收口。
 - **在途**：mstsc 报告修正。
+
+
+## 第457轮：**报告修正未落地（催办精确编辑）**
+
+- **[主代理核验]** 执行者 `ses_e884b1ba0ffeM39k5d6IHiW4bq` idle（`pending:true`）；`evidence/mstsc/REPORT.md` **mtime 未变**（21:14:08）→ 修正未落地。
+- **[催办]** prompt **精确编辑** §4.3：删「1 条 TSRequest」表述，改为「[MS-CSSP] 3.1.5：2 条 TSRequest（CHALLENGE + pubKeyAuth）+ EUAR，工程实现合规」；根因聚焦 post-CredSSP MCS 衔接。禁止改产品代码。
+- **在途**：mstsc 报告修正。
