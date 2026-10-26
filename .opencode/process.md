@@ -9422,3 +9422,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[执行者 ses_e88cb6d96ffepts6sKKpNUQ4al]** 审计循环收敛：甲乙双审一致盖章 **通过 ✅，无缺陷**；观察项已闭合（`desktop_gdi_pixel_matches_getpixel`）；build 0/0；desktop_gdi 5/16/0；ctest 50/50。
 - **判定**：与第413/414轮一致，**无新动作**；GDI 已合并 master `176e3b3`。
 - **在途**：Linux 门禁修复（`ses_e88b60db1fferBHxxHzKv53kjI`）。
+
+
+## 第416轮：**Linux 门禁续修（3 处未使用函数）**
+
+- **[主代理实跑 Linux 门禁]** `wsl.exe bash scripts/linux-build-gate.sh` → **LINUX GATE FAIL: FAILED=2 WINDOWS_H=0**（`rdpusb_client.cpp` 的 `[[maybe_unused]]` 已生效，但暴露更多未使用函数）。
+- **[完整错误清单（3 处 `-Werror=unused-function`）]**：
+  1. `tests/test_rdp_standard_security.cpp:53:10` `uint16_t {anonymous}::ReadU16Le(...)`。
+  2. `tests/test_gui_send.cpp:71:6` `bool {anonymous}::FindChannelWrite(...)`。
+  3. `tests/test_gui_send.cpp:31:34` `rtsc::security::ConnectionDriver {anonymous}::MakeGuiDriver()`。
+- **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：给 3 函数加 `[[maybe_unused]]`（禁删代码/禁 `#ifdef`），**反复重跑门禁直至 PASS**；确认 Windows build 0/0。
+- **在途**：Linux 门禁续修。
