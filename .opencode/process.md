@@ -9960,3 +9960,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`，wrote 1793042613046）；`evidence/mstsc/server-fix.log` 现仅 `listening on 0.0.0.0:3390`（**无 session accepted**）；diff **+290/-34**。
 - **[处置]** 催办 licensing 0x808 诊断结果（根因 + 修复 + mstsc 重跑 + 构建/ctest/Linux 门禁 + 插桩还原）。
 - **在途**：mstsc licensing 诊断（授权中）。
+
+
+## 第482轮：**修复代理 idle（server-fix.log 仅 listening）→ 催办 licensing 诊断**
+
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`，wrote 1793043507131）；`evidence/mstsc/server-fix.log` 仍仅 `listening on 0.0.0.0:3390`（**无 session accepted**）；diff **+296/-34**。
+- **[处置]** 催办 licensing 0x808 诊断结果（根因 + 修复 + mstsc 重跑 + 构建/ctest/Linux 门禁 + 插桩还原）。
+- **在途**：mstsc licensing 诊断（授权中）。
