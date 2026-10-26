@@ -49,6 +49,8 @@ add_library(rtsc_proto STATIC
     src/proto/orders.cpp
     src/proto/rop.cpp
     src/proto/secondary.cpp
+    src/proto/rail.cpp
+    src/proto/gateway.cpp
 )
 target_include_directories(rtsc_proto PUBLIC include)
 target_link_libraries(rtsc_proto PUBLIC rtsc_crypto)
@@ -389,6 +391,19 @@ else()
     target_include_directories(rtsc_net PUBLIC include)
 endif()
 
+# RD Gateway tunnel + RDP-UDP transport ([MS-TSGU] / [MS-RDPEUDP]).
+# Platform neutral: the transport logic lives in gateway_transport.cpp; the
+# UDP socket seam has a Winsock backend (Windows) and a POSIX backend.
+add_library(rtsc_gateway STATIC src/net/gateway_transport.cpp)
+target_include_directories(rtsc_gateway PUBLIC include)
+target_link_libraries(rtsc_gateway PUBLIC rtsc_proto)
+if(WIN32)
+    target_sources(rtsc_gateway PRIVATE src/net/udp_winsock.cpp)
+    target_link_libraries(rtsc_gateway PUBLIC ws2_32)
+else()
+    target_sources(rtsc_gateway PRIVATE src/net/udp_posix.cpp)
+endif()
+
 add_library(rtsc_client STATIC src/client/graphics.cpp src/client/client.cpp src/client/view.cpp src/client/session_info.cpp)
 target_include_directories(rtsc_client PUBLIC include)
 target_link_libraries(rtsc_client PUBLIC rtsc_proto rtsc_render rtsc_ui rtsc_security rtsc_net)
@@ -488,6 +503,20 @@ add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
 target_include_directories(rtsc_server_tests PRIVATE tests)
 
+# RAIL ([MS-RDPERP]) wire structures and virtual channel.
+add_executable(rtsc_rail_tests tests/test_rail.cpp)
+target_link_libraries(rtsc_rail_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rail_tests PRIVATE tests)
+
+# RD Gateway ([MS-TSGU]) and RDP-UDP ([MS-RDPEUDP]) wire structures + tunnel.
+# The end-to-end test drives the in-tree server through the tunnel, so this
+# target links the client/server stack as well.
+add_executable(rtsc_gateway_tests tests/test_gateway.cpp)
+target_link_libraries(rtsc_gateway_tests PRIVATE
+                      rtsc_gateway rtsc_client rtsc_server rtsc_proto
+                      rtsc_crypto rtsc_util)
+target_include_directories(rtsc_gateway_tests PRIVATE tests)
+
 enable_testing()
 add_test(NAME proto COMMAND rtsc_tests)
 add_test(NAME ber COMMAND rtsc_ber_tests)
@@ -536,6 +565,8 @@ add_test(NAME credssp COMMAND rtsc_credssp_tests)
 add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
+add_test(NAME rail COMMAND rtsc_rail_tests)
+add_test(NAME gateway COMMAND rtsc_gateway_tests)
 
 if(MSVC)
     target_compile_options(rtsc_tests PRIVATE /W4 /WX)
@@ -600,4 +631,7 @@ if(MSVC)
     target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rail_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_gateway_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_gateway PRIVATE /W4 /WX)
 endif()
