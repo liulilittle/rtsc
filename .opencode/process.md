@@ -8688,3 +8688,95 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **结论**：**GUI 标准 RDP 接线正确，PROTOCOL_RDP 与 TLS 路径均工作 ✅**。
 - **[主代理]** 提交 WIP（GUI 接线）到 master。
 - **在途**：提交 WIP。
+
+
+## 第331轮：**派发服务器增强安全（TLS/CredSSP 服务端）**
+
+- **[worktree]** 新建 `F:/rtsc/.worktrees/server-sec`（`feat/server-sec`，HEAD `f9aefb3`）。
+- **[task 派发]** `ses_e8a82ee90ffe9keucB7AggYklh`（**服务器增强安全**，后台运行）：
+  - X.224 negotiation 接受 `PROTOCOL_SSL`/`PROTOCOL_HYBRID`；
+  - **TLS 服务端**（`SSL_accept`，复用客户端 TLS 栈）；
+  - **CredSSP/NTLM 服务端**（EUAR NEGOTIATE → EUAC CHALLENGE → EUAR AUTHENTICATE → NTLM accept；`SEC_INFO_PKT`）；
+  - 会话密钥 + `SEC_ENCRYPT`/`SEC_LICENSE_PKT`；
+  - TDD `tests/test_server_security.cpp`；回环（客户端 ↔ 服务器 TLS/CredSSP 到 active；如可行用 mstsc 连）；
+  - C0：`/W4 /WX` + `ctest` 全绿；**只在 worktree 内写**，不碰主树/client/audio/proto/usb/rdpdr。
+- **目标**：**mstsc 直达本项目服务器**（家庭版解禁的端到端验证）。
+- **在途**：服务器增强安全（子代理）。
+
+
+## 第332轮：**/goal resume（active）——继续推进**
+
+- **[update_goal_status: active]**（用户 `/goal resume`：任务未完成，继续推进工程任务）。
+- **[在途]** 服务器增强安全 TLS/CredSSP 服务端（`ses_e8a82ee90ffe9keucB7AggYklh`，worktree `feat/server-sec`）。
+- **令牌/费用**（get_goal）：主 1846240244 | 子 3424970259 | 总 5271210503；费用 主 0 | 子 0.14763605 | 总 0.14763605。
+
+
+## 第333轮：**server-sec 全绿 → 催办完成报告**
+
+- **[核验]** 服务器增强安全 worktree（`feat/server-sec`）：`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**；`server` Passed。
+  - 改动：`credssp_server.{h,cpp}`、`server_security_layer.{h,cpp}`（新）；`server.{h,cpp}`、`tls*.{h,cpp}`、`connection_driver.cpp`、`test_server_security.cpp`（新）、`test_security_layer.cpp`、CMakeLists（改）。
+  - 首次 configure 因陈旧/空 build 目录失败 → 删除后重 configure 成功。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（无报告）→ **催办完成报告**（随后合并 + 双审）。
+- **在途**：服务器增强安全（催办中）。
+
+
+## 第334轮：**server-sec 全绿复核；代理 busy（写报告中）**
+
+- **[核验]** 服务器增强安全 worktree（`feat/server-sec`）：`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` **busy**（响应催办，写完成报告中）。
+- **在途**：服务器增强安全（等完成报告 → 合并 + 双审）。
+
+
+## 第335轮：**server-sec 进度（回环测试中）**
+
+- **[relay: ses_e8a82ee90ffe9keucB7AggYklh]** 尾部输出：`The shell timeout killed the server. Let me restart it with a long-lived loop.` → **回环测试中**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：服务器增强安全（回环测试中）。
+
+
+## 第336轮：**server-sec 全绿复核（46/46）；代理 idle**
+
+- **[核验]** 服务器增强安全 worktree（`feat/server-sec`）：`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（最后写入 1792976591600，无完成报告）。
+- **在途**：服务器增强安全（等完成报告 → 合并 + 双审）。
+
+
+## 第337轮：**再催 server-sec 完成报告**
+
+- **[主代理]** server-sec 代理（`ses_e8a82ee90ffe9keucB7AggYklh`）idle 多轮，worktree 全绿（46/46）但无完成报告 → **再次催办**（完成→报告；阻塞→证据；无法继续→明确报告，将改派）。
+- **在途**：服务器增强安全（催办中）。
+
+
+## 第338轮：**server-sec 进度（真实 mstsc 回环中）**
+
+- **[relay: ses_e8a82ee90ffe9keucB7AggYklh]** 尾部输出：`mstsc exited after the cert dialog. Let me restart the server with proper file logging and retry to capture the server-side view.` → **正用真实 mstsc 做回环**（证书对话框后退出，重启服务器带文件日志重试）。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：服务器增强安全（真实 mstsc 回环中）。
+
+
+## 第339轮：**server-sec 全绿复核（46/46）；代理 idle**
+
+- **[核验]** 服务器增强安全 worktree（`feat/server-sec`）：`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（最后写入 1792976591600，无完成报告）。
+- **在途**：服务器增强安全（等完成报告 → 合并 + 双审）。
+
+
+## 第341轮：**派发服务器增强安全合并到 master**
+
+- **[注意]** server-sec worktree 改动**未提交**（HEAD 仍 `f9aefb3`）。
+- **[task 派发]** `ses_e8a287f09ffeG7hymS0ISuWoPp`（**合并服务器增强安全到 master**，后台运行）：提交 worktree → `git merge --no-ff feat/server-sec` → 解决冲突（CMakeLists/test_security_layer）→ 重验 build/ctest → 报告。
+- **在途**：server-sec 合并（代理）。
+
+
+## 第342轮：**server-sec 合并进度（确认无提交，查文档中）**
+
+- **[relay: ses_e8a287f09ffeG7hymS0ISuWoPp]** 尾部输出：`Key finding: feat/server-sec has no commits ahead of master — all worktree changes are uncommitted. Let me check the repo's workflow docs before acting.` → **合并进行中**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：server-sec 合并（代理）。
+
+
+## 第343轮：**清理遗留临时脚本；server-sec 合并代理 idle**
+
+- **[清理]** 主树遗留 `upd_proc340.py`（临时脚本）→ 已删除；主树工作树干净（仅 `.opencode/process.md`）。
+- **[get_goal]** server-sec 合并代理（`ses_e8a287f09ffeG7hymS0ISuWoPp`）idle（无报告）；server-sec 代理 idle。
+- **在途**：server-sec 合并（代理）。
