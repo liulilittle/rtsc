@@ -9473,3 +9473,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[根因]** 该测试用 `SecurityLayer::Create`/`ServerSecurityLayer::Create`（默认装平台 TLS）；Linux 默认 `RTSC_TLS_OPENSSL=OFF` → 无 TLS 后端。两层均有 `SetTlsTransportForTest`；`tests/test_security_layer.cpp:33` 已有 `ScriptedTls`。
 - **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：提取 `ScriptedTls` 为共享测试辅助（或等价定义），在 `tls_server_loopback_to_done` 对两层注入；重跑门禁至 PASS。
 - **在途**：Linux 门禁续修。
+
+
+## 第422轮：**Linux 门禁续修进展**
+
+- **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出：**将把 `ScriptedTls` 提取为共享头，并接入两个测试**（`test_server_security.cpp` + `test_security_layer.cpp`）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：Linux 门禁续修。
