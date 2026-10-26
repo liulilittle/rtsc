@@ -113,6 +113,48 @@ RTSC_TEST(credssp_server_direct_exchange) {
     CHECK(server.mic_verified());
 }
 
+RTSC_TEST(credssp_server_challenge_flags_and_version) {
+    // Regression for the mstsc interop fix: the server's NTLM CHALLENGE must
+    // advertise NTLMSSP_NEGOTIATE_TARGET_INFO because it always sends an AV
+    // list, and when NTLMSSP_NEGOTIATE_VERSION is negotiated the version
+    // field (offset 48..55) must be non-zero. A real client (mstsc) rejects a
+    // CHALLENGE that advertises kVersion with a zero version, or an AV list
+    // without kTargetInfo, and drops the connection at the pubKeyAuth step.
+    CredsspServer server(Lookup, 6);
+    server.SetServerPublicKey(FixedServerKey());
+
+    // A mstsc-like NEGOTIATE: it does NOT request kTargetInfo, so the server
+    // must set that flag on its own because it always sends an AV list. Using
+    // the project's own CredsspClient here would hide a kTargetInfo revert,
+    // because that client requests the flag itself.
+    NegotiateMessage neg;
+    neg.flags = 0xE20882B7;  // measured mstsc NEGOTIATE flags (no kTargetInfo)
+    Bytes neg_bytes;
+    CHECK(neg.Encode(neg_bytes).ok());
+    TsRequest req;
+    req.version = 6;
+    req.nego_token = neg_bytes;
+    Bytes m1;
+    CHECK(req.Encode(m1).ok());
+
+    Bytes m2;
+    CHECK(server.OnClientMessage(m1.data(), m1.size(), m2).ok());
+
+    const Bytes challenge = server.ChallengeMessageForTest();
+    CHECK(challenge.size() >= 56);
+    CHECK(challenge[0] == static_cast<uint8_t>('N'));
+    CHECK_EQ(challenge[8], static_cast<uint8_t>(0x02));  // MESSAGE_TYPE_CHALLENGE
+
+    const uint32_t flags = static_cast<uint32_t>(challenge[20]) |
+                           (static_cast<uint32_t>(challenge[21]) << 8) |
+                           (static_cast<uint32_t>(challenge[22]) << 16) |
+                           (static_cast<uint32_t>(challenge[23]) << 24);
+    CHECK((flags & ntlm_flag::kTargetInfo) != 0);
+    CHECK((flags & ntlm_flag::kVersion) != 0);
+    CHECK_EQ(challenge[48], static_cast<uint8_t>(0x0A));  // ProductMajorVersion
+    CHECK_EQ(challenge[49], static_cast<uint8_t>(0x00));  // ProductMinorVersion
+}
+
 RTSC_TEST(credssp_server_rejects_unknown_account) {
     Credentials creds;
     creds.domain = "NTDEV";
