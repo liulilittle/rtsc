@@ -9375,3 +9375,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[task 派发]** `ses_e88cb6d96ffepts6sKKpNUQ4al`（后台）：**Windows GDI 桌面捕获**（`desktop_gdi.{h,cpp}` + `MakeGdiDesktopSource` + `tests/test_desktop_gdi.cpp` + CMake 仅 Windows 目标）；Capture = CreateDC("DISPLAY") + 虚拟桌面 GetDeviceCaps + CreateDIBSection(32bpp 顶向下) + BitBlt → RGBA；失败如实返回 false；无交互桌面环境如实跳过不静默通过。
   - 依据：用户硬约束⑤服务器模式（家庭版解禁）——真实桌面来源是服务器可用性的关键。
 - **在途**：GDI 桌面捕获（新）。
+
+
+## 第411轮：**GDI 桌面捕获完成报告 + 双审派发 + Linux 门禁修复派发**
+
+- **[执行者报告 ses_e88cb6d96ffepts6sKKpNUQ4al]** GDI 桌面捕获完成：
+  - 新增 `include/rtsc/server/desktop_gdi.h`（46 行，`#ifdef _WIN32`，仅暴露 `MakeGdiDesktopSource`）+ `src/server/desktop_gdi.cpp`（277 行）+ `tests/test_desktop_gdi.cpp`（127 行）；CMakeLists +21（`rtsc_server_desktop_gdi` + 测试 + add_test，仅 Windows）。
+  - 实现：DPI 感知 → CreateDC("DISPLAY") → 虚拟桌面度量 → CreateDIBSection(32bpp 顶向下) → BitBlt/StretchBlt → BGRA→RGBA + alpha=0xFF。
+  - 证据：build 0/0 warning；ctest **50/50**；desktop_gdi **4/13/0**；GetPixel 红证 (51,51,51) 一致。
+- **[主代理核验]** `cmake --build` **EXIT=0**；`ctest` **50/50**；`rtsc_desktop_gdi_tests` **4/13/0** —— 与报告一致。
+- **[既有问题]** Linux 构建门失败：`src/channel/rdpusb_client.cpp:40` `Utf16ToUtf8` 匿名命名空间未使用 → `-Werror=unused-function`（非本任务引入）。
+- **[派发]** ① GDI 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验像素正确性/几何/失败路径/接口卫生/变异反证）。② Linux 门禁修复 `ses_e88b60db1fferBHxxHzKv53kjI`（后台）。
+- **在途**：GDI 双审（甲+乙）、Linux 门禁修复。
