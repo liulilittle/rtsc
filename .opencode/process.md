@@ -9897,3 +9897,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` **busy**（`pending:true`，wrote 1793037079959）；`src/server/server.cpp` fprintf = 0（调试已还原）；diff 扩至 **+258/-34**，新增 `include/rtsc/crypto/rsa_server.h`、`src/crypto/rsa_server.cpp`、`include/rtsc/proto/licensing.h`、`src/proto/licensing.cpp`、`src/server/rsa_posix_stub.cpp`（服务器 RSA/许可支持）。
 - **判定**：修复进行中（非完成报告）；不催、不重派，等待其收口。
 - **在途**：mstsc MCS 交接修复（收口）。
+
+
+## 第474轮：**清理遗留脚本 + 催办收口报告**
+
+- **[清理]** 删除遗留脚本 `upd_proc466.py`（工作树卫生）。
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`）；diff **+258/-34**（11 文件：`rsa_server.{h,cpp}`、`licensing.{h,cpp}`、`rsa_posix_stub.cpp`、`server.cpp` 等）。
+- **[处置]** 催办收口报告（修复内容 + mstsc 验证结果 + 构建/ctest/Linux 门禁）。
+- **在途**：mstsc MCS 交接修复（收口）。
