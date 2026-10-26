@@ -9808,3 +9808,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle；`src/security/server_security_layer.cpp` 仍 **+7 行调试 fprintf**（未还原）。
 - **[催办]** prompt **最小步骤**：只做「删除两处 `[rtsc-sec]` fprintf + `#include <cstdio>`，确认 `git diff` 为空，重编译零错误」。先不做根因定位。
 - **在途**：mstsc MCS 交接修复。
+
+
+## 第462轮：**清理无效子代理（用户命令）**
+
+- **[用户命令]** 「删除所有的无效子代理」（重复两次）。
+- **[处置]** ptc 批量 `manage_subagent delete`（每批 15，硬编码列表；get_goal 大 payload 致整批超时，改小批后成功）：
+  - 已删 **77** 个 idle 子代理（BER/MCS/PER/TLS/能力/许可/共享头/判据/变异/门禁/缩放/rdpsnd/服务器基础层/mstsc/USB/multimon/RDPDR/剪贴板/RAIL/性能基准/RespEx/Linux 门禁/多会话/mstsc 报告修正等历史会话）。
+  - **保留**：`ses_e878558e8ffeL3341W4gsKduOU`（在途修复代理）+ 甲乙审计（`ses_e9521c2ffffeZBDuOPXW92RkJ7`/`ses_e9521c2ddffe46eT67qVc2vaH8`）。
+- **在途**：mstsc MCS 交接修复（继续）。
