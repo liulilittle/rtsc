@@ -9227,3 +9227,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e8a82ee90ffe9keucB7AggYklh]** 尾部输出：**CredSSP 已达 pubKeyAuth echo**；剩余阻塞 = **证书对话框时序**（cert dialog timing）；将重启并即时处理。
 - **判定**：进展中，**非完成报告**；不催、不重派，等待其收口。
 - **在途**：server-sec（CredSSP 修复）。
+
+
+## 第396轮：**派发性能基准任务**
+
+- **[task 派发]** `ses_e8915631bffeUU6DQ2Lwh41cdY`（后台运行）：**性能基准工具**——位图解码吞吐（raw/RLE/RDP6/NSCodec）、端到端回环延迟、CPU 占用；交付 bench 工具 + `docs/perf-baseline.md`（实跑数值）；约束：只读产品代码、可复现（固定输入/预热/中位数/方差）。
+- **依据**：用户硬约束②极致性能（远程桌面 CPU 不炸）；与 server-sec（真机 CredSSP）无资源冲突。
+- **在途**：server-sec（CredSSP 修复）、性能基准（新）。
