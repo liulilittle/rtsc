@@ -9728,3 +9728,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 代理 `ses_e884b1ba0ffeM39k5d6IHiW4bq` idle（wrote 1793018971100），**多轮无新证据**（`evidence/mstsc/` 无更新；两产品文件仍有临时 fprintf）。
 - **[G4b]** 催办**只回答代码路径问题**（不做新实验）：① `Run()` 在 `DoSecureHandshake()` 后是否调 `DoConnectResponse()`；② 读循环位置；③ 服务器是否先发；④ 客户端是否等服务器先发。并还原两产品文件调试。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第453轮：**mstsc 实网验证完成报告（阻塞）+ 双审派发**
+
+- **[执行者报告 ses_e884b1ba0ffeM39k5d6IHiW4bq]** **阻塞：mstsc 不可达 active**。TLS+CredSSP/NLA 全部成功；失败在 **CredSSP 完成后的 MCS 数据面交接**（服务器发 EUAR 后收不到 mstsc 的 MCS Connect Initial，mstsc 复位并报 **0x1204**）。
+  - 交付：`tools/rtsc_server/main.cpp`（`rtsc_server_host`）+ `CMakeLists.txt`（+11）+ `scripts/rdp_flight_log.py` + `evidence/mstsc/REPORT.md` + 证据（server 日志、7 张 mstsc 截图、.rdp）。
+  - 服务器阶段：`x224 ok secure_req=1 proto=0x2`（HYBRID）→ `credssp complete, leftover plain=0` → `secure ok credssp_req=1` → `ReadFrame transport n=-1` → `FAIL connect_response`。
+  - 根因假设（待证伪）：工程内 `CredsspServer` 发 2 条 TSRequest(m2,m4)+EUAR，而 [MS-CSSP] 基线是 1 条(CHALLENGE)+EUAR；多出者被 mstsc 当协议错误（因工程内客户端/服务器共用同一状态机，故自洽）。
+  - 产品代码零改动（`git diff` 为空）；基线回归绿。
+- **[主代理核验]** `git diff -- src/server/server.cpp src/security/server_security_layer.cpp` **为空**；build **EXIT=0**；ctest **51/51**；`evidence/mstsc/REPORT.md` 完整（134 行）。
+- **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验 diff 为空/构建 ctest/基线 rtsc_connect/**[MS-CSSP] 消息序列核实**/工具正确性/变异反证）。
+- **在途**：mstsc 实网报告双审。
