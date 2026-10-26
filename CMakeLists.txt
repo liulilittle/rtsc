@@ -520,6 +520,20 @@ add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
 target_include_directories(rtsc_server_tests PRIVATE tests)
 
+# Windows GDI desktop capture: the real-desktop DesktopSource. Windows only;
+# the DesktopSource interface stays platform neutral in rtsc/server/server.h.
+# The implementation only needs the header plus gdi32/user32, so it does not
+# link the whole rtsc_server library.
+if(WIN32)
+    add_library(rtsc_server_desktop_gdi STATIC src/server/desktop_gdi.cpp)
+    target_include_directories(rtsc_server_desktop_gdi PUBLIC include)
+    target_link_libraries(rtsc_server_desktop_gdi PUBLIC gdi32 user32)
+
+    add_executable(rtsc_desktop_gdi_tests tests/test_desktop_gdi.cpp)
+    target_link_libraries(rtsc_desktop_gdi_tests PRIVATE rtsc_server_desktop_gdi rtsc_util)
+    target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
+endif()
+
 # RAIL ([MS-RDPERP]) wire structures and virtual channel.
 add_executable(rtsc_rail_tests tests/test_rail.cpp)
 target_link_libraries(rtsc_rail_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -590,6 +604,9 @@ add_test(NAME credssp COMMAND rtsc_credssp_tests)
 add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
+if(WIN32)
+    add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
+endif()
 add_test(NAME rail COMMAND rtsc_rail_tests)
 add_test(NAME rail_client COMMAND rtsc_rail_client_tests)
 add_test(NAME gateway COMMAND rtsc_gateway_tests)
@@ -658,6 +675,10 @@ if(MSVC)
     target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
+    if(WIN32)
+        target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
+        target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)
+    endif()
     target_compile_options(rtsc_rail_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail_client_tests PRIVATE /W4 /WX)
