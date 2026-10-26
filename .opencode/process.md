@@ -9598,3 +9598,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**GDI 捕获可用，处于交互式控制台会话**；正在后台启动服务器。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第436轮：**mstsc 实网验证未完成（催办）**
+
+- **[主代理核验]** `tools/rtsc_server/main.cpp`（11652B）已建；`CMakeLists.txt` 新增 `rtsc_server_host` 目标；`evidence/mstsc/server-3390.log` 仅显示服务器启动/停止（`listening on 0.0.0.0:3390`、`run window elapsed; stopping`），**无 mstsc 连接记录**；代理 idle（wrote 1793010260275），**无完成报告**。
+- **[催办]** prompt 完成验证：启动服务器 + 真实 `mstsc.exe` 连接 + 记录到达阶段/渲染/证书对话框/阻塞点（禁止伪造成功）。
+- **在途**：mstsc↔rtsc_server 实网验证。
