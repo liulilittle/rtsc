@@ -9564,3 +9564,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** build **EXIT=0**；ctest **51/51**；`rtsc_server_multisession_tests` **3/49/0** —— 与报告一致。
 - **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验并发真实性/尺寸隔离/红证复现/framebuffer 独立/加密隔离/无产品改动）。
 - **在途**：多会话并发测试双审。
+
+
+## 第432轮：**审计乙多会话并发通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：ctest 51/51；multisession 3/49/0；并发（ready/go 原子屏障，真并发非串行）；尺寸断言 value-specific；红证（逻辑反证：`server.cpp:813-816` 变异→全红）；framebuffer 每会话独立（RecordingSource）；加密会话隔离（WIN32 `encryption_methods=0x1B` 实测 OK）；只新增测试+CMakeLists（`git diff -- src/server/server.cpp` 为空）；变异反证 2 条。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：多会话并发测试双审（乙✅/甲待）。
