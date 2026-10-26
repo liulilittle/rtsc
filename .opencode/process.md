@@ -9629,3 +9629,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[判读]** 0x706 疑因：服务器 CCF 选定的协议/加密与 mstsc 期望（NLA/HYBRID）不匹配，或服务器在 CCF 后未继续（TLS ClientHello 未收/未处理）。**待代理根因**。
 - **[注意]** `server.cpp` 的调试 fprintf 为**临时仪器**，合并前必须还原（`git diff -- src/server/server.cpp` 须为空）。
 - **在途**：mstsc↔rtsc_server 实网验证（0x706 根因分析中）。
+
+
+## 第440轮：**mstsc 实网验证未完成（催办收口）**
+
+- **[主代理核验]** 代理 idle（wrote 1793013044667）；`evidence/mstsc/` 无新增 flight/server 日志（最近 `server-3390.log` 19:11）；`src/server/server.cpp` 仍有**临时调试 fprintf**（未还原）。
+- **[催办]** prompt 收口：① 0x706 根因（基于 flight-3391.log）+ 证据；② 还原 `server.cpp` 调试（`git diff` 须为空）；③ 结论（mstsc 是否可达 active，阻塞点）；④ 保留服务器工具/脚本/证据。
+- **在途**：mstsc↔rtsc_server 实网验证。
