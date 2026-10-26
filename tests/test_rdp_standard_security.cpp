@@ -50,7 +50,7 @@ std::vector<uint8_t> MakeServerSecurityData(uint32_t method, uint32_t level,
     return w.take();
 }
 
-uint16_t ReadU16Le(const std::vector<uint8_t>& b, size_t off) {
+[[maybe_unused]] uint16_t ReadU16Le(const std::vector<uint8_t>& b, size_t off) {
     return static_cast<uint16_t>(b[off]) |
            static_cast<uint16_t>(static_cast<uint16_t>(b[off + 1]) << 8);
 }

@@ -24,6 +24,7 @@
 #include "rtsc/security/security_layer.h"
 #include "rtsc/security/server_security_layer.h"
 #include "rtsc/server/server.h"
+#include "test_tls_scripted.h"
 #include "test_framework.h"
 #include "test_main.h"
 
@@ -202,6 +203,11 @@ RTSC_TEST(tls_server_loopback_to_done) {
     CHECK(client != nullptr);
     CHECK(server != nullptr);
     if (!client || !server) return;
+
+    if (rtsc::tls::EnumerateTlsBackends().empty()) {
+        std::printf("  skipped: no platform TLS backend (need SChannel or RTSC_TLS_OPENSSL)\n");
+        return;
+    }
 
     std::string error;
     CHECK(RunLoopback(*client, *server, error));

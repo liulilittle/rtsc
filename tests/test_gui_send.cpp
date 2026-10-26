@@ -28,7 +28,7 @@
 
 namespace {
 
-rtsc::security::ConnectionDriver MakeGuiDriver() {
+[[maybe_unused]] rtsc::security::ConnectionDriver MakeGuiDriver() {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
     mcfg.requested_protocols = rtsc::proto::kProtocolRdp;
@@ -68,7 +68,7 @@ class RecordingTransport final : public rtsc::net::Transport {
     std::vector<std::vector<uint8_t>> writes_;
 };
 
-bool FindChannelWrite(const RecordingTransport& transport, uint16_t channel_id,
+[[maybe_unused]] bool FindChannelWrite(const RecordingTransport& transport, uint16_t channel_id,
                       std::vector<uint8_t>* user_data) {
     for (const auto& wire : transport.writes()) {
         rtsc::proto::McsSendData sd;

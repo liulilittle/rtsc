@@ -496,8 +496,9 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 # Full client: connection driver + graphics pipeline + window backend.
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp)
 target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_proto rtsc_util)
+target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr)
 if(WIN32)
-    target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_audio rtsc_cliprdr)
+    target_link_libraries(rtsc_gui PRIVATE rtsc_audio)
 endif()
 
 # Crash-guard self test. Not registered with ctest: it intentionally terminates

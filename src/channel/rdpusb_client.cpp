@@ -37,7 +37,7 @@ std::u16string Utf8ToUtf16(const std::string& in) {
     return out;
 }
 
-std::string Utf16ToUtf8(const std::u16string& in) {
+[[maybe_unused]] std::string Utf16ToUtf8(const std::u16string& in) {
     std::string out;
     for (const char16_t ch : in) {
         const uint32_t cp = static_cast<uint32_t>(ch);
