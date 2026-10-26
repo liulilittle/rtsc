@@ -9526,3 +9526,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** **Linux 门禁 PASS**（`FAILED_COUNT=0`、`WINDOWS_H_COUNT=0`、`CTEST_EXIT=0`、48/48）；Windows build **EXIT=0**、ctest **50/50**、`rtsc_server_security_tests` **5/43/0**（`tls_server_loopback_to_done` 真实运行不跳过）。
 - **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验 diff/门禁/Windows/跳过正确性/ScriptedTls 提取/变异反证）。
 - **在途**：Linux 门禁修复双审。
+
+
+## 第428轮：**审计乙 Linux 门禁修复通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：git diff 正确（`[[maybe_unused]]` 仅未使用函数；CMakeLists 仅链接调整；无产品逻辑改动）；Linux 门禁 PASS（FAILED_COUNT=0/WINDOWS_H_COUNT=0/48）；Windows ctest 50/50、server_security 5/43/0、`tls_server_loopback_to_done` 真实运行；跳过正确性（EnumerateTlsBackends）；ScriptedTls 提取；变异反证 2 条。
+  - **观察项（低）**：① ctest 首轮瞬态 1 failed（后 3 轮 50/50，疑 flaky）；② `test_rail_client.cpp` 仍自带 ScriptedTls（重复）；③ 报告「删除 SetTlsTransportForTest」与 diff 略出入。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：Linux 门禁修复双审（乙✅/甲待）。
