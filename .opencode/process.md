@@ -9817,3 +9817,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 已删 **77** 个 idle 子代理（BER/MCS/PER/TLS/能力/许可/共享头/判据/变异/门禁/缩放/rdpsnd/服务器基础层/mstsc/USB/multimon/RDPDR/剪贴板/RAIL/性能基准/RespEx/Linux 门禁/多会话/mstsc 报告修正等历史会话）。
   - **保留**：`ses_e878558e8ffeL3341W4gsKduOU`（在途修复代理）+ 甲乙审计（`ses_e9521c2ffffeZBDuOPXW92RkJ7`/`ses_e9521c2ddffe46eT67qVc2vaH8`）。
 - **在途**：mstsc MCS 交接修复（继续）。
+
+
+## 第463轮：**修复代理 busy（6 产品文件改动）**
+
+- **[主代理核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` **busy**（`pending:true`）；工作树改动：`security_layer.h`(+7)/`server_security_layer.h`(+6)/`connection_driver.cpp`(+23/-14)/`security_layer.cpp`(+12)/`server_security_layer.cpp`(+12/-2)/`server.cpp`(+25/-2) + `tests/test_security_layer.cpp`/`test_server_security.cpp`/`test_tls_scripted.h`。
+- **[新证据]** `evidence/mstsc/server-fix.log`（22:57）、`server-fix.err`（0B）。
+- **判定**：修复进行中（非完成报告）；不催、不重派，等待其收口。
+- **在途**：mstsc MCS 交接修复。
