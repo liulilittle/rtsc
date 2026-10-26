@@ -9714,3 +9714,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 代理 `ses_e884b1ba0ffeM39k5d6IHiW4bq` idle（wrote 1793017996344），**多轮无新证据**（`evidence/mstsc/` 无更新；两产品文件仍有临时 fprintf）。
 - **[G4b]** 已多轮无进展 → 催办**硬截止**：本轮必须收口（A 根因+修复+重跑；或 B 已尝试/最强假设/阻塞点/下一步），并还原两产品文件调试。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第451轮：**mstsc 实网调试进展（CredSSP 后服务器收不到）**
+
+- **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**确定性结论——CredSSP 完成、无残留数据；随后服务器收不到任何数据、客户端关闭**；将 dump post-CredSSP 原始传输字节。
+- **[判读]** CredSSP 后 MCS Connect Initial 未被服务器接收（客户端关闭）→ 疑服务器在 CredSSP 完成后未进入 MCS 读循环，或客户端在等待服务器先发（EUAR/MCS）。**待代理根因**。
+- **在途**：mstsc↔rtsc_server 实网验证。
