@@ -9318,3 +9318,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[观察]** 执行者提及 0x000F 的 512/520 疑问 —— 该问题**已在 `53fd68a` 修复**（520/528），执行者观察为过时信息。
 - **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须核验协议布局（body 1048/orderLength 1052）+ 截断/无终止符拒绝 + 方向 + 回归 + 变异反证。
 - **在途**：CredSSP 修复双审（乙✅/甲待）、RespEx 双审（甲+乙）。
+
+
+## 第405轮：**审计乙 RespEx 通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** RailGetAppIdRespEx 复核 **通过 ✅**：ctest 49/49；rail 28/145/0；rail_client 17/114/0；协议布局正确（1048/1052）；拒绝路径（length/type/无 NUL/build 超长）；方向 server→client；回归 0x000F 全绿；2 条核心断言 value-specific。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7`（CredSSP 修复 + RespEx 两份审计）。
+- **在途**：CredSSP 修复双审（乙✅/甲待）、RespEx 双审（乙✅/甲待）。
