@@ -9264,3 +9264,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 结论（各路径 >60fps、CPU 单核满载）**不受影响**；但「canonical 数值」**不可复现**，报告宜更显著声明跨运行方差（现仅 §3.2 列）。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：性能基准双审（乙✅/甲待）、server-sec（CredSSP 修复）。
+
+
+## 第400轮：**性能基准双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7]** 独立审计 **通过 ✅**：
+  - 构建 EXIT=0/0 warning；ctest 49/49。
+  - 重跑 3 次与文档 canonical 对照（raw 4.238 vs 5.793/4.642/4.891；rle 8.267 vs 8.536/8.177/8.447；rdp6-argb 5.418 vs 5.634/5.526/5.737；aycocg 7.004 vs 6.915/7.074/7.170；nsc 6.589 vs 6.222/6.462/7.175；round-trip 0.814 vs 0.871/0.791/0.778；end-to-end 5.428 vs 5.862/5.322/5.195；CPU 100%）→ **在方差内，无数值虚报**。
+  - `git diff CMakeLists.txt` 仅 +11 行（新增 rtsc_bench 目标 + 链接库 + /W4 /WX），**未改产品逻辑**。
+  - 方法论：无 RNG、预热 3、30 次取中位数、min/max/mean/stddev、单位正确。
+  - 限制如实声明；观察项：rtsc_bench 未接入 add_test（合理）；执行者消息数值与文档 canonical 略有出入（均在方差内，以文档为准）。
+- **[合并 master]** `feat: performance benchmark tool + baseline report`；工作树干净。
+- **在途**：server-sec（CredSSP 修复）。
