@@ -9636,3 +9636,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 代理 idle（wrote 1793013044667）；`evidence/mstsc/` 无新增 flight/server 日志（最近 `server-3390.log` 19:11）；`src/server/server.cpp` 仍有**临时调试 fprintf**（未还原）。
 - **[催办]** prompt 收口：① 0x706 根因（基于 flight-3391.log）+ 证据；② 还原 `server.cpp` 调试（`git diff` 须为空）；③ 结论（mstsc 是否可达 active，阻塞点）；④ 保留服务器工具/脚本/证据。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第441轮：**mstsc 实网调试进展**
+
+- **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**细分 `DoConnectResponse` 的读失败 vs 解析失败**（0x706 根因）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：mstsc↔rtsc_server 实网验证。
