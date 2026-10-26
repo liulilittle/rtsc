@@ -9825,3 +9825,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[新证据]** `evidence/mstsc/server-fix.log`（22:57）、`server-fix.err`（0B）。
 - **判定**：修复进行中（非完成报告）；不催、不重派，等待其收口。
 - **在途**：mstsc MCS 交接修复。
+
+
+## 第464轮：**修复代理宿主证书错误 → 补发继续指令**
+
+- **[异常]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` 报 `UnknownError: unknown certificate verification error`（宿主证书错误），现 idle（`pending:true`，未终结）。
+- **[核验]** 该代理已改 6 产品文件（+90/-22）：`security_layer.{h,cpp}`、`server_security_layer.{h,cpp}`、`connection_driver.cpp`、`server.cpp` + 3 测试。
+- **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 要求核验改动是修复/还原调试 + 定位根因 + 修复 + mstsc 重跑验证）。
+- **[上报用户]** 宿主 `unknown certificate verification error` 为模型/provider 相关错误，已如实记录并上报；按规则**禁止擅自更换模型**。
+- **在途**：mstsc MCS 交接修复（继续）。
