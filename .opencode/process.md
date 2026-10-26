@@ -9442,3 +9442,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 3 处错误清单）。
 - **[上报用户]** 模型/provider 相关错误（`stream_interrupted`）——按规则**禁止擅自更换模型**，已如实记录并上报。
 - **在途**：Linux 门禁续修（等报告）。
+
+
+## 第418轮：**Linux 门禁续修进展**
+
+- **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出：**三处编辑已应用**（`test_rdp_standard_security.cpp:53` / `test_gui_send.cpp:71` / `:31` 加 `[[maybe_unused]]`），**正在跑 Linux 门禁**。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：Linux 门禁续修。
