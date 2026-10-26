@@ -9406,3 +9406,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 观察项（低）：测试 `CheckFrame` 未直接断言 swap/alpha（建议补「已知 COLORREF → 期望 RGBA」断言）。
 - **[合并 master]** `feat: Windows GDI desktop capture for RDP server`（CMakeLists +21 + 3 新文件）；**未含**他方并发的 `src/channel/rdpusb_client.cpp`（Linux 修复，在途）。
 - **在途**：Linux 门禁修复（`ses_e88b60db1fferBHxxHzKv53kjI`）。
+
+
+## 第414轮：**GDI 观察项闭合 + 双审盖章确认**
+
+- **[执行者 ses_e88cb6d96ffepts6sKKpNUQ4al]** 采纳低观察项：新增 `desktop_gdi_pixel_matches_getpixel`（`tests/test_desktop_gdi.cpp:114`）——捕获 4x4，逐像素与 OS `GetPixel` 的 R/G/B 比对 + 断言 alpha==0xFF（直接验证 swap/alpha）；仅改测试。
+- **[主代理核验]** 已提交版本 `git show HEAD:tests/test_desktop_gdi.cpp` 含 **5 个 RTSC_TEST**（含 `desktop_gdi_pixel_matches_getpixel` + `GetPixel` 调用）；worktree `git status` 仅 `M src/channel/rdpusb_client.cpp`（无未提交 GDI 改动）；`rtsc_desktop_gdi_tests` **5/16/0**；ctest **50/50**；build EXIT=0。
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 观察项已闭合 **✅，双审盖章通过**：5/16/0；ctest 50/50；build 0/0；甲以探针+变异反证独立确认 swap；范围仅 CMakeLists + 3 新文件。
+- **结论**：GDI 桌面捕获（含观察项修复）已合并 master `176e3b3`，双审盖章完成。
+- **在途**：Linux 门禁修复（`ses_e88b60db1fferBHxxHzKv53kjI`）。
