@@ -9234,3 +9234,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[task 派发]** `ses_e8915631bffeUU6DQ2Lwh41cdY`（后台运行）：**性能基准工具**——位图解码吞吐（raw/RLE/RDP6/NSCodec）、端到端回环延迟、CPU 占用；交付 bench 工具 + `docs/perf-baseline.md`（实跑数值）；约束：只读产品代码、可复现（固定输入/预热/中位数/方差）。
 - **依据**：用户硬约束②极致性能（远程桌面 CPU 不炸）；与 server-sec（真机 CredSSP）无资源冲突。
 - **在途**：server-sec（CredSSP 修复）、性能基准（新）。
+
+
+## 第397轮：**性能基准完成报告 + 双审派发**
+
+- **[执行者报告 ses_e8915631bffeUU6DQ2Lwh41cdY]** 性能基准工具完成（只读产品代码）：
+  - 新增 `tools/rtsc_bench/main.cpp`（~700 行）+ `docs/perf-baseline.md`（170 行）；`CMakeLists.txt` 仅新增 `rtsc_bench` 目标。
+  - 数值（1920x1080，30 次中位数）：raw 4.323ms/231.3fps、rle 8.307ms/120.4fps、rdp6-argb 5.311ms/188.3fps、rdp6-aycocg 7.231ms/138.3fps、nsc 6.667ms/150.0fps；回环 0.842ms；端到端 5.541ms/180.5fps；CPU 100%。
+- **[主代理核验]** `cmake --build build --config Release` **EXIT=0**；`ctest -C Release` **49/49**；`build/Release/rtsc_bench.exe` 存在；`docs/perf-baseline.md` 含实跑数值表（§1 环境、§2 构建、§3 吞吐）。
+  - （注：报告 §3.1 canonical run 值 raw 4.238ms/236fps 与执行者消息 4.323ms/231.3fps 略有差异，报告称含多次独立运行方差——待审计核对。）
+- **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须重跑 `rtsc_bench.exe` 核对报告数值 + 核验 CMakeLists 未改产品逻辑。
+- **在途**：性能基准双审（甲+乙）、server-sec（CredSSP 修复）。
