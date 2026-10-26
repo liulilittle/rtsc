@@ -9707,3 +9707,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**`ReceivePdu` 从未到达——客户端在 CredSSP 后关闭、无 post-CredSSP 数据读**；将 dump 安全层在 CredSSP 完成时的残留缓冲。
 - **[判读]** 服务器在 CredSSP 完成后未继续读/发（MCS Connect Initial 等），或客户端在服务器完成前关闭。**待代理根因**。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第450轮：**mstsc 代理长期停滞 → 硬截止催办**
+
+- **[主代理核验]** 代理 `ses_e884b1ba0ffeM39k5d6IHiW4bq` idle（wrote 1793017996344），**多轮无新证据**（`evidence/mstsc/` 无更新；两产品文件仍有临时 fprintf）。
+- **[G4b]** 已多轮无进展 → 催办**硬截止**：本轮必须收口（A 根因+修复+重跑；或 B 已尝试/最强假设/阻塞点/下一步），并还原两产品文件调试。
+- **在途**：mstsc↔rtsc_server 实网验证。
