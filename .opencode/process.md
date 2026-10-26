@@ -9457,3 +9457,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[根因]** `CMakeLists.txt:499-501` 把 `rtsc_rdpsnd rtsc_audio rtsc_cliprdr` 链接放在 `if(WIN32)` 内，但 `main.cpp` 无条件使用 `CliprdrClient`(:314)/`RdpsndClient`(:316)。`rtsc_rdpsnd`/`rtsc_cliprdr` **平台无关**（`clipboard.cpp` 内部有 `_WIN32` 守卫）；仅 `rtsc_audio` 是 Windows-only（非 Windows 已用 `NullAudioSink`）。
 - **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：`CMakeLists.txt:499-501` 改为无条件链接 `rtsc_rdpsnd rtsc_cliprdr`、`rtsc_audio` 仍仅 Windows；重跑门禁至 PASS。
 - **在途**：Linux 门禁续修。
+
+
+## 第420轮：**Linux 门禁续修进展**
+
+- **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出：**正在重跑门禁**（已应用 `rtsc_gui` 链接修复）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：Linux 门禁续修。
