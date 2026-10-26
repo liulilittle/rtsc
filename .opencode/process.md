@@ -9480,3 +9480,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出：**将把 `ScriptedTls` 提取为共享头，并接入两个测试**（`test_server_security.cpp` + `test_security_layer.cpp`）。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：Linux 门禁续修。
+
+
+## 第423轮：**Linux 门禁修复未完成（催办）**
+
+- **[主代理实跑门禁]** 仍 `server_security` 失败（`tls_server_loopback_to_done` → `client: no TLS transport available`，1/48）。
+- **[核验]** `git status`：`tests/test_tls_scripted.h`（新）已建，但 **`tests/test_server_security.cpp` 未修改** → **接线未完成**。
+- **[get_goal]** 代理 `ses_e88b60db1fferBHxxHzKv53kjI` idle（wrote 1793005097549）。
+- **[催办]** prompt 完成接线：`#include "test_tls_scripted.h"` + 两层 `SetTlsTransportForTest(std::make_unique<ScriptedTls>())`（首个 Step 前）；重跑门禁至 PASS。
+- **在途**：Linux 门禁续修。
