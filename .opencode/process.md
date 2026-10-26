@@ -9220,3 +9220,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 非阻断观察：①GUI 无 ClientExecute 触发源；②UDP 停等；③SYN 未做 MTU 零填充/cookieHash；④RailGetAppIdRespEx(0x0018) 未建结构；⑤MS 抓包注解 512 判为文档笔误。
 - **[合并 master]** `53fd68a` feat: RAIL client integration（12 文件 +1379/-7）+ `9dc96f0` chore: coordination log；工作树干净。
 - **在途**：server-sec（CredSSP 修复，`pending:true`）。
+
+
+## 第395轮：**server-sec 进展（CredSSP 修复中）**
+
+- **[relay: ses_e8a82ee90ffe9keucB7AggYklh]** 尾部输出：**CredSSP 已达 pubKeyAuth echo**；剩余阻塞 = **证书对话框时序**（cert dialog timing）；将重启并即时处理。
+- **判定**：进展中，**非完成报告**；不催、不重派，等待其收口。
+- **在途**：server-sec（CredSSP 修复）。
