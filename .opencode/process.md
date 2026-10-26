@@ -9554,3 +9554,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[task 派发]** `ses_e88696414fferylzHwsalaJLqn`（后台）：**RDP 服务器多会话并发测试**——启动 `RdpServer`，并发 2~3 个客户端各自 Connect 到 active；断言 `session_count()` == 并发数、各会话状态独立、各收到帧；若并发模型有缺陷如实报告最小复现。
   - 依据：用户硬约束④多远程用户。
 - **在途**：服务器多会话并发测试（新）。
+
+
+## 第431轮：**多会话并发测试完成 + 双审派发**
+
+- **[执行者报告 ses_e88696414fferylzHwsalaJLqn]** 完成（仅测试 + CMake）：`tests/test_server_multisession.cpp`（3 用例/49 checks）+ CMakeLists 注册。
+  - 用例：① 3 客户端并发 Connect→active + 尺寸隔离 + `session_count()==3`；② `RecordingSource` 证明 framebuffer 每会话独立；③ 加密 Standard RDP 并发会话隔离（WIN32）。
+  - TDD 红证：变异 `server.cpp:813-816`（忽略每会话尺寸→全局）→ 3 用例全红/12 failed checks；edit 反向还原（`git diff -- src/server/server.cpp` 为空）。
+- **[主代理核验]** build **EXIT=0**；ctest **51/51**；`rtsc_server_multisession_tests` **3/49/0** —— 与报告一致。
+- **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验并发真实性/尺寸隔离/红证复现/framebuffer 独立/加密隔离/无产品改动）。
+- **在途**：多会话并发测试双审。
