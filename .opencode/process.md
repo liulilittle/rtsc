@@ -9678,3 +9678,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[判读]** CCF 后 mstsc 未继续（未发 TLS ClientHello）→ 疑 CCF 选定的协议 mstsc 不接受，或服务器 TLS 腿未就绪。**待代理根因**。
 - **[注意]** 两产品文件的 fprintf 为**临时仪器**，合并前必须还原（`git diff` 须为空）。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第446轮：**mstsc 定向假设（协议选择）**
+
+- **[主代理核验]** 代理 idle；`evidence/mstsc/` 无新增；两产品文件仍有临时 fprintf。
+- **[定向假设]** 服务器 CCF 选 `proto=0x2`（SSL-only），但 mstsc 请求 **HYBRID（0x8）**；若服务器未按客户端请求选 HYBRID，mstsc 因缺 NLA 报错 0x706。
+- **[催办]** prompt 验证：① 打印 CRQ `requestedProtocols`；② 检查 `selected_protocol_` 选择逻辑；③ 根因 + 修复 + 重跑；④ 还原两产品文件调试。
+- **在途**：mstsc↔rtsc_server 实网验证。
