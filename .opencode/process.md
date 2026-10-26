@@ -9613,3 +9613,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[判读]** 0x706 = 安全设置不匹配（NLA/CredSSP 或加密协商失败）。**待根因**：可能为 CredSSP 版本/标志、NLA 账户、或加密方法协商。
 - **[处置]** 记录 + 关闭对话框（解除阻塞）；催办代理完成根因分析。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第438轮：**mstsc 实网验证进展**
+
+- **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**重启服务器（捕获 stderr）并运行 mstsc**（针对 0x706 根因）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：mstsc↔rtsc_server 实网验证。
