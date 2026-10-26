@@ -73,6 +73,13 @@ if(WIN32)
     target_link_libraries(rtsc_cliprdr PUBLIC user32)
 endif()
 
+# RAIL (Remote Programs Virtual Channel) client handler ([MS-RDPERP]). Platform
+# neutral: it runs the RAIL order protocol and reassembles the "rail" static
+# virtual channel through proto::RailChannel.
+add_library(rtsc_rail STATIC src/channel/rail_client.cpp)
+target_include_directories(rtsc_rail PUBLIC include)
+target_link_libraries(rtsc_rail PUBLIC rtsc_proto)
+
 # rdpdr (device redirection) virtual channel handler ([MS-RDPEFS]). Platform
 # neutral: it runs the drive redirection protocol and serves file I/O through
 # the rdpdr::IFileSystem seam; HostFileSystem is the host implementation
@@ -406,7 +413,7 @@ endif()
 
 add_library(rtsc_client STATIC src/client/graphics.cpp src/client/client.cpp src/client/view.cpp src/client/session_info.cpp)
 target_include_directories(rtsc_client PUBLIC include)
-target_link_libraries(rtsc_client PUBLIC rtsc_proto rtsc_render rtsc_ui rtsc_security rtsc_net)
+target_link_libraries(rtsc_client PUBLIC rtsc_proto rtsc_render rtsc_ui rtsc_security rtsc_net rtsc_rail)
 # RtlGetVersion (the connection-information dialog's local-OS field) lives in
 # ntdll.dll. GetVersionExW is the alternative but is deprecated and trips C4996,
 # which is fatal under /WX.
@@ -508,6 +515,14 @@ add_executable(rtsc_rail_tests tests/test_rail.cpp)
 target_link_libraries(rtsc_rail_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rail_tests PRIVATE tests)
 
+# RAIL client integration: the "rail" static virtual channel handler, the
+# Confirm Active RAIL capability set, and the Client-side registration.
+add_executable(rtsc_rail_client_tests tests/test_rail_client.cpp)
+target_link_libraries(rtsc_rail_client_tests PRIVATE
+                       rtsc_rail rtsc_client rtsc_security rtsc_tls
+                       rtsc_credssp rtsc_proto rtsc_crypto rtsc_net rtsc_ui rtsc_util)
+target_include_directories(rtsc_rail_client_tests PRIVATE tests)
+
 # RD Gateway ([MS-TSGU]) and RDP-UDP ([MS-RDPEUDP]) wire structures + tunnel.
 # The end-to-end test drives the in-tree server through the tunnel, so this
 # target links the client/server stack as well.
@@ -566,6 +581,7 @@ add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
 add_test(NAME rail COMMAND rtsc_rail_tests)
+add_test(NAME rail_client COMMAND rtsc_rail_client_tests)
 add_test(NAME gateway COMMAND rtsc_gateway_tests)
 
 if(MSVC)
@@ -632,6 +648,8 @@ if(MSVC)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rail PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rail_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_gateway_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_gateway PRIVATE /W4 /WX)
 endif()

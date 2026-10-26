@@ -412,4 +412,13 @@ std::vector<uint8_t> ConnectionDriver::SendChannelPdu(
     return security_ ? security_->SendPdu(framed) : std::vector<uint8_t>{};
 }
 
+uint16_t ConnectionDriver::ChannelIdForName(const std::string& name) const {
+    const std::vector<std::string>& names = machine_config_.channel_names;
+    const std::vector<uint16_t>& ids = machine_.state().static_virtual_channels;
+    for (size_t i = 0; i < names.size() && i < ids.size(); ++i) {
+        if (names[i] == name) return ids[i];
+    }
+    return 0;
+}
+
 }  // namespace rtsc::security

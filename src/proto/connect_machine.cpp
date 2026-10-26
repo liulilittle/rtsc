@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "rtsc/proto/connection_initiation.h"
+#include "rtsc/proto/rail.h"
 #include "rtsc/proto/rdp_neg.h"
 
 namespace rtsc::proto {
@@ -143,6 +144,14 @@ void Append(std::vector<uint8_t>& dst, const std::vector<uint8_t>& src) {
     dst.insert(dst.end(), src.begin(), src.end());
 }
 
+// True when the client advertised `name` in its Client Network Data.
+bool AdvertisesChannel(const ConnectMachine::Config& c, const char* name) {
+    for (const auto& n : c.channel_names) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 const char* to_string(ConnectPhase p) {
@@ -203,6 +212,12 @@ ConnectStep ConnectMachine::SendChannelJoin() {
         pdu.info.code_page = 0x0409;  // en-US language id (Unicode mode)
         pdu.info.flags = info::kMouse | info::kUnicode | info::kDisableCtrlAltDel |
                          info::kMaximizeShell | info::kLogonNotify;
+        // [MS-RDPBCGR] 2.2.1.11.1.1 INFO_RAIL: the client supports the RAIL
+        // (Remote Programs) protocol. It is set when the client advertised the
+        // "rail" static virtual channel in the Client Network Data.
+        if (AdvertisesChannel(config_, kRailChannelName)) {
+            pdu.info.flags |= info::kRail;
+        }
         if (credentials_.autologon) pdu.info.flags |= info::kAutoLogon;
         pdu.info.domain = credentials_.domain;
         pdu.info.user_name = credentials_.user_name;

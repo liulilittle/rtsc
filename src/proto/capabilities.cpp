@@ -97,7 +97,7 @@ uint16_t ExpectedCapabilityLength(uint16_t raw) {
         case CapabilityType::kVirtualChannel: return 8;   // 8 or 12
         case CapabilityType::kDrawNineGridCache: return 16;
         case CapabilityType::kDrawGdiPlus: return 16;
-        case CapabilityType::kRail: return 0;  // variable
+        case CapabilityType::kRail: return 8;  // TS_RAIL_CAPS (fixed)
         case CapabilityType::kWindow: return 12;
         case CapabilityType::kCompDesk: return 8;
         case CapabilityType::kMultifragmentUpdate: return 8;
@@ -672,6 +672,24 @@ CapabilitySet BitmapCacheRev2CapabilitySet::encode() const {
     return MakeSet(CapabilityType::kBitmapCacheRev2, b);
 }
 
+// ---- RAIL -----------------------------------------------------------------
+
+Status RailCapabilitySet::parse(const CapabilitySet& set, RailCapabilitySet& out) {
+    out = RailCapabilitySet{};
+    if (const Status s = Expect(set, CapabilityType::kRail); s != Status::Ok) {
+        return s;
+    }
+    if (set.data.size() < 4) return Status::InvalidLength;
+    out.rail_support_level = FieldU32(set, 0);
+    return Status::Ok;
+}
+
+CapabilitySet RailCapabilitySet::encode() const {
+    ByteWriter b;
+    b.u32le(rail_support_level);
+    return MakeSet(CapabilityType::kRail, b);
+}
+
 // ---- Default client set ---------------------------------------------------
 
 std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width,
@@ -733,6 +751,13 @@ std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width
     VirtualChannelCapabilitySet vc;
     vc.flags = VirtualChannelCapabilitySet::kNoComp;
     sets.push_back(vc.encode());
+
+    // RAIL ([MS-RDPERP] 2.2.1.1.1): the client supports Remote Programs over the
+    // "rail" static virtual channel, including the HandshakeEx PDU.
+    RailCapabilitySet rail;
+    rail.rail_support_level = RailCapabilitySet::kLevelSupported |
+                              RailCapabilitySet::kLevelHandshakeExSupported;
+    sets.push_back(rail.encode());
 
     GlyphCacheCapabilitySet glyphs;
     // Conservative cell sizes; the exact values only affect rendering quality.

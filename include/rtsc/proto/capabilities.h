@@ -324,13 +324,35 @@ struct BitmapCacheRev2CapabilitySet {
     CapabilitySet encode() const;
 };
 
+// TS_RAIL_CAPS ([MS-RDPERP] 2.2.1.1.1), 8 bytes total: RailSupportLevel (4).
+//
+// Sent by the client in the Confirm Active PDU and by the server in the Demand
+// Active PDU; it tells the peer that RAIL PDUs can be exchanged over the RAIL
+// static virtual channel. The support-level flags MUST be zero unless
+// kLevelSupported is set.
+struct RailCapabilitySet {
+    static constexpr uint32_t kLevelSupported = 0x00000001;
+    static constexpr uint32_t kLevelDockedLangbarSupported = 0x00000002;
+    static constexpr uint32_t kLevelShellIntegrationSupported = 0x00000004;
+    static constexpr uint32_t kLevelLanguageImeSyncSupported = 0x00000008;
+    static constexpr uint32_t kLevelServerToClientImeSyncSupported = 0x00000010;
+    static constexpr uint32_t kLevelHideMinimizedAppsSupported = 0x00000020;
+    static constexpr uint32_t kLevelWindowCloakingSupported = 0x00000040;
+    static constexpr uint32_t kLevelHandshakeExSupported = 0x00000080;
+
+    uint32_t rail_support_level = kLevelSupported;
+
+    static Status parse(const CapabilitySet& set, RailCapabilitySet& out);
+    CapabilitySet encode() const;
+};
+
 // Builds the default client capability set used by this project: the sets that
 // a working client must send, with conservative values.
 //
 // Deliberately excluded: capabilities that only the server sends, and codec sets
 // whose payloads belong to other specifications.
 std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width,
-                                                          uint16_t desktop_height,
-                                                          uint16_t color_depth);
+                                                           uint16_t desktop_height,
+                                                           uint16_t color_depth);
 
 }  // namespace rtsc::proto

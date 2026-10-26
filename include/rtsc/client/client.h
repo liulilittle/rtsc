@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "rtsc/channel/rail_client.h"
 #include "rtsc/client/graphics.h"
 #include "rtsc/client/session_info.h"
 #include "rtsc/net/transport.h"
@@ -46,6 +47,32 @@ class Client {
                          std::function<void(const uint8_t*, size_t)> handler) {
         driver_.SetChannelHandler(channel_id, std::move(handler));
     }
+
+    // Sets the function used to send complete rail channel messages. The
+    // function receives the MCS channel id the server assigned to the rail
+    // channel and the message (CHANNEL_PDU_HEADER + RAIL orders); it returns
+    // false on a write failure. Must be called before StartRailChannel().
+    void SetRailSender(
+        std::function<bool(uint16_t, const std::vector<uint8_t>&)> send) {
+        rail_send_ = std::move(send);
+        rail_.SetSendFn([this](const std::vector<uint8_t>& m) {
+            if (rail_channel_id_ != 0 && rail_send_) {
+                rail_send_(rail_channel_id_, m);
+            }
+        });
+    }
+
+    // The RAIL handler. The front-end installs an OrderHandler to react to the
+    // inbound server orders (window move / minmax / taskbar / exec result /
+    // get appid response, ...).
+    channel::RailClient& rail() { return rail_; }
+
+    // Resolves the rail static virtual channel id from the Server Network Data,
+    // registers the RAIL handler on it and starts the RAIL session (Handshake +
+    // ClientStatus). Returns the channel id, or 0 when the server did not assign
+    // a rail channel. Call after Connect(), once the channel join completed.
+    uint16_t StartRailChannel(uint32_t build_number = 0,
+                              uint32_t client_flags = 0);
 
     // Drives the connection sequence to the active session. Blocking.
     bool Connect(net::Transport& transport, std::string& error);
@@ -122,6 +149,9 @@ class Client {
 
     security::ConnectionDriver driver_;
     GraphicsPipeline graphics_;
+    channel::RailClient rail_;
+    std::function<bool(uint16_t, const std::vector<uint8_t>&)> rail_send_;
+    uint16_t rail_channel_id_ = 0;
 
     using Clock = std::chrono::steady_clock;
     std::deque<Clock::time_point> frame_times_;

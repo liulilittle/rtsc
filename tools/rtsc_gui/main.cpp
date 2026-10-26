@@ -59,6 +59,12 @@ constexpr uint16_t kChannelRdpdr = 1004;
 constexpr uint16_t kChannelCliprdr = 1005;
 constexpr uint16_t kChannelRdpsnd = 1006;
 
+// RAIL ([MS-RDPERP]): the client's Handshake build number and the ClientStatus
+// feature flags. Zero flags claim no optional RAIL features; the handler still
+// parses every inbound order.
+constexpr uint32_t kRailBuildNumber = 0x00001DB0;
+constexpr uint32_t kRailClientFlags = 0;
+
 void usage() {
     std::printf(
         "%s\n"
@@ -101,7 +107,10 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
         mcfg.encryption_methods = 0;
     }
     mcfg.client_name = "RTSC";
-    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
+    // The "rail" static virtual channel carries the Remote Programs orders
+    // ([MS-RDPERP]); the server assigns it the next MCS channel id after the
+    // three redirection channels.
+    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd", "rail"};
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -244,6 +253,7 @@ int main(int argc, char** argv) {
     // protocol.
     unsigned vc_rdpdr = 0;
     unsigned vc_cliprdr = 0;
+    unsigned vc_rail = 0;
     unsigned input_sends = 0;
     unsigned channel_sends = 0;
 
@@ -274,6 +284,17 @@ int main(int argc, char** argv) {
     const auto send_rdpsnd = [&](const std::vector<uint8_t>& message) {
         send_channel(kChannelRdpsnd, message);
     };
+
+    // RAIL (Remote Programs, [MS-RDPERP]): the client sends the RAIL orders on
+    // the "rail" static virtual channel through the same application data
+    // plane. The channel id is resolved from the Server Network Data once the
+    // channel join completed, so the sender is bound here and used by
+    // StartRailChannel() after Connect().
+    client.SetRailSender([&](uint16_t channel_id,
+                             const std::vector<uint8_t>& message) {
+        send_channel(channel_id, message);
+        return true;
+    });
 
     // Clipboard redirection (CLIPRDR): decode the cliprdr static virtual channel
     // and synchronise the local clipboard with the remote session. The handler
@@ -309,6 +330,22 @@ int main(int argc, char** argv) {
         return 1;
     }
     cliprdr.Start();
+
+    // RAIL: register the handler on the server-assigned "rail" static virtual
+    // channel and start the RAIL session. The server sends its Handshake first
+    // ([MS-RDPERP] 2.2.2.2.1); the client responds and sends its ClientStatus.
+    client.rail().SetHandler([&](const rtsc::proto::RailPdu& pdu) {
+        ++vc_rail;
+        (void)pdu;  // the RailClient state holds the decoded orders
+    });
+    const uint16_t rail_id =
+        client.StartRailChannel(kRailBuildNumber, kRailClientFlags);
+    if (rail_id == 0) {
+        std::printf("rail: server did not assign a rail static virtual channel\n");
+    } else {
+        std::printf("rail: static virtual channel id %u\n",
+                    static_cast<unsigned>(rail_id));
+    }
 
     // Size the window and the surface to the desktop the server granted (the
     // Demand Active bitmap capability). This is what makes the default 1:1 view
@@ -598,10 +635,30 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("virtual channel chunks: rdpdr=%u cliprdr=%u\n", vc_rdpdr,
-                vc_cliprdr);
+    std::printf("virtual channel chunks: rdpdr=%u cliprdr=%u rail=%u\n", vc_rdpdr,
+                vc_cliprdr, vc_rail);
     std::printf("application sends: input=%u channel=%u\n", input_sends,
                 channel_sends);
+    std::printf(
+        "rail: pdus=%u window_moves=%u minmax=%u taskbar=%u langbar=%u "
+        "exec=%u exec_results=%u appid_req=%u appid_resp=%u incomplete=%u "
+        "sent=%u\n",
+        client.rail().pdu_count(), client.rail().window_move_count(),
+        client.rail().minmax_info_count(), client.rail().taskbar_count(),
+        client.rail().langbar_count(), client.rail().exec_count(),
+        client.rail().exec_result_count(), client.rail().get_app_id_req_count(),
+        client.rail().get_app_id_resp_count(),
+        client.rail().incomplete_message_count(), client.rail().send_count());
+    if (client.rail().has_app_id()) {
+        std::printf("rail: appid window=%u appid=%s\n",
+                    static_cast<unsigned>(client.rail().app_id_window()),
+                    "received");
+    }
+    if (client.rail().has_exec_result()) {
+        std::printf("rail: exec_result=%u raw=%u\n",
+                    static_cast<unsigned>(client.rail().exec_result().exec_result),
+                    static_cast<unsigned>(client.rail().exec_result().raw_result));
+    }
     std::printf(
         "clipboard: long_names=%s remote_formats=%zu caps_sent=%u "
         "server_caps=%u remote_lists=%u local_lists=%u responses=%u "

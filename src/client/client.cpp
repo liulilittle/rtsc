@@ -29,6 +29,16 @@ Client::Client(security::ConnectionDriver driver, uint16_t width, uint16_t heigh
     activity_id_ = GenerateActivityId();
 }
 
+uint16_t Client::StartRailChannel(uint32_t build_number, uint32_t client_flags) {
+    const uint16_t id = driver_.ChannelIdForName(proto::kRailChannelName);
+    if (id == 0) return 0;
+    rail_channel_id_ = id;
+    driver_.SetChannelHandler(
+        id, [this](const uint8_t* data, size_t size) { rail_.OnChannelData(data, size); });
+    rail_.Start(build_number, client_flags);
+    return id;
+}
+
 void Client::NoteFrame() {
     const Clock::time_point now = Clock::now();
     frame_times_.push_back(now);

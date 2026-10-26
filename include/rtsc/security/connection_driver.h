@@ -113,6 +113,14 @@ class ConnectionDriver {
     }
     size_t unrouted_channel_count() const { return unrouted_channel_count_; }
 
+    // Maps a static virtual channel name (as advertised in the Client Network
+    // Data, in order) to the MCS channel id the server assigned in the Server
+    // Network Data. The ids are assigned in the order the client listed the
+    // channels, so name[i] corresponds to static_virtual_channels[i]. Returns 0
+    // when the name was not advertised or the server did not assign a matching
+    // id.
+    uint16_t ChannelIdForName(const std::string& name) const;
+
     bool session_active() const { return session_ != nullptr && session_->active(); }
 
     // The desktop size the server granted, taken from the Demand Active bitmap
