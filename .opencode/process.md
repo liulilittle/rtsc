@@ -9336,3 +9336,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[派发]** B 补回归测试 → 执行者 `ses_e8a82ee90ffe9keucB7AggYklh`（worktree `.worktrees/server-sec`）：断言 CHALLENGE flags 含 kTargetInfo + version(48..55) 非零；TDD 红/绿证据。
   - （注：审计甲亦将该缺口发 `ses_e89f33669ffebYATbhfOQ8Z2Mx`，忙，已入队。）
 - **在途**：B 补测试（执行者）、（A 已合并）。
+
+
+## 第407轮：**CredSSP 补回归测试完成 + 双审派发**
+
+- **[执行者报告 ses_e8a82ee90ffe9keucB7AggYklh]** 补测试完成（仅改 `tests/test_server_security.cpp`）：
+  - 新增 `RTSC_TEST(credssp_server_challenge_flags_and_version)`：断言 CHALLENGE flags 含 `kTargetInfo` + version(48..55) 非零（major=0x0A）。
+  - 关键：用**实测 mstsc NEGOTIATE flags=0xE20882B7（不含 kTargetInfo）**构造原始 TSRequest 喂服务器（避免 CredsspClient 自身请求 kTargetInfo 掩盖回退）。
+  - 红/绿证：改回原状 → :152/:154 FAIL（5/43/1 failing）；恢复 → 绿（5/43/0）。
+  - 指纹：test_server_security.cpp ffc7fcbdff886518；产品文件与 c2a5d0b 一致。
+- **[主代理核验]** worktree `cmake --build` **EXIT=0**；`ctest` **46/46**；`rtsc_server_security_tests` **5/43/0** —— 与报告一致；`git status` 仅 `M tests/test_server_security.cpp`。
+- **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，须复现红证 + 核验测试有效性（mstsc-like NEGOTIATE）+ 只改测试。
+- **在途**：CredSSP 回归测试双审（甲+乙）。
