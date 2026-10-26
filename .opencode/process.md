@@ -9785,3 +9785,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 桌面无 mstsc 窗口；mstsc 进程 14840（无主窗口、Responding=True）；`rtsc_server_host` 55752 在跑。mstsc↔rtsc_server 在 **CredSSP 后 MCS 数据面交接**失败（0x1204）。
 - **[派发]** `ses_e878558e8ffeL3341W4gsKduOU`（后台）：**修复 mstsc↔rtsc_server 的 post-CredSSP MCS 数据面交接**（定位根因 文件:行 + 最小修复 + TDD + mstsc 重跑验证 + 构建/ctest/Linux 门禁）。
 - **在途**：mstsc MCS 交接修复。
+
+
+## 第459轮：**修复代理工具错误 → 补发继续指令**
+
+- **[异常]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` 报 `Failed to execute statement`（工具错误），现 idle（未终结）。
+- **[核验]** 该代理留 `src/security/server_security_layer.cpp` **+7 行**改动（待确认是修复还是调试）。
+- **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 要求先核验那 7 行是修复还是调试）。
+- **在途**：mstsc MCS 交接修复（继续）。
