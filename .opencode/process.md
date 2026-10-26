@@ -9876,3 +9876,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`）；`src/server/server.cpp` fprintf **29 处**（较上轮 26 增加）→ 在**加调试**而非还原。
 - **[处置]** 强催：**停止加调试**；删除全部 29 处 fprintf + `#include <cstdio>`；保留 HYBRID_EX 修复；**真实 mstsc 重跑验证**（到达 active 并渲染）。
 - **在途**：mstsc MCS 交接修复（收口）。
+
+
+## 第471轮：**第二个根因（0x706 ServerCertificateUnpackErr）→ 派发修复**
+
+- **[relay: ses_e878558e8ffeL3341W4gsKduOU]** 尾部输出：**找到第二个根因**——mstsc 0x706 = `disconnectReasonServerCertificateUnpackErr`：外部安全（TLS/CredSSP）下 **Server Security Data 必须 method=0/level=0 且无证书**，服务器却发了 Server Security 证书 → mstsc 解包失败。
+- **[派发]** 修复：Connect Response 的 Server Security Data 在 SSL/HYBRID/HYBRID_EX 下 **method=0/level=0/无证书**；还原全部 fprintf；**真实 mstsc 重跑验证**（到达 active 并渲染）+ 构建/ctest/Linux 门禁。
+- **在途**：mstsc MCS 交接修复（收口）。
