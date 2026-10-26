@@ -9862,3 +9862,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 但 diff 中仍含**调试 `std::fprintf(stderr, "[dbg] ...")`**（待还原）。
 - **[处置]** 催办：还原调试 fprintf + 保留 HYBRID_EX 修复 + **真实 mstsc 重跑验证**（到达 active 并渲染）+ 构建/ctest/Linux 门禁。
 - **在途**：mstsc MCS 交接修复（收口中）。
+
+
+## 第469轮：**修复代理 busy（调试待还原 + mstsc 验证中）**
+
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` **busy**（`pending:true`，wrote 1793031119970）；`src/server/server.cpp` 仍有 **26 处 fprintf**（调试，待还原）；`evidence/mstsc/server-fix.log`（0:12）、`server-fix.err`（0B）。
+- **判定**：收口中（还原调试 + mstsc 重跑验证）；不催、不重派，等待其报告。
+- **在途**：mstsc MCS 交接修复（收口）。
