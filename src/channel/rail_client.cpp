@@ -129,6 +129,17 @@ void RailClient::OnPdu(const RailPdu& pdu) {
                 ++get_app_id_resp_count_;
             }
         }
+    } else if (type == rtsc::proto::RailGetAppIdRespEx::kOrderType) {
+        // The server's extended response (0x0018): windowId + ApplicationId +
+        // processId + ProcessImageName ([MS-RDPERP] 2.2.2.8.2).
+        rtsc::proto::RailGetAppIdRespEx o;
+        if (rtsc::proto::RailGetAppIdRespEx::parse(full.data(), full.size(), o) ==
+            Status::Ok) {
+            app_id_ex_ = o;
+            app_id_ex_window_ = o.window_id;
+            has_app_id_ex_ = true;
+            ++get_app_id_resp_ex_count_;
+        }
     }
 
     if (handler_) handler_(pdu);

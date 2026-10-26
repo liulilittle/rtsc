@@ -585,6 +585,60 @@ RTSC_TEST(rail_client_answers_get_app_id_req_with_resp) {
     CHECK(trimmed == u"microsoft.windows.notepad");
 }
 
+RTSC_TEST(rail_client_parses_get_app_id_resp_ex) {
+    // The server's extended response (0x0018, [MS-RDPERP] 2.2.2.8.2) is parsed
+    // into the handler state and bumps its counter.
+    rtsc::channel::RailClient rail([](const std::vector<uint8_t>&) {});
+
+    RailGetAppIdRespEx ex;
+    ex.window_id = 0x20052;
+    ex.application_id = u"microsoft.windows.notepad";
+    ex.process_id = 0x1234;
+    ex.process_image_name = u"C:\\Windows\\System32\\notepad.exe";
+    std::string why;
+    const std::vector<uint8_t> pdu = ex.build(why);
+    FeedRail(rail, pdu);
+
+    CHECK_EQ(rail.get_app_id_resp_ex_count(), static_cast<unsigned>(1));
+    CHECK(rail.has_app_id_ex());
+    CHECK_EQ(rail.app_id_ex_window(), static_cast<uint32_t>(0x20052));
+    CHECK(rail.app_id_ex().application_id == ex.application_id);
+    CHECK_EQ(rail.app_id_ex().process_id, static_cast<uint32_t>(0x1234));
+    CHECK(rail.app_id_ex().process_image_name == ex.process_image_name);
+    // The plain response counter is untouched.
+    CHECK_EQ(rail.get_app_id_resp_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rail_client_get_app_id_resp_ex_reaches_handler) {
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RailClient rail(
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    unsigned seen = 0;
+    uint16_t seen_type = 0;
+    rail.SetHandler([&](const RailPdu& pdu) {
+        if (pdu.header.order_type == RailGetAppIdRespEx::kOrderType) {
+            ++seen;
+            seen_type = pdu.header.order_type;
+        }
+    });
+
+    RailGetAppIdRespEx ex;
+    ex.window_id = 5;
+    ex.application_id = u"app";
+    ex.process_image_name = u"img";
+    std::string why;
+    FeedRail(rail, ex.build(why));
+
+    CHECK_EQ(seen, static_cast<unsigned>(1));
+    CHECK_EQ(seen_type, static_cast<uint16_t>(0x0018));
+    CHECK_EQ(rail.pdu_count(), static_cast<unsigned>(1));
+
+    // Direction: 0x0018 is server -> client only. Feeding it must not make the
+    // client emit anything, and there is no SendGetAppIdRespEx on the client.
+    CHECK_EQ(rail.send_count(), static_cast<unsigned>(0));
+    CHECK_EQ(sent.size(), static_cast<size_t>(0));
+}
+
 RTSC_TEST(rail_client_sends_activate_and_langbar) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::RailClient rail(

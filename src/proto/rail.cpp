@@ -375,6 +375,72 @@ Status RailGetAppIdReq::parse(const uint8_t* data, size_t size,
     return Status::Ok;
 }
 
+// Reads a null-terminated UTF-16LE string from a fixed-size field. Returns false
+// when the field has no null terminator within `size` bytes (a completely filled
+// fixed field), which the spec does not allow.
+bool ReadFixedUtf16Z(const uint8_t* data, size_t size, std::u16string& out) {
+    out.clear();
+    for (size_t i = 0; i + 1 < size; i += 2) {
+        const uint16_t ch = static_cast<uint16_t>(data[i]) |
+                             (static_cast<uint16_t>(data[i + 1]) << 8);
+        if (ch == 0) return true;
+        out.push_back(static_cast<char16_t>(ch));
+    }
+    return false;
+}
+
+std::vector<uint8_t> RailGetAppIdRespEx::build(std::string& why) const {
+    why.clear();
+    const std::vector<uint8_t> app = RailUtf16ToLeBytes(application_id);
+    const std::vector<uint8_t> image = RailUtf16ToLeBytes(process_image_name);
+    if (app.size() > kStringFieldSize) {
+        why = "ApplicationId exceeds 520 bytes";
+        return {};
+    }
+    if (image.size() > kStringFieldSize) {
+        why = "ProcessImageName exceeds 520 bytes";
+        return {};
+    }
+    // A fixed 520-byte field that is completely filled leaves no room for the
+    // null terminator; FreeRDP rejects that, so do we.
+    if (application_id.size() > kMaxStringUnits) {
+        why = "ApplicationId needs a null terminator within 520 bytes";
+        return {};
+    }
+    if (process_image_name.size() > kMaxStringUnits) {
+        why = "ProcessImageName needs a null terminator within 520 bytes";
+        return {};
+    }
+
+    ByteWriter w;
+    w.u32le(window_id);
+    w.bytes(app.data(), app.size());
+    for (size_t i = app.size(); i < kStringFieldSize; ++i) w.u8(0);
+    w.u32le(process_id);
+    w.bytes(image.data(), image.size());
+    for (size_t i = image.size(); i < kStringFieldSize; ++i) w.u8(0);
+    return BuildRailPdu(kOrderType, w.take());
+}
+
+Status RailGetAppIdRespEx::parse(const uint8_t* data, size_t size,
+                                 RailGetAppIdRespEx& out) {
+    ByteReader r(data, size);
+    size_t body_size = 0;
+    const Status st = ReadRailPduHeader(r, kOrderType, body_size);
+    if (st != Status::Ok) return st;
+    if (body_size != kBodySize) return Status::InvalidLength;
+    if (!r.u32le(out.window_id)) return Status::NeedMoreData;
+    if (!ReadFixedUtf16Z(r.cursor(), kStringFieldSize, out.application_id)) {
+        return Status::InvalidField;
+    }
+    if (!r.skip(kStringFieldSize)) return Status::NeedMoreData;
+    if (!r.u32le(out.process_id)) return Status::NeedMoreData;
+    if (!ReadFixedUtf16Z(r.cursor(), kStringFieldSize, out.process_image_name)) {
+        return Status::InvalidField;
+    }
+    return Status::Ok;
+}
+
 std::vector<uint8_t> RailSysparamOrder::build() const {
     ByteWriter w;
     w.u32le(param);
@@ -619,6 +685,7 @@ void RailChannel::OnMessage(const std::vector<uint8_t>& message) {
             case RailLangbarInfo::kOrderType: ++langbar_count_; break;
             case RailClientExecute::kOrderType: ++exec_count_; break;
             case RailExecuteResult::kOrderType: ++exec_result_count_; break;
+            case RailGetAppIdRespEx::kOrderType: ++get_app_id_resp_ex_count_; break;
             default: break;
         }
 

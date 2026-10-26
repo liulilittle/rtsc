@@ -357,6 +357,31 @@ struct RailGetAppIdReq {
     static Status parse(const uint8_t* data, size_t size, RailGetAppIdReq& out);
 };
 
+// TS_RAIL_ORDER_GET_APPID_RESP_EX (0x0018): the Server Get Application ID
+// Extended Response PDU ([MS-RDPERP] 2.2.2.8.2). Sent by the server in response
+// to a client GetAppIdReq; it carries the ApplicationId plus the process id and
+// image name. windowId (4) + ApplicationId (520) + processId (4) +
+// ProcessImageName (520) = 1048 body bytes; orderLength = 1052. FreeRDP's
+// RAIL_GET_APPID_RESP_EX{windowId; WCHAR applicationID[260]; UINT32 processId;
+// WCHAR processImageName[260];} matches this layout.
+struct RailGetAppIdRespEx {
+    static constexpr uint16_t kOrderType = 0x0018;
+    static constexpr size_t kStringFieldSize = 520;   // 260 UTF-16 code units
+    static constexpr size_t kMaxStringUnits = 259;     // leaves room for the NUL
+    static constexpr size_t kBodySize = 4 + kStringFieldSize + 4 + kStringFieldSize;
+    static constexpr size_t kOrderLength = RailPduHeader::kSize + kBodySize;
+
+    uint32_t window_id = 0;
+    std::u16string application_id;
+    uint32_t process_id = 0;
+    std::u16string process_image_name;
+
+    // Returns an empty vector (and sets `why`) when a string does not fit in its
+    // fixed 520-byte field with a null terminator.
+    std::vector<uint8_t> build(std::string& why) const;
+    static Status parse(const uint8_t* data, size_t size, RailGetAppIdRespEx& out);
+};
+
 // TS_RAIL_ORDER_SYSPARAM (0x0003): systemParam (4) + a body that depends on the
 // parameter. The boolean and rectangle parameters are the ones a RemoteApp
 // client normally sends; the extended SPI parameters are carried as a 32-bit
@@ -440,6 +465,7 @@ class RailChannel {
     unsigned langbar_count() const { return langbar_count_; }
     unsigned exec_count() const { return exec_count_; }
     unsigned exec_result_count() const { return exec_result_count_; }
+    unsigned get_app_id_resp_ex_count() const { return get_app_id_resp_ex_count_; }
     unsigned incomplete_message_count() const { return incomplete_message_count_; }
 
  private:
@@ -458,6 +484,7 @@ class RailChannel {
     unsigned langbar_count_ = 0;
     unsigned exec_count_ = 0;
     unsigned exec_result_count_ = 0;
+    unsigned get_app_id_resp_ex_count_ = 0;
     unsigned incomplete_message_count_ = 0;
 };
 

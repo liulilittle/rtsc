@@ -108,6 +108,11 @@ class RailClient {
     bool has_app_id() const { return has_app_id_; }
     uint32_t app_id_window() const { return app_id_window_; }
     const std::u16string& app_id() const { return app_id_; }
+    // The extended response (0x0018, [MS-RDPERP] 2.2.2.8.2): the ApplicationId
+    // plus the process id and image name.
+    bool has_app_id_ex() const { return has_app_id_ex_; }
+    uint32_t app_id_ex_window() const { return app_id_ex_window_; }
+    const rtsc::proto::RailGetAppIdRespEx& app_id_ex() const { return app_id_ex_; }
 
     // ---- diagnostics -------------------------------------------------------
     unsigned pdu_count() const;
@@ -124,6 +129,7 @@ class RailClient {
     unsigned langbar_count() const;
     unsigned get_app_id_req_count() const { return get_app_id_req_count_; }
     unsigned get_app_id_resp_count() const { return get_app_id_resp_count_; }
+    unsigned get_app_id_resp_ex_count() const { return get_app_id_resp_ex_count_; }
     unsigned incomplete_message_count() const;
     unsigned send_count() const { return send_count_; }
 
@@ -151,11 +157,15 @@ class RailClient {
     bool has_app_id_ = false;
     uint32_t app_id_window_ = 0;
     std::u16string app_id_;
+    bool has_app_id_ex_ = false;
+    uint32_t app_id_ex_window_ = 0;
+    rtsc::proto::RailGetAppIdRespEx app_id_ex_{};
 
     unsigned client_status_count_ = 0;
     unsigned minmax_info_count_ = 0;
     unsigned get_app_id_req_count_ = 0;
     unsigned get_app_id_resp_count_ = 0;
+    unsigned get_app_id_resp_ex_count_ = 0;
     unsigned send_count_ = 0;
 };
 

@@ -242,6 +242,107 @@ RTSC_TEST(rail_get_appid_req_round_trips) {
     CHECK_EQ(out.window_id, static_cast<uint32_t>(0x77));
 }
 
+RTSC_TEST(rail_get_appid_resp_ex_round_trips_all_fields) {
+    // [MS-RDPERP] 2.2.2.8.2: windowId (4) + ApplicationId (520) + processId (4) +
+    // ProcessImageName (520) = 1048 body bytes; orderLength = 1052.
+    RailGetAppIdRespEx in;
+    in.window_id = 0x20052;
+    in.application_id = u"microsoft.windows.notepad";
+    in.process_id = 0x1234;
+    in.process_image_name = u"C:\\Windows\\System32\\notepad.exe";
+    std::string why;
+    const std::vector<uint8_t> pdu = in.build(why);
+    CHECK(why.empty());
+    CHECK_EQ(pdu.size(), static_cast<size_t>(1052));
+    CHECK_EQ(pdu[0], 0x18);
+    CHECK_EQ(pdu[1], 0x00);
+
+    RailGetAppIdRespEx out;
+    CHECK(RailGetAppIdRespEx::parse(pdu.data(), pdu.size(), out) == Status::Ok);
+    CHECK_EQ(out.window_id, static_cast<uint32_t>(0x20052));
+    CHECK(out.application_id == in.application_id);
+    CHECK_EQ(out.process_id, static_cast<uint32_t>(0x1234));
+    CHECK(out.process_image_name == in.process_image_name);
+}
+
+RTSC_TEST(rail_get_appid_resp_ex_rejects_bad_length_and_type) {
+    RailGetAppIdRespEx in;
+    in.window_id = 1;
+    std::string why;
+    const std::vector<uint8_t> pdu = in.build(why);
+
+    RailGetAppIdRespEx out;
+    // A declared orderLength smaller than the fixed body is InvalidLength.
+    ByteWriter bad_len;
+    bad_len.u16le(RailGetAppIdRespEx::kOrderType);
+    bad_len.u16le(static_cast<uint16_t>(RailGetAppIdRespEx::kBodySize - 1));
+    CHECK(RailGetAppIdRespEx::parse(bad_len.data().data(), bad_len.size(), out) ==
+          Status::InvalidLength);
+
+    // The header type is validated against 0x0018.
+    ByteWriter bad_type;
+    bad_type.u16le(RailGetAppIdReq::kOrderType);
+    bad_type.u16le(static_cast<uint16_t>(RailGetAppIdRespEx::kOrderLength));
+    bad_type.bytes(pdu.data() + 4, pdu.size() - 4);
+    CHECK(RailGetAppIdRespEx::parse(bad_type.data().data(), bad_type.size(), out) ==
+          Status::InvalidType);
+}
+
+RTSC_TEST(rail_get_appid_resp_ex_rejects_truncated_strings) {
+    // A fixed 520-byte field that is completely filled leaves no room for the
+    // null terminator the spec requires. FreeRDP rejects that
+    // (rail_read_get_application_id_extended_response_order); so must we.
+    const std::u16string full(260, u'A');
+    std::string why;
+    RailGetAppIdRespEx in;
+    in.application_id = full;
+    in.process_image_name = u"notepad.exe";
+    CHECK(in.build(why).empty());
+    CHECK(!why.empty());
+
+    RailGetAppIdRespEx in2;
+    in2.application_id = u"notepad";
+    in2.process_image_name = full;
+    CHECK(in2.build(why).empty());
+    CHECK(!why.empty());
+
+    // 259 code units still fit with a terminator.
+    RailGetAppIdRespEx in3;
+    in3.application_id = std::u16string(259, u'B');
+    in3.process_image_name = u"ok";
+    CHECK(!in3.build(why).empty());
+
+    // A peer that sends the unterminated field on the wire is rejected.
+    ByteWriter body;
+    body.u32le(7);
+    body.bytes(RailUtf16ToLeBytes(full).data(), 520);
+    body.u32le(9);
+    body.bytes(RailUtf16ToLeBytes(u"img").data(), 6);
+    for (int i = 0; i < 514; ++i) body.u8(0);
+    const std::vector<uint8_t> wire =
+        BuildRailPdu(RailGetAppIdRespEx::kOrderType, body.take());
+    RailGetAppIdRespEx out;
+    CHECK(RailGetAppIdRespEx::parse(wire.data(), wire.size(), out) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(rail_get_appid_resp_ex_is_server_to_client) {
+    // 0x0018 is sent by the server in response to the client's 0x000E request;
+    // the client only receives it, and there is no client -> server sender.
+    RailGetAppIdRespEx in;
+    in.window_id = 0x11;
+    std::string why;
+    const std::vector<uint8_t> pdu = in.build(why);
+    const uint16_t wire_type =
+        static_cast<uint16_t>(pdu[0]) | (static_cast<uint16_t>(pdu[1]) << 8);
+    CHECK(wire_type == static_cast<uint16_t>(0x0018));
+    CHECK(wire_type != RailGetAppIdReq::kOrderType);
+    CHECK(wire_type != static_cast<uint16_t>(RailOrderType::kGetAppIdResp));
+    // The enum name is used by the diagnostics.
+    CHECK(std::string(to_string(RailOrderType::kGetAppIdRespEx)) ==
+          std::string("TS_RAIL_ORDER_GET_APPID_RESP_EX"));
+}
+
 RTSC_TEST(rail_sysparam_boolean_and_rect_round_trip) {
     RailSysparamOrder drag;
     drag.param = kSpiSetDragFullWindows;
