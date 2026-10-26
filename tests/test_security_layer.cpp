@@ -75,6 +75,15 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
         out.clear();
         return Ok();
     }
+    rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return Ok();
+    }
+    rtsc::tls::Error LocalSubjectPublicKey(
+        std::vector<uint8_t>& out) const override {
+        out = {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01};
+        return Ok();
+    }
     rtsc::tls::Error negotiated(rtsc::tls::NegotiatedInfo& out) const override {
         out = rtsc::tls::NegotiatedInfo{};
         out.tls_version = 0x0304;

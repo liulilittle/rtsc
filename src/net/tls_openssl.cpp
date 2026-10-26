@@ -305,6 +305,19 @@ class OpensslTransport final : public TlsTransport {
         return MakeError(Status::kOk, 0, "");
     }
 
+    // The OpenSSL backend has no server-role certificate wiring yet (the
+    // in-tree RDP server uses the SChannel backend). These return kUnsupported
+    // instead of fabricating an identity the handshake never produced.
+    Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return MakeError(Status::kUnsupported, 0, "server role is not wired");
+    }
+
+    Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return MakeError(Status::kUnsupported, 0, "server role is not wired");
+    }
+
     // ------------------------------------------------------------ parameters
     Error negotiated(NegotiatedInfo& out) const override {
         out = NegotiatedInfo{};
