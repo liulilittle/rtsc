@@ -9656,3 +9656,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[判读]** X.224 选定 `proto=0x2`（PROTOCOL_SSL / TLS-only）后，服务器 `DoSecureHandshake()` **TLS accept 失败**（错误信息为空）→ 连接断开 → mstsc 报 0x706。**根因方向**：服务器 TLS 服务端（SChannel accept）失败。
 - **[待]** 代理定位 TLS accept 失败的具体原因（SChannel 状态码 / 证书 / 协议版本）。
 - **在途**：mstsc↔rtsc_server 实网验证（0x706 根因分析中）。
+
+
+## 第443轮：**mstsc 代理 idle、根因未收口（催办）**
+
+- **[主代理核验]** 代理 idle（wrote 1793014272432）；`evidence/mstsc/` 无新增（`server-3390.err` 仍停在 `FAIL secure:`）；`src/server/server.cpp` 调试 fprintf 未还原。
+- **[催办]** prompt 定位：① 在 `DoSecureHandshake()` 失败处打印 SChannel 状态码（`SEC_E_*`/`GetLastError`）重跑；② 根因；③ 还原 `server.cpp` 调试；④ 结论 + 下一步。
+- **在途**：mstsc↔rtsc_server 实网验证。
