@@ -9433,3 +9433,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   3. `tests/test_gui_send.cpp:31:34` `rtsc::security::ConnectionDriver {anonymous}::MakeGuiDriver()`。
 - **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：给 3 函数加 `[[maybe_unused]]`（禁删代码/禁 `#ifdef`），**反复重跑门禁直至 PASS**；确认 Windows build 0/0。
 - **在途**：Linux 门禁续修。
+
+
+## 第417轮：**Linux 修复代理 provider 中断 → 补发继续指令**
+
+- **[异常]** `ses_e88b60db1fferBHxxHzKv53kjI` 报 `UnknownError: upstream_error / stream_interrupted`（provider 中断响应）。
+- **[get_goal]** 该代理 **idle（pending:true）**，未终结。
+- **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 3 处错误清单）。
+- **[上报用户]** 模型/provider 相关错误（`stream_interrupted`）——按规则**禁止擅自更换模型**，已如实记录并上报。
+- **在途**：Linux 门禁续修（等报告）。
