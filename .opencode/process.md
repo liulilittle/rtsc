@@ -9355,3 +9355,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：ctest 46/46；server_security 5/43/0；红证（逻辑反证：去 kTargetInfo/关 version 必 FAIL）；测试有效性（原始 mstsc-like NEGOTIATE 0xE20882B7 直喂服务器，非 CredsspClient）；只改测试（`git status` 仅 `M tests/test_server_security.cpp`；产品指纹 = c2a5d0b）。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：CredSSP 回归测试双审（乙✅/甲待）。
+
+
+## 第409轮：**CredSSP 修复 + 回归测试双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 最终定案]** 双审盖章通过 ✅（两轮交叉，含 1 处低 severity TDD 缺口返修）：
+  - 修复正确：version 仅在 kVersion 置位时写（偏移 48..55，合 [MS-NLMP] 2.2.2.10）；flags 补 kTargetInfo（有 AV 列表必须置）；探针实测 flags=0x62888201、version=10.0.17763/0x0F。
+  - 回归测试：`test_server_security.cpp:130-138` 用原始 mstsc-like NEGOTIATE(0xE20882B7) 喂服务器；红证复现（去 kTargetInfo+关 version → FAIL :152/:154）；断言 value-specific；仅改测试；产品指纹=c2a5d0b。
+  - 实测：build EXIT=0/0 warning；ctest **46/46**；server_security **5/43/0**；`git status` 仅 `M tests/test_server_security.cpp`。
+- **[团队结束报告 ses_e89f33669ffebYATbhfOQ8Z2Mx]** 确认双审盖章通过，无残留缺陷；指纹 ntlm.h b6a3eb7f206ef46a / credssp_server.cpp 87b92b1c219ff35d / ntlm.cpp c9810cbb09c71e5e / test_server_security.cpp ffc7fcbdff886518；HEAD 2a30663。
+- **[合并 master]** worktree 提交 `2a30663`（test）→ `git merge --no-ff feat/server-sec` → master `c816f82`（4 文件 +61/-3）；工作树干净。
+- **[主代理核验]** 主树 `cmake --build` **EXIT=0**；`ctest -C Release` **49/49**（0 failed）。
+- **在途**：无（全部已合并）。
