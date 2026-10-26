@@ -1,4 +1,4 @@
-﻿// RDP server role: the server half of the [MS-RDPBCGR] connection sequence.
+// RDP server role: the server half of the [MS-RDPBCGR] connection sequence.
 //
 // Reference: [MS-RDPBCGR] 1.3.1.1 / 3.2.5 / 3.3.5, [MS-RDPELE] 1.3, 2.2.
 //
@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -27,7 +28,9 @@
 #include "rtsc/crypto/random.h"
 #include "rtsc/crypto/rdp_security.h"
 #include "rtsc/crypto/rsa_server.h"
+#include "rtsc/net/tls.h"
 #include "rtsc/net/transport.h"
+#include "rtsc/security/server_security_layer.h"
 #include "rtsc/proto/byte_order.h"
 #include "rtsc/proto/capabilities.h"
 #include "rtsc/proto/client_info.h"
@@ -36,6 +39,7 @@
 #include "rtsc/proto/input.h"
 #include "rtsc/proto/licensing.h"
 #include "rtsc/proto/mcs.h"
+#include "rtsc/proto/rdp_neg.h"
 #include "rtsc/proto/share.h"
 #include "rtsc/proto/tpkt.h"
 #include "rtsc/proto/x224.h"
@@ -478,6 +482,9 @@ class RdpSession {
     // Serves the connection until the peer disconnects or Stop() is called.
     void Run() {
         if (!DoX224()) return;
+        if (secure_requested_) {
+            if (!DoSecureHandshake()) return;
+        }
         if (!DoConnectResponse()) return;
         if (!DoChannelJoin()) return;
         if (!DoSecurityAndClientInfo()) return;
@@ -500,7 +507,27 @@ class RdpSession {
  private:
     // ---- transport helpers -------------------------------------------------
     bool Send(const std::vector<uint8_t>& frame) {
-        return !frame.empty() && transport_->Write(frame.data(), frame.size());
+        if (frame.empty()) return false;
+        if (secure_) {
+            const auto ct = sec_ ? sec_->SendPdu(frame) : std::vector<uint8_t>{};
+            return !ct.empty() && transport_->Write(ct.data(), ct.size());
+        }
+        return transport_->Write(frame.data(), frame.size());
+    }
+
+    // Peels one TPKT frame out of `buf`. Returns false when `buf` does not yet
+    // hold a complete frame.
+    static bool ExtractFrame(std::vector<uint8_t>& buf, std::vector<uint8_t>& frame) {
+        if (buf.size() < 2) return false;
+        if (buf[0] != 0x03 || buf[1] != 0x00) return false;
+        if (buf.size() < 4) return false;
+        const size_t len = (static_cast<size_t>(buf[2]) << 8) | buf[3];
+        if (len < 4) return false;
+        if (buf.size() < len) return false;
+        const auto begin = buf.begin();
+        frame.assign(begin, begin + static_cast<std::ptrdiff_t>(len));
+        buf.erase(begin, begin + static_cast<std::ptrdiff_t>(len));
+        return true;
     }
 
     bool ReadFrame(std::vector<uint8_t>& frame) {
@@ -510,20 +537,14 @@ class RdpSession {
             return true;
         }
         for (;;) {
-            if (read_buf_.size() >= 2) {
-                if (read_buf_[0] != 0x03 || read_buf_[1] != 0x00) return false;
-                if (read_buf_.size() >= 4) {
-                    const size_t len = (static_cast<size_t>(read_buf_[2]) << 8) |
-                                       read_buf_[3];
-                    if (len < 4) return false;
-                    if (read_buf_.size() >= len) {
-                        const auto begin = read_buf_.begin();
-                        frame.assign(begin, begin + static_cast<std::ptrdiff_t>(len));
-                        read_buf_.erase(begin,
-                                        begin + static_cast<std::ptrdiff_t>(len));
-                        return true;
-                    }
+            if (secure_) {
+                if (!secure_frames_.empty()) {
+                    frame = std::move(secure_frames_.front());
+                    secure_frames_.pop_front();
+                    return true;
                 }
+            } else if (ExtractFrame(read_buf_, frame)) {
+                return true;
             }
             uint8_t tmp[kReadChunk];
             const int n = transport_->Read(tmp, sizeof(tmp));
@@ -532,7 +553,12 @@ class RdpSession {
                 continue;
             }
             if (n <= 0) return false;
-            read_buf_.insert(read_buf_.end(), tmp, tmp + static_cast<size_t>(n));
+            if (secure_) {
+                auto frames = sec_->ReceivePdu(tmp, static_cast<size_t>(n));
+                for (auto& f : frames) secure_frames_.push_back(std::move(f));
+            } else {
+                read_buf_.insert(read_buf_.end(), tmp, tmp + static_cast<size_t>(n));
+            }
         }
     }
 
@@ -640,6 +666,23 @@ class RdpSession {
                                    (static_cast<uint32_t>(p[off + 7]) << 24);
         }
 
+        // Enhanced security: accept PROTOCOL_SSL / PROTOCOL_HYBRID when the
+        // server is configured for it. HYBRID additionally runs CredSSP (the
+        // mstsc default); SSL is transport security only.
+        if ((requested_protocols_ & (proto::kProtocolSsl | proto::kProtocolHybrid)) != 0 &&
+            config_.enable_enhanced_security) {
+            if ((requested_protocols_ & proto::kProtocolHybrid) != 0) {
+                selected_protocol_ = proto::kProtocolHybrid;
+                credssp_required_ = true;
+            } else {
+                selected_protocol_ = proto::kProtocolSsl;
+                credssp_required_ = false;
+            }
+            secure_requested_ = true;
+            Send(BuildX224Confirm(selected_protocol_));
+            return true;
+        }
+
         if (requested_protocols_ != 0 && config_.require_external_security) {
             // This server implements Standard RDP Security only. A client that
             // insists on external security is told so explicitly.
@@ -649,6 +692,49 @@ class RdpSession {
         }
         Send(BuildX224Confirm(0));
         return true;
+    }
+
+    // Runs the TLS accept plus CredSSP server plus EUAR. On success every
+    // subsequent read/write is encrypted through `sec_`.
+    bool DoSecureHandshake() {
+        security::ServerConfig scfg;
+        scfg.tls_config = config_.tls_config;
+        scfg.tls_config.role = tls::Role::kServer;
+        scfg.credssp_version = config_.credssp_version;
+        scfg.credential_lookup = config_.credential_lookup;
+        scfg.credssp_required = credssp_required_;
+        sec_ = security::ServerSecurityLayer::Create(scfg, last_error_);
+        if (!sec_) return false;
+
+        std::vector<uint8_t> pending;
+        for (;;) {
+            const security::StepResult r = sec_->Step(pending.data(), pending.size());
+            pending.clear();
+            if (r.want == security::Want::kWrite) {
+                if (!r.to_wire.empty() &&
+                    !transport_->Write(r.to_wire.data(), r.to_wire.size())) {
+                    return false;
+                }
+                continue;
+            }
+            if (r.want == security::Want::kDone) {
+                secure_ = true;
+                return true;
+            }
+            if (r.want == security::Want::kFailed) {
+                last_error_ = r.error;
+                return false;
+            }
+            // kRead: wait for the next ciphertext flight.
+            uint8_t tmp[kReadChunk];
+            const int n = transport_->Read(tmp, sizeof(tmp));
+            if (n == net::kReadTimeout) {
+                if (stop_requested_.load(std::memory_order_relaxed)) return false;
+                continue;
+            }
+            if (n <= 0) return false;
+            pending.assign(tmp, tmp + static_cast<size_t>(n));
+        }
     }
 
     bool DoConnectResponse() {
@@ -1111,6 +1197,17 @@ class RdpSession {
     std::vector<uint8_t> pending_;
     bool has_pending_ = false;
     std::atomic<bool> stop_requested_{false};
+
+    // Enhanced security state (TLS + CredSSP). `secure_requested_` is set by
+    // DoX224 when the negotiated protocol is SSL or HYBRID; `secure_` becomes
+    // true once the handshake completes and every frame is encrypted.
+    bool secure_requested_ = false;
+    bool secure_ = false;
+    uint32_t selected_protocol_ = 0;
+    bool credssp_required_ = true;
+    std::unique_ptr<security::ServerSecurityLayer> sec_;
+    std::deque<std::vector<uint8_t>> secure_frames_;
+    std::string last_error_;
 
     uint32_t requested_protocols_ = 0;
     uint16_t client_desktop_width_ = 0;

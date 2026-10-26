@@ -96,10 +96,24 @@ enum class CertPolicy : uint8_t {
     kStrict,    // full chain + hostname validation, failure reason must be reportable
 };
 
+// TLS endpoint role. The same TlsTransport interface serves both ends of the
+// RDP connection: the client stack connects out (kClient), the in-tree RDP
+// server accepts (kServer). The role is a config value, not a separate class,
+// because every method after the handshake (Send / Receive / negotiated /
+// record_sizes / Shutdown) is identical for both ends.
+enum class Role : uint8_t {
+    kClient,
+    kServer,
+};
+
 struct Config {
     std::string peer_host;  // target address, used for SNI and logging; may be empty
     std::string sni;        // explicit SNI; empty = use peer_host; both empty = no SNI
     bool send_sni = true;
+
+    // Endpoint role. Defaults to kClient so every existing caller (and the
+    // Standard RDP Security path, which does not use TLS at all) is unchanged.
+    Role role = Role::kClient;
 
     CertPolicy cert_policy = CertPolicy::kTofu;
     std::array<uint8_t, 32> pinned_spki_sha256{};
@@ -161,6 +175,16 @@ class TlsTransport {
     // is stranded inside the backend.
     virtual Error Receive(const uint8_t* ciphertext, size_t size,
                           std::vector<uint8_t>& plaintext, size_t max_out) = 0;
+
+    // ---- local (server-role) identity ---------------------------------------
+    // The server's own leaf certificate, used by the CredSSP server for the
+    // pubKeyAuth echo and the NTLM channel binding. These are only valid after
+    // a server-role handshake; a client-role transport returns kUnsupported.
+    virtual Error LocalCertificateDer(std::vector<uint8_t>& out) const = 0;
+    // Local SubjectPublicKey (BIT STRING content), the same 270-byte value
+    // CredSSP hashes into the binding hash. Never slice it from the SPKI at a
+    // fixed offset (the offset differs between key sizes).
+    virtual Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const = 0;
 
     // ---- peer public key ----------------------------------------------------
     // Full SubjectPublicKeyInfo DER (measured: RSA-2048 = 294 B, RSA-1024 = 162 B).

@@ -226,8 +226,13 @@ void ConnectionDriver::BeginPostClientInfo(DriverStep& out) {
         // omits it entirely when encryption is off. The fallback keeps the
         // plaintext Standard RDP Security path usable against that server.
         lc.server_certificate = standard_->server_certificate();
-        lc.allow_missing_server_key = true;
     }
+    // The in-tree server omits the licensing certificate on the enhanced
+    // (TLS/CredSSP) path too: it issues no CAL and does not validate the
+    // client's encrypted premaster. A real server supplies the certificate and
+    // the client still uses it; `allow_missing_server_key` only relaxes the
+    // "no certificate at all" case, so it is safe to set for both paths.
+    lc.allow_missing_server_key = true;
     licensing_ = std::make_unique<proto::LicensingMachine>(lc);
     licensing_->Start();
 

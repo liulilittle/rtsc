@@ -38,8 +38,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include "rtsc/net/tls.h"
 
 namespace rtsc::server {
 
@@ -68,6 +71,29 @@ struct ServerConfig {
     // implements in this milestone, so that a peer which only wants TLS can
     // still be served (or rejected by its own policy).
     bool require_external_security = false;
+
+    // ---- enhanced security (TLS + CredSSP / NLA) --------------------------
+    // When false (the default) the server keeps its historical behaviour:
+    // PROTOCOL_RDP only. When true, a client that asks for PROTOCOL_SSL or
+    // PROTOCOL_HYBRID is answered with the matching protocol and the session
+    // runs the TLS accept plus CredSSP before MCS, which is what mstsc needs.
+    bool enable_enhanced_security = false;
+
+    // TLS parameters for the server role. `role` is forced to kServer by the
+    // session; the caller only needs to set the certificate policy and (for a
+    // production deployment) the version window.
+    tls::Config tls_config;
+
+    // CredSSP version (5 or 6 recommended).
+    uint32_t credssp_version = 6;
+
+    // Account lookup for CredSSP/NTLM. Given the domain and user name from the
+    // client's AUTHENTICATE, returns the account password. The server cannot
+    // derive the NTLM session key without it, so a null lookup rejects every
+    // enhanced-security connection (the TLS leg still completes).
+    std::function<std::optional<std::string>(const std::string& domain,
+                                             const std::string& user)>
+        credential_lookup;
 
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.

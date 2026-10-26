@@ -324,6 +324,7 @@ add_library(rtsc_credssp STATIC
     src/credssp/ts_request.cpp
     src/credssp/ntlm.cpp
     src/credssp/credssp.cpp
+    src/credssp/credssp_server.cpp
 )
 target_include_directories(rtsc_credssp PUBLIC include)
 target_link_libraries(rtsc_credssp PUBLIC rtsc_crypto)
@@ -340,7 +341,7 @@ add_executable(rtsc_credssp_sm_tests tests/test_credssp_sm.cpp)
 target_link_libraries(rtsc_credssp_sm_tests PRIVATE rtsc_credssp rtsc_util)
 target_include_directories(rtsc_credssp_sm_tests PRIVATE tests)
 
-add_library(rtsc_security STATIC src/security/security_layer.cpp src/security/standard_rdp_security.cpp src/security/connection_driver.cpp)
+add_library(rtsc_security STATIC src/security/security_layer.cpp src/security/standard_rdp_security.cpp src/security/connection_driver.cpp src/security/server_security_layer.cpp)
 target_include_directories(rtsc_security PUBLIC include)
 target_link_libraries(rtsc_security PUBLIC rtsc_tls rtsc_credssp rtsc_proto rtsc_crypto)
 
@@ -359,6 +360,15 @@ target_link_libraries(rtsc_rdp_standard_security_tests PRIVATE
                       rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdp_standard_security_tests PRIVATE tests)
 add_test(NAME rdp_standard_security COMMAND rtsc_rdp_standard_security_tests)
+
+# Server-side enhanced security: TLS accept + CredSSP server + EUAR, driven
+# against the project's own client security stack.
+add_executable(rtsc_server_security_tests tests/test_server_security.cpp)
+target_link_libraries(rtsc_server_security_tests PRIVATE
+                      rtsc_client rtsc_server rtsc_security rtsc_tls rtsc_credssp
+                      rtsc_proto rtsc_crypto rtsc_net rtsc_util)
+target_include_directories(rtsc_server_security_tests PRIVATE tests)
+add_test(NAME server_security COMMAND rtsc_server_security_tests)
 
 # GUI send path: input and static virtual channels through the application
 # data plane, against the in-tree server over PROTOCOL_RDP.
@@ -472,7 +482,7 @@ add_library(rtsc_server STATIC
     src/server/rsa_posix_stub.cpp
     src/crypto/rsa_server.cpp)
 target_include_directories(rtsc_server PUBLIC include)
-target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net)
+target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security)
 
 add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
@@ -578,6 +588,7 @@ if(MSVC)
     target_compile_options(rtsc_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdp_standard_security_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui_send_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_connect PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui PRIVATE /W4 /WX)

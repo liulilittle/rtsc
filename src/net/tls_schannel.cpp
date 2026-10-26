@@ -92,6 +92,7 @@ public:
         if (have_ctx_) DeleteSecurityContext(&ctx_);
         if (have_cred_) FreeCredentialsHandle(&cred_);
         if (peer_cert_) CertFreeCertificateContext(peer_cert_);
+        if (server_cert_) CertFreeCertificateContext(server_cert_);
     }
 
     bool Start(std::string& why) {
@@ -102,6 +103,9 @@ public:
     // ---------------------------------------------------------------- handshake
     Error Handshake(const uint8_t* in, size_t in_size, size_t& consumed,
                     std::vector<uint8_t>& out) override {
+        if (config_.role == Role::kServer) {
+            return HandshakeServer(in, in_size, consumed, out);
+        }
         consumed = 0;
         out.clear();
         if (terminal_) return last_error_;
@@ -197,6 +201,68 @@ public:
             case SEC_E_WRONG_PRINCIPAL:
             case SEC_E_CERT_EXPIRED:
                 return Fail(Status::kCertRejected, st);
+            default:
+                return Fail(Status::kInternal, st);
+        }
+    }
+
+    // Server half of the handshake (AcceptSecurityContext). The token
+    // semantics match the client: the input token is consumed in full, output
+    // (if any) goes to the peer, and the handshake completes once SChannel
+    // reports SEC_E_OK.
+    Error HandshakeServer(const uint8_t* in, size_t in_size, size_t& consumed,
+                          std::vector<uint8_t>& out) {
+        consumed = 0;
+        out.clear();
+        if (terminal_) return last_error_;
+        if (closed_) return MakeError(Status::kClosed, 0, "already closed");
+        if (handshake_complete_) return MakeError(Status::kOk, 0, "");
+
+        std::vector<uint8_t> token;
+        if (in_size != 0) token.assign(in, in + in_size);
+
+        uint8_t out_storage[65536] = {};
+        SecBuffer in_buf{static_cast<unsigned long>(token.size()), SECBUFFER_TOKEN,
+                         token.empty() ? nullptr : token.data()};
+        SecBuffer out_buf{sizeof(out_storage), SECBUFFER_TOKEN, out_storage};
+        SecBufferDesc in_desc{SECBUFFER_VERSION, token.empty() ? 0u : 1u, &in_buf};
+        SecBufferDesc out_desc{SECBUFFER_VERSION, 1, &out_buf};
+
+        DWORD req = ASC_REQ_SEQUENCE_DETECT | ASC_REQ_REPLAY_DETECT |
+                    ASC_REQ_CONFIDENTIALITY | ASC_REQ_EXTENDED_ERROR | ASC_REQ_STREAM;
+        DWORD out_flags = 0;
+        // pfContextAttr is an [out] parameter and must be a valid pointer;
+        // passing nullptr crashes inside SSPICLI (FreeContextBuffer).
+        const SECURITY_STATUS st = AcceptSecurityContext(
+            &cred_, have_ctx_ ? &ctx_ : nullptr,
+            token.empty() ? nullptr : &in_desc, req, SECURITY_NATIVE_DREP, &ctx_,
+            &out_desc, &out_flags, nullptr);
+        if (st == SEC_I_CONTINUE_NEEDED || st == SEC_E_OK) have_ctx_ = true;
+        if (out_buf.cbBuffer > 0 && out_buf.pvBuffer != nullptr) {
+            const auto* p = static_cast<const uint8_t*>(out_buf.pvBuffer);
+            out.assign(p, p + out_buf.cbBuffer);
+        }
+        consumed = in_size;
+
+        switch (st) {
+            case SEC_E_OK:
+                if (!FinishHandshake(why_)) {
+                    last_error_ = MakeError(Status::kInternal, 0, why_);
+                    terminal_ = true;
+                    return last_error_;
+                }
+                return MakeError(Status::kOk, 0, "");
+            case SEC_I_CONTINUE_NEEDED:
+                return MakeError(Status::kNeedMoreInput, 0, "");
+            case SEC_E_INCOMPLETE_MESSAGE:
+                return MakeError(Status::kNeedMoreInput, st, "incomplete handshake");
+            case SEC_E_ILLEGAL_MESSAGE:
+            case SEC_E_INVALID_TOKEN:
+                return Fail(Status::kProtocolError, st);
+            case SEC_E_NO_CREDENTIALS:
+            case SEC_E_UNKNOWN_CREDENTIALS:
+            case SEC_E_ALGORITHM_MISMATCH:
+                return Fail(Status::kUnsupported, st);
             default:
                 return Fail(Status::kInternal, st);
         }
@@ -346,6 +412,27 @@ public:
         }
     }
 
+    // -------------------------------------------------- local (server) identity
+    Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        if (server_cert_ == nullptr) return NotHandshaken();
+        out.assign(server_cert_->pbCertEncoded,
+                   server_cert_->pbCertEncoded + server_cert_->cbCertEncoded);
+        return MakeError(Status::kOk, 0, "");
+    }
+
+    Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        if (server_cert_ == nullptr) return NotHandshaken();
+        const CRYPT_BIT_BLOB& key =
+            server_cert_->pCertInfo->SubjectPublicKeyInfo.PublicKey;
+        if (key.pbData == nullptr || key.cbData == 0) {
+            return ConstError(Status::kInternal, 0, "local key is empty");
+        }
+        out.assign(key.pbData, key.pbData + key.cbData);
+        return MakeError(Status::kOk, 0, "");
+    }
+
     // ------------------------------------------------------------- peer identity
     Error PeerSubjectPublicKeyInfo(std::vector<uint8_t>& out) const override {
         out.clear();
@@ -416,15 +503,22 @@ public:
         ApplyControlToken(&ctx_, &desc);
 
         DWORD out_flags = 0;
-        const DWORD req = ISC_REQ_STREAM | ISC_REQ_ALLOCATE_MEMORY;
+        const DWORD req = config_.role == Role::kServer
+                              ? static_cast<DWORD>(ASC_REQ_STREAM) | ASC_REQ_ALLOCATE_MEMORY
+                              : static_cast<DWORD>(ISC_REQ_STREAM) | ISC_REQ_ALLOCATE_MEMORY;
         // Input descriptor must be null and the output buffer must have a null
         // pvBuffer: SChannel allocates it and we free it afterwards.
         SecBuffer out_buf{0, SECBUFFER_TOKEN, nullptr};
         SecBufferDesc out_desc{SECBUFFER_VERSION, 1, &out_buf};
-        const SECURITY_STATUS st =
-            InitializeSecurityContextW(&cred_, &ctx_, nullptr, req, 0,
-                                       SECURITY_NATIVE_DREP, nullptr, 0, &ctx_,
-                                       &out_desc, &out_flags, nullptr);
+        SECURITY_STATUS st = SEC_E_OK;
+        if (config_.role == Role::kServer) {
+            st = AcceptSecurityContext(&cred_, &ctx_, nullptr, req, SECURITY_NATIVE_DREP,
+                                       &ctx_, &out_desc, &out_flags, nullptr);
+        } else {
+            st = InitializeSecurityContextW(&cred_, &ctx_, nullptr, req, 0,
+                                            SECURITY_NATIVE_DREP, nullptr, 0, &ctx_,
+                                            &out_desc, &out_flags, nullptr);
+        }
         shutdown_sent_ = true;
         if (out_buf.cbBuffer > 0 && out_buf.pvBuffer != nullptr) {
             const auto* p = static_cast<const uint8_t*>(out_buf.pvBuffer);
@@ -450,6 +544,9 @@ public:
 private:
     // ------------------------------------------------------------- credentials
     bool AcquireCredentials(std::string& why) {
+        if (config_.role == Role::kServer) {
+            return AcquireServerCredentials(why);
+        }
         SCHANNEL_CRED legacy{};
         legacy.dwVersion = SCHANNEL_CRED_VERSION;
         legacy.grbitEnabledProtocols = ProtocolMask();
@@ -464,6 +561,73 @@ private:
         }
         have_cred_ = true;
         return true;
+    }
+
+    // Creates an ephemeral self-signed certificate in the default CSP. The
+    // server has no pre-provisioned identity, so the client is expected to
+    // accept it through its own trust policy (the in-tree client uses kInsecure
+    // / kTofu; mstsc shows the standard untrusted-certificate prompt).
+    bool MakeSelfSignedCert(std::string& why) {
+        CERT_NAME_BLOB subject{};
+        const char name[] = "CN=rtsc-rdp-server";
+        if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
+                            nullptr, &subject.cbData, nullptr)) {
+            why = "CertStrToName(size) failed";
+            return false;
+        }
+        std::vector<uint8_t> name_der(subject.cbData);
+        subject.pbData = name_der.data();
+        if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
+                            subject.pbData, &subject.cbData, nullptr)) {
+            why = "CertStrToName(data) failed";
+            return false;
+        }
+        server_cert_ = CertCreateSelfSignCertificate(0, &subject, 0, nullptr, nullptr,
+                                                     nullptr, nullptr, nullptr);
+        if (server_cert_ == nullptr) {
+            why = "CertCreateSelfSignCertificate failed";
+            return false;
+        }
+        return true;
+    }
+
+    bool AcquireServerCredentials(std::string& why) {
+        if (!MakeSelfSignedCert(why)) return false;
+
+        SCHANNEL_CRED legacy{};
+        legacy.dwVersion = SCHANNEL_CRED_VERSION;
+        legacy.grbitEnabledProtocols = ServerProtocolMask();
+        legacy.cCreds = 1;
+        legacy.paCred = &server_cert_;
+
+        TimeStamp ts{};
+        const SECURITY_STATUS st = AcquireCredentialsHandleW(
+            nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W), SECPKG_CRED_INBOUND,
+            nullptr, &legacy, nullptr, nullptr, &cred_, &ts);
+        if (st != SEC_E_OK) {
+            why = "AcquireCredentialsHandle(inbound) failed: " + FormatCode(st);
+            return false;
+        }
+        have_cred_ = true;
+        return true;
+    }
+
+    DWORD ServerProtocolMask() const {
+        // Legacy SCHANNEL_CRED cannot express a TLS 1.3 lower bound without the
+        // SCH_CREDENTIALS version, so the server advertises the same window the
+        // client does. TLS 1.2 is always enabled; TLS 1.3 is requested when the
+        // config allows it, and SChannel downgrades cleanly if the client (or
+        // the local build) cannot negotiate it.
+        DWORD mask = 0;
+        if (config_.allow_tls10) mask |= SP_PROT_TLS1_0_SERVER;
+        if (config_.min_version <= kTls12 && config_.max_version >= kTls12) {
+            mask |= SP_PROT_TLS1_2_SERVER;
+        }
+        if (config_.allow_tls13 && config_.max_version >= kTls13) {
+            mask |= SP_PROT_TLS1_3_SERVER;
+        }
+        if (mask == 0) mask = SP_PROT_TLS1_2_SERVER;
+        return mask;
     }
 
     DWORD ProtocolMask() const {
@@ -662,11 +826,20 @@ private:
         SecBufferDesc ibd{SECBUFFER_VERSION, 1, &ib};
         SecBufferDesc obd{SECBUFFER_VERSION, 1, &ob};
         DWORD flags = 0;
-        DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
-                    ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
-                    ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
-        InitializeSecurityContextW(&cred_, &ctx_, nullptr, req, 0, SECURITY_NATIVE_DREP,
-                                   &ibd, 0, &ctx_, &obd, &flags, nullptr);
+        if (config_.role == Role::kServer) {
+            const DWORD req = ASC_REQ_SEQUENCE_DETECT | ASC_REQ_REPLAY_DETECT |
+                              ASC_REQ_CONFIDENTIALITY | ASC_REQ_EXTENDED_ERROR |
+                              ASC_REQ_STREAM;
+            AcceptSecurityContext(&cred_, &ctx_, &ibd, req, SECURITY_NATIVE_DREP, &ctx_,
+                                  &obd, &flags, nullptr);
+        } else {
+            DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
+                        ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
+                        ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
+            InitializeSecurityContextW(&cred_, &ctx_, nullptr, req, 0,
+                                       SECURITY_NATIVE_DREP, &ibd, 0, &ctx_, &obd, &flags,
+                                       nullptr);
+        }
         if (ob.cbBuffer > 0 && ob.pvBuffer != nullptr) {
             FreeContextBuffer(ob.pvBuffer);
         }
@@ -736,6 +909,8 @@ private:
     NegotiatedInfo info_{};
     std::string why_;
     mutable PCCERT_CONTEXT peer_cert_ = nullptr;
+    // Server role only: the ephemeral self-signed identity created at Start().
+    PCCERT_CONTEXT server_cert_ = nullptr;
 };
 
 // Maps a SChannel SECURITY_STATUS from the shutdown path to a transport Status.
