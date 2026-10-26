@@ -9834,3 +9834,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 要求核验改动是修复/还原调试 + 定位根因 + 修复 + mstsc 重跑验证）。
 - **[上报用户]** 宿主 `unknown certificate verification error` 为模型/provider 相关错误，已如实记录并上报；按规则**禁止擅自更换模型**。
 - **在途**：mstsc MCS 交接修复（继续）。
+
+
+## 第465轮：**修复代理 idle（diff +96/-23）→ 补发继续指令**
+
+- **[异常恢复]** 宿主 `unknown certificate verification error` 复现（回合异常终止后自动恢复）。
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`，wrote 1793029172924）；工作树改动增至 **+96/-23**（`security_layer.{h,cpp}`、`server_security_layer.{h,cpp}`、`connection_driver.cpp`、`server.cpp` + 3 测试）。
+- **[处置]** 补发继续指令（核验改动是修复/还原调试 + 定位根因 + 修复 + mstsc 重跑验证）。
+- **在途**：mstsc MCS 交接修复。
