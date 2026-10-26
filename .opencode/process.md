@@ -9298,3 +9298,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** `git -C .worktrees/server-sec diff 82941c6 c2a5d0b` 逐行核验（3 文件 +19/-3）；worktree 内 `cmake --build` **EXIT=0**、`ctest` **46/46**。
 - **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须核验协议正确性（[MS-NLMP] version 字段位置/条件、kTargetInfo 与 AV 一致性）+ mstsc flags + 回归。
 - **在途**：CredSSP 修复双审（甲+乙）、RailGetAppIdRespEx（ses_e88f9dd0effeFx4p8aedWoltDF）。
+
+
+## 第403轮：**审计乙 CredSSP 修复通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：`git diff 82941c6 c2a5d0b` 正确；CHALLENGE version 字段偏移 48..55 正确、仅在 kVersion 置位时写；kTargetInfo 与 AV 列表一致；mstsc 到达 pubKeyAuth echo（执行者实测）；ctest **46/46**、server_security **4/33/0**、credssp **23/69/0**。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：CredSSP 修复双审（乙✅/甲待）、RailGetAppIdRespEx（ses_e88f9dd0effeFx4p8aedWoltDF）。
