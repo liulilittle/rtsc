@@ -9801,3 +9801,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[状态]** 令牌：主 317068417 | 子 3902401002 | 总 5992400879；费用：主 0 | 子 0.14763605 | 总 0.14763605。
 - **[在途]** mstsc MCS 交接修复（`ses_e878558e8ffeL3341W4gsKduOU`，已补发继续指令）。
 - **在途**：mstsc MCS 交接修复。
+
+
+## 第461轮：**修复代理 idle、调试未还原（催办最小步骤）**
+
+- **[主代理核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle；`src/security/server_security_layer.cpp` 仍 **+7 行调试 fprintf**（未还原）。
+- **[催办]** prompt **最小步骤**：只做「删除两处 `[rtsc-sec]` fprintf + `#include <cstdio>`，确认 `git diff` 为空，重编译零错误」。先不做根因定位。
+- **在途**：mstsc MCS 交接修复。
