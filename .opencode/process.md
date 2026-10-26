@@ -8780,3 +8780,216 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[清理]** 主树遗留 `upd_proc340.py`（临时脚本）→ 已删除；主树工作树干净（仅 `.opencode/process.md`）。
 - **[get_goal]** server-sec 合并代理（`ses_e8a287f09ffeG7hymS0ISuWoPp`）idle（无报告）；server-sec 代理 idle。
 - **在途**：server-sec 合并（代理）。
+
+
+## 第344轮：**甲异常（证书验证错误）→ 补发继续指令**
+
+- **[异常]** 审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 遇 `UnknownError: unknown certificate verification error`。
+- **[get_goal]** 甲 `idle`（`pending:true`，未终结）；乙 `ses_e9521c2ddffe46eT67qVc2vaH8` `busy`（审计中）。
+- **[prompt 补发]** 甲：继续完成审计（改用只读方式避免证书验证；附原任务摘要）；若无法继续明确报告（将改派）。
+- **在途**：服务器增强安全双审（甲补发中、乙审计中）。
+
+
+## 第345轮：**审计乙：服务器增强安全通过 ✅**（等甲）
+
+- **[审计乙]** RDP 服务器增强安全（TLS + CredSSP/NTLM + EUAR/EUAC）**复核通过 ✅**（结构/集成/C0 层面）：
+  - **文件/构建 ✅**：`credssp_server.{h,cpp}`（rtsc_credssp）、`server_security_layer.{h,cpp}`（rtsc_security）、`test_server_security.cpp`。
+  - **X.224 ✅**：接受 SSL/HYBRID（HYBRID→CredSSP、SSL→仅传输安全），标准 RDP 回退（server.cpp:672-693）。
+  - **TLS+CredSSP ✅**：`DoSecureHandshake()` 经 `ServerSecurityLayer`（TLS accept→CredSSP→EUAR→kDone，fail-closed）；`CredsspServer` 状态机 + `CredentialLookup`。
+  - **TDD ✅**：4 测试/33 checks；**C0 ✅**：`rtsc_server_security_tests` 4/33/0；`ctest` 46/46。
+  - **风险（非阻断）**：证书信任；NLA 账户需接 `credential_lookup`；平台分支（OpenSSL/SChannel）；EUAR/EUAC 需 mstsc 实网验证。
+  - **备注**：本次聚焦结构/集成/C0，CredSSP/NTLM 密码学细节建议后续专项复核。
+- **待办**：等**审计甲**盖章 → 服务器增强安全双审完成。
+- **在途**：服务器增强安全双审（甲补发中）。
+
+
+## 第346轮：**服务器增强安全双审盖章 ✅**（甲乙）
+
+- **[审计甲·最终定案]** RDP 服务器增强安全（TLS + CredSSP/NTLM 服务端 + EUAR/EUAC）**双审盖章通过 ✅**（HEAD `a2dce18`，双亲 `25a53a1` + `82941c6`）：
+  - **CredSSP/NTLM 密码学逐条核验**（对照 [MS-NLMP] v2021）：NTOWFv2、ComputeResponse、SessionBaseKey、KXKEY/ExportedSessionKey、SIGNKEY/SEALKEY、MIC、Seal/Open —— **全部一致 ✅**。
+  - **状态机/TLS/集成**：CredSSP EUAR→EUAC→EUAR→authInfo→4B EUAR（五步；未知账户在派生密钥前拒绝；pubKeyAuth 绑定校验；MIC 校验；版本 2..6）；TLS 服务端 SChannel `AcceptSecurityContext` + 自签证书 + fail-closed；X.224 接受 SSL/HYBRID + PROTOCOL_RDP 回退；CMakeLists 注册新源。
+  - **实测**：`cmake --build` EXIT=0/0 warning；`ctest` **46/46**；`rtsc_server_security_tests` **4/33/0**（直连交换 + 未知账户拒绝 + TLS loopback + 全栈到 active）；`rtsc_security_tests` 17/127/0；`rtsc_credssp_tests` 23/69/0；`rtsc_credssp_sm_tests` 27/324/0。
+  - **非阻断观察（登记）**：① **KEY_EXCH 未同时要求 SIGN/SEAL**（低；`credssp_server.cpp:184` 仅判 `kKeyExch`；in-tree 客户端恒发 `kSign|kSeal|kKeyExch`，互操作无影响；严格按规范宜加门）+ SIGNKEY/SEALKEY 无条件派生（ESS 恒在，低风险）；② 证书信任（测试 `CertPolicy::kInsecure`，真实 mstsc 遇自签证书可能弹框/拒绝）；③ `CredentialLookup` 生产实现未提供（测试硬编码）；④ 无实网 TLS/CredSSP 回环（仅 scripted TLS + 全栈 loopback）；⑤ rdpdr/rdpsnd 通道经 enhanced 路径未逐一验证。
+- **结论**：**服务器增强安全实现密码学正确、集成完整、回环通过，审计通过 ✅**（观察项①建议后续加固，非阻断）。
+- **说明**：执行者 relay 两次被拒（SEND_TIMEOUT），详细报告未送达，已备案。
+- **在途**：无（服务器增强安全完成）。
+
+
+## 第347轮：**乙异常（证书验证错误）——在盖章之后，任务已完成**
+
+- **[异常]** 审计乙 `ses_e9521c2ddffe46eT67qVc2vaH8` 遇 `UnknownError: unknown certificate verification error`（发生在其**盖章之后**；服务器增强安全双审已盖章 ✅）。
+- **[处置]** 乙的审计任务**已完成**（盖章 ✅）→ 无需补发；异常为完成后的宿主/证书问题，已备案。
+- **说明**：模型相关错误（证书验证）须上报用户处理，禁止擅自更换模型。
+- **在途**：无（服务器增强安全完成）。
+
+
+## 第348轮：**server-sec 进度（mstsc↔服务器 CredSSP 调试中）**
+
+- **[relay: ses_e8a82ee90ffe9keucB7AggYklh]** 尾部输出：`mstsc reaches the server (sessions accepted) but CredSSP doesn't complete. Let me add a temporary diagnostic to find the exact failure point.` → **mstsc 已到达服务器（sessions accepted），CredSSP 未完成**，正在加诊断定位。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：服务器增强安全（mstsc↔服务器 CredSSP 调试中）。
+
+
+## 第349轮：**审计规则登记（探针红证 + 四步形态）**
+
+- **[规则]**（用户/系统下达，登记）：
+  - **审计上报缺陷必须先探针红证**：运行 temp/scripts 探针并附 `[FAIL]`/`[RED]` 输出，或证据引用 `[BASH:]`/`[READ:]`；**未实证不报缺陷**。
+  - **四步形态**：①查问题（读工具/探针先于缺陷结论）→ ②根因（`根因:`/`ROOTCAUSE`）→ ③方案（`[方案]`/`plan:`）→ ④协商盖章。
+- **[应用]** 后续所有审计（甲/乙）均须遵守：缺陷清单每条附**探针红证**（或 `[BASH:]`/`[READ:]` 证据）。
+- **[状态]** server-sec worktree：`M src/server/server.cpp`（诊断改动，未提交）；构建 EXIT=0、`ctest` 46/46；代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote 1792979668720）。
+- **在途**：server-sec（mstsc↔服务器 CredSSP 调试中）。
+
+
+## 第350轮：**审计实证核查——观察项①缺探针红证**
+
+- **[核查]** 服务器增强安全审计（甲）的**观察项①（KEY_EXCH 未同时要求 SIGN/SEAL）缺 P 探针红证**（仅静态读代码，无 `[FAIL]`/`[RED]` 输出、无 `[BASH:]`/`[READ:]` 探针）→ 按规则「未实证不报缺陷」，**该观察项不得作为有效缺陷**（仅作登记/后续加固建议）。
+- **[合规项]** 甲的实测证据（`[BASH: cmake --build]`、`[BASH: rtsc_server_security_tests]`、`[BASH: ctest]`）**含证据引用**，合规。
+- **[后续]** 若需将观察项①升级为缺陷，**必须先补探针红证**（构造畸形客户端：仅 `kKeyExch` 无 `kSign|kSeal` → 探针断言行为）。
+- **[状态]** server-sec worktree：`M src/server/server.cpp`（诊断改动）；构建 EXIT=0、`ctest` 46/46；代理 idle。
+- **在途**：server-sec（mstsc↔服务器 CredSSP 调试中）。
+
+
+## 第351轮：**server-sec 状态（诊断改动未提交；代理 idle）**
+
+- **[核验]** server-sec worktree（`feat/server-sec`）：`M src/server/server.cpp`（诊断改动，未提交）；`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote 1792979668720）；合并代理 `ses_e8a287f09ffeG7hymS0ISuWoPp` idle。
+- **在途**：server-sec（mstsc↔服务器 CredSSP 调试中；诊断改动未提交）。
+
+
+## 第352轮：**催办 server-sec（mstsc CredSSP 诊断后无报告）**
+
+- **[状态]** server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote 1792979668720）；worktree `M src/server/server.cpp`（诊断改动，未提交）；构建 EXIT=0、`ctest` 46/46。
+- **[prompt 催办]** 代理：立即回复状态 + mstsc↔服务器 CredSSP 诊断结果（失败点 + 证据）；若阻塞给具体阻塞点；若无法继续明确报告（将改派）。
+- **在途**：server-sec（催办中）。
+
+
+## 第353轮：**/goal resume（任务未完成，继续推进）**
+
+- **[update_goal_status: active]**（用户 `/goal resume`）。
+- **[状态]** server-sec worktree：`M src/server/server.cpp`（诊断改动）；构建 EXIT=0、`ctest` 46/46；代理 `ses_e8a82ee90ffe9keucB7AggYklh` 已催办。
+- **在途**：server-sec（mstsc↔服务器 CredSSP 诊断中）。
+
+
+## 第354轮：**用户指令——无限制提高质量（不考虑 token/上下文/子代理数量）**
+
+- **[用户指令]** 令牌/上下文/子代理数量**无上限**；**不要考虑这些限制**；**无限制提高质量**。
+- **[应用]** 后续工作不受 token/上下文/子代理数量约束；每项特性追求最高质量（协议正确性、边界完备、TDD 红绿、双审盖章、C0、回环证据）。
+- **[状态]** server-sec worktree：`M credssp_server.cpp` + `M server.cpp`（代理正在修 CredSSP）；构建 EXIT=0、`ctest` 46/46。
+- **在途**：server-sec（CredSSP 修复中）。
+
+
+## 第355轮：**server-sec 状态（CredSSP 修复中；代理 idle）**
+
+- **[核验]** server-sec worktree（`feat/server-sec`）：`M credssp_server.cpp` + `M server.cpp`（CredSSP 修复，未提交）；`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote null）；合并代理 `ses_e8a287f09ffeG7hymS0ISuWoPp` idle。
+- **在途**：server-sec（CredSSP 修复中；等完成报告）。
+
+
+## 第356轮：**server-sec 状态（CredSSP 修复中；代理 idle）**
+
+- **[核验]** server-sec worktree（`feat/server-sec`）：`M credssp_server.cpp` + `M server.cpp`（CredSSP 修复，未提交）；`cmake --build Release` **EXIT=0**；`ctest` **100%（46/46）**。
+- **[get_goal]** 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote null）。
+- **在途**：server-sec（CredSSP 修复中；等完成报告）。
+
+
+## 第357轮：**无限制提高质量——并行推进 RAIL/Gateway + 催办 server-sec**
+
+- **[用户指令]** 令牌/上下文/子代理数量**无上限**；**无限制提高质量**。
+- **[worktree]** 新建 `F:/rtsc/.worktrees/rail`（`feat/rail`）→ 派发 **RAIL / Gateway**（并行）。
+- **[prompt 催办]** server-sec 代理：提交 CredSSP 修复完成报告（或明确报告无法继续）。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway（新）。
+
+
+## 第358轮：**RAIL + Gateway 完成 + 核验 + 派发双审**
+
+- **[执行完成]** `ses_e89f33669ffebYATbhfOQ8Z2Mx`（worktree `feat/rail`）：
+  - 新增：`include/rtsc/proto/rail.h`（2202e9bb43c39978）、`src/proto/rail.cpp`（a2fb43a3daa7973e）、`include/rtsc/proto/gateway.h`（15abf272ce38d88d）、`src/proto/gateway.cpp`（262a9f1e0e667426）、`include/rtsc/net/gateway_transport.h`（e7d7fd64b622f481）、`src/net/gateway_transport.cpp`（bf16247a37ab0638）、`src/net/udp_winsock.cpp`、`src/net/udp_posix.cpp`、`tests/test_rail.cpp`（f78e97770e5c3074）、`tests/test_gateway.cpp`（8e1fce4b495aabe8）；`CMakeLists.txt`。
+  - **RAIL**（[MS-RDPERP]）：PDU 头 + Handshake/HandshakeEx/ClientStatus/Syscommand/Sysmenu/WindowMove/MinMaxInfo/LocalMoveSize/TaskbarInfo/LangbarInfo/GetAppIdReq/Sysparam/ClientExecute(UTF-16)/ExecuteResult + `RailChannel` 分片重组。
+  - **Gateway/UDP**（[MS-TSGU]/[MS-RDPEUDP]/[MS-RDPEMT]）：`RdpConnectionTransport` + HTTP CONNECT + RDGSP + TLSAuth/SOAP + RDPUDP FEC/Data/Ack/Syn + Multitransport；`GatewayTunnel`（CONNECT 隧道，复用现有 TLS/CredSSP）；`UdpTransport`（停等+ACK+重传 / SYNLOSSY）。
+  - 红探针两处（改字节序 → FAIL；去掉 source header → FAIL）→ 绿；`rtsc_rail_tests` 21/99/0、`rtsc_gateway_tests` 20/106/0。
+  - 回环：`gateway_tunnel_end_to_end_against_the_in_tree_server`（in-tree RdpServer + MockGateway → Client.Connect → active + 测试图帧）。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R 'rail|gateway'` **Passed**；`ctest` **48/48**；指纹一致。
+- **[风险/登记]**：① RAIL 通道名用 spec 值 `rail`（任务写的 `rdpra` 疑误记）；② 现行 [MS-TSGU] 用 RDGSP POST 而非 CONNECT（两者皆实现；`X-Transport` 为解释）；③ **客户端集成未做**（未广告 rail/未置 INFO_RAIL/未注册 RAIL 处理器）；④ UDP 可靠模式为停等（非完整 FEC/拥塞控制）；SYN 未做 MTU 零填充与 cookieHash(v3)；⑤ `SPI_SET_HIGH_CONTRAST` 未实现；`RailGetAppIdResp(0x000F)` 未建结构；⑥ Linux 门禁整体 FAIL 系既有 `rdpusb_client.cpp:40` 缺陷（非本任务范围）。
+- **[prompt 双审]** 审计甲 + 乙（worktree `feat/rail`；缺陷断言须附探针红证）。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审（甲+乙）。
+
+
+## 第359轮：**审计乙：RAIL + Gateway 通过 ✅**（等甲）
+
+- **[审计乙]** RAIL + RD Gateway **复核通过 ✅**（结构/集成/C0 层面）：
+  - 产物 ✅：`rail.{h,cpp}`、`gateway.{h,cpp}`、`gateway_transport.{h,cpp}`、`udp_winsock.cpp`/`udp_posix.cpp`、`test_rail.cpp`、`test_gateway.cpp`。
+  - RAIL ✅：21 测试覆盖全部 order + `RailChannel` 分片重组；**通道名 `kRailChannelName="rail"`（spec 一致，非 `rdpra`）**。
+  - Gateway ✅：`CONNECT` + RDGSP `POST /remoteDesktopGateway/` + SOAP/TLSAuth + `RdpConnectionTransport`。
+  - C0 ✅：`rtsc_rail_tests` 21/99/0；`rtsc_gateway_tests` 20/106/0；`ctest` 48/48。
+  - 风险（非阻断）：客户端集成未做；UDP 停等；SYN MTU/cookieHash；`SPI_SET_HIGH_CONTRAST`；`RailGetAppIdResp(0x000F)`；Linux 门禁既有缺陷。
+  - 备注：聚焦结构/集成/C0 与关键项（通道名/CONNECT-RDGSP）；逐字节协议细节建议后续专项复核。
+- **待办**：等**审计甲**盖章 → RAIL/Gateway 双审完成。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审（甲待复）。
+
+
+## 第360轮：**甲异常（证书验证错误）→ 补发 RAIL/Gateway 审计**
+
+- **[异常]** 审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 遇 `UnknownError: unknown certificate verification error`。
+- **[get_goal]** 甲 `idle`（`pending:true`，未终结）；乙 `idle`（已盖章）；RAIL agent `busy`（wrote 1792984705674）。
+- **[prompt 补发]** 甲：继续完成 RAIL/Gateway 审计（改用只读方式；附原任务摘要）；若无法继续明确报告（将改派）。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审（甲补发中）。
+
+
+## 第361轮：**RAIL 缺陷①（4 SPI 常量错误，阻断）→ 派发修复**
+
+- **[审计甲 + 乙 一致]** **阻断缺陷①**：`rail.h:177-180` = `0x00002006`/`0x0000030A`/`0x00000304`/`0x00000303`；**规范 [MS-RDPERP] 2.2.2.4.1** = `SPI_SETCARETWIDTH 0x00002007` / `SPI_SETSTICKYKEYS 0x0000003B` / `SPI_SETTOGGLEKEYS 0x00000035` / `SPI_SETFILTERKEYS 0x00000033`。
+  - **根因**：`rail.cpp:446-457` parse switch 用代码常量 → 规范对端（mstsc）发规范值落 default(`:458-460`) → `InvalidField` 拒收 → **wire 不兼容**。
+  - **探针红证**（甲实跑）：规范值 → parse=REJECT；代码值 → Ok。
+  - **甲修正归因**：代码值**既非规范值也非 Win32 SDK 值**（真实 SDK 值与规范一致）→ 是**凭空错误的数值**（疑构造/笔误）。
+  - **测试盲区**：`test_rail.cpp:245` 只测了值恰好一致的 `kSpiSetDragFullWindows`/`kSpiSetWorkArea`。
+- **[主代理核验]**：`.tmp/MS-RDPERP.txt` 确认规范值 `SPI_SETCARETWIDTH 0x00002007` / `SPI_SETSTICKYKEYS 0x0000003B` / `SPI_SETTOGGLEKEYS 0x00000035` / `SPI_SETFILTERKEYS 0x00000033` ✅。
+- **[prompt 返修]** RAIL agent：改 4 常量为规范值 + 测试喂规范值（红→绿）+ C0。
+- **[观察项]**：③ `kSpiSetHighContrast`(0x43) 未实现（落 default）；② 通道名 `rail` vs 规范原文大小写（低）。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 返修（甲+乙待重跑探针 + 交叉定案）。
+
+
+## 第362轮：**RAIL 缺陷①+③ 返修完成 + 核验 + 派发双审复核**
+
+- **[返修完成]** `ses_e89f33669ffebYATbhfOQ8Z2Mx`：
+  - **缺陷①**：`rail.h` 4 常量 → 规范值（[MS-RDPERP] 2.2.2.4.1，`.tmp/MS-RDPERP.txt:2442/2447/2454/2461`）：`kSpiSetCaretWidth 0x00002007` / `kSpiSetStickyKeys 0x0000003B` / `kSpiSetToggleKeys 0x00000035` / `kSpiSetFilterKeys 0x00000033`。
+  - **缺陷③**：`SPI_SET_HIGH_CONTRAST`(0x43) 实现（`TS_HIGHCONTRAST`：Flags 4 + ColorSchemeLength 4 + UNICODE_STRING{cbString 2 + string}）。
+  - **TDD**：`test_rail.cpp` +2 用例（含**直接喂规范字面值**）；红探针（改回 SDK 值 → 3 tests/11 checks FAIL）→ 绿 **24/124/0**。
+  - **观察项②**：通道名保留 `rail`（附 FreeRDP `RAIL_SVC_CHANNEL_NAME "rail"` + 抓包 + MS 论坛 + 小写惯例证据）。
+  - **C0**：`/W4 /WX` 0 warning；`ctest` 48/48；Linux 4 文件通过。
+  - **指纹**：rail.h `a0c4c0c314b6b6cd` / rail.cpp `9bd81b70e9e6e687` / test_rail.cpp `2b9be0a73eacc536`。
+- **[主代理核验]**（实跑）：`cmake --build Release` **EXIT=0**；`ctest -R 'rail|gateway'` **Passed**；`ctest` **48/48**；指纹一致。
+- **[宿主错误]** 证书验证错误致回合异常终止，已自动恢复。
+- **[prompt 双审复核]** 审计甲 + 乙（缺陷①是否真正闭合 + 缺陷③布局 + 观察项②通道名 + TDD 红证 + C0）。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审复核（甲+乙）。
+
+
+## 第363轮：**审计乙：RAIL 缺陷①+③ 重审闭合 ✅**（等甲）
+
+- **[审计乙]** RAIL 缺陷①（SPI 常量）+③（HighContrast）**重审闭合 ✅**：
+  - 缺陷① 闭合 ✅：`rail.h:177-180` 改为规范值 `0x00002007`/`0x0000003B`/`0x00000035`/`0x00000033`（与 `.tmp/MS-RDPERP.txt:2442/2447/2454/2461` 一致）。
+  - 缺陷③ 闭合 ✅：`rail.cpp:410-413`/`:467-468` 实现 `SPI_SET_HIGH_CONTRAST`。
+  - 红证有区分力 ✅：`test_rail.cpp:308` 直接喂规范字面值断言 parse==Ok（独立于代码常量）。
+  - C0 ✅：rail **24/124/0**；ctest **48/48**；指纹全对（rail.h `a0c4c0c314b6b6cd` / rail.cpp `9bd81b70e9e6e687` / test_rail.cpp `2b9be0a73eacc536`）。
+  - 观察项②：本地 MS-RDPERP.txt 未显式给出通道名 → 维持小写 `rail`（低，非阻断）。
+- **待办**：等**审计甲**盖章 → RAIL/Gateway 双审完成。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审（甲待复）。
+
+
+## 第364轮：**乙重复确认 RAIL 缺陷①+③ 盖章 ✅**（等甲）
+
+- **[审计乙]** 重复确认（与主代理交叉）：RAIL 缺陷①+③ 返修**已复核并盖章 ✅**（缺陷①规范值、缺陷③ HC 实现、红证独立、C0 rail 24/124/0 + ctest 48/48、指纹全对）。
+- **待办**：等**审计甲**盖章 → RAIL/Gateway 双审完成。
+- **在途**：server-sec（CredSSP 修复）、RAIL/Gateway 双审（甲待复）。
+
+
+## 第365轮：**RAIL + Gateway 双审盖章 ✅**（甲乙）+ 合并 master
+
+- **[审计甲 + 乙 一致盖章]** RAIL + RD Gateway **定案通过 ✅**：
+  - 缺陷①（阻断，4 SPI 常量）已修并闭合：`rail.h:177-180` = `0x00002007`/`0x0000003B`/`0x00000035`/`0x00000033`（[MS-RDPERP] 2.2.2.4.1）；甲重跑探针：规范值全 parse=Ok、旧错误值全 REJECT。
+  - 缺陷③（`SPI_SET_HIGH_CONTRAST`）已修并闭合（`TS_HIGHCONTRAST` 对称 build/parse）。
+  - 观察项②（通道名）：双审均接受小写 `rail`（FreeRDP `RAIL_SVC_CHANNEL_NAME="rail"` + 真实抓包 + MS 论坛）。
+- **交付物**（worktree `feat/rail`）：`rail.{h,cpp}`、`gateway.{h,cpp}`、`gateway_transport.{h,cpp}`、`udp_winsock.cpp`、`udp_posix.cpp`、`test_rail.cpp`、`test_gateway.cpp`、`CMakeLists.txt`。
+- **证据**：绿 rail 24/124/0、gateway 20/106/0、`ctest` 48/48、`/W4 /WX` 0 warning；回环 `gateway_tunnel_end_to_end_against_the_in_tree_server`；Linux 4 文件通过。
+- **残留风险（非阻断）**：① 客户端集成未做（未广告 rail/未置 INFO_RAIL/未注册处理器）；② UDP 停等（非完整 FEC/滑动窗口）；SYN MTU/cookieHash(v3)；③ 通道名大小写；④ `SPI_2` 扩展参数（0xF002..）与 `RailGetAppIdResp(0x000F)` 未建结构；⑤ Linux 门禁既有 `rdpusb_client.cpp:40` 缺陷；⑥ HTTP CONNECT vs RDGSP POST 均实现。
+- **[主代理]** 合并 `feat/rail` → master。
+- **在途**：server-sec（CredSSP 修复）。
