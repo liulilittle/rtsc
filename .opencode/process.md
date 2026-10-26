@@ -9605,3 +9605,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** `tools/rtsc_server/main.cpp`（11652B）已建；`CMakeLists.txt` 新增 `rtsc_server_host` 目标；`evidence/mstsc/server-3390.log` 仅显示服务器启动/停止（`listening on 0.0.0.0:3390`、`run window elapsed; stopping`），**无 mstsc 连接记录**；代理 idle（wrote 1793010260275），**无完成报告**。
 - **[催办]** prompt 完成验证：启动服务器 + 真实 `mstsc.exe` 连接 + 记录到达阶段/渲染/证书对话框/阻塞点（禁止伪造成功）。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第437轮：**mstsc 实网现象：错误 0x706**
+
+- **[用户/代理报告]** mstsc 连接 `rtsc_server` 弹错误对话框：**错误代码 0x706**、扩展错误 0x0（「由于安全设置错误，客户端无法连接到远程计算机」）。
+- **[判读]** 0x706 = 安全设置不匹配（NLA/CredSSP 或加密协商失败）。**待根因**：可能为 CredSSP 版本/标志、NLA 账户、或加密方法协商。
+- **[处置]** 记录 + 关闭对话框（解除阻塞）；催办代理完成根因分析。
+- **在途**：mstsc↔rtsc_server 实网验证。
