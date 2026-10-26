@@ -9325,3 +9325,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** RailGetAppIdRespEx 复核 **通过 ✅**：ctest 49/49；rail 28/145/0；rail_client 17/114/0；协议布局正确（1048/1052）；拒绝路径（length/type/无 NUL/build 超长）；方向 server→client；回归 0x000F 全绿；2 条核心断言 value-specific。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7`（CredSSP 修复 + RespEx 两份审计）。
 - **在途**：CredSSP 修复双审（乙✅/甲待）、RespEx 双审（乙✅/甲待）。
+
+
+## 第406轮：**甲审计结论：A 通过 / B 缺回归测试 → 合并 A + 派发 B 补测试**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7]**：
+  - **A. RailGetAppIdRespEx(0x0018) 通过 ✅**：协议布局逐字节合规范（body 1048/orderLength 1052，字段序合 [MS-RDPERP] 2.2.2.8.2）；拒绝路径完备（type/length/无 NUL/build 超长）；方向 server→client（发送仍 0x000F）；变异反证 2 条均判别；C0 build 0/0、ctest 49/49、rail 28/145/0、rail_client 17/114/0、0x000F 无回归。
+  - **B. server CredSSP CHALLENGE 修复：代码正确，但有 1 个低 severity TDD 覆盖缺口**：把修复改回原状（去 kTargetInfo + 关 version 写入）→ **全部测试仍绿**（无任何测试断言 CHALLENGE 的 version/kTargetInfo，修复可被静默回退）。**B 未盖章**，建议补测试后定案。
+- **[合并 master]** A（RespEx）已提交 `feat: RAIL GetAppIdRespEx (0x0018) proto + client handling + tests`（6 文件 +270/-0）。
+- **[派发]** B 补回归测试 → 执行者 `ses_e8a82ee90ffe9keucB7AggYklh`（worktree `.worktrees/server-sec`）：断言 CHALLENGE flags 含 kTargetInfo + version(48..55) 非零；TDD 红/绿证据。
+  - （注：审计甲亦将该缺口发 `ses_e89f33669ffebYATbhfOQ8Z2Mx`，忙，已入队。）
+- **在途**：B 补测试（执行者）、（A 已合并）。
