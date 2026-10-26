@@ -9367,3 +9367,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[合并 master]** worktree 提交 `2a30663`（test）→ `git merge --no-ff feat/server-sec` → master `c816f82`（4 文件 +61/-3）；工作树干净。
 - **[主代理核验]** 主树 `cmake --build` **EXIT=0**；`ctest -C Release` **49/49**（0 failed）。
 - **在途**：无（全部已合并）。
+
+
+## 第410轮：**派发 GDI 桌面捕获任务**
+
+- **[W1/核验]** 服务器基线：`RdpServer` 已支持每会话一线程（多用户并发，会话隔离 D1）；但**仅有 `TestPatternSource`**（`server.cpp:1350`），**无真实桌面捕获**（grep `GetDIBits/CreateDC/BitBlt` 无命中）。
+- **[task 派发]** `ses_e88cb6d96ffepts6sKKpNUQ4al`（后台）：**Windows GDI 桌面捕获**（`desktop_gdi.{h,cpp}` + `MakeGdiDesktopSource` + `tests/test_desktop_gdi.cpp` + CMake 仅 Windows 目标）；Capture = CreateDC("DISPLAY") + 虚拟桌面 GetDeviceCaps + CreateDIBSection(32bpp 顶向下) + BitBlt → RGBA；失败如实返回 false；无交互桌面环境如实跳过不静默通过。
+  - 依据：用户硬约束⑤服务器模式（家庭版解禁）——真实桌面来源是服务器可用性的关键。
+- **在途**：GDI 桌面捕获（新）。
