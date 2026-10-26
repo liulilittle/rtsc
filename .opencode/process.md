@@ -9498,3 +9498,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[根因]** `ScriptedTls` 是**单侧**的（`test_security_layer.cpp` 用它驱动单 layer + 手动喂 server 消息）；注入 client/server **两侧**不能组成互操作握手 → 死锁。
 - **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：`tls_server_loopback_to_done` 在**无平台 TLS 后端**时**如实跳过**（打印原因 + return，不计失败；同 `test_desktop_gdi.cpp` 风格）；保留共享头；Windows 仍真实运行。重跑门禁至 PASS。
 - **在途**：Linux 门禁续修。
+
+
+## 第425轮：**Linux 门禁修复未落地（仍死锁）**
+
+- **[主代理实跑门禁]** 仍 `server_security` 失败：`tls_server_loopback_to_done:211` → `deadlock: both sides waiting with no output`（不变）。
+- **[核验]** `tests/test_server_security.cpp:207-208` 已注入 `ScriptedTls`（client+server），但**未加跳过**（第424轮指令尚未落地）。
+- **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出「All wired. Running the gate.」（疑为第423轮的延迟消息）。
+- **在途**：Linux 门禁续修（第424轮：无 TLS 后端时跳过）。
