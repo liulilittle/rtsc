@@ -9534,3 +9534,16 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - **观察项（低）**：① ctest 首轮瞬态 1 failed（后 3 轮 50/50，疑 flaky）；② `test_rail_client.cpp` 仍自带 ScriptedTls（重复）；③ 报告「删除 SetTlsTransportForTest」与 diff 略出入。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：Linux 门禁修复双审（乙✅/甲待）。
+
+
+## 第429轮：**Linux 门禁修复双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 独立审计]** **通过 ✅**（并实证 `[[maybe_unused]]` load-bearing）：
+  - Linux 门禁 PASS（FAILED_COUNT=0/WINDOWS_H_COUNT=0/CTEST_EXIT=0/48）。
+  - **变异反证**：删 `rdpusb_client.cpp` 的 `[[maybe_unused]]` → 门禁 FAIL（FAILED=1）→ 该属性是门禁关键；还原后 PASS。
+  - Windows build 0/0、ctest 50/50、server_security 5/43/0（`tls_server_loopback_to_done` 真实运行不跳过）。
+  - 跳过正确性（EnumerateTlsBackends）；ScriptedTls 提取（无重复）；只改构建/测试无产品逻辑。
+  - 观察项（低）：ctest 首轮瞬态（甲连跑 3 次 50/50 未复现）；执行者描述与 diff 略出入（该行本就不在提交版本）；test_rail_client.cpp 自带 ScriptedTls（无害）。
+- **[合并 master]** `fix: Linux build gate green (rtsc_gui link + [[maybe_unused]] + scripted TLS skip)`（CMakeLists +3/-1 + 6 文件 + 新 test_tls_scripted.h）；工作树干净。
+- **[主代理核验]** 已在第427轮核验（Linux PASS、Windows 50/50）。
+- **在途**：无（全部已合并）。
