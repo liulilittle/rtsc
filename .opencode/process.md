@@ -9489,3 +9489,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[get_goal]** 代理 `ses_e88b60db1fferBHxxHzKv53kjI` idle（wrote 1793005097549）。
 - **[催办]** prompt 完成接线：`#include "test_tls_scripted.h"` + 两层 `SetTlsTransportForTest(std::make_unique<ScriptedTls>())`（首个 Step 前）；重跑门禁至 PASS。
 - **在途**：Linux 门禁续修。
+
+
+## 第424轮：**Linux 门禁第 3 问题（ScriptedTls 死锁 → 如实跳过）**
+
+- **[主代理实跑门禁]** 仍 `server_security` 失败，但错误**已变**：`tls_server_loopback_to_done:211` → `deadlock: both sides waiting with no output`（不再是 `no TLS transport`）。
+- **[核验]** `git status` 现含 `tests/test_security_layer.cpp` + `tests/test_server_security.cpp`（已改）+ `test_tls_scripted.h`（新）。
+- **[根因]** `ScriptedTls` 是**单侧**的（`test_security_layer.cpp` 用它驱动单 layer + 手动喂 server 消息）；注入 client/server **两侧**不能组成互操作握手 → 死锁。
+- **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：`tls_server_loopback_to_done` 在**无平台 TLS 后端**时**如实跳过**（打印原因 + return，不计失败；同 `test_desktop_gdi.cpp` 风格）；保留共享头；Windows 仍真实运行。重跑门禁至 PASS。
+- **在途**：Linux 门禁续修。
