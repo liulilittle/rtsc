@@ -9740,3 +9740,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** `git diff -- src/server/server.cpp src/security/server_security_layer.cpp` **为空**；build **EXIT=0**；ctest **51/51**；`evidence/mstsc/REPORT.md` 完整（134 行）。
 - **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验 diff 为空/构建 ctest/基线 rtsc_connect/**[MS-CSSP] 消息序列核实**/工具正确性/变异反证）。
 - **在途**：mstsc 实网报告双审。
+
+
+## 第454轮：**审计乙 mstsc 实网复核（事实/工具通过，根因假设推翻）**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核：**事实/工具通过 ✅，根因假设须更正**：
+  - 无产品改动 ✅（`git diff` 为空）；build EXIT=0；ctest **51/51**；`tools/rtsc_server/main.cpp` 正确构造 ServerConfig + GDI/测试源。
+  - **根因假设 ❌**：执行者称服务器发 2 条 TSRequest 是偏差（称规范基线 1 条）。核 [MS-CSSP] 3.1.5：服务器 **Step 2 CHALLENGE、Step 4 pubKeyAuth、Step 6 EUAR** → **规范本就 2 条 TSRequest + EUAR**，假设错误。
+  - **实际失败点**：`DoConnectResponse` 的 `ReadFrame()` 在 secure_ 下读客户端 MCS Connect Initial 失败 → 未回 Connect Response → mstsc 0x1204；根因更可能在 **CredSSP 后 MCS 数据面衔接/分帧**。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：mstsc 实网报告双审（乙✅事实/甲待）。
