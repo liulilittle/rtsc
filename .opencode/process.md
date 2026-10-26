@@ -9209,3 +9209,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - （首次构建遇瞬时 `.obj` 锁 Permission denied，等待 25s 重试后 EXIT=0。）
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 修复后重跑探针 + 交叉定案（甲原话「待缺陷①修复后重跑探针 + 交叉定案」）。
 - **在途**：甲交叉定案、server-sec（CredSSP 修复）。
+
+
+## 第394轮：**RAIL 客户端集成双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 最终定案]** 双审盖章通过 ✅（两轮交叉复核，含缺陷①返修）：
+  - 缺陷①闭合：`rail_client.cpp:22-23` kGetAppIdRespFieldSize=520/orderLength=528；`test_rail_client.cpp:573/574/581` 断言 528/528/读 520；变异反证（改回 512 → FAIL got 520 want 528）。
+  - 协议正确性：GetAppIdReq/Resp 方向（2.2.2.6.5/2.2.2.8.1）、ChannelIdForName 位置映射（[MS-RDPBCGR] 2.2.1.4.4）、INFO_RAIL、RailCapabilitySet、client 接线 —— 逐条核验通过。
+  - 实测：`cmake --build --clean-first` EXIT=0/0 warning；ctest **49/49**；rail_client **15/102/0**；指纹全对。
+  - 非阻断观察：①GUI 无 ClientExecute 触发源；②UDP 停等；③SYN 未做 MTU 零填充/cookieHash；④RailGetAppIdRespEx(0x0018) 未建结构；⑤MS 抓包注解 512 判为文档笔误。
+- **[合并 master]** `53fd68a` feat: RAIL client integration（12 文件 +1379/-7）+ `9dc96f0` chore: coordination log；工作树干净。
+- **在途**：server-sec（CredSSP 修复，`pending:true`）。
