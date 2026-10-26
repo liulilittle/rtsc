@@ -9686,3 +9686,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[定向假设]** 服务器 CCF 选 `proto=0x2`（SSL-only），但 mstsc 请求 **HYBRID（0x8）**；若服务器未按客户端请求选 HYBRID，mstsc 因缺 NLA 报错 0x706。
 - **[催办]** prompt 验证：① 打印 CRQ `requestedProtocols`；② 检查 `selected_protocol_` 选择逻辑；③ 根因 + 修复 + 重跑；④ 还原两产品文件调试。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第447轮：**mstsc 实网调试进展**
+
+- **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**服务器窗口超时；重启（更长窗口）并跑最终诊断**（验证协议选择假设）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：mstsc↔rtsc_server 实网验证。
