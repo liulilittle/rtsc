@@ -9912,3 +9912,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`）；`evidence/mstsc/server-fix.log` 仅 `session accepted (count=1)`，**无 active**；shots 仍为 10/26 旧图（18:42-19:01）→ **修复未验证**。
 - **[处置]** 强催**实网 mstsc 验证**：启动服务器 + 真实 mstsc + 处理 GUI 对话框（打开 RDP/证书/凭据）+ 观察是否到达 active 并渲染 + 如实报告（截图+日志）。
 - **在途**：mstsc MCS 交接修复（实网验证中）。
+
+
+## 第476轮：**修复代理 busy（实网 mstsc 验证中）**
+
+- **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` **busy**（`pending:true`，wrote 1793038072737）；`evidence/mstsc/server-fix.log` 仍仅 `session accepted (count=1)`（无 active）；shots 仍为 10/26 旧图。
+- **判定**：实网 mstsc 验证进行中；等待其报告。
+- **在途**：mstsc MCS 交接修复（实网验证中）。
