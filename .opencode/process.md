@@ -9284,3 +9284,17 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[催办]** 再次 prompt server-sec 收口报告（修复内容/证据/是否闭合）。
 - **[task 派发]** `ses_e88f9dd0effeFx4p8aedWoltDF`（后台）：**RailGetAppIdRespEx (0x0018)** —— proto build/parse + rail_client 处理 + 测试（TDD）；依据 [MS-RDPERP] 2.2.2.8.2 + FreeRDP `RAIL_GET_APPID_RESP_EX`；只改 rail proto/rail_client/测试。
 - **在途**：server-sec（CredSSP 修复）、RailGetAppIdRespEx（新）。
+
+
+## 第402轮：**server-sec CredSSP 修复完成报告 + 双审派发**
+
+- **[执行者报告 ses_e8a82ee90ffe9keucB7AggYklh]** 核心交付完成且全绿；mstsc 部分验证到 pubKeyAuth echo（证书信任对话框为剩余阻塞，非协议缺陷）。
+  - 修复（worktree 未提交 → 已提交 `c2a5d0b` feat/server-sec）：
+    - `ntlm.h`：`ChallengeMessage` 加 version 字段（major=0x0A/minor=0x00/build=0x4563/revision=0x0F）。
+    - `credssp_server.cpp`：`BuildChallenge` flags 补 `kTargetInfo`。
+    - `ntlm.cpp`：`Encode` 在 `kVersion` 置位时写 version（48..55）。
+  - 证据：build EXIT=0/0 warning；ctest **46/46**；server_security **4/33/0**；客户端↔服务器回环到 active（64x48 帧）；mstsc TCP+TLS 成功、CredSSP NEGOTIATE(40B)/CHALLENGE(118B)/AUTHENTICATE(470B) 到达、MIC+pubKeyAuth 校验通过、pubKeyAuth echo(48B) 已发。
+  - 风险：①自签证书信任（部署问题）；②NLA 账户需配置 `credential_lookup`；③OpenSSL 后端未接线服务端；④提交状态。
+- **[主代理核验]** `git -C .worktrees/server-sec diff 82941c6 c2a5d0b` 逐行核验（3 文件 +19/-3）；worktree 内 `cmake --build` **EXIT=0**、`ctest` **46/46**。
+- **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须核验协议正确性（[MS-NLMP] version 字段位置/条件、kTargetInfo 与 AV 一致性）+ mstsc flags + 回归。
+- **在途**：CredSSP 修复双审（甲+乙）、RailGetAppIdRespEx（ses_e88f9dd0effeFx4p8aedWoltDF）。
