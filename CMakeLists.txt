@@ -478,6 +478,16 @@ target_link_libraries(rtsc_render PUBLIC rtsc_proto rtsc_ui)
 add_executable(rtsc_probe tools/rtsc_probe/main.cpp)
 target_link_libraries(rtsc_probe PRIVATE rtsc_proto rtsc_util)
 
+# Reproducible performance benchmark. Measures bitmap decode throughput (raw /
+# Interleaved RLE / RDP6 ARGB + AYCoCg / NSCodec), end-to-end frame latency over
+# the scripted TLS loopback, and process CPU occupancy. Read-only w.r.t. the
+# product sources: it only links the public libraries and the test TLS seam.
+add_executable(rtsc_bench tools/rtsc_bench/main.cpp)
+target_link_libraries(rtsc_bench PRIVATE
+                      rtsc_client rtsc_proto rtsc_ui rtsc_util
+                      rtsc_security rtsc_tls rtsc_credssp rtsc_crypto)
+target_include_directories(rtsc_bench PRIVATE include)
+
 # Real-connection driver: ties the state machine and the security layer to a
 # TCP socket.
 add_executable(rtsc_connect tools/rtsc_connect/main.cpp)
@@ -639,6 +649,7 @@ if(MSVC)
     target_compile_options(rtsc_gui_send_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_connect PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui PRIVATE /W4 /WX)
+    target_compile_options(rtsc_bench PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_tls_tests PRIVATE /W4 /WX)
     endif()
