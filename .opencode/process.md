@@ -9547,3 +9547,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[合并 master]** `fix: Linux build gate green (rtsc_gui link + [[maybe_unused]] + scripted TLS skip)`（CMakeLists +3/-1 + 6 文件 + 新 test_tls_scripted.h）；工作树干净。
 - **[主代理核验]** 已在第427轮核验（Linux PASS、Windows 50/50）。
 - **在途**：无（全部已合并）。
+
+
+## 第430轮：**派发服务器多会话并发测试**
+
+- **[task 派发]** `ses_e88696414fferylzHwsalaJLqn`（后台）：**RDP 服务器多会话并发测试**——启动 `RdpServer`，并发 2~3 个客户端各自 Connect 到 active；断言 `session_count()` == 并发数、各会话状态独立、各收到帧；若并发模型有缺陷如实报告最小复现。
+  - 依据：用户硬约束④多远程用户。
+- **在途**：服务器多会话并发测试（新）。
