@@ -9584,3 +9584,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[合并 master]** `test: RDP server multi-session concurrency (isolation + per-session framebuffer)`（CMakeLists + 新测试）；工作树干净。
 - **[主代理核验]** 已在第431轮核验（build 0、ctest 51/51、3/49/0）。
 - **在途**：无（全部已合并）。
+
+
+## 第434轮：**派发 mstsc↔rtsc_server 实网验证**
+
+- **[task 派发]** `ses_e884b1ba0ffeM39k5d6IHiW4bq`（后台）：**mstsc ↔ rtsc_server 实网验证**——查明 `tools/rtsc_server` 现状（无则建最小服务器工具）；启动服务器（enhanced security + GDI 桌面源 + credential_lookup）；用真实 `mstsc.exe` 连接；如实记录到达阶段/渲染/证书对话框/阻塞点（禁止伪造成功）。
+  - 依据：用户硬约束⑤服务器模式/⑥开源发布的关键验收。
+- **在途**：mstsc↔rtsc_server 实网验证（新）。
