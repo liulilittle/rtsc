@@ -9777,3 +9777,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 执行者 `ses_e884b1ba0ffeM39k5d6IHiW4bq` idle（`pending:true`）；`evidence/mstsc/REPORT.md` **mtime 未变**（21:14:08）→ 修正未落地。
 - **[催办]** prompt **精确编辑** §4.3：删「1 条 TSRequest」表述，改为「[MS-CSSP] 3.1.5：2 条 TSRequest（CHALLENGE + pubKeyAuth）+ EUAR，工程实现合规」；根因聚焦 post-CredSSP MCS 衔接。禁止改产品代码。
 - **在途**：mstsc 报告修正。
+
+
+## 第458轮：**用户报告 mstsc 卡死 → 派发修复**
+
+- **[用户报告]** 「远程桌面客户端链接后，微软 MSTSC 卡死」「这说明你这个有严重问题无法使用的」。
+- **[主代理核验]** 桌面无 mstsc 窗口；mstsc 进程 14840（无主窗口、Responding=True）；`rtsc_server_host` 55752 在跑。mstsc↔rtsc_server 在 **CredSSP 后 MCS 数据面交接**失败（0x1204）。
+- **[派发]** `ses_e878558e8ffeL3341W4gsKduOU`（后台）：**修复 mstsc↔rtsc_server 的 post-CredSSP MCS 数据面交接**（定位根因 文件:行 + 最小修复 + TDD + mstsc 重跑验证 + 构建/ctest/Linux 门禁）。
+- **在途**：mstsc MCS 交接修复。
