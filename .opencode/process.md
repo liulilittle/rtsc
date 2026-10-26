@@ -9305,3 +9305,16 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：`git diff 82941c6 c2a5d0b` 正确；CHALLENGE version 字段偏移 48..55 正确、仅在 kVersion 置位时写；kTargetInfo 与 AV 列表一致；mstsc 到达 pubKeyAuth echo（执行者实测）；ctest **46/46**、server_security **4/33/0**、credssp **23/69/0**。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：CredSSP 修复双审（乙✅/甲待）、RailGetAppIdRespEx（ses_e88f9dd0effeFx4p8aedWoltDF）。
+
+
+## 第404轮：**RailGetAppIdRespEx 完成报告 + 双审派发**
+
+- **[执行者报告 ses_e88f9dd0effeFx4p8aedWoltDF]** 完成（TDD 先红后绿，仅 6 文件 +270/-1）：
+  - `rail.h:360`+`rail.cpp:378` `RailGetAppIdRespEx`（0x0018；body 1048 / orderLength 1052；长度/类型/无终止符校验）。
+  - `rail.cpp:688` 计数；`rail_client.h:111`+`rail_client.cpp:131` 状态+计数+handler。
+  - `test_rail.cpp:245`（4 例）+`test_rail_client.cpp:588`（2 例）。
+  - 依据：[MS-RDPERP] 2.2.2.8.2 + FreeRDP `RAIL_GET_APPID_RESP_EX_ORDER_LENGTH=1048`。
+- **[主代理核验]** `cmake --build` **EXIT=0**；`ctest` **49/49**；`rtsc_rail_tests` **28/145/0**；`rtsc_rail_client_tests` **17/114/0** —— 与报告一致。
+- **[观察]** 执行者提及 0x000F 的 512/520 疑问 —— 该问题**已在 `53fd68a` 修复**（520/528），执行者观察为过时信息。
+- **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态，须核验协议布局（body 1048/orderLength 1052）+ 截断/无终止符拒绝 + 方向 + 回归 + 变异反证。
+- **在途**：CredSSP 修复双审（乙✅/甲待）、RespEx 双审（甲+乙）。
