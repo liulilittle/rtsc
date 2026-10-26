@@ -9276,3 +9276,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 限制如实声明；观察项：rtsc_bench 未接入 add_test（合理）；执行者消息数值与文档 canonical 略有出入（均在方差内，以文档为准）。
 - **[合并 master]** `feat: performance benchmark tool + baseline report`；工作树干净。
 - **在途**：server-sec（CredSSP 修复）。
+
+
+## 第401轮：**催办 server-sec + 派发 RailGetAppIdRespEx**
+
+- **[get_goal]** server-sec `ses_e8a82ee90ffe9keucB7AggYklh` idle（wrote 1792995798199）；worktree 3 文件未提交；无完成报告。
+- **[催办]** 再次 prompt server-sec 收口报告（修复内容/证据/是否闭合）。
+- **[task 派发]** `ses_e88f9dd0effeFx4p8aedWoltDF`（后台）：**RailGetAppIdRespEx (0x0018)** —— proto build/parse + rail_client 处理 + 测试（TDD）；依据 [MS-RDPERP] 2.2.2.8.2 + FreeRDP `RAIL_GET_APPID_RESP_EX`；只改 rail proto/rail_client/测试。
+- **在途**：server-sec（CredSSP 修复）、RailGetAppIdRespEx（新）。
