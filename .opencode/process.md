@@ -9571,3 +9571,16 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：ctest 51/51；multisession 3/49/0；并发（ready/go 原子屏障，真并发非串行）；尺寸断言 value-specific；红证（逻辑反证：`server.cpp:813-816` 变异→全红）；framebuffer 每会话独立（RecordingSource）；加密会话隔离（WIN32 `encryption_methods=0x1B` 实测 OK）；只新增测试+CMakeLists（`git diff -- src/server/server.cpp` 为空）；变异反证 2 条。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：多会话并发测试双审（乙✅/甲待）。
+
+
+## 第433轮：**多会话并发测试双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 独立审计]** **通过 ✅**（附红证复现）：
+  - build 0/0；ctest **51/51**；multisession **3/49/0**。
+  - 并发正确性：`RunConcurrent` 每客户端一线程 + `ready`/`go` 自旋屏障 → 真并发；尺寸断言 value-specific（:196-197）。
+  - **红证复现**：`server.cpp:813-816` 每会话尺寸选择取反 → 用例 1/2 红（got 64, want 80/96）；用例 3 亦红；还原后绿。
+  - framebuffer 每会话独立（`RecordingSource` 记录每次 (w,h)，mutex 保护）；加密会话隔离（WIN32 `encryption_methods=0x1B`，2 并发 RSA+RC4）；`git diff -- src/server/server.cpp` 为空。
+  - 观察项（低）：跨平台用例用 `encryption_methods=0`（RSA 后端 Windows-only，加密路径仅 WIN32 覆盖，已注释声明）；端口固定 3397/3398/3399。
+- **[合并 master]** `test: RDP server multi-session concurrency (isolation + per-session framebuffer)`（CMakeLists + 新测试）；工作树干净。
+- **[主代理核验]** 已在第431轮核验（build 0、ctest 51/51、3/49/0）。
+- **在途**：无（全部已合并）。
