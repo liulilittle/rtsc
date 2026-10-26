@@ -9514,3 +9514,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[处置]** 按「新任务经 task 新开子代理」改派**新代理** `ses_e88796621ffemFfhc6HI0cWl2n`（后台），执行精确修法：删除 :207-208 注入；在 `if (!client || !server) return;` 后加 `if (rtsc::tls::EnumerateTlsBackends().empty()) { printf(...); return; }`；重跑门禁至 PASS。
 - **[并发控制]** 原代理 `ses_e88b60db1fferBHxxHzKv53kjI` 已 **abort**（任务被新代理取代，避免并发写同一文件）。
 - **在途**：Linux 门禁修复（新代理 `ses_e88796621ffemFfhc6HI0cWl2n`）。
+
+
+## 第427轮：**Linux 门禁修复完成 + 双审派发**
+
+- **[执行者报告 ses_e88796621ffemFfhc6HI0cWl2n]** 修复完成（仅改测试 + CMake）：
+  - `test_server_security.cpp`：删两行 `SetTlsTransportForTest`（死锁根因）；加 `EnumerateTlsBackends().empty()` 跳过块。
+  - `test_security_layer.cpp` + `test_tls_scripted.h`（新）：`ScriptedTls` 提取共享头。
+  - `rdpusb_client.cpp`/`test_gui_send.cpp`/`test_rdp_standard_security.cpp`：3 处 `[[maybe_unused]]`。
+  - `CMakeLists.txt`：`rtsc_gui` 无条件链接 `rtsc_rdpsnd rtsc_cliprdr`，`rtsc_audio` 仍仅 Windows。
+- **[主代理核验]** **Linux 门禁 PASS**（`FAILED_COUNT=0`、`WINDOWS_H_COUNT=0`、`CTEST_EXIT=0`、48/48）；Windows build **EXIT=0**、ctest **50/50**、`rtsc_server_security_tests` **5/43/0**（`tls_server_loopback_to_done` 真实运行不跳过）。
+- **[派发]** 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验 diff/门禁/Windows/跳过正确性/ScriptedTls 提取/变异反证）。
+- **在途**：Linux 门禁修复双审。
