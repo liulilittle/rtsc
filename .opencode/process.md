@@ -9387,3 +9387,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[既有问题]** Linux 构建门失败：`src/channel/rdpusb_client.cpp:40` `Utf16ToUtf8` 匿名命名空间未使用 → `-Werror=unused-function`（非本任务引入）。
 - **[派发]** ① GDI 双审：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`（须核验像素正确性/几何/失败路径/接口卫生/变异反证）。② Linux 门禁修复 `ses_e88b60db1fferBHxxHzKv53kjI`（后台）。
 - **在途**：GDI 双审（甲+乙）、Linux 门禁修复。
+
+
+## 第412轮：**审计乙 GDI 通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** GDI 桌面捕获复核 **通过 ✅**：ctest 50/50；desktop_gdi 4/13/0；像素（顶向下/BGRA→RGBA/alpha 0xFF）；几何（virtual/monitor/explicit/StretchBlt/clamp）；失败路径；接口卫生（无 Win32 类型/守卫/Linux 不编译）；只新增文件+CMakeLists；变异反证 2 条。
+  - **观察项（低）**：`CheckFrame` 未用已知图像直接验证 BGRA↔RGBA 交换与 alpha（真实桌面内容任意）→ 建议后续用图案源做单元级像素断言（非阻断）。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7`（GDI）；Linux 门禁修复 `ses_e88b60db1fferBHxxHzKv53kjI`。
+- **在途**：GDI 双审（乙✅/甲待）、Linux 门禁修复。
