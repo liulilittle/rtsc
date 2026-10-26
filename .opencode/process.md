@@ -9643,3 +9643,16 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**细分 `DoConnectResponse` 的读失败 vs 解析失败**（0x706 根因）。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第442轮：**mstsc 0x706 根因线索（服务器 TLS accept 失败）**
+
+- **[主代理核验]** `evidence/mstsc/server-3390.log`：`session accepted (count=1)`（mstsc 已连上）。`server-3390.err`（调试）：
+  ```
+  [rtsc-sess] Run start
+  [rtsc-sess] x224 ok secure_req=1 proto=0x2
+  [rtsc-sess] FAIL secure:
+  ```
+- **[判读]** X.224 选定 `proto=0x2`（PROTOCOL_SSL / TLS-only）后，服务器 `DoSecureHandshake()` **TLS accept 失败**（错误信息为空）→ 连接断开 → mstsc 报 0x706。**根因方向**：服务器 TLS 服务端（SChannel accept）失败。
+- **[待]** 代理定位 TLS accept 失败的具体原因（SChannel 状态码 / 证书 / 协议版本）。
+- **在途**：mstsc↔rtsc_server 实网验证（0x706 根因分析中）。
