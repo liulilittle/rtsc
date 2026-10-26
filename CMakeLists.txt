@@ -521,6 +521,14 @@ add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
 target_include_directories(rtsc_server_tests PRIVATE tests)
 
+# RDP server multi-session concurrency: N concurrent clients over Standard RDP
+# Security, asserting per-session isolation (desktop geometry, framebuffer
+# capture, session counter).
+add_executable(rtsc_server_multisession_tests tests/test_server_multisession.cpp)
+target_link_libraries(rtsc_server_multisession_tests PRIVATE
+                      rtsc_client rtsc_server rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_server_multisession_tests PRIVATE tests)
+
 # Windows GDI desktop capture: the real-desktop DesktopSource. Windows only;
 # the DesktopSource interface stays platform neutral in rtsc/server/server.h.
 # The implementation only needs the header plus gdi32/user32, so it does not
@@ -605,6 +613,7 @@ add_test(NAME credssp COMMAND rtsc_credssp_tests)
 add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
+add_test(NAME server_multisession COMMAND rtsc_server_multisession_tests)
 if(WIN32)
     add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
 endif()
@@ -676,6 +685,7 @@ if(MSVC)
     target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_multisession_tests PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
         target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)
