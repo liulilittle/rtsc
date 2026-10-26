@@ -9793,3 +9793,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 该代理留 `src/security/server_security_layer.cpp` **+7 行**改动（待确认是修复还是调试）。
 - **[处置]** 经 manage_subagent prompt **补发继续指令**（附原任务摘要 + 要求先核验那 7 行是修复还是调试）。
 - **在途**：mstsc MCS 交接修复（继续）。
+
+
+## 第460轮：**/goal resume → active**
+
+- **[用户命令]** `/goal resume` → 目标恢复 **active**。
+- **[状态]** 令牌：主 317068417 | 子 3902401002 | 总 5992400879；费用：主 0 | 子 0.14763605 | 总 0.14763605。
+- **[在途]** mstsc MCS 交接修复（`ses_e878558e8ffeL3341W4gsKduOU`，已补发继续指令）。
+- **在途**：mstsc MCS 交接修复。
