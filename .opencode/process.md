@@ -9506,3 +9506,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** `tests/test_server_security.cpp:207-208` 已注入 `ScriptedTls`（client+server），但**未加跳过**（第424轮指令尚未落地）。
 - **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出「All wired. Running the gate.」（疑为第423轮的延迟消息）。
 - **在途**：Linux 门禁续修（第424轮：无 TLS 后端时跳过）。
+
+
+## 第426轮：**Linux 门禁修复改派新代理**
+
+- **[主代理实跑门禁]** 仍 `server_security` 死锁（`test_server_security.cpp:211`）；`test_server_security.cpp:207-208` 仍为 `SetTlsTransportForTest(ScriptedTls)`，**无跳过** → 代理 `ses_e88b60db1fferBHxxHzKv53kjI` 的修复**反复未落地**（连续报「All wired. Running the gate.」）。
+- **[处置]** 按「新任务经 task 新开子代理」改派**新代理** `ses_e88796621ffemFfhc6HI0cWl2n`（后台），执行精确修法：删除 :207-208 注入；在 `if (!client || !server) return;` 后加 `if (rtsc::tls::EnumerateTlsBackends().empty()) { printf(...); return; }`；重跑门禁至 PASS。
+- **[并发控制]** 原代理 `ses_e88b60db1fferBHxxHzKv53kjI` 已 **abort**（任务被新代理取代，避免并发写同一文件）。
+- **在途**：Linux 门禁修复（新代理 `ses_e88796621ffemFfhc6HI0cWl2n`）。
