@@ -9348,3 +9348,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** worktree `cmake --build` **EXIT=0**；`ctest` **46/46**；`rtsc_server_security_tests` **5/43/0** —— 与报告一致；`git status` 仅 `M tests/test_server_security.cpp`。
 - **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，须复现红证 + 核验测试有效性（mstsc-like NEGOTIATE）+ 只改测试。
 - **在途**：CredSSP 回归测试双审（甲+乙）。
+
+
+## 第408轮：**审计乙 CredSSP 回归测试通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 复核 **通过 ✅**：ctest 46/46；server_security 5/43/0；红证（逻辑反证：去 kTargetInfo/关 version 必 FAIL）；测试有效性（原始 mstsc-like NEGOTIATE 0xE20882B7 直喂服务器，非 CredsspClient）；只改测试（`git status` 仅 `M tests/test_server_security.cpp`；产品指纹 = c2a5d0b）。
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
+- **在途**：CredSSP 回归测试双审（乙✅/甲待）。
