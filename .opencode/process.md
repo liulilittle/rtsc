@@ -9395,3 +9395,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - **观察项（低）**：`CheckFrame` 未用已知图像直接验证 BGRA↔RGBA 交换与 alpha（真实桌面内容任意）→ 建议后续用图案源做单元级像素断言（非阻断）。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7`（GDI）；Linux 门禁修复 `ses_e88b60db1fferBHxxHzKv53kjI`。
 - **在途**：GDI 双审（乙✅/甲待）、Linux 门禁修复。
+
+
+## 第413轮：**GDI 双审盖章 → 合并 master**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 独立审计]** **通过 ✅**（无阻断缺陷；乙的低观察项已由探针实证闭合）：
+  - 构建 EXIT=0/0 warning；ctest **50/50**；desktop_gdi **4/13/0**。
+  - **像素正确性（探针实证）**：gdi_probe2 捕获 R≠B 像素（COLORREF=FFA150）→ `capture=50A1FFFF`（R 在最低地址、alpha=FF）；**变异反证**（去 swap → `FFA150FF` MISMATCH ×8）。
+  - 几何（virtual/monitor/explicit/StretchBlt/clamp）；失败路径（空屏幕/无显示器/未知 monitor/工厂 early-fail）；接口卫生（`#ifdef _WIN32`、无 Win32 类型泄漏、Linux 不编译）；只新增文件 + CMakeLists。
+  - 观察项（低）：测试 `CheckFrame` 未直接断言 swap/alpha（建议补「已知 COLORREF → 期望 RGBA」断言）。
+- **[合并 master]** `feat: Windows GDI desktop capture for RDP server`（CMakeLists +21 + 3 新文件）；**未含**他方并发的 `src/channel/rdpusb_client.cpp`（Linux 修复，在途）。
+- **在途**：Linux 门禁修复（`ses_e88b60db1fferBHxxHzKv53kjI`）。
