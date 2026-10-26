@@ -9670,3 +9670,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**在 CredSSP 后数据面加 hex-dump，看 mstsc 实际发送内容**（暗示已越过 TLS/CredSSP）。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第445轮：**mstsc 实网调试（两产品文件加临时 hex-dump）**
+
+- **[主代理核验]** 代理 idle（wrote 1793015781645）；`git status`：`M src/security/server_security_layer.cpp`（+`ReceivePdu` hex-dump fprintf）+ `M src/server/server.cpp`（+阶段 fprintf）；`evidence/mstsc/flight-3391.log` 更新（19:52-19:53：c2s 42B CRQ → s2c 19B CCF → **无后续**，proxy stopped）；`server-3390.err` 0B（重启后清空）。
+- **[判读]** CCF 后 mstsc 未继续（未发 TLS ClientHello）→ 疑 CCF 选定的协议 mstsc 不接受，或服务器 TLS 腿未就绪。**待代理根因**。
+- **[注意]** 两产品文件的 fprintf 为**临时仪器**，合并前必须还原（`git diff` 须为空）。
+- **在途**：mstsc↔rtsc_server 实网验证。
