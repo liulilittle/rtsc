@@ -8993,3 +8993,219 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **残留风险（非阻断）**：① 客户端集成未做（未广告 rail/未置 INFO_RAIL/未注册处理器）；② UDP 停等（非完整 FEC/滑动窗口）；SYN MTU/cookieHash(v3)；③ 通道名大小写；④ `SPI_2` 扩展参数（0xF002..）与 `RailGetAppIdResp(0x000F)` 未建结构；⑤ Linux 门禁既有 `rdpusb_client.cpp:40` 缺陷；⑥ HTTP CONNECT vs RDGSP POST 均实现。
 - **[主代理]** 合并 `feat/rail` → master。
 - **在途**：server-sec（CredSSP 修复）。
+
+
+## 第366轮：**派发 RAIL 客户端集成**
+
+- **[task 派发]** `ses_e8a...`（**RAIL 客户端集成**，后台运行）：广告 `rail` 通道 + 置 `INFO_RAIL` + 注册 RAIL 处理器（`RailChannel` 分片重组 + order 派发）+ GUI 处理（`GetAppIdReq`/`ClientExecute`/`Syscommand`）+ TDD `tests/test_rail_client.cpp`。
+- **约束**：只写主树；不碰 server/audio/rail.*/cliprdr/rdpdr/rdpusb/usb/rdpdr；不并发写。
+- **在途**：server-sec（CredSSP 修复）、RAIL 客户端集成（新）。
+
+
+## 第367轮：**RAIL 客户端集成进度（写测试文件中）**
+
+- **[relay: ses_e899e96d1ffecSNVXucZfAxuQL]** 尾部输出：`Now the test file:` → **正在写 `tests/test_rail_client.cpp`**。
+- 处置：记录；等待完成报告（不中断、不轮询）。
+- **在途**：server-sec（CredSSP 修复）、RAIL 客户端集成。
+
+
+## 第368轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`（未跟踪）；构建 EXIT=0、`ctest` **48/48**；工作树仅 `.opencode/process.md` + 上述两新文件。
+- **[server-sec worktree]** `M credssp_server.cpp` + `M server_security_layer.cpp` + `M server.cpp`（CredSSP 修复）。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`，wrote 1792982095573）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第369轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`，wrote 1792982095573）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第370轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第371轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第372轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第373轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第374轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第375轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第376轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第377轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第378轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第379轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第380轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第381轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第382轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第383轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第384轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第385轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第386轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第387轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第388轮：**在途状态（RAIL 集成 + server-sec）**
+
+- **[主树]** RAIL 客户端集成已写 `include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`；构建 EXIT=0、`ctest` **48/48**。
+- **[get_goal]** RAIL 集成代理 `ses_e899e96d1ffecSNVXucZfAxuQL` idle（wrote 1792988147425）；server-sec 代理 `ses_e8a82ee90ffe9keucB7AggYklh` idle（`pending:true`）。
+- **在途**：RAIL 客户端集成（等报告）、server-sec（CredSSP 修复，等报告）。
+
+
+## 第389轮：**RAIL 集成核验 + 恢复接线**
+
+- **[核验]** `RailClient`（`include/rtsc/channel/rail_client.h` + `src/channel/rail_client.cpp`，240 行）已写但**未接线**：`src/client/*.cpp` 与 `src/security/connection_driver.cpp` 无 rail 引用，`RailClient` 仅出现在自身文件 → 集成未完成。
+- **[核验]** RDPSND 已实现：`src/proto/rdpsnd.cpp` + `src/channel/rdpsnd_client.cpp` + `src/audio/audio_win32.cpp` + `tests/test_rdpsnd*.cpp` + CMakeLists 注册 + `rtsc_gui` 链接 `rtsc_rdpsnd rtsc_audio`。
+- **[核验]** 连接驱动已按 channel id 分派静态 VC（`connection_driver.cpp:300` `channel_handlers_`）。
+- **[派发]** 恢复 `ses_e899e96d1ffecSNVXucZfAxuQL`（RAIL 集成）完成接线：注册 rail 通道处理器 + ConfirmActive 广告 TS_RAIL_CAPS + `Start()` + 补 `tests/test_rail_client.cpp`；验收 build 零错误 + ctest 全绿。
+- **在途**：RAIL 集成接线（已派发）、server-sec（CredSSP 修复，`pending:true`）。
+
+
+## 第390轮：**RAIL 集成完成报告 + 双审派发**
+
+- **[执行者报告]** `ses_e899e96d1ffecSNVXucZfAxuQL` RAIL 客户端集成完成（非只写不接线）：
+  - 新增 `include/rtsc/channel/rail_client.h`(162) + `src/channel/rail_client.cpp`(245) + `tests/test_rail_client.cpp`(769,15用例)。
+  - 修改 `CMakeLists.txt`/`client.{h,cpp}`/`capabilities.{h,cpp}`/`connect_machine.cpp`/`connection_driver.{h,cpp}`/`main.cpp`。
+  - 接线：`connection_driver.cpp:415` ChannelIdForName（名→MCS id）；`client.cpp:32` 注册 handler + `rail_.Start()`；`capabilities.h:333` RailCapabilitySet(TS_RAIL_CAPS) + `capabilities.cpp:757` 默认广告；`main.cpp:113/293/342`；`connect_machine.cpp:148/218` INFO_RAIL；`CMakeLists.txt:79/416/520/584`。
+  - 红探针 A/B/C/D（encode 写0 / 不置 INFO_RAIL / orderType 改错 / 去 handler 注册）均翻红。
+- **[主代理核验]** `cmake --build build --config Release` **EXIT=0**（零错误零警告）；`ctest -C Release` **100% passed, 49/49**（rail #47、rail_client #48）。
+- **[派发]** 双审已派发：甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` + 乙 `ses_e9521c2ddffe46eT67qVc2vaH8`，四步形态（查问题→根因→方案→协商盖章），缺陷须探针红证，重点核验自述风险 1（ChannelIdForName 顺序依赖）与 4（GetAppIdReq/Resp 方向，[MS-RDPERP] 2.2.2.6.5/2.2.2.8.1）。
+- **[git]** 主树改动 10 文件 + 3 未跟踪；**未合并 master**（待双审盖章）。
+- **在途**：RAIL 双审（甲+乙）、server-sec（CredSSP 修复，`pending:true`）。
+
+
+## 第391轮：**审计乙 RAIL 通过**
+
+- **[relay: ses_e9521c2ddffe46eT67qVc2vaH8 审计乙]** RAIL 客户端集成复核 **通过 ✅**：
+  - 构建 EXIT=0；`cl /W4 /WX` 单编 rail_client.cpp+test 零 error/warning；ctest **49/49**；`rtsc_rail_client_tests` 15/102/0；CMakeLists 条目齐全。
+  - 变异反证 3 条核心断言 value-specific（受禁改源码约束为逻辑反证）。
+  - **自述风险1 裁定不成立**：[MS-RDPBCGR] 2.2.1.4.4 TS_UD_SC_NET 原文「Each MCS channel ID corresponds in position to the channels requested in the Client Network Data structure」→ 位置映射符合规范。
+  - 风险4 方向正确、防御性应答为超集（低）；风险2/3 已知限制。
+- **[待]** 审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论（未回复）。
+- **在途**：RAIL 双审（乙✅/甲待）、server-sec（CredSSP 修复）。
+
+
+## 第392轮：**审计甲乙一致确认缺陷①（GetAppIdResp 字段尺寸）**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7]** 审计**未通过**，发现 1 中缺陷（附变异红证）：
+  - 缺陷①：`src/channel/rail_client.cpp:21` `kGetAppIdRespFieldSize=512`（注释称 orderLength=520）；规范 [MS-RDPERP] 2.2.2.8.1 = **ApplicationId 520 bytes**、orderLength **528**；`tests/test_rail_client.cpp:570-574` 断言 `order_length==520 && size()==520`、`:581` 读 512 → **测试把错值当期望**。
+  - 变异红证：512→520 → `rail_client_answers_get_app_id_req_with_resp` FAIL（got 528 want 520）。
+  - 其余核验通过：风险1 不成立（TS_UD_SC_NET 位置映射合规范）、INFO_RAIL 接线、方向正确、C0（build 0/0、ctest 49/49、rail_client 15/102/0）。
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 独立**确认**同一缺陷（中，非阻断；仅防御性回发路径）。
+- **[主代理独立核验]** 规范原文确认：[MS-RDPERP] 2.2.2.8.1「ApplicationId (520 bytes)」、FreeRDP `RAIL_GET_APPID_RESP_ORDER{windowId; WCHAR applicationId[260];}` = 4+520 → orderLength 528。缺陷①**属实**。
+- **[返修要求]** 字段 520 + orderLength 528 + 测试断言订正（528/size 528/读 520）+ 注释订正。
+- **在途**：缺陷①返修（执行者）、server-sec（CredSSP 修复）。
+
+
+## 第393轮：**缺陷①修复核验通过**
+
+- **[审计乙 ses_e9521c2ddffe46eT67qVc2vaH8]** 重审闭合 **✅**：`rail_client.cpp:19-22` 订正 520 字节/orderLength=528；`test_rail_client.cpp:577-578` 断言 528/528、`:585` 读 520；红证有区分力（改回 512 → FAIL got 520 want 528）；rail_client 15/102/0、ctest 49/49、指纹 fe227ce63c26b46e / 140d8aff39de85b6。
+- **[主代理独立核验]** `rail_client.cpp:19-23` = 520/528 注释与常量；`test_rail_client.cpp:573-581` = 断言 528/528 + 读 520；指纹与乙报**一致**；`cmake --build` **EXIT=0**、`ctest -C Release` **49/49**。
+  - （首次构建遇瞬时 `.obj` 锁 Permission denied，等待 25s 重试后 EXIT=0。）
+- **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 修复后重跑探针 + 交叉定案（甲原话「待缺陷①修复后重跑探针 + 交叉定案」）。
+- **在途**：甲交叉定案、server-sec（CredSSP 修复）。
