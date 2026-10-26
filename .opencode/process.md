@@ -9449,3 +9449,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e88b60db1fferBHxxHzKv53kjI]** 尾部输出：**三处编辑已应用**（`test_rdp_standard_security.cpp:53` / `test_gui_send.cpp:71` / `:31` 加 `[[maybe_unused]]`），**正在跑 Linux 门禁**。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：Linux 门禁续修。
+
+
+## 第419轮：**Linux 门禁第 2 个问题（rtsc_gui 链接错误）**
+
+- **[主代理实跑门禁]** `FAILED=1`（链接失败）：`rtsc_gui/main.cpp:314/316/332/699` 未定义引用 `CliprdrClient`/`RdpsndClient` 构造/析构/`Start()`。
+- **[根因]** `CMakeLists.txt:499-501` 把 `rtsc_rdpsnd rtsc_audio rtsc_cliprdr` 链接放在 `if(WIN32)` 内，但 `main.cpp` 无条件使用 `CliprdrClient`(:314)/`RdpsndClient`(:316)。`rtsc_rdpsnd`/`rtsc_cliprdr` **平台无关**（`clipboard.cpp` 内部有 `_WIN32` 守卫）；仅 `rtsc_audio` 是 Windows-only（非 Windows 已用 `NullAudioSink`）。
+- **[派发]** 续修 `ses_e88b60db1fferBHxxHzKv53kjI`：`CMakeLists.txt:499-501` 改为无条件链接 `rtsc_rdpsnd rtsc_cliprdr`、`rtsc_audio` 仍仅 Windows；重跑门禁至 PASS。
+- **在途**：Linux 门禁续修。
