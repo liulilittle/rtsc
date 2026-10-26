@@ -9750,3 +9750,16 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - **实际失败点**：`DoConnectResponse` 的 `ReadFrame()` 在 secure_ 下读客户端 MCS Connect Initial 失败 → 未回 Connect Response → mstsc 0x1204；根因更可能在 **CredSSP 后 MCS 数据面衔接/分帧**。
 - **待**：审计甲 `ses_e9521c2ffffeZBDuOPXW92RkJ7` 结论。
 - **在途**：mstsc 实网报告双审（乙✅事实/甲待）。
+
+
+## 第455轮：**审计甲 mstsc 实网复核（与乙一致：事实通过/根因错）**
+
+- **[审计甲 ses_e9521c2ffffeZBDuOPXW92RkJ7 独立审计]** **工具/事实/构建通过 ✅，根因假设错误 ❌**：
+  - 产品代码零改动（`git diff` 两文件均空）；build 0/0；ctest **51/51**。
+  - 报告事实核查一致（基线 `rtsc_connect` → `DONE: Client Info PDU sent`；失败路径 `server-3390-final-run.err` 逐行印证；flight 日志 CRQ 42B→CCF 19B→53s 无数据→复位；截图 01-07 一致）。
+  - `tools/rtsc_server/main.cpp` 正确构造 ServerConfig。
+  - **根因假设 ❌**：[MS-CSSP] 3.1.5（已独立核实）明确服务器发 **2 条 TSRequest（CHALLENGE + pubKeyAuth）+ EUAR**（Step 2/4/6）→ 执行者「1 条」表述错误，工程实现**合规**。真实失败点：`DoConnectResponse()` 的 `ReadFrame()` 在 secure_ 下读 MCS Connect Initial 时**传输层 -1**（mstsc 收 EUAR 后未发 MCS Connect Initial，直接复位）→ 根因疑在 **CredSSP 后 MCS 数据面衔接/EUAR 时机/TLS record 边界**。
+  - 变异反证：删一条 TSRequest 会违反 Step 4（工程内 client fail pubKeyAuth 校验）。
+- **[裁定]** 工具+证据有效；**根因诊断有误，需修正后再作为定案依据**。
+- **[派发]** 修正 `evidence/mstsc/REPORT.md` §4.3（改为 2 TSRequest + EUAR，聚焦 post-CredSSP MCS 衔接）。
+- **在途**：mstsc 报告修正。
