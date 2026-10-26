@@ -9663,3 +9663,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[主代理核验]** 代理 idle（wrote 1793014272432）；`evidence/mstsc/` 无新增（`server-3390.err` 仍停在 `FAIL secure:`）；`src/server/server.cpp` 调试 fprintf 未还原。
 - **[催办]** prompt 定位：① 在 `DoSecureHandshake()` 失败处打印 SChannel 状态码（`SEC_E_*`/`GetLastError`）重跑；② 根因；③ 还原 `server.cpp` 调试；④ 结论 + 下一步。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第444轮：**mstsc 实网调试进展（已过 CredSSP？）**
+
+- **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**在 CredSSP 后数据面加 hex-dump，看 mstsc 实际发送内容**（暗示已越过 TLS/CredSSP）。
+- **判定**：进展中，非完成报告；不催、不重派，等待其收口。
+- **在途**：mstsc↔rtsc_server 实网验证。
