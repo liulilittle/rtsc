@@ -9620,3 +9620,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[relay: ses_e884b1ba0ffeM39k5d6IHiW4bq]** 尾部输出：**重启服务器（捕获 stderr）并运行 mstsc**（针对 0x706 根因）。
 - **判定**：进展中，非完成报告；不催、不重派，等待其收口。
 - **在途**：mstsc↔rtsc_server 实网验证。
+
+
+## 第439轮：**mstsc 实网调试（0x706 根因）**
+
+- **[主代理核验]** 代理在 `src/server/server.cpp` 加**临时调试 fprintf**（`[rtsc-sess]` 各阶段）；新增 `scripts/rdp_flight_log.py`（RDP 代理抓包）+ `evidence/mstsc/`（mstsc-*.rdp、flight-3391.log、server-3390.log）。
+- **[flight-3391.log]** mstsc 经代理（3391→3390）：`c2s 42 bytes`（X.224 CRQ）→ `s2c 19 bytes`（CCF）→ **服务器超时**（`s2c error: timed out`）→ 连接关闭（c2s=42 s2c=19）。
+- **[判读]** 0x706 疑因：服务器 CCF 选定的协议/加密与 mstsc 期望（NLA/HYBRID）不匹配，或服务器在 CCF 后未继续（TLS ClientHello 未收/未处理）。**待代理根因**。
+- **[注意]** `server.cpp` 的调试 fprintf 为**临时仪器**，合并前必须还原（`git diff -- src/server/server.cpp` 须为空）。
+- **在途**：mstsc↔rtsc_server 实网验证（0x706 根因分析中）。
