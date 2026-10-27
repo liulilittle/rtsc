@@ -457,6 +457,34 @@ RTSC_TEST(machine_client_info_autologon_flag_follows_credentials) {
     CHECK(pdu.info.password == "pw");
 }
 
+RTSC_TEST(machine_client_info_requests_true_image_quality) {
+    // mstsc requests ClearType font smoothing and DWM desktop composition via
+    // the Client Info performanceFlags; without them the server renders aliased
+    // text and a non-composited desktop — the "screenshot" look.
+    ConnectMachine m(MakeConfig(), MakeCredentials());
+    m.Start();
+    Feed(m, hex(kCcfRdp));
+    Feed(m, hex(kConnectResponseHex));
+    Feed(m, hex(kAttachUserConfirm));
+    const char* confirms[] = {kJoinConfirmUser, kJoinConfirmIo, kJoinConfirmVc1,
+                              kJoinConfirmVc2, kJoinConfirmVc3};
+    ConnectStep last;
+    for (int i = 0; i < 5; ++i) last = Feed(m, hex(confirms[i]));
+
+    McsSendData sd;
+    CHECK(McsSendData::parse(last.output.data(), last.output.size(), sd) ==
+          Status::Ok);
+    ClientInfoPdu pdu;
+    CHECK(ClientInfoPdu::parse(sd.user_data.data(), sd.user_data.size(), pdu) ==
+          Status::Ok);
+    CHECK(pdu.info.has_extended_info);
+    CHECK(pdu.info.extended_info.has_performance_flags);
+    CHECK_EQ(pdu.info.extended_info.performance_flags,
+             static_cast<uint32_t>(perf::kEnableFontSmoothing |
+                                   perf::kEnableDesktopComposition));
+    CHECK((pdu.info.flags & info::kEnableWindowsKey) != 0);
+}
+
 RTSC_TEST(machine_message_channel_joined_when_server_assigns_one) {
     // Append an SC_MCS_MSGCHANNEL (0x0C04) block assigning channel 1008 to the
     // official 337-byte Connect Response, then verify the join queue inserts it
@@ -515,6 +543,47 @@ RTSC_TEST(machine_message_channel_joined_when_server_assigns_one) {
     CHECK_EQ(q[1], static_cast<uint16_t>(1003));
     CHECK_EQ(q[2], static_cast<uint16_t>(1008));
     CHECK_EQ(q[3], static_cast<uint16_t>(1004));
+}
+
+RTSC_TEST(machine_client_core_declares_spec_color_depth_combo) {
+    // [MS-RDPBCGR] 2.2.1.3.2: highColorDepth has no value 32 (valid: 4, 8, 15,
+    // 16, 24). The session colour depth is advertised as highColorDepth=24,
+    // and supportedColorDepths lists ONLY depths this client can actually
+    // decode. The mstsc-style 32bpp combination (24 + RNS_UD_CS_WANT_32BPP_
+    // SESSION 0x0002 + RNS_UD_32BPP_SUPPORT 0x0008) is deferred until the
+    // RDP6-planar decoder covers 32bpp (dual-audit ruling: a real Windows
+    // server answers that combination with a 32bpp session whose planar
+    // bitmaps this client cannot yet decode).
+    ConnectMachine m(MakeConfig(), MakeCredentials());
+    m.Start();
+    const auto step = Feed(m, hex(kCcfRdp));
+    McsConnectInitial ci;
+    CHECK(McsConnectInitial::parse(step.output.data(), step.output.size(), ci) ==
+          Status::Ok);
+
+    // Walk the GCC payload to the user data blocks (same layout walk as
+    // test_multimon: 7-byte T.124 identifier, PER length, CCRQ header, H.221
+    // key, PER length, then the blocks).
+    const auto& gcc = ci.gcc_conference_create_request;
+    CHECK(gcc.size() > 21);
+    size_t off = 7;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    off += 8 + 4;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    GccUserData ud;
+    CHECK(GccUserData::parse(gcc.data() + off, gcc.size() - off, ud) ==
+          Status::Ok);
+
+    const auto* core = ud.find(0xC001);
+    CHECK(core != nullptr);
+    CHECK(core->payload.size() >= 142);
+    const auto rd16 = [&core](size_t o) {
+        return static_cast<uint16_t>(core->payload[o] |
+                                     (core->payload[o + 1] << 8));
+    };
+    CHECK_EQ(rd16(136), static_cast<uint16_t>(24));      // highColorDepth
+    CHECK_EQ(rd16(138), static_cast<uint16_t>(0x0001));  // 24bpp only (decodable)
+    CHECK((rd16(140) & 0x0002) == 0);                    // no WANT_32BPP yet
 }
 
 // ---- Guard rails ----------------------------------------------------------

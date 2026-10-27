@@ -1,4 +1,4 @@
-﻿// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
+// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
 // connection state machine, exercised end to end.
 //
 // The tests drive the server with a scripted peer that speaks the client half
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,11 +45,14 @@ namespace {
 
 class FrameReader {
  public:
-    explicit FrameReader(rtsc::net::Transport& t) : t_(t) {}
+    explicit FrameReader(rtsc::net::Transport& t,
+                         std::chrono::milliseconds deadline =
+                             std::chrono::seconds(5))
+        : t_(&t), deadline_(deadline) {}
 
     bool Read(std::vector<uint8_t>& frame) {
         const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            std::chrono::steady_clock::now() + deadline_;
         for (;;) {
             if (buf_.size() >= 2) {
                 if (buf_[0] != 0x03 || buf_[1] != 0x00) return false;
@@ -68,7 +72,7 @@ class FrameReader {
             }
             if (std::chrono::steady_clock::now() >= deadline) return false;
             uint8_t tmp[8192];
-            const int n = t_.Read(tmp, sizeof(tmp));
+            const int n = t_->Read(tmp, sizeof(tmp));
             if (n == rtsc::net::kReadTimeout) continue;
             if (n <= 0) return false;
             buf_.insert(buf_.end(), tmp, tmp + static_cast<size_t>(n));
@@ -76,7 +80,8 @@ class FrameReader {
     }
 
  private:
-    rtsc::net::Transport& t_;
+    rtsc::net::Transport* t_;
+    std::chrono::milliseconds deadline_;
     std::vector<uint8_t> buf_;
 };
 
@@ -154,14 +159,24 @@ struct HandshakeResult {
     uint16_t desktop_width = 0;
     uint16_t desktop_height = 0;
     bool license_valid_client = false;
+    bool rect_extents_consistent = false;
     bool got_bitmap = false;
     uint16_t bitmap_width = 0;
     uint16_t bitmap_height = 0;
     std::vector<uint8_t> bitmap_pixels;
+    // Size of the share PDU (MCS userData) that carried the first bitmap
+    // frame; an MCS Send Data userData is capped at 16383 bytes.
+    size_t share_pdu_bytes = 0;
+    // Kept open after DriveToActive so a test can keep interacting with the
+    // active session (input, slow-path share PDUs).
+    std::unique_ptr<rtsc::net::Transport> transport;
+    std::unique_ptr<FrameReader> reader;
     std::string error;
 };
 
-HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
+HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
+                              uint16_t client_width = 64,
+                              uint16_t client_height = 48) {
     HandshakeResult r;
     std::string error;
     auto transport = rtsc::net::ConnectTcp("127.0.0.1", port, error);
@@ -169,7 +184,10 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
         r.error = "connect: " + error;
         return r;
     }
-    FrameReader reader(*transport);
+    // One reader for the whole session: handing a fresh reader to the caller
+    // would drop any bytes already buffered past the last extracted frame
+    // (a TPKT desync mid-frame).
+    auto reader = std::make_unique<FrameReader>(*transport);
 
     // 1. X.224 Connection Request.
     X224ConnectionRequest crq;
@@ -182,7 +200,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     }
 
     std::vector<uint8_t> frame;
-    if (!reader.Read(frame)) {
+    if (!reader->Read(frame)) {
         r.error = "x224 confirm read";
         return r;
     }
@@ -198,13 +216,13 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     }
 
     // 2. MCS Connect Initial.
-    const auto blocks = ClientBlocks(64, 48, 0);
+    const auto blocks = ClientBlocks(client_width, client_height, 0);
     const auto ci = McsConnectInitial::build(blocks);
     if (!WriteAll(*transport, ci)) {
         r.error = "connect initial write";
         return r;
     }
-    if (!reader.Read(frame)) {
+    if (!reader->Read(frame)) {
         r.error = "connect response read";
         return r;
     }
@@ -229,7 +247,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
         r.error = "attach user write";
         return r;
     }
-    if (!reader.Read(frame)) {
+    if (!reader->Read(frame)) {
         r.error = "attach user confirm read";
         return r;
     }
@@ -248,7 +266,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
             r.error = "channel join write";
             return r;
         }
-        if (!reader.Read(frame)) {
+        if (!reader->Read(frame)) {
             r.error = "channel join confirm read";
             return r;
         }
@@ -275,51 +293,17 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
         return r;
     }
 
-    // 6. Server License Request -> reply -> LICENSE_ERROR_MESSAGE.
-    if (!reader.Read(frame)) {
-        r.error = "license request read";
-        return r;
-    }
-    McsSendData sd;
-    if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok ||
-        sd.user_data.size() < 4) {
-        r.error = "license request framing";
-        return r;
-    }
-    LicensingPdu lic;
-    if (LicensingPdu::Parse(sd.user_data.data() + 4, sd.user_data.size() - 4, lic) !=
-        Status::Ok) {
-        r.error = "license request parse";
-        return r;
-    }
-    if (lic.preamble.type != LicenseMessageType::kLicenseRequest) {
-        r.error = "expected SERVER_LICENSE_REQUEST";
-        return r;
-    }
-
-    // Reply with a New License Request. The server does not need its contents to
-    // accept the client without a CAL.
-    ClientNewLicenseRequest nlr;
-    nlr.client_random.assign(32, 0x42);
-    nlr.encrypted_premaster.assign(136, 0);
-    nlr.user_name = "rtsc";
-    nlr.machine_name = "RTSC";
-    const auto nlr_user =
-        LicensingPdu::Encode(LicenseMessageType::kNewLicenseRequest, nlr.encode());
-    ByteWriter lic_header;
-    lic_header.u16le(0x0080);  // SEC_LICENSE_PKT
-    lic_header.u16le(0);
-    std::vector<uint8_t> lic_ud = lic_header.take();
-    lic_ud.insert(lic_ud.end(), nlr_user.begin(), nlr_user.end());
-    if (!WriteAll(*transport, McsSendData::build_request(r.user_channel, r.io_channel,
-                                                         lic_ud))) {
-        r.error = "license reply write";
-        return r;
-    }
-    if (!reader.Read(frame)) {
+    // 6. Licensing: the server issues no CALs, so it sends exactly one
+    //    ERROR_ALERT (STATUS_VALID_CLIENT + ST_NO_TRANSITION) and completes the
+    //    phase. This matches a real Windows server without a license server
+    //    (observed on Win11 26100: "80 00 00 00 ff 03 10 00 07 00 00 00 02 00
+    //    00 00 04 00 00 00"); mstsc rejects a full SERVER_LICENSE_REQUEST with
+    //    disconnectReasonLicensingFailed (0x808).
+    if (!reader->Read(frame)) {
         r.error = "license error read";
         return r;
     }
+    McsSendData sd;
     if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok ||
         sd.user_data.size() < 4) {
         r.error = "license error framing";
@@ -335,7 +319,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
                              err.error_alert.is_valid_client();
 
     // 7. Demand Active.
-    if (!reader.Read(frame)) {
+    if (!reader->Read(frame)) {
         r.error = "demand active read";
         return r;
     }
@@ -364,7 +348,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     }
 
     // 8. Confirm Active + finalization batch.
-    const auto caps = BuildDefaultClientCapabilities(64, 48, 32);
+    const auto caps = BuildDefaultClientCapabilities(client_width, client_height, 32);
     const auto confirm = ConfirmActivePdu::encode(r.user_channel, da.share_id,
                                                  da.pdu_source, "RTSC", caps);
     auto send_data = [&](ShareDataPduType type, const std::vector<uint8_t>& payload) {
@@ -422,7 +406,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     // 9. Server Synchronize / Control / Font Map.
     bool got_font_map = false;
     while (!got_font_map) {
-        if (!reader.Read(frame)) {
+        if (!reader->Read(frame)) {
             r.error = "finalization read";
             return r;
         }
@@ -437,7 +421,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     }
 
     // 10. The server pushes one test-pattern bitmap frame.
-    if (!reader.Read(frame)) {
+    if (!reader->Read(frame)) {
         r.error = "bitmap frame read";
         return r;
     }
@@ -458,6 +442,15 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
         return r;
     }
     const BitmapData& rect = bm.rectangles.front();
+    // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2: destRight/destBottom are INCLUSIVE, so
+    // destRight - destLeft + 1 must equal width. mstsc drops the rectangle when
+    // they disagree (the session renders black); this is the regression check
+    // for that failure mode.
+    r.rect_extents_consistent =
+        static_cast<int>(rect.dest_right) - static_cast<int>(rect.dest_left) + 1 ==
+            static_cast<int>(rect.width) &&
+        static_cast<int>(rect.dest_bottom) - static_cast<int>(rect.dest_top) + 1 ==
+            static_cast<int>(rect.height);
     DecodedBitmap decoded;
     if (DecodeRawBitmap(rect.bitmap_data.data(), rect.bitmap_data.size(), rect.width,
                         rect.height, rect.bits_per_pixel, decoded) != Status::Ok) {
@@ -468,6 +461,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     r.bitmap_width = decoded.width;
     r.bitmap_height = decoded.height;
     r.bitmap_pixels = decoded.pixels;
+    r.share_pdu_bytes = sd.user_data.size();
 
     // Optionally leave an input PDU on the wire so the caller can observe the
     // server's input callback.
@@ -481,6 +475,10 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false) {
     }
 
     r.reached_active = true;
+    // Hand the still-open transport and its reader (with any buffered bytes)
+    // to the caller so a test can keep interacting with the active session.
+    r.transport = std::move(transport);
+    r.reader = std::move(reader);
     return r;
 }
 
@@ -553,6 +551,7 @@ RTSC_TEST(server_full_handshake_to_active) {
     CHECK_EQ(r.desktop_width, 64);
     CHECK_EQ(r.desktop_height, 48);
     CHECK(r.license_valid_client);
+    CHECK(r.rect_extents_consistent);
     CHECK(r.got_bitmap);
     CHECK_EQ(r.bitmap_width, 64);
     CHECK_EQ(r.bitmap_height, 48);
@@ -667,6 +666,271 @@ RTSC_TEST(test_pattern_source_shape) {
     CHECK_EQ(rgba[1], 255);
     CHECK_EQ(rgba[2], 255);
     CHECK_EQ(rgba[3], 255);
+}
+
+namespace {
+
+// A desktop source that captures successfully `succeeds` times, then fails.
+class FailingAfterSource : public rtsc::server::DesktopSource {
+ public:
+    explicit FailingAfterSource(int succeeds) : succeeds_(succeeds) {}
+
+    bool Capture(uint16_t width, uint16_t height,
+                 std::vector<uint8_t>& rgba) override {
+        if (calls_++ >= succeeds_) return false;
+        return pattern_->Capture(width, height, rgba);
+    }
+
+ private:
+    int succeeds_;
+    int calls_ = 0;
+    std::unique_ptr<rtsc::server::DesktopSource> pattern_ =
+        rtsc::server::MakeTestPatternSource();
+};
+
+// Sends one client slow-path share data PDU (Refresh Rect / Suppress Output).
+bool SendSlowPathPdu(HandshakeResult& r, ShareDataPduType type,
+                     const std::vector<uint8_t>& body) {
+    const auto share =
+        BuildSlowPathDataPdu(r.user_channel, r.share_id, 0x01, type, body);
+    return WriteAll(*r.transport,
+                    McsSendData::build_request(r.user_channel, r.io_channel,
+                                               share));
+}
+
+}  // namespace
+
+RTSC_TEST(server_refresh_rect_triggers_immediate_resend) {
+    // [MS-RDPBCGR] 2.2.11.2.1: a client Refresh Rect asks the server to resend
+    // the named area at once 鈥?well before the ~1 s periodic refresh would.
+    ServerConfig cfg;
+    cfg.port = 3394;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port);
+    CHECK(r.reached_active);
+
+    // numberOfAreas(1) + pad3Octets(3) + one full-desktop rectangle.
+    std::vector<uint8_t> body = {0x01, 0x00, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x00,
+                                 0x3f, 0x00, 0x2f, 0x00};
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kRefreshRect, body));
+
+    // A short deadline: the frame must arrive immediately (the ~1 s periodic
+    // refresh cannot be what satisfied this read).
+    FrameReader fast(*r.transport, std::chrono::milliseconds(500));
+    std::vector<uint8_t> frame;
+    CHECK(fast.Read(frame));
+    McsSendData sd;
+    CHECK(McsSendData::parse(frame.data(), frame.size(), sd) == Status::Ok);
+    SlowPathGraphicsUpdate upd;
+    CHECK(SlowPathGraphicsUpdate::parse(sd.user_data.data(), sd.user_data.size(),
+                                        upd) == Status::Ok);
+    UpdateBitmapData bm;
+    CHECK(UpdateBitmapData::parse(upd.update_data.data(), upd.update_data.size(),
+                                  bm) == Status::Ok);
+    CHECK(!bm.rectangles.empty());
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_suppress_output_gates_refresh) {
+    // [MS-RDPBCGR] 2.2.11.3.1: allowDisplayUpdates=0 stops the desktop
+    // refresh; allowDisplayUpdates=1 resumes it.
+    ServerConfig cfg;
+    cfg.port = 3395;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port);
+    CHECK(r.reached_active);
+
+    // allow(1) + pad3(3): no desktopRect.
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kSuppressOutput,
+                          {0x00, 0x00, 0x00, 0x00}));
+
+    // Suppressed: no frame may arrive for 2 s (the ~1 s periodic refresh
+    // must be suspended).
+    std::vector<uint8_t> frame;
+    CHECK(!r.reader->Read(frame));
+
+    // allow(1) + pad3(3) + desktopRect(8): output resumes.
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kSuppressOutput,
+                          {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                           0x3f, 0x00, 0x2f, 0x00}));
+    CHECK(r.reader->Read(frame));
+    McsSendData sd;
+    CHECK(McsSendData::parse(frame.data(), frame.size(), sd) == Status::Ok);
+    SlowPathGraphicsUpdate upd;
+    CHECK(SlowPathGraphicsUpdate::parse(sd.user_data.data(), sd.user_data.size(),
+                                        upd) == Status::Ok);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_refresh_continues_during_input) {
+    // The periodic desktop refresh must run on its own ~1 s cadence and must
+    // NOT be reset by client input: continuous input previously zeroed the
+    // idle counter and froze the desktop while the user was interacting.
+    ServerConfig cfg;
+    cfg.port = 3396;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port);
+    CHECK(r.reached_active);
+
+    // Send a mouse move every 200 ms and count bitmap frames over ~3 s. The
+    // reader's short deadline keeps the loop sending input while it waits.
+    FrameReader poller(*r.transport, std::chrono::milliseconds(300));
+    int frames = 0;
+    int inputs = 0;
+    const auto t_end = std::chrono::steady_clock::now() +
+                       std::chrono::milliseconds(3000);
+    auto next_input = std::chrono::steady_clock::now();
+    std::vector<uint8_t> frame;
+    while (std::chrono::steady_clock::now() < t_end) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_input) {
+            WriteAll(*r.transport,
+                     McsSendData::build_request(
+                         r.user_channel, r.io_channel,
+                         EncodeFastPathInputPdu(
+                             {EncodeMouseEvent(kPtrMove,
+                                               static_cast<uint16_t>(inputs % 64),
+                                               20)})));
+            ++inputs;
+            next_input = now + std::chrono::milliseconds(200);
+        }
+        if (poller.Read(frame)) ++frames;
+    }
+    // Input must really have kept flowing, and frames must still have arrived.
+    CHECK(inputs >= 10);
+    CHECK(frames >= 2);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_wide_desktop_bands_fit_mcs_limit) {
+    // A single 4Bpp row wider than ~4085 px overflows both the 16383-byte MCS
+    // Send Data userData cap and the u16 bitmapLength; the banding must split
+    // columns as well as rows and keep every rectangle self-consistent.
+    ServerConfig cfg;
+    cfg.port = 3397;
+    cfg.desktop_width = 5000;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+                                      cfg.desktop_width, cfg.desktop_height);
+    if (!r.error.empty()) {
+        std::printf("  handshake error: %s\n", r.error.c_str());
+    }
+    CHECK(r.reached_active);
+    CHECK(r.error.empty());
+
+    // First chunk: the widest single-row rectangle that fits the budget.
+    CHECK(r.rect_extents_consistent);
+    CHECK_EQ(r.bitmap_width, 4085);
+    CHECK_EQ(r.bitmap_height, 1);
+    CHECK(r.share_pdu_bytes <= 16383);
+
+    // Next bands keep arriving, chunked the same way (4085 + 915 per row).
+    const uint16_t expected_widths[3] = {915, 4085, 915};
+    for (int i = 0; i < 3; ++i) {
+        std::vector<uint8_t> frame;
+        CHECK(r.reader->Read(frame));
+        McsSendData sd;
+        CHECK(McsSendData::parse(frame.data(), frame.size(), sd) == Status::Ok);
+        CHECK(sd.user_data.size() <= 16383);
+        SlowPathGraphicsUpdate upd;
+        CHECK(SlowPathGraphicsUpdate::parse(sd.user_data.data(),
+                                            sd.user_data.size(),
+                                            upd) == Status::Ok);
+        UpdateBitmapData bm;
+        CHECK(UpdateBitmapData::parse(upd.update_data.data(),
+                                      upd.update_data.size(), bm) ==
+              Status::Ok);
+        CHECK(!bm.rectangles.empty());
+        if (bm.rectangles.empty()) break;  // CHECK above keeps counting: don't UB
+        const BitmapData& rect = bm.rectangles.front();
+        CHECK_EQ(rect.width, expected_widths[i]);
+        CHECK_EQ(static_cast<int>(rect.dest_right) -
+                     static_cast<int>(rect.dest_left) + 1,
+                 static_cast<int>(rect.width));
+        DecodedBitmap decoded;
+        CHECK(DecodeRawBitmap(rect.bitmap_data.data(), rect.bitmap_data.size(),
+                              rect.width, rect.height, rect.bits_per_pixel,
+                              decoded) == Status::Ok);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_refresh_send_failure_closes_session) {
+    // A periodic-refresh SendFrame() failure must be handled: the session
+    // records the error and exits, which closes the transport (the client sees
+    // EOF instead of an endless silent session).
+    ServerConfig cfg;
+    cfg.port = 3398;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    FailingAfterSource source(1);  // first capture OK, then fail
+    RdpServer server(cfg);
+    server.SetDesktopSource(&source);
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port);
+    CHECK(r.reached_active);
+
+    // The next periodic refresh (~1 s) fails: the server must end the session.
+    // EOF arrives within a bounded window; a silent keep-alive session would
+    // only produce read timeouts.
+    bool saw_eof = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        uint8_t tmp[4096];
+        const int n = r.transport->Read(tmp, sizeof(tmp));
+        if (n != rtsc::net::kReadTimeout) {
+            saw_eof = n <= 0;
+            break;
+        }
+    }
+    CHECK(saw_eof);
+
+    server.Stop();
+    runner.join();
 }
 
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

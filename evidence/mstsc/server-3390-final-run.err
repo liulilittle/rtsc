@@ -1,0 +1,7 @@
+[rtsc-sess] Run start
+[rtsc-sess] x224 ok secure_req=1 proto=0x2
+[rtsc-sec] credssp complete, leftover plain=0:
+[rtsc-sess] secure ok credssp_req=1
+[rtsc-sess] secure ReadFrame transport n=-1
+[rtsc-sess] connect_response: ReadFrame failed
+[rtsc-sess] FAIL connect_response

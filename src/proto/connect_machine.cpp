@@ -211,7 +211,28 @@ ConnectStep ConnectMachine::SendChannelJoin() {
         // layer wraps the post-Client-Info traffic.
         pdu.info.code_page = 0x0409;  // en-US language id (Unicode mode)
         pdu.info.flags = info::kMouse | info::kUnicode | info::kDisableCtrlAltDel |
-                         info::kMaximizeShell | info::kLogonNotify;
+                         info::kMaximizeShell | info::kLogonNotify |
+                         info::kEnableWindowsKey;
+        // mstsc-quality image: request ClearType font smoothing and DWM
+        // desktop composition ([MS-RDPBCGR] 2.2.5.1.1 performanceFlags).
+        // Without the enable bits the server renders aliased text on a
+        // non-composited desktop — visibly unlike the physical console.
+        pdu.info.has_extended_info = true;
+        {
+            // mstsc always sends the extended block; the performanceFlags live
+            // at the end of its chain (address/dir -> timezone -> sessionId ->
+            // performanceFlags). An all-zero TS_TIME_ZONE_PDU means bias 0, so
+            // the server runs the session on UTC rather than the client's
+            // local timezone; wiring the real local timezone is future work.
+            auto& ext = pdu.info.extended_info;
+            ext.client_address_family = TsExtendedInfoPacket::kAfInet;
+            ext.has_time_zone = true;
+            ext.has_session_id = true;
+            ext.session_id = 0;
+            ext.has_performance_flags = true;
+            ext.performance_flags = perf::kEnableFontSmoothing |
+                                    perf::kEnableDesktopComposition;
+        }
         // [MS-RDPBCGR] 2.2.1.11.1.1 INFO_RAIL: the client supports the RAIL
         // (Remote Programs) protocol. It is set when the client advertised the
         // "rail" static virtual channel in the Client Network Data.

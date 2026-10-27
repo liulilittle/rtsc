@@ -137,7 +137,8 @@ SessionStep SessionSetupMachine::HandleDemandActive(const uint8_t* data,
 
     // Build Confirm Active.
     const auto caps = BuildDefaultClientCapabilities(
-        config_.desktop_width, config_.desktop_height, config_.color_depth);
+        config_.desktop_width, config_.desktop_height, config_.color_depth,
+        config_.rail_mode);
     const auto confirm = ConfirmActivePdu::encode(
         state_.user_channel_id, state_.share_id, state_.server_channel_id,
         config_.source_descriptor, caps);
@@ -172,6 +173,9 @@ SessionStep SessionSetupMachine::HandleDemandActive(const uint8_t* data,
         out.to_send.push_back(
             FrameDataPdu(ShareDataPduType::kFontList, w.take()));
     }
+
+    // Refresh Rect ([MS-RDPBCGR] 2.2.11.2) is NOT sent here: it belongs after
+    // the server's Font Map completes activation (see HandleSharePdu).
 
     confirm_sent_ = true;
     // S2 -> S3: everything up to Font List has been emitted.
@@ -242,8 +246,58 @@ SessionStep SessionSetupMachine::HandleSharePdu(const uint8_t* data,
             if (state_.phase == SessionPhase::kFinalizing) {
                 state_.phase = SessionPhase::kActive;
                 out.active = true;
+                // Refresh Rect ([MS-RDPBCGR] 2.2.11.2), mirroring mstsc: the
+                // client asks the server to send the desktop for the full
+                // Demand-Active rectangle as soon as activation completes.
+                // Without it a server that suppressed output for an idle
+                // console never repaints and the client shows a black desktop.
+                RefreshRectPdu refresh;
+                RefreshRectPdu::Rect full;
+                full.right = static_cast<uint16_t>(state_.desktop_width == 0
+                                                       ? 0
+                                                       : state_.desktop_width -
+                                                             1);
+                full.bottom = static_cast<uint16_t>(state_.desktop_height == 0
+                                                        ? 0
+                                                        : state_.desktop_height -
+                                                              1);
+                refresh.rectangles.push_back(full);
+                out.to_send.push_back(FrameDataPdu(ShareDataPduType::kRefreshRect,
+                                                   refresh.encode()));
             }
             return out;
+        case ShareDataPduType::kSuppressOutput: {
+            // [MS-RDPBCGR] 2.2.11.3.1: the client gates the server's desktop
+            // output. With allowDisplayUpdates=1 the PDU names the desktop
+            // rectangle and the client answers with a Refresh Rect for it,
+            // mirroring mstsc. allowDisplayUpdates=0 keeps the output
+            // suppressed and needs no reply. A malformed body is ignored: the
+            // session continues.
+            SuppressOutputPdu sup;
+            if (SuppressOutputPdu::parse(data + ShareDataHeader::kSize,
+                                         size - ShareDataHeader::kSize,
+                                         sup) != Status::Ok) {
+                return out;
+            }
+            if (sup.allow_display_updates) {
+                RefreshRectPdu refresh;
+                if (sup.rectangles.empty()) {
+                    RefreshRectPdu::Rect full;
+                    full.right = static_cast<uint16_t>(
+                        state_.desktop_width == 0 ? 0 : state_.desktop_width - 1);
+                    full.bottom = static_cast<uint16_t>(
+                        state_.desktop_height == 0 ? 0
+                                                   : state_.desktop_height - 1);
+                    refresh.rectangles.push_back(full);
+                } else {
+                    refresh.rectangles = sup.rectangles;
+                }
+                out.to_send.push_back(
+                    FrameDataPdu(ShareDataPduType::kRefreshRect,
+                                 refresh.encode()));
+            }
+            return out;
+        }
         default:
             // Graphics / input PDUs before Font Map, or anything unlisted: the
             // state machine only reacts to the PDUs above (12.2).

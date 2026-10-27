@@ -220,10 +220,16 @@ StepResult ServerSecurityLayer::DriveCredssp() {
     }
 
     if (credssp_->complete()) {
-        // The server emits the 4-byte EUAR (authorization success) once the
-        // client's authInfo has been accepted. The client waits for it before
-        // it will send the MCS Connect Initial.
         phase_ = Phase::kDone;
+        // [MS-RDPBCGR] 2.2.10.2: the 4-byte EUAR is only sent when the client
+        // advertised PROTOCOL_HYBRID_EX and the server selected it. A
+        // HYBRID-only session (0x2) resumes directly with the MCS Connect
+        // Initial; sending unsolicited bytes makes mstsc reset with 0x1204.
+        if (!config_.euar_required) {
+            StepResult r;
+            r.want = Want::kDone;
+            return r;
+        }
         const credssp::Bytes euar(4, 0x00);
         return EncryptAndWrite(euar);
     }

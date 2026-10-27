@@ -173,6 +173,8 @@ void ScopeList::write(ByteWriter& w) const {
         LicenseBlob blob;
         blob.type = LicenseBlobType::kScope;
         blob.data = scope;
+        // [MS-RDPELE] 2.2.2.1.2.1: the scope string is NUL terminated.
+        if (blob.data.empty() || blob.data.back() != 0) blob.data.push_back(0);
         blob.write(w);
     }
 }
@@ -356,6 +358,10 @@ std::vector<uint8_t> ClientPlatformChallengeResponse::encode() const {
     if (!mac.empty()) w.bytes(mac.data(), mac.size());
     return w.take();
 }
+
+// CLIENT_PLATFORM_CHALLENGE_RESPONSE has an encode() only: this client builds
+// the message but never consumes one, and no test exercises a parse, so the
+// parser is deliberately absent (audit batch: dead code trimmed).
 
 // ---- ServerNewLicense -----------------------------------------------------
 
@@ -628,6 +634,8 @@ Status LicensingPdu::Parse(const uint8_t* data, size_t size, LicensingPdu& out) 
         default:
             // Client-to-server messages are not expected inbound; the caller
             // decides what to do, but the framing itself is well formed.
+            // NEW_LICENSE_REQUEST (0x13) lands here too: the client only ever
+            // *sends* one, so no inbound parser is wired for it.
             return Status::Ok;
     }
 }

@@ -92,7 +92,8 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
                                             const std::string& domain,
                                             const std::string& user,
                                             const std::string& password,
-                                            bool standard_rdp) {
+                                            bool standard_rdp,
+                                            bool rail_mode) {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
     if (standard_rdp) {
@@ -107,10 +108,14 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
         mcfg.encryption_methods = 0;
     }
     mcfg.client_name = "RTSC";
-    // The "rail" static virtual channel carries the Remote Programs orders
-    // ([MS-RDPERP]); the server assigns it the next MCS channel id after the
-    // three redirection channels.
-    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd", "rail"};
+    // Static virtual channels ([MS-RDPBCGR] 2.2.1.11). The "rail" channel is
+    // only advertised in RemoteApp (--rail): a desktop session claiming it
+    // makes the server prepare a RemoteApp session with a black desktop.
+    if (rail_mode) {
+        mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd", "rail"};
+    } else {
+        mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
+    }
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -140,6 +145,7 @@ int main(int argc, char** argv) {
     long max_seconds = 0;  // 0 = unlimited
     bool standard_rdp = false;
     bool input_probe = false;
+    bool rail_mode = false;
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(argc));
     for (int i = 1; i < argc; ++i) {
@@ -150,6 +156,13 @@ int main(int argc, char** argv) {
         }
         if (std::strcmp(a, "--input-probe") == 0) {
             input_probe = true;
+            continue;
+        }
+        if (std::strcmp(a, "--rail") == 0) {
+            // RemoteApp (RAIL) mode: advertise the rail channel, INFO_RAIL and
+            // TS_RAIL_CAPS. A desktop session must NOT claim them (mstsc only
+            // does in remoteapplicationmode:i:1).
+            rail_mode = true;
             continue;
         }
         if (std::strcmp(a, "--frames") == 0 && i + 1 < argc) {
@@ -237,7 +250,8 @@ int main(int argc, char** argv) {
     }
 
     rtsc::client::Client client(
-        MakeDriver(host, domain, user, password, standard_rdp), width, height);
+        MakeDriver(host, domain, user, password, standard_rdp, rail_mode), width,
+     height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
     // the rendering. The default is 1:1 lossless: zoom 100% and fit off, so the
@@ -334,17 +348,21 @@ int main(int argc, char** argv) {
     // RAIL: register the handler on the server-assigned "rail" static virtual
     // channel and start the RAIL session. The server sends its Handshake first
     // ([MS-RDPERP] 2.2.2.2.1); the client responds and sends its ClientStatus.
-    client.rail().SetHandler([&](const rtsc::proto::RailPdu& pdu) {
-        ++vc_rail;
-        (void)pdu;  // the RailClient state holds the decoded orders
-    });
-    const uint16_t rail_id =
-        client.StartRailChannel(kRailBuildNumber, kRailClientFlags);
-    if (rail_id == 0) {
-        std::printf("rail: server did not assign a rail static virtual channel\n");
-    } else {
-        std::printf("rail: static virtual channel id %u\n",
-                    static_cast<unsigned>(rail_id));
+    // Skipped entirely outside RemoteApp mode: the channel was never offered.
+    if (rail_mode) {
+        client.rail().SetHandler([&](const rtsc::proto::RailPdu& pdu) {
+            ++vc_rail;
+            (void)pdu;  // the RailClient state holds the decoded orders
+        });
+        const uint16_t rail_id =
+            client.StartRailChannel(kRailBuildNumber, kRailClientFlags);
+        if (rail_id == 0) {
+            std::printf(
+                "rail: server did not assign a rail static virtual channel\n");
+        } else {
+            std::printf("rail: static virtual channel id %u\n",
+                        static_cast<unsigned>(rail_id));
+        }
     }
 
     // Size the window and the surface to the desktop the server granted (the

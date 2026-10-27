@@ -543,6 +543,16 @@ if(WIN32)
     target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
 endif()
 
+# Standalone host for the RDP server role: the same RdpServer the loopback
+# tests drive, configured from the command line and served to a real client
+# (mstsc). The GDI desktop capture is Windows-only; other platforms fall back to
+# the synthetic test pattern inside the tool.
+add_executable(rtsc_server_host tools/rtsc_server/main.cpp)
+target_link_libraries(rtsc_server_host PRIVATE rtsc_server rtsc_util)
+if(WIN32)
+    target_link_libraries(rtsc_server_host PRIVATE rtsc_server_desktop_gdi)
+endif()
+
 # RAIL ([MS-RDPERP]) wire structures and virtual channel.
 add_executable(rtsc_rail_tests tests/test_rail.cpp)
 target_link_libraries(rtsc_rail_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -677,6 +687,7 @@ if(MSVC)
     target_compile_options(rtsc_connect PRIVATE /W4 /WX)
     target_compile_options(rtsc_gui PRIVATE /W4 /WX)
     target_compile_options(rtsc_bench PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_host PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_tls_tests PRIVATE /W4 /WX)
     endif()

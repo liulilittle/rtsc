@@ -63,7 +63,6 @@ RTSC_TEST(fastpath_output_rejects_truncated_update) {
 
 RTSC_TEST(update_bitmap_data_parses_one_rectangle) {
     ByteWriter d;
-    d.u16le(0x0001);  // UPDATETYPE_BITMAP
     d.u16le(1);       // numberRectangles
     d.u16le(0);       // destLeft
     d.u16le(0);       // destTop
@@ -89,31 +88,35 @@ RTSC_TEST(update_bitmap_data_parses_one_rectangle) {
     CHECK_EQ(bm.rectangles[0].bitmap_data[0], static_cast<uint8_t>(0x44));
 }
 
-RTSC_TEST(update_bitmap_data_rejects_wrong_type) {
+RTSC_TEST(update_bitmap_data_rejects_truncated_rectangles) {
+    // Declares 2 rectangles but no rectangle data follows.
     ByteWriter d;
-    d.u16le(0x0002);  // wrong: palette
-    d.u16le(0);
+    d.u16le(2);  // numberRectangles
     const auto data = d.take();
     UpdateBitmapData bm;
     CHECK(UpdateBitmapData::parse(data.data(), data.size(), bm) ==
-          Status::InvalidType);
+          Status::NeedMoreData);
 }
 
 RTSC_TEST(update_palette_data_parses_entries) {
+    // TS_UPDATE_PALETTE_DATA ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.3): numberColors is
+    // a 32-bit field, so the palette entries start 4 bytes after the pad, not
+    // 2 — a u16 read would shift every entry by two bytes.
     ByteWriter d;
     d.u16le(0x0002);  // UPDATETYPE_PALETTE
     d.u16le(0);       // pad2Octets
-    d.u16le(2);       // numberColors
+    d.u32le(3);       // numberColors
     d.u8(0x11); d.u8(0x22); d.u8(0x33);
     d.u8(0x44); d.u8(0x55); d.u8(0x66);
+    d.u8(0x77); d.u8(0x88); d.u8(0x99);
     const auto data = d.take();
 
     UpdatePaletteData pal;
     CHECK(UpdatePaletteData::parse(data.data(), data.size(), pal) == Status::Ok);
-    CHECK_EQ(pal.number_colors, static_cast<uint16_t>(2));
-    CHECK_EQ(pal.entries.size(), static_cast<size_t>(6));
+    CHECK_EQ(pal.number_colors, static_cast<uint32_t>(3));
+    CHECK_EQ(pal.entries.size(), static_cast<size_t>(9));
     CHECK_EQ(pal.entries[0], static_cast<uint8_t>(0x11));
-    CHECK_EQ(pal.entries[5], static_cast<uint8_t>(0x66));
+    CHECK_EQ(pal.entries[8], static_cast<uint8_t>(0x99));
 }
 
 namespace {
@@ -140,16 +143,16 @@ std::vector<uint8_t> SlowPathUpdate(uint16_t update_type,
 }  // namespace
 
 RTSC_TEST(slowpath_graphics_update_parses_bitmap) {
-    // updateData = TS_UPDATE_BITMAP_DATA with 0 rectangles.
+    // updateData = TS_UPDATE_BITMAP_DATA with 0 rectangles; the updateType is
+    // consumed by SlowPathGraphicsUpdate::parse and is not part of the body.
     ByteWriter d;
-    d.u16le(0x0001);  // UPDATETYPE_BITMAP (repeated inside the update data)
-    d.u16le(0);       // numberRectangles
+    d.u16le(0);  // numberRectangles
     const auto pdu = SlowPathUpdate(kUpdateBitmap, d.take());
 
     SlowPathGraphicsUpdate out;
     CHECK(SlowPathGraphicsUpdate::parse(pdu.data(), pdu.size(), out) == Status::Ok);
     CHECK_EQ(out.update_type, static_cast<uint16_t>(kUpdateBitmap));
-    CHECK_EQ(out.update_data.size(), static_cast<size_t>(4));
+    CHECK_EQ(out.update_data.size(), static_cast<size_t>(2));
 
     UpdateBitmapData bm;
     CHECK(UpdateBitmapData::parse(out.update_data.data(), out.update_data.size(),

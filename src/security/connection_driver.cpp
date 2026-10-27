@@ -144,6 +144,11 @@ DriverStep ConnectionDriver::OnData(const uint8_t* data, size_t size) {
 
         if (!standard_rdp_ &&
             machine_.state().phase == ConnectPhase::kAwaitExternalSecurity) {
+            // [MS-RDPBCGR] 2.2.10.2: the server sends the EUAR only when
+            // PROTOCOL_HYBRID_EX was negotiated; HYBRID resumes directly with
+            // the MCS Connect Initial.
+            security_config_.expect_euar =
+                (machine_.state().negotiated_protocol & proto::kProtocolHybridEx) != 0;
             std::string why;
             security_ = SecurityLayer::Create(security_config_, why);
             if (!security_) return Fail("cannot create the security layer: " + why);
@@ -241,6 +246,14 @@ void ConnectionDriver::BeginPostClientInfo(DriverStep& out) {
     sc.io_channel_id = machine_.state().io_channel_id;
     sc.desktop_width = static_cast<uint16_t>(machine_config_.desktop_width);
     sc.desktop_height = static_cast<uint16_t>(machine_config_.desktop_height);
+    // RAIL caps are claimed only when the "rail" static virtual channel was
+    // advertised in the Client Network Data (RemoteApp mode).
+    for (const auto& name : machine_config_.channel_names) {
+        if (name == "rail") {
+            sc.rail_mode = true;
+            break;
+        }
+    }
     session_ = std::make_unique<proto::SessionSetupMachine>(sc);
     session_->Start();
 }
@@ -363,19 +376,19 @@ DriverStep ConnectionDriver::DriveSecurity(const uint8_t* data, size_t size) {
     const StepResult r = security_->Step(data, size);
 
     if (r.want == Want::kWrite) {
-        // Return to the caller so it can put these bytes on the wire; it will
-        // call OnData again once the peer's response has been read.
-        out.to_send = r.to_wire;
-        return out;
-    }
-    if (r.want == Want::kRead) {
+        Append(out.to_send, r.to_wire);
+        // With PROTOCOL_HYBRID (no EUAR) the handshake is complete as soon as
+        // step 5 is produced: the layer already reports kDone even though this
+        // flight carried the final CredSSP message. Emit the MCS Connect
+        // Initial now; waiting for a read that never comes deadlocks.
+        if (!security_->handshake_complete()) return out;
+    } else if (r.want == Want::kRead) {
         return out;  // empty: need more bytes from the peer
-    }
-    if (r.want == Want::kFailed) {
+    } else if (r.want == Want::kFailed) {
         return Fail("security handshake failed: " + r.error);
     }
 
-    // r.want == Want::kDone: emit the MCS Connect Initial through the layer.
+    // Handshake complete: emit the MCS Connect Initial through the layer.
     const auto step = machine_.OnExternalSecurityComplete();
     if (machine_.failed()) return Fail(machine_.state().error);
     if (!step.output.empty()) {

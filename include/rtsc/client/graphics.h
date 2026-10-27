@@ -87,6 +87,11 @@ class GraphicsPipeline {
     uint16_t pointer_x() const noexcept { return pointer_x_; }
     uint16_t pointer_y() const noexcept { return pointer_y_; }
 
+    // True when the remote pointer must be composited over the desktop
+    // (kPtrDefault received and not revoked by kPtrNull). mstsc always shows
+    // the pointer; a client that draws none looks like a static screenshot.
+    bool cursor_visible() const noexcept { return cursor_style_ == kArrow; }
+
     // The 8-bit palette (768 bytes) used by palette-indexed bitmaps.
     const std::vector<uint8_t>& palette() const noexcept { return palette_; }
 
@@ -108,6 +113,9 @@ class GraphicsPipeline {
     // Decodes one TS_BITMAP_DATA rectangle and blits it onto the surface.
     bool ApplyBitmapRect(const proto::BitmapData& rect);
 
+    // Composites the remote pointer over the rendered viewport when visible.
+    void DrawCursor(ui::Surface& dst, const ViewTransform& vt) const;
+
     // Draws primary orders from a fast-path or slow-path orders update. One
     // shared instance keeps the cross-PDU parser state (orderType, bounds,
     // brush cache) coherent across both update paths.
@@ -125,6 +133,10 @@ class GraphicsPipeline {
     bool has_pointer_ = false;
     uint16_t pointer_x_ = 0;
     uint16_t pointer_y_ = 0;
+    // Remote pointer visibility: kNone until the first pointer-style update,
+    // kArrow after TS_PTR_DEFAULT_ATTR, kHidden after TS_PTR_NULL_ATTR.
+    enum PointerStyle { kNone, kHidden, kArrow };
+    PointerStyle cursor_style_ = kNone;
     double zoom_ = 1.0;
     bool fit_ = true;
 };

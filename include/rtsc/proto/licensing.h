@@ -195,6 +195,7 @@ struct ClientHardwareId {
 };
 
 // CLIENT_PLATFORM_CHALLENGE_RESPONSE (bMsgType 0x15, [MS-RDPELE] 2.2.2.5).
+// Encode-only: this client builds the message but never consumes one.
 struct ClientPlatformChallengeResponse {
     std::vector<uint8_t> encrypted_challenge_response;
     std::vector<uint8_t> encrypted_hwid;  // 20 bytes (RC4 keeps the length)
@@ -272,8 +273,10 @@ Status ExtractRsaPublicKey(const std::vector<uint8_t>& certificate_blob,
 // A licensing PDU: the 4-byte preamble plus its message body, as carried in the
 // payload of an MCS Send Data PDU with SEC_LICENSE_PKT set.
 //
-// Parse() dispatches on bMsgType and fills whichever member matches; Encode()
-// writes the preamble (computing wMsgSize) followed by the body.
+// Parse() dispatches on bMsgType and fills whichever member matches (client
+// messages have no inbound parser: they are encoded here and parsed by the
+// direct struct parse functions); Encode() writes the preamble (computing
+// wMsgSize) followed by the body.
 struct LicensingPdu {
     LicensePreamble preamble;
     ServerLicenseRequest license_request;

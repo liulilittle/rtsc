@@ -81,7 +81,7 @@ struct UpdateBitmapData {
 
 // TS_UPDATE_PALETTE_DATA ([MS-RDPBCGR] 2.2.9.1.1.3.1.1.1).
 struct UpdatePaletteData {
-    uint16_t number_colors = 0;
+    uint32_t number_colors = 0;  // 32-bit field ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.3)
     std::vector<uint8_t> entries;  // 3 * number_colors RGB bytes
 
     static Status parse(const uint8_t* data, size_t size, UpdatePaletteData& out);

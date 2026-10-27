@@ -30,6 +30,12 @@ bool RsaServerKeyPair::DecryptClientRandom(const std::vector<uint8_t>& /*in*/,
     return false;
 }
 
+bool RsaServerKeyPair::DecryptRaw(const std::vector<uint8_t>& /*in*/,
+                                  std::vector<uint8_t>& out) {
+    out.clear();
+    return false;
+}
+
 }  // namespace rtsc::crypto
 
 #endif  // !_WIN32

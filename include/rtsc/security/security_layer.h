@@ -47,6 +47,13 @@ struct Config {
     // CredSSP version (5 or 6 recommended).
     uint32_t credssp_version = 6;
 
+    // Whether the server selected PROTOCOL_HYBRID_EX and will therefore send
+    // the Early User Authorization Result PDU (a bare 4-byte AUTHZ result)
+    // after the CredSSP handshake. [MS-RDPBCGR] 2.2.10.2: the EUAR is only sent
+    // when the client advertised HYBRID_EX and the server selected it; a
+    // HYBRID-only server sends nothing and the client resumes with MCS.
+    bool expect_euar = true;
+
     // Client credentials for CredSSP.
     credssp::Credentials credentials;
 

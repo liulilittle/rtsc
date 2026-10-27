@@ -116,12 +116,163 @@ RTSC_TEST(session_setup_demand_active_emits_finalization_batch) {
     CHECK(!step.failed);
 
     // Confirm Active + Synchronize + Control(Cooperate) + Control(RequestControl)
-    // + Font List = 5 PDUs.
+    // + Font List = 5 PDUs. The Refresh Rect is NOT part of the batch: mstsc
+    // sends it only after the server's Font Map completes activation.
     CHECK_EQ(step.to_send.size(), static_cast<size_t>(5));
     CHECK(m.state().phase == SessionPhase::kFinalizing);
     CHECK_EQ(m.state().share_id, static_cast<uint32_t>(0x000103EA));
     CHECK_EQ(m.state().server_channel_id, static_cast<uint16_t>(0x03EA));
     CHECK(m.state().server_capabilities.sets.size() == 13);
+}
+
+RTSC_TEST(session_setup_confirm_active_has_no_rail_caps_by_default) {
+    // Desktop sessions must not claim TS_RAIL_CAPS ([MS-RDPERP] 1.3: RAIL is
+    // for Remote Programs); claiming it unconditionally made the Windows
+    // server run a RemoteApp session with a never-composited desktop.
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    const auto step = m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+    CHECK(!step.failed);
+    CHECK(step.to_send.size() >= 1);
+
+    McsSendData sd;
+    CHECK(McsSendData::parse(step.to_send[0].data(), step.to_send[0].size(),
+                            sd) == Status::Ok);
+    ConfirmActivePdu ca;
+    CHECK(ConfirmActivePdu::parse(sd.user_data.data(), sd.user_data.size(),
+                                  ca) == Status::Ok);
+    CHECK(!ca.capabilities.has(CapabilityType::kRail));
+}
+
+RTSC_TEST(session_setup_font_map_activation_emits_refresh_rect) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    auto wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(step.active);
+    CHECK(m.state().phase == SessionPhase::kActive);
+
+    // The activation step carries exactly one extra PDU: the Refresh Rect
+    // ([MS-RDPBCGR] 2.2.11.3) requesting the full desktop, mirroring mstsc.
+    CHECK_EQ(step.to_send.size(), static_cast<size_t>(1));
+    McsSendData sd;
+    CHECK(McsSendData::parse(step.to_send[0].data(), step.to_send[0].size(),
+                            sd) == Status::Ok);
+    ShareDataHeader hdr;
+    CHECK(ShareDataHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                 hdr) == Status::Ok);
+    CHECK(hdr.pdu_type2 == ShareDataPduType::kRefreshRect);
+
+    // Body: numberOfAreas(1) + pad3Octets(3) + one full-desktop rectangle
+    // (left, top, right, bottom inclusive, [MS-RDPBCGR] 2.2.11.2.1). The
+    // padding FOLLOWS the count: a server reading numberOfAreas from byte 0
+    // must see 1, not the pad1 byte the old (pad1+count) layout emitted.
+    const auto& body = sd.user_data;
+    CHECK(body.size() >= ShareDataHeader::kSize + 12);
+    const uint8_t* p = body.data() + ShareDataHeader::kSize;
+    CHECK_EQ(p[0], static_cast<uint8_t>(1));  // numberOfAreas
+    CHECK_EQ(p[1], static_cast<uint8_t>(0));  // pad3Octets
+    CHECK_EQ(p[2], static_cast<uint8_t>(0));
+    CHECK_EQ(p[3], static_cast<uint8_t>(0));
+    const auto rd16 = [&p](size_t off) {
+        return static_cast<uint16_t>(p[off]) |
+               static_cast<uint16_t>(p[off + 1] << 8);
+    };
+    CHECK_EQ(rd16(4), static_cast<uint16_t>(0));   // left
+    CHECK_EQ(rd16(6), static_cast<uint16_t>(0));   // top
+    CHECK_EQ(rd16(8), static_cast<uint16_t>(m.state().desktop_width - 1));   // right
+    CHECK_EQ(rd16(10), static_cast<uint16_t>(m.state().desktop_height - 1));  // bottom
+}
+
+RTSC_TEST(session_setup_suppress_output_allow_triggers_refresh_rect) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+
+    // Server Suppress Output with allowDisplayUpdates=1 and the desktop
+    // rectangle ([MS-RDPBCGR] 2.2.11.3.1: allowDisplayUpdates(1) + pad3Octets(3)
+    // + desktopRect(8); no count field, no rectangle array): the client must
+    // answer with a Refresh Rect for that rectangle.
+    std::vector<uint8_t> body = {0x01, 0x00, 0x00, 0x00,   // allow + pad3
+                                 0x00, 0x00, 0x00, 0x00,   // desktopRect left/top
+                                 0xff, 0x03, 0xff, 0x03};  // desktopRect right/bottom
+    const auto step = m.OnPdu(
+        ServerDataPdu(ShareDataPduType::kSuppressOutput, body).data(),
+        ServerDataPdu(ShareDataPduType::kSuppressOutput, body).size());
+    CHECK(!step.failed);
+    CHECK_EQ(step.to_send.size(), static_cast<size_t>(1));
+
+    McsSendData sd;
+    CHECK(McsSendData::parse(step.to_send[0].data(), step.to_send[0].size(),
+                            sd) == Status::Ok);
+    ShareDataHeader hdr;
+    CHECK(ShareDataHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                  hdr) == Status::Ok);
+    CHECK(hdr.pdu_type2 == ShareDataPduType::kRefreshRect);
+    // numberOfAreas(1)=1 then pad3Octets(3)=0.
+    const uint8_t* p = sd.user_data.data() + ShareDataHeader::kSize;
+    CHECK_EQ(p[0], static_cast<uint8_t>(1));
+    CHECK_EQ(p[1], static_cast<uint8_t>(0));
+    CHECK_EQ(p[2], static_cast<uint8_t>(0));
+    CHECK_EQ(p[3], static_cast<uint8_t>(0));
+    // The refreshed rectangle is the one the server named, not the full
+    // desktop: (0,0)-(1023,1023).
+    const auto rd16 = [&p](size_t off) {
+        return static_cast<uint16_t>(p[off]) |
+               static_cast<uint16_t>(p[off + 1] << 8);
+    };
+    CHECK_EQ(rd16(4), static_cast<uint16_t>(0));
+    CHECK_EQ(rd16(6), static_cast<uint16_t>(0));
+    CHECK_EQ(rd16(8), static_cast<uint16_t>(0x03ff));
+    CHECK_EQ(rd16(10), static_cast<uint16_t>(0x03ff));
+}
+
+RTSC_TEST(session_setup_suppress_output_disallow_does_not_refresh) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+
+    // allowDisplayUpdates=0 ([MS-RDPBCGR] 2.2.11.3.1: allow(1) + pad3(3), no
+    // desktopRect, no count): output stays suppressed; no Refresh Rect.
+    std::vector<uint8_t> body = {0x00, 0x00, 0x00, 0x00};
+    const auto step = m.OnPdu(
+        ServerDataPdu(ShareDataPduType::kSuppressOutput, body).data(),
+        ServerDataPdu(ShareDataPduType::kSuppressOutput, body).size());
+    CHECK(!step.failed);
+    CHECK(step.to_send.empty());
+}
+
+RTSC_TEST(session_setup_suppress_output_malformed_is_ignored) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+
+    // A truncated body must neither fail the session nor emit a refresh. Two
+    // malformed shapes: a cut-off header, and allow=1 with the mandatory
+    // desktopRect missing ([MS-RDPBCGR] 2.2.11.3.1).
+    for (const std::vector<uint8_t>& body : {std::vector<uint8_t>{0x01, 0x00},
+                                             std::vector<uint8_t>{0x01, 0x00,
+                                                                  0x00, 0x00}}) {
+        const auto step = m.OnPdu(
+            ServerDataPdu(ShareDataPduType::kSuppressOutput, body).data(),
+            ServerDataPdu(ShareDataPduType::kSuppressOutput, body).size());
+        CHECK(!step.failed);
+        CHECK(step.to_send.empty());
+    }
 }
 
 RTSC_TEST(session_setup_first_pdu_is_confirm_active) {

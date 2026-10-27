@@ -57,6 +57,12 @@ class RsaServerKeyPair {
     bool DecryptClientRandom(const std::vector<uint8_t>& in,
                              std::vector<uint8_t>& out);
 
+    // Decrypts an RSA-encrypted buffer and returns the raw little-endian
+    // plaintext (up to bitlen/8 bytes). Used by the licensing exchange to
+    // recover the 48-byte premaster secret. `in` is the (bitlen/8)+8 byte
+    // buffer; the trailing 8 bytes are ignored.
+    bool DecryptRaw(const std::vector<uint8_t>& in, std::vector<uint8_t>& out);
+
  private:
     void Close() noexcept;
 

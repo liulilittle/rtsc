@@ -51,6 +51,22 @@ constexpr uint32_t CompressionType(uint32_t type) {
 
 }  // namespace info
 
+// TS_INFO_PACKET::performanceFlags ([MS-RDPBCGR] 2.2.5.1.1). The enable bits
+// are what mstsc sends for full-quality sessions; a client that omits them
+// gets aliased text and a non-composited desktop (the "screenshot" look).
+namespace perf {
+
+constexpr uint32_t kDisableWallpaper = 0x00000001;
+constexpr uint32_t kDisableFullWindowDrag = 0x00000002;
+constexpr uint32_t kDisableMenuAnimations = 0x00000004;
+constexpr uint32_t kDisableTheming = 0x00000008;
+constexpr uint32_t kDisableCursorShadow = 0x00000020;
+constexpr uint32_t kDisableCursorSettings = 0x00000040;
+constexpr uint32_t kEnableFontSmoothing = 0x00000080;
+constexpr uint32_t kEnableDesktopComposition = 0x00000100;
+
+}  // namespace perf
+
 // TS_SYSTEMTIME (16 bytes, [MS-RDPBCGR] 2.2.1.11.1.1.1.1). wYear MUST be 0.
 struct TsSystemTime {
     uint16_t year = 0;

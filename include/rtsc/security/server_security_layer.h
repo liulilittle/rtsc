@@ -53,6 +53,12 @@ struct ServerConfig {
     // transport security only, no network-level authentication).
     bool credssp_required = true;
 
+    // Whether to emit the 4-byte Early User Authorization Result PDU after
+    // CredSSP. [MS-RDPBCGR] 2.2.10.2: the EUAR MUST only be sent when the
+    // client advertised PROTOCOL_HYBRID_EX and the server selected it. A
+    // HYBRID-only session (0x2) resumes directly with the MCS Connect Initial.
+    bool euar_required = true;
+
     // Account lookup used to derive the NTLM session key. Null means every
     // CredSSP connection is rejected (the TLS leg still completes).
     credssp::CredentialLookup credential_lookup;

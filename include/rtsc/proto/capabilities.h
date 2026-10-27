@@ -166,8 +166,11 @@ struct GeneralCapabilitySet {
     uint16_t update_capability_flag = 0;
     uint16_t remote_unshare_flag = 0;
     uint16_t compression_level = 0;
-    uint8_t refresh_rect_support = 0;
-    uint8_t suppress_output_support = 0;
+    // mstsc advertises both as supported; a server that gates desktop output
+    // (Suppress Output) only honours a Refresh Rect from a client that
+    // declared these ([MS-RDPBCGR] 2.2.7.1.1 tail).
+    uint8_t refresh_rect_support = 1;
+    uint8_t suppress_output_support = 1;
 
     static Status parse(const CapabilitySet& set, GeneralCapabilitySet& out);
     CapabilitySet encode() const;
@@ -351,8 +354,14 @@ struct RailCapabilitySet {
 //
 // Deliberately excluded: capabilities that only the server sends, and codec sets
 // whose payloads belong to other specifications.
+//
+// `rail_mode` opts into the RAIL capability ([MS-RDPERP]): only a RemoteApp
+// session may claim TS_RAIL_CAPS. A desktop session that claims it makes the
+// Windows server prepare a RemoteApp session whose desktop is never
+// composited (the client sees a black screen).
 std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width,
                                                            uint16_t desktop_height,
-                                                           uint16_t color_depth);
+                                                           uint16_t color_depth,
+                                                           bool rail_mode = false);
 
 }  // namespace rtsc::proto

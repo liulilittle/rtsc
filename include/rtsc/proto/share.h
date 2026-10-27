@@ -242,4 +242,38 @@ struct FastPathPdu {
 // Fixed wire size of a fast-path input event, or 0 for an unknown eventCode.
 size_t FastPathInputEventSize(FastPathInputEventCode code);
 
+// TS_REFRESH_RECT_PDU body ([MS-RDPBCGR] 2.2.11.2.1): the client asks the
+// server to (re)send the display data for the given inclusive rectangles.
+struct RefreshRectPdu {
+    struct Rect {
+        uint16_t left = 0;
+        uint16_t top = 0;
+        uint16_t right = 0;    // inclusive
+        uint16_t bottom = 0;   // inclusive
+    };
+
+    std::vector<Rect> rectangles;
+
+    // numberOfAreas(1) + pad3Octets(3) + areas * 8 bytes
+    // ([MS-RDPBCGR] 2.2.11.2.1; FreeRDP update_write_refresh_rect: count +
+    // Seek(3)). numberOfAreas is a u8, so at most 255 rectangles can be
+    // encoded; every caller here sends exactly one full-desktop area.
+    std::vector<uint8_t> encode() const;
+    static Status parse(const uint8_t* data, size_t size, RefreshRectPdu& out);
+};
+
+// TS_SUPPRESS_OUTPUT_PDU body ([MS-RDPBCGR] 2.2.11.3.1): the client gates the
+// server's desktop output. With allowDisplayUpdates=1 the PDU carries the
+// desktop rectangle and the server answers with a Refresh Rect (mstsc
+// behavior); with 0 it is just the 4-byte header.
+struct SuppressOutputPdu {
+    bool allow_display_updates = false;
+    std::vector<RefreshRectPdu::Rect> rectangles;
+
+    // allowDisplayUpdates(1) + pad3Octets(3) + desktopRect(8), where the
+    // desktopRect is present if and only if allowDisplayUpdates == 1. There is
+    // no count field and no rectangle array.
+    static Status parse(const uint8_t* data, size_t size, SuppressOutputPdu& out);
+};
+
 }  // namespace rtsc::proto

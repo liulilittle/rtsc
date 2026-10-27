@@ -694,7 +694,8 @@ CapabilitySet RailCapabilitySet::encode() const {
 
 std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width,
                                                           uint16_t desktop_height,
-                                                          uint16_t color_depth) {
+                                                          uint16_t color_depth,
+                                                          bool rail_mode) {
     std::vector<CapabilitySet> sets;
 
     GeneralCapabilitySet general;
@@ -752,12 +753,15 @@ std::vector<CapabilitySet> BuildDefaultClientCapabilities(uint16_t desktop_width
     vc.flags = VirtualChannelCapabilitySet::kNoComp;
     sets.push_back(vc.encode());
 
-    // RAIL ([MS-RDPERP] 2.2.1.1.1): the client supports Remote Programs over the
-    // "rail" static virtual channel, including the HandshakeEx PDU.
-    RailCapabilitySet rail;
-    rail.rail_support_level = RailCapabilitySet::kLevelSupported |
-                              RailCapabilitySet::kLevelHandshakeExSupported;
-    sets.push_back(rail.encode());
+    // RAIL ([MS-RDPERP] 2.2.1.1.1): only a RemoteApp session claims it. A
+    // desktop session that advertises TS_RAIL_CAPS makes the Windows server
+    // prepare a RemoteApp session and never composite the desktop.
+    if (rail_mode) {
+        RailCapabilitySet rail;
+        rail.rail_support_level = RailCapabilitySet::kLevelSupported |
+                                  RailCapabilitySet::kLevelHandshakeExSupported;
+        sets.push_back(rail.encode());
+    }
 
     GlyphCacheCapabilitySet glyphs;
     // Conservative cell sizes; the exact values only affect rendering quality.

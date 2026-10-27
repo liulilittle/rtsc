@@ -675,8 +675,18 @@ RTSC_TEST(rail_capability_set_round_trips) {
                                    RailCapabilitySet::kLevelHandshakeExSupported));
 }
 
-RTSC_TEST(default_client_capabilities_advertise_rail) {
+RTSC_TEST(default_client_capabilities_do_not_advertise_rail) {
+    // mstsc only advertises the RAIL capability in RemoteApp mode; a desktop
+    // session that claims TS_RAIL_CAPS makes the Windows server prepare a
+    // RemoteApp session and never composite the desktop (black screen).
     const auto sets = BuildDefaultClientCapabilities(1280, 1024, 0xCA01);
+    for (const auto& set : sets) {
+        CHECK(set.type != CapabilityType::kRail);
+    }
+}
+
+RTSC_TEST(client_capabilities_advertise_rail_when_requested) {
+    const auto sets = BuildDefaultClientCapabilities(1280, 1024, 0xCA01, true);
     bool found = false;
     for (const auto& set : sets) {
         if (set.type == CapabilityType::kRail) {

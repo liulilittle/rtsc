@@ -274,6 +274,18 @@ StepResult SecurityLayer::DriveCredssp() {
         // server emits the EUAR only after it has received step 5, so waiting
         // for the EUAR before sending deadlocks and the peer closes the
         // connection. Send step 5 first, then wait for the EUAR.
+        if (!config_.expect_euar) {
+            // PROTOCOL_HYBRID (0x2): no EUAR follows. Complete as soon as step
+            // 5 is on the wire; any leftover plaintext is the head of the MCS
+            // data plane and is consumed by ReceivePdu.
+            phase_ = Phase::kDone;
+            if (!out_msg.empty()) {
+                return EncryptAndWrite(out_msg);
+            }
+            StepResult r;
+            r.want = Want::kDone;
+            return r;
+        }
         euar_buf_.insert(euar_buf_.end(), plain_buf_.begin(), plain_buf_.end());
         plain_buf_.clear();
         phase_ = Phase::kEuar;

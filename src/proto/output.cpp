@@ -90,12 +90,13 @@ Status FastPathOutputPdu::parse(const uint8_t* data, size_t size,
 Status UpdateBitmapData::parse(const uint8_t* data, size_t size,
                                UpdateBitmapData& out) {
     out.rectangles.clear();
-    if (data == nullptr || size < 4) return Status::NeedMoreData;
+    if (data == nullptr || size < 2) return Status::NeedMoreData;
 
+    // TS_UPDATE_BITMAP_DATA ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.1): numberRectangles
+    // followed by that many TS_BITMAP_DATA rectangles. The updateType is NOT
+    // part of this structure: the dispatcher (slow-path TS_GRAPHICS_UPDATE or
+    // fast-path updateHeader) consumes it before this parser runs.
     ByteReader r(data, size);
-    uint16_t update_type = 0;
-    if (!r.u16le(update_type)) return Status::NeedMoreData;
-    if (update_type != 0x0001) return Status::InvalidType;  // UPDATETYPE_BITMAP
     if (!r.u16le(out.number_rectangles)) return Status::NeedMoreData;
 
     for (uint16_t i = 0; i < out.number_rectangles; ++i) {
@@ -132,7 +133,10 @@ Status UpdatePaletteData::parse(const uint8_t* data, size_t size,
     if (update_type != 0x0002) return Status::InvalidType;  // UPDATETYPE_PALETTE
     uint16_t pad = 0;
     r.u16le(pad);
-    if (!r.u16le(out.number_colors)) return Status::NeedMoreData;
+    // numberColors is a 32-bit field ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.3; FreeRDP
+    // reads it the same way) — reading it as u16 shifted every palette entry
+    // by two bytes.
+    if (!r.u32le(out.number_colors)) return Status::NeedMoreData;
 
     const size_t need = static_cast<size_t>(out.number_colors) * 3;
     if (r.remaining() < need) return Status::NeedMoreData;

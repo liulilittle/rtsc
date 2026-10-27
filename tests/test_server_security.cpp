@@ -214,6 +214,68 @@ RTSC_TEST(tls_server_loopback_to_done) {
     if (!error.empty()) std::printf("  loopback error: %s\n", error.c_str());
 }
 
+RTSC_TEST(server_security_layer_hybrid_without_ex_omits_euar) {
+    // [MS-RDPBCGR] 2.2.10.2: the server sends the 4-byte Early User
+    // Authorization Result only when PROTOCOL_HYBRID_EX was negotiated. A
+    // HYBRID-only session must end after CredSSP step 5 with no extra bytes;
+    // otherwise the client (mstsc) sees unsolicited data and resets with a
+    // protocol error (0x1204).
+    ServerConfig scfg;
+    scfg.tls_config.role = rtsc::tls::Role::kServer;
+    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    scfg.credssp_version = 6;
+    scfg.credential_lookup = Lookup;
+    scfg.euar_required = false;
+
+    std::string swhy;
+    auto server = ServerSecurityLayer::Create(scfg, swhy);
+    CHECK(server != nullptr);
+    if (!server) return;
+    server->SetTlsTransportForTest(std::make_unique<ScriptedTls>());
+
+    // Complete the server TLS accept. The scripted transport consumes the two
+    // handshake tokens, so the CredSSP exchange below starts with an empty
+    // plaintext buffer (exactly as after a real accept).
+    auto sr = server->Step(nullptr, 0);
+    CHECK(sr.want == Want::kRead);
+    const uint8_t hello[] = {0x16, 0x03, 0x01, 0x00, 0x05, 0x01};
+    sr = server->Step(hello, sizeof(hello));
+    CHECK(sr.want == Want::kWrite);  // server hello
+    const uint8_t finished[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    sr = server->Step(finished, sizeof(finished));
+    CHECK(sr.want == Want::kRead);  // accept complete, awaiting CredSSP
+
+    // Drive a real CredSSP client directly so the exchange is not masked by
+    // the project's own client state machine.
+    Credentials creds;
+    creds.domain = "NTDEV";
+    creds.user = "rtsc";
+    creds.password = "password";
+    CredsspClient client(creds, 6);
+    client.SetServerPublicKey(
+        {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01});
+
+    Bytes m1, m2, m3, m4, m5;
+    CHECK(client.Start(m1).ok());
+    sr = server->Step(m1.data(), m1.size());
+    CHECK(sr.want == Want::kWrite);
+    m2 = sr.to_wire;
+    CHECK(client.OnServerResponse(m2.data(), m2.size(), m3).ok());
+    sr = server->Step(m3.data(), m3.size());
+    CHECK(sr.want == Want::kWrite);
+    m4 = sr.to_wire;
+    CHECK(client.OnServerResponse(m4.data(), m4.size(), m5).ok());
+
+    // Step 5 (authInfo) completes CredSSP. With HYBRID there is no EUAR: the
+    // layer must report kDone and must not emit a 4-byte AUTHZ result.
+    sr = server->Step(m5.data(), m5.size());
+    CHECK(sr.want == Want::kDone);
+    CHECK(server->handshake_complete());
+    CHECK(!(sr.to_wire.size() == 4 && sr.to_wire[0] == 0x00 &&
+            sr.to_wire[1] == 0x00 && sr.to_wire[2] == 0x00 &&
+            sr.to_wire[3] == 0x00));
+}
+
 #if defined(_WIN32)
 RTSC_TEST(server_enhanced_security_loopback_to_active) {
     // The full loopback: the project's own client (ConnectionDriver + graphics)
@@ -287,6 +349,70 @@ RTSC_TEST(server_enhanced_security_loopback_to_active) {
         }
         if (!got_frame) std::printf("  frame error: %s\n", error.c_str());
         CHECK(got_frame);
+        transport->Close();
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
+    // mstsc advertises PROTOCOL_SSL | PROTOCOL_HYBRID | PROTOCOL_HYBRID_EX
+    // (0x0B). The server must answer with PROTOCOL_HYBRID_EX (0x8) and send
+    // the EUAR; selecting plain HYBRID (0x2) while still sending the EUAR makes
+    // mstsc treat those 4 bytes as a protocol error (0x1204) and reset.
+    const uint16_t port = 3397;
+    rtsc::server::ServerConfig scfg;
+    scfg.port = port;
+    scfg.desktop_width = 64;
+    scfg.desktop_height = 48;
+    scfg.enable_enhanced_security = true;
+    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    scfg.credssp_version = 6;
+    scfg.credential_lookup = Lookup;
+    auto source = rtsc::server::MakeTestPatternSource();
+    rtsc::server::RdpServer server(scfg);
+    server.SetDesktopSource(source.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    rtsc::proto::ConnectMachine::Config mcfg;
+    mcfg.cookie = "Cookie: mstshash=rtsc";
+    mcfg.requested_protocols = rtsc::proto::kProtocolSsl |
+                               rtsc::proto::kProtocolHybrid |
+                               rtsc::proto::kProtocolHybridEx;
+    mcfg.desktop_width = 64;
+    mcfg.desktop_height = 48;
+    mcfg.client_name = "RTSC";
+    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
+    mcfg.encryption_methods = 0;
+
+    rtsc::proto::ConnectMachine::Credentials creds;
+    creds.domain = "NTDEV";
+    creds.user_name = "rtsc";
+    creds.password = "password";
+
+    rtsc::security::Config secfg;
+    secfg.tls_config.peer_host = "127.0.0.1";
+    secfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    secfg.credssp_version = 6;
+    secfg.credentials.domain = "NTDEV";
+    secfg.credentials.user = "rtsc";
+    secfg.credentials.password = "password";
+
+    rtsc::security::ConnectionDriver driver(mcfg, creds, secfg);
+    rtsc::client::Client client(std::move(driver), 64, 48);
+
+    std::string cerr;
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", port, cerr);
+    CHECK(transport != nullptr);
+    if (transport != nullptr) {
+        CHECK(client.Connect(*transport, error));
+        if (!error.empty()) std::printf("  connect error: %s\n", error.c_str());
+        CHECK(client.driver().machine().state().negotiated_protocol ==
+              rtsc::proto::kProtocolHybridEx);
+        CHECK(client.active());
         transport->Close();
     }
 

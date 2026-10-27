@@ -125,6 +125,15 @@ void GraphicsPipeline::RenderMonitorTo(size_t index, ui::Surface& dst) const {
         uint8_t* d = dst.data() + static_cast<size_t>(y) * dst.width() * 4;
         std::memcpy(d, s, static_cast<size_t>(copy_w) * 4);
     }
+    // 1:1 monitor copy: the pointer maps directly (minus the monitor origin).
+    if (cursor_style_ == kArrow && has_pointer_) {
+        ViewTransform vt;
+        vt.x = -sx;
+        vt.y = -sy;
+        vt.width = surface_.width();
+        vt.height = surface_.height();
+        DrawCursor(dst, vt);
+    }
 }
 
 int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
@@ -132,10 +141,14 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
     for (const auto& update : pdu.updates) {
         switch (update.code) {
             case proto::FastPathUpdateCode::kBitmap: {
+                // The fast-path bitmap body starts with the 2-byte updateType
+                // (FreeRDP fastpath_recv_update_common reads it the same way);
+                // TS_UPDATE_BITMAP_DATA follows it.
+                if (update.data.size() < 2) break;
                 proto::UpdateBitmapData bm;
                 if (proto::UpdateBitmapData::parse(
-                        update.data.data(), update.data.size(), bm) !=
-                    proto::Status::Ok) {
+                        update.data.data() + 2, update.data.size() - 2,
+                        bm) != proto::Status::Ok) {
                     break;
                 }
                 for (const auto& rect : bm.rectangles) {
@@ -162,6 +175,19 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
                                                        (update.data[3] << 8));
                     has_pointer_ = true;
                 }
+                break;
+            }
+            case proto::FastPathUpdateCode::kPtrDefault: {
+                // TS_PTR_DEFAULT_ATTR (0x6, no payload): show the system arrow.
+                cursor_style_ = kArrow;
+                ++drawn;  // the style change must repaint
+                break;
+            }
+            case proto::FastPathUpdateCode::kPtrNull: {
+                // TS_PTR_NULL_ATTR (0x5, no payload): the server hides the
+                // pointer (e.g. over a hidden-cursor surface).
+                cursor_style_ = kHidden;
+                ++drawn;
                 break;
             }
             case proto::FastPathUpdateCode::kOrders: {
@@ -290,6 +316,59 @@ void GraphicsPipeline::RenderTo(ui::Surface& dst) const {
         dst.FillRect(ix0, iy1, ix1 - ix0, dst.height() - iy1, 0, 0, 0, 255);
     }
     ScaleSurface(surface_, dst, vt);
+    DrawCursor(dst, vt);
+}
+
+void GraphicsPipeline::DrawCursor(ui::Surface& dst,
+                                  const ViewTransform& vt) const {
+    if (cursor_style_ != kArrow || !has_pointer_) return;
+    // The pointer position uses the same primary-monitor-relative coordinates
+    // as bitmap destLeft/destTop ([MS-RDPBCGR] 2.2.9.1.1.4.1), so it is
+    // translated by the union origin exactly like ApplyBitmapRect.
+    // Limitation: only the position is honoured — pointer *shape* updates
+    // (TS_COLORPOINTERATTRIBUTE / TS_POINTERATTRIBUTE) are dropped and the
+    // arrow is always drawn.
+    const int px = static_cast<int>(pointer_x_) - origin_x_;
+    const int py = static_cast<int>(pointer_y_) - origin_y_;
+    // Map the virtual-desktop pointer position into the viewport (the same
+    // mapping ScaleSurface applies to the desktop pixels).
+    const int cx = vt.x + (px * vt.width) / surface_.width();
+    const int cy = vt.y + (py * vt.height) / surface_.height();
+    // Standard Windows arrow, 12x19: '#' = black outline, 'o' = white fill.
+    static const char* kArrow[] = {
+        "#...........",
+        "##..........",
+        "#o#.........",
+        "#oo#........",
+        "#ooo#.......",
+        "#oooo#......",
+        "#ooooo#.....",
+        "#oooooo#....",
+        "#ooooooo#...",
+        "#oooooooo#..",
+        "#ooooo#####.",
+        "#oo#oo#.....",
+        "#o#.#oo#....",
+        "##..#oo#....",
+        "#....#oo#...",
+        ".....#oo#...",
+        "......#oo#..",
+        "......#oo#..",
+        ".......#....",
+    };
+    constexpr int kArrowW = 12;
+    constexpr int kArrowH = 19;
+    for (int y = 0; y < kArrowH; ++y) {
+        for (int x = 0; x < kArrowW; ++x) {
+            const char c = kArrow[y][x];
+            if (c == '.') continue;
+            if (c == '#') {
+                dst.SetPixel(cx + x, cy + y, 0, 0, 0, 255);
+            } else {
+                dst.SetPixel(cx + x, cy + y, 255, 255, 255, 255);
+            }
+        }
+    }
 }
 
 }  // namespace rtsc::client

@@ -15,8 +15,10 @@
 
 #include "rtsc/server/server.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -83,6 +85,11 @@ constexpr uint16_t kFirstStaticChannelId = 1004;
 
 constexpr uint8_t kStreamLow = 0x01;
 constexpr size_t kReadChunk = 16384;
+// Period between active-phase desktop refreshes. Deliberately wall-clock based
+// and independent of client input: resetting on input (the earlier idle-tick
+// counter) froze the desktop whenever the client streamed input faster than
+// the idle threshold could expire.
+constexpr std::chrono::milliseconds kRefreshInterval{1000};
 
 // Writes a BER length determinant (short form, or the 0x81 / 0x82 long form).
 void WriteBerLength(ByteWriter& w, size_t len) {
@@ -377,18 +384,26 @@ std::vector<uint8_t> BuildDemandActive(uint16_t pdu_source, uint32_t share_id,
     return w.take();
 }
 
-// Encodes a horizontal band of a top-down RGBA framebuffer into an
-// uncompressed bottom-up BGRA bitmap rectangle (32bpp).
-std::vector<uint8_t> EncodeBitmapBand(uint16_t width, uint32_t src_y, uint16_t height,
+// Encodes a horizontal band (optionally a column slice of one) of a top-down
+// RGBA framebuffer into an uncompressed bottom-up BGRA bitmap rectangle
+// (32bpp). `full_width` is the desktop width (the source stride); the emitted
+// rectangle covers columns [src_x, src_x + width) of rows [src_y, src_y +
+// height).
+std::vector<uint8_t> EncodeBitmapBand(uint16_t full_width, uint32_t src_x,
+                                      uint16_t width, uint32_t src_y,
+                                      uint16_t height,
                                       const std::vector<uint8_t>& rgba) {
+    const size_t src_stride = static_cast<size_t>(full_width) * 4;
     const size_t row = static_cast<size_t>(width) * 4;
     std::vector<uint8_t> out(row * height);
     for (uint32_t r = 0; r < height; ++r) {
-        const size_t src_row = (static_cast<size_t>(src_y) + r) * row;
-        const size_t dst_row = static_cast<size_t>(height - 1 - r) * row;  // bottom-up
+        const size_t s_row =
+            (static_cast<size_t>(src_y) + r) * src_stride +
+            static_cast<size_t>(src_x) * 4;
+        const size_t d_row = static_cast<size_t>(height - 1 - r) * row;  // bottom-up
         for (uint32_t x = 0; x < width; ++x) {
-            const size_t s = src_row + static_cast<size_t>(x) * 4;
-            const size_t d = dst_row + static_cast<size_t>(x) * 4;
+            const size_t s = s_row + static_cast<size_t>(x) * 4;
+            const size_t d = d_row + static_cast<size_t>(x) * 4;
             out[d + 0] = rgba[s + 2];  // B
             out[d + 1] = rgba[s + 1];  // G
             out[d + 2] = rgba[s + 0];  // R
@@ -398,17 +413,20 @@ std::vector<uint8_t> EncodeBitmapBand(uint16_t width, uint32_t src_y, uint16_t h
     return out;
 }
 
-// TS_UPDATE_BITMAP_DATA for one band: updateType(2) + numberRectangles(2) +
-// TS_BITMAP_DATA (a single rectangle).
-std::vector<uint8_t> BuildBitmapBand(uint16_t width, uint16_t dest_y, uint16_t height,
+// TS_UPDATE_BITMAP_DATA for one band: numberRectangles(2) + TS_BITMAP_DATA (a
+// single rectangle). The TS_GRAPHICS_UPDATE updateType is written by SendFrame.
+std::vector<uint8_t> BuildBitmapBand(uint16_t width, uint16_t dest_left,
+                                     uint16_t dest_y, uint16_t height,
                                      const std::vector<uint8_t>& pixels) {
     ByteWriter w;
-    w.u16le(0x0001);  // UPDATETYPE_BITMAP
-    w.u16le(1);       // numberRectangles
-    w.u16le(0);       // destLeft
-    w.u16le(dest_y);  // destTop
-    w.u16le(width);   // destRight
-    w.u16le(static_cast<uint16_t>(dest_y + height));  // destBottom
+    w.u16le(1);            // numberRectangles
+    w.u16le(dest_left);    // destLeft
+    w.u16le(dest_y);       // destTop
+    // destRight/destBottom are INCLUSIVE coordinates: destRight - destLeft + 1
+    // must equal width ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.2; mstsc drops the
+    // rectangle when they disagree).
+    w.u16le(static_cast<uint16_t>(dest_left + width - 1));   // destRight
+    w.u16le(static_cast<uint16_t>(dest_y + height - 1));  // destBottom
     w.u16le(width);
     w.u16le(height);
     w.u16le(32);     // bitsPerPixel
@@ -419,38 +437,6 @@ std::vector<uint8_t> BuildBitmapBand(uint16_t width, uint16_t dest_y, uint16_t h
 }
 
 // ---- Licensing -------------------------------------------------------------
-
-// SERVER_LICENSE_REQUEST body: serverRandom(32) + ProductInfo + keyExchangeAlg
-// blob + certificate blob + scope list. The certificate is empty here: the
-// public key travels in the Server Security Data instead.
-std::vector<uint8_t> BuildLicenseRequest(const std::vector<uint8_t>& server_random) {
-    ByteWriter w;
-    w.bytes(server_random.data(), server_random.size());
-
-    proto::ProductInfo product;
-    product.version = 0x00010000;  // Windows NT major.minor
-    const std::string company = "Microsoft Corporation";
-    const std::string product_id = "A02";
-    for (char c : company) product.company_name.push_back(static_cast<uint8_t>(c));
-    for (char c : product_id) product.product_id.push_back(static_cast<uint8_t>(c));
-    product.write(w);
-
-    proto::LicenseBlob key_list;
-    key_list.type = proto::LicenseBlobType::kKeyExchgAlg;
-    key_list.data = {0x01, 0x00, 0x00, 0x00};  // KEY_EXCHANGE_ALG_RSA
-    key_list.write(w);
-
-    proto::LicenseBlob cert;
-    cert.type = proto::LicenseBlobType::kCertificate;
-    cert.write(w);  // empty: the MCS Connect Response carries the public key
-
-    proto::ScopeList scopes;
-    const std::string scope = "DESCRIPTION";
-    scopes.scopes.push_back({scope.begin(), scope.end()});
-    scopes.write(w);
-
-    return w.take();
-}
 
 // LICENSE_ERROR_MESSAGE with STATUS_VALID_CLIENT + ST_NO_TRANSITION: the client
 // needs no license and the licensing phase is complete.
@@ -530,7 +516,14 @@ class RdpSession {
         return true;
     }
 
-    bool ReadFrame(std::vector<uint8_t>& frame) {
+    // Reads the next frame. `refresh_due` (optional) enables the active-phase
+    // desktop refresh: when the read wait elapses and the wall clock has
+    // passed `*refresh_due`, the desktop frame is re-sent on a fixed ~1 s
+    // cadence, independent of whether the client is sending input. A refresh
+    // send failure is fatal: the error is recorded and the read (and with it
+    // the session) ends.
+    bool ReadFrame(std::vector<uint8_t>& frame,
+                   std::chrono::steady_clock::time_point* refresh_due = nullptr) {
         if (has_pending_) {
             frame = std::move(pending_);
             has_pending_ = false;
@@ -550,6 +543,26 @@ class RdpSession {
             const int n = transport_->Read(tmp, sizeof(tmp));
             if (n == net::kReadTimeout) {
                 if (stop_requested_.load(std::memory_order_relaxed)) return false;
+                if (refresh_due != nullptr && !output_suppressed_) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= *refresh_due) {
+                        // Periodic desktop refresh: mstsc discards updates
+                        // that arrive before its surface is ready, so the
+                        // desktop is re-sent on a fixed ~1 s cadence. This is
+                        // deliberately independent of client input — keying
+                        // it off an idle counter reset by input froze the
+                        // desktop exactly while the user was interacting.
+                        // While the client has suppressed output
+                        // ([MS-RDPBCGR] 2.2.11.3.1) nothing is sent; the
+                        // stale deadline then makes the refresh fire as soon
+                        // as output resumes.
+                        *refresh_due = now + kRefreshInterval;
+                        if (!SendFrame()) {
+                            last_error_ = "periodic desktop refresh failed";
+                            return false;
+                        }
+                    }
+                }
                 continue;
             }
             if (n <= 0) return false;
@@ -669,14 +682,26 @@ class RdpSession {
         // Enhanced security: accept PROTOCOL_SSL / PROTOCOL_HYBRID when the
         // server is configured for it. HYBRID additionally runs CredSSP (the
         // mstsc default); SSL is transport security only.
-        if ((requested_protocols_ & (proto::kProtocolSsl | proto::kProtocolHybrid)) != 0 &&
+        if ((requested_protocols_ & (proto::kProtocolSsl | proto::kProtocolHybrid |
+                                     proto::kProtocolHybridEx)) != 0 &&
             config_.enable_enhanced_security) {
-            if ((requested_protocols_ & proto::kProtocolHybrid) != 0) {
+            // [MS-RDPBCGR] 2.2.1.2.1 / 2.2.10.2: HYBRID_EX selects CredSSP plus
+            // the Early User Authorization Result PDU; plain HYBRID selects
+            // CredSSP only. mstsc advertises 0x0B and expects HYBRID_EX (0x8)
+            // back, so selecting 0x2 while still sending the EUAR makes it
+            // report a protocol error (0x1204) and reset.
+            if ((requested_protocols_ & proto::kProtocolHybridEx) != 0) {
+                selected_protocol_ = proto::kProtocolHybridEx;
+                credssp_required_ = true;
+                euar_required_ = true;
+            } else if ((requested_protocols_ & proto::kProtocolHybrid) != 0) {
                 selected_protocol_ = proto::kProtocolHybrid;
                 credssp_required_ = true;
+                euar_required_ = false;
             } else {
                 selected_protocol_ = proto::kProtocolSsl;
                 credssp_required_ = false;
+                euar_required_ = false;
             }
             secure_requested_ = true;
             Send(BuildX224Confirm(selected_protocol_));
@@ -703,6 +728,7 @@ class RdpSession {
         scfg.credssp_version = config_.credssp_version;
         scfg.credential_lookup = config_.credential_lookup;
         scfg.credssp_required = credssp_required_;
+        scfg.euar_required = euar_required_;
         sec_ = security::ServerSecurityLayer::Create(scfg, last_error_);
         if (!sec_) return false;
 
@@ -719,6 +745,13 @@ class RdpSession {
             }
             if (r.want == security::Want::kDone) {
                 secure_ = true;
+                // With PROTOCOL_HYBRID the client pipelines the MCS Connect
+                // Initial right behind CredSSP step 5 (no EUAR to wait for).
+                // Any complete PDU already sitting in the layer's plaintext
+                // buffer must be handed to the MCS reader now, otherwise
+                // ReadFrame blocks waiting for bytes that already arrived.
+                auto leftover = sec_->ReceivePdu(nullptr, 0);
+                for (auto& f : leftover) secure_frames_.push_back(std::move(f));
                 return true;
             }
             if (r.want == security::Want::kFailed) {
@@ -793,6 +826,17 @@ class RdpSession {
             chosen_method_ = kMethod40;
         }
         encryption_level_ = chosen_method_ != 0 ? kLevelClientCompatible : 0;
+
+        // With an external security protocol (TLS / CredSSP) the Server Security
+        // Data MUST carry method=0 and level=0 and MUST NOT include a server
+        // certificate ([MS-RDPBCGR] 2.2.1.4.3). mstsc advertises 128-bit
+        // encryption even under CredSSP; sending a certificate it must not
+        // unpack fails with disconnectReasonServerCertificateUnpackErr (0x706).
+        // Standard RDP Security keeps the negotiated method and certificate.
+        if (secure_requested_) {
+            chosen_method_ = 0;
+            encryption_level_ = 0;
+        }
 
         // The licensing Server License Request always carries a 32-byte random,
         // whether or not Standard RDP Security encryption is in effect.
@@ -939,26 +983,18 @@ class RdpSession {
     }
 
     bool DoLicensing() {
-        // Server License Request, then accept the client's reply with
-        // STATUS_VALID_CLIENT (no CAL is issued).
-        if (!SendLicensingPdu(
-                proto::LicensingPdu::Encode(proto::LicenseMessageType::kLicenseRequest,
-                                            BuildLicenseRequest(server_random_)))) {
-            return false;
-        }
-        std::vector<uint8_t> frame;
-        if (!ReadFrame(frame)) return false;
-        proto::McsSendData sd;
-        if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
-            return false;
-        }
-        std::vector<uint8_t> ud = sd.user_data;
-        if (!DecryptIfEncrypted(ud)) return false;
-        // The reply is a New License Request / License Info; its contents are
-        // not needed because no CAL is issued.
-        return SendLicensingPdu(
-            proto::LicensingPdu::Encode(proto::LicenseMessageType::kErrorAlert,
-                                        BuildLicenseError()));
+        // This server issues no CALs, so the licensing phase is a single PDU:
+        // ERROR_ALERT(STATUS_VALID_CLIENT + ST_NO_TRANSITION), sent unprompted
+        // right after the Client Info PDU. That is byte-for-byte what a real
+        // Windows server without a license server does (observed on Win11
+        // 26100: "80 00 00 00 ff 03 10 00 07 00 00 00 02 00 00 00 04 00 00 00")
+        // and what mstsc accepts: offering it a full SERVER_LICENSE_REQUEST
+        // instead makes its licensing state machine disconnect with
+        // disconnectReasonLicensingFailed (0x808).
+        const bool extended_error = false;  // the observed preamble flags byte is 0x03
+        return SendLicensingPdu(proto::LicensingPdu::Encode(
+            proto::LicenseMessageType::kErrorAlert, BuildLicenseError(),
+            extended_error));
     }
 
     bool DoDemandActive() {
@@ -1056,50 +1092,120 @@ class RdpSession {
         const size_t need = static_cast<size_t>(desktop_width_) * desktop_height_ * 4;
         if (rgba.size() < need) return false;
 
-        const size_t row_bytes = static_cast<size_t>(desktop_width_) * 4;
         // An MCS Send Data userData is capped at 16383 bytes; reserve the share
-        // data header (18) + update header (4) + bitmap header (20) so the band
-        // always fits. A desktop larger than one band is sent as several
-        // horizontal bands, which the client composites by destination.
+        // data header (18) + update header (4) + bitmap header (20) so each
+        // bitmap rectangle always fits. bitmapLength is a u16, bounding the
+        // pixel block by 65535 bytes as well ([MS-RDPBCGR]
+        // 2.2.9.1.1.3.1.2.2). A desktop larger than one rectangle is tiled:
+        // horizontal bands, and each band split into column chunks when a
+        // single 4Bpp row would overflow the budget (wide monitors). The
+        // client composites every rectangle by destination coordinates.
+        constexpr size_t kBytesPerPixel = 4;
         const size_t overhead = 18 + 4 + 20;
-        const size_t max_rows =
-            proto::mcs::kMaxSendDataUserData > overhead + row_bytes
-                ? (proto::mcs::kMaxSendDataUserData - overhead) / row_bytes
-                : 1;
-        const uint16_t band = static_cast<uint16_t>(max_rows);
+        const size_t budget = proto::mcs::kMaxSendDataUserData > overhead
+                                  ? proto::mcs::kMaxSendDataUserData - overhead
+                                  : 0;
+        const uint16_t chunk_w = static_cast<uint16_t>(
+            std::min<size_t>(desktop_width_, budget / kBytesPerPixel));
+        const size_t chunk_row = static_cast<size_t>(chunk_w) * kBytesPerPixel;
+        size_t max_rows = chunk_row != 0 ? budget / chunk_row : 0;
+        max_rows = std::min<size_t>(max_rows, 65535 / chunk_row);
+        if (max_rows == 0) max_rows = 1;  // unreachable for u16 widths; defensive
+        const uint16_t band = static_cast<uint16_t>(
+            std::min<size_t>(max_rows, desktop_height_));
 
         for (uint16_t y = 0; y < desktop_height_; y += band) {
-            const uint32_t remaining = static_cast<uint32_t>(desktop_height_) - y;
-            const uint16_t h = static_cast<uint16_t>(std::min<uint32_t>(band, remaining));
-            const auto pixels = EncodeBitmapBand(desktop_width_, y, h, rgba);
-            const auto bitmap = BuildBitmapBand(desktop_width_, y, h, pixels);
-            // TS_GRAPHICS_UPDATE = updateType + TS_UPDATE_BITMAP_DATA, and
-            // TS_UPDATE_BITMAP_DATA repeats the updateType (the client parser
-            // consumes one and then expects the other).
-            ByteWriter payload;
-            payload.u16le(0x0001);  // TS_GRAPHICS_UPDATE.updateType
-            payload.bytes(bitmap.data(), bitmap.size());
-            const auto share = proto::BuildSlowPathDataPdu(
-                kServerChannelId, share_id_, kStreamLow, proto::ShareDataPduType::kUpdate,
-                payload.take());
-            if (!SendRawUserData(share)) return false;
+            const uint32_t remaining_h = static_cast<uint32_t>(desktop_height_) - y;
+            const uint16_t h = static_cast<uint16_t>(std::min<uint32_t>(band, remaining_h));
+            for (uint32_t x = 0; x < desktop_width_; x += chunk_w) {
+                const uint32_t remaining_w = static_cast<uint32_t>(desktop_width_) - x;
+                const uint16_t w = static_cast<uint16_t>(std::min<uint32_t>(chunk_w, remaining_w));
+                const auto pixels = EncodeBitmapBand(desktop_width_, x, w, y, h, rgba);
+                const auto bitmap = BuildBitmapBand(w, static_cast<uint16_t>(x), y, h, pixels);
+                // TS_GRAPHICS_UPDATE = updateType + TS_UPDATE_BITMAP_DATA, where
+                // TS_UPDATE_BITMAP_DATA = numberRectangles + rectangles
+                // ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.1; the updateType appears once).
+                ByteWriter payload;
+                payload.u16le(0x0001);  // TS_GRAPHICS_UPDATE.updateType
+                payload.bytes(bitmap.data(), bitmap.size());
+                const auto share = proto::BuildSlowPathDataPdu(
+                    kServerChannelId, share_id_, kStreamLow, proto::ShareDataPduType::kUpdate,
+                    payload.take());
+                if (!SendRawUserData(share)) return false;
+            }
         }
         return true;
     }
 
     void ActiveLoop() {
         SendFrame();
+        // The single frame sent at active can race the client's Confirm Active
+        // processing (mstsc drops updates that arrive before its surface is
+        // ready and stays black), so the desktop is refreshed on a fixed ~1 s
+        // cadence, independent of client input.
+        auto next_refresh = std::chrono::steady_clock::now() + kRefreshInterval;
         std::vector<uint8_t> frame;
         while (!stop_requested_.load(std::memory_order_relaxed)) {
-            if (!ReadFrame(frame)) break;
+            if (!ReadFrame(frame, &next_refresh)) break;
             proto::McsSendData sd;
             if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
                 continue;
             }
             std::vector<uint8_t> payload;
             if (!UnwrapInbound(sd.user_data, payload)) continue;
+            if (!HandleSlowPathPdu(payload, &next_refresh)) break;
             HandleInputPdu(payload);
         }
+    }
+
+    // Handles the client's slow-path share PDUs (everything a Fast-Path input
+    // PDU is not). Only two matter to this server ([MS-RDPBCGR] 1.3.7 /
+    // 2.2.11.2.1 / 2.2.11.3.1): Refresh Rect asks for an immediate redraw of
+    // the named areas, and Suppress Output gates the periodic desktop
+    // refresh. Everything else is ignored. Returns false when a refresh send
+    // failed: the session must then end (the caller breaks its loop).
+    bool HandleSlowPathPdu(
+        const std::vector<uint8_t>& payload,
+        std::chrono::steady_clock::time_point* next_refresh) {
+        if (payload.size() < proto::ShareDataHeader::kSize) return true;
+        proto::ShareDataHeader hdr;
+        if (proto::ShareDataHeader::parse(payload.data(), payload.size(), hdr) !=
+            Status::Ok) {
+            return true;  // not a share data PDU (e.g. fast-path input)
+        }
+        if (hdr.pdu_type2 == proto::ShareDataPduType::kRefreshRect) {
+            proto::RefreshRectPdu refresh;
+            if (proto::RefreshRectPdu::parse(payload.data() +
+                                                 proto::ShareDataHeader::kSize,
+                                             payload.size() -
+                                                 proto::ShareDataHeader::kSize,
+                                             refresh) != Status::Ok) {
+                return true;  // malformed: ignored
+            }
+            // Immediate full-desktop resend: this server serves the whole
+            // framebuffer, so every requested area is inside one frame.
+            if (!SendFrame()) {
+                last_error_ = "refresh-rect resend failed";
+                return false;
+            }
+            if (next_refresh != nullptr) {
+                *next_refresh = std::chrono::steady_clock::now() + kRefreshInterval;
+            }
+        } else if (hdr.pdu_type2 == proto::ShareDataPduType::kSuppressOutput) {
+            proto::SuppressOutputPdu sup;
+            if (proto::SuppressOutputPdu::parse(payload.data() +
+                                                    proto::ShareDataHeader::kSize,
+                                                payload.size() -
+                                                    proto::ShareDataHeader::kSize,
+                                                sup) != Status::Ok) {
+                return true;  // malformed: ignored
+            }
+            // allowDisplayUpdates=0 suppresses the periodic refresh;
+            // allowDisplayUpdates=1 resumes it (the stale deadline makes the
+            // next read timeout fire a refresh immediately).
+            output_suppressed_ = !sup.allow_display_updates;
+        }
+        return true;
     }
 
     void HandleInputPdu(const std::vector<uint8_t>& payload) {
@@ -1205,6 +1311,7 @@ class RdpSession {
     bool secure_ = false;
     uint32_t selected_protocol_ = 0;
     bool credssp_required_ = true;
+    bool euar_required_ = false;
     std::unique_ptr<security::ServerSecurityLayer> sec_;
     std::deque<std::vector<uint8_t>> secure_frames_;
     std::string last_error_;
@@ -1227,6 +1334,10 @@ class RdpSession {
 
     uint32_t share_id_ = 0;
     bool active_ = false;
+    // Set by a client Suppress Output PDU (allowDisplayUpdates=0,
+    // [MS-RDPBCGR] 2.2.11.3.1): suspends the periodic desktop refresh until
+    // the client resumes output.
+    bool output_suppressed_ = false;
     Credentials credentials_;
 };
 

@@ -27,12 +27,22 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
                                std::vector<uint8_t>& out) override {
         (void)in;
         out.clear();
-        consumed = in_size;
-        ++rounds_;
-        if (rounds_ == 1) {
+        if (!hello_sent_) {
+            // First call: emit the peer's handshake token (ClientHello for a
+            // client, ServerHello for a server) and stay incomplete.
+            hello_sent_ = true;
+            consumed = in_size;
             out = {0x16, 0x03, 0x01, 0x00, 0x05, 0x01};
             return Ok();
         }
+        // Like a real TLS stack, the accept/handshake cannot complete until the
+        // peer's token arrives. Pumping with no input must not advance the
+        // state machine (the driver pumps after every write).
+        if (in_size == 0) {
+            consumed = 0;
+            return Ok();
+        }
+        consumed = in_size;
         handshake_complete_ = true;
         return Ok();
     }
@@ -103,7 +113,7 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
     const char* backend_name() const noexcept override { return "scripted"; }
 
  private:
-    int rounds_ = 0;
+    bool hello_sent_ = false;
     bool handshake_complete_ = false;
     rtsc::tls::Error last_error_{};
 };

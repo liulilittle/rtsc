@@ -294,4 +294,67 @@ size_t FastPathInputEventSize(FastPathInputEventCode code) {
     return 0;
 }
 
+// ---- RefreshRectPdu ([MS-RDPBCGR] 2.2.11.2.1) ------------------------------
+
+std::vector<uint8_t> RefreshRectPdu::encode() const {
+    ByteWriter w;
+    // numberOfAreas(1) + pad3Octets(3): the count comes FIRST, the padding
+    // follows it. numberOfAreas is a u8 (max 255 areas; see share.h).
+    w.u8(static_cast<uint8_t>(rectangles.size()));
+    w.u8(0);
+    w.u8(0);
+    w.u8(0);
+    for (const auto& rect : rectangles) {
+        w.u16le(rect.left);
+        w.u16le(rect.top);
+        w.u16le(rect.right);
+        w.u16le(rect.bottom);
+    }
+    return w.take();
+}
+
+Status RefreshRectPdu::parse(const uint8_t* data, size_t size,
+                              RefreshRectPdu& out) {
+    out.rectangles.clear();
+    ByteReader r(data, size);
+    uint8_t count = 0;
+    if (!r.u8(count)) return Status::NeedMoreData;
+    if (!r.skip(3)) return Status::NeedMoreData;  // pad3Octets
+    for (uint8_t i = 0; i < count; ++i) {
+        Rect rect;
+        if (!r.u16le(rect.left)) return Status::NeedMoreData;
+        if (!r.u16le(rect.top)) return Status::NeedMoreData;
+        if (!r.u16le(rect.right)) return Status::NeedMoreData;
+        if (!r.u16le(rect.bottom)) return Status::NeedMoreData;
+        out.rectangles.push_back(rect);
+    }
+    if (!r.empty()) return Status::InvalidLength;
+    return Status::Ok;
+}
+
+// ---- SuppressOutputPdu ([MS-RDPBCGR] 2.2.11.3.1) ---------------------------
+
+Status SuppressOutputPdu::parse(const uint8_t* data, size_t size,
+                                SuppressOutputPdu& out) {
+    out = SuppressOutputPdu{};
+    ByteReader r(data, size);
+    uint8_t allow = 0;
+    if (!r.u8(allow)) return Status::NeedMoreData;
+    if (!r.skip(3)) return Status::NeedMoreData;  // pad3Octets
+    // desktopRect is present if and only if allowDisplayUpdates == 1
+    // ([MS-RDPBCGR] 2.2.11.3.1; FreeRDP update_read_suppress_output and
+    // IronRDP do the same). There is no count field and no rectangle array.
+    if (allow != 0) {
+        RefreshRectPdu::Rect rect;
+        if (!r.u16le(rect.left)) return Status::NeedMoreData;
+        if (!r.u16le(rect.top)) return Status::NeedMoreData;
+        if (!r.u16le(rect.right)) return Status::NeedMoreData;
+        if (!r.u16le(rect.bottom)) return Status::NeedMoreData;
+        out.rectangles.push_back(rect);
+    }
+    if (!r.empty()) return Status::InvalidLength;
+    out.allow_display_updates = allow != 0;
+    return Status::Ok;
+}
+
 }  // namespace rtsc::proto

@@ -202,6 +202,31 @@ bool RsaServerKeyPair::DecryptClientRandom(const std::vector<uint8_t>& in,
     return true;
 }
 
+bool RsaServerKeyPair::DecryptRaw(const std::vector<uint8_t>& in,
+                                  std::vector<uint8_t>& out) {
+    out.clear();
+    if (key_ == nullptr || bits_ == 0) return false;
+    const size_t modulus_size = bits_ / 8;
+    if (in.size() < modulus_size) return false;
+
+    std::vector<uint8_t> cipher(in.begin(),
+                                in.begin() + static_cast<ptrdiff_t>(modulus_size));
+    std::vector<uint8_t> plain(modulus_size, 0);
+    ULONG written = 0;
+    const NTSTATUS st = BCryptDecrypt(
+        static_cast<BCRYPT_KEY_HANDLE>(key_), cipher.data(),
+        static_cast<ULONG>(cipher.size()), nullptr, nullptr, 0, plain.data(),
+        static_cast<ULONG>(plain.size()), &written, BCRYPT_PAD_NONE);
+    if (!NT_SUCCESS(st) || written != modulus_size) return false;
+
+    // plain is big-endian; RDP interprets the plaintext as little-endian.
+    out.assign(modulus_size, 0);
+    for (size_t i = 0; i < modulus_size; ++i) {
+        out[i] = plain[modulus_size - 1 - i];
+    }
+    return true;
+}
+
 }  // namespace rtsc::crypto
 
 #endif  // _WIN32

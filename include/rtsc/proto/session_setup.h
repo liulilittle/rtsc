@@ -78,6 +78,9 @@ class SessionSetupMachine {
         uint16_t desktop_height = 1024;
         uint16_t color_depth = 24;
         std::string source_descriptor = "RTSC";
+        // RemoteApp (RAIL) session: only then may the Confirm Active carry
+        // TS_RAIL_CAPS ([MS-RDPERP]; mstsc sets it via remoteapplicationmode).
+        bool rail_mode = false;
     };
 
     explicit SessionSetupMachine(const Config& config);

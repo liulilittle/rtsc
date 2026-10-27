@@ -189,6 +189,49 @@ RTSC_TEST(security_layer_full_handshake_reaches_done) {
     CHECK(!layer->failed());
 }
 
+RTSC_TEST(security_layer_hybrid_without_euar_completes_after_step5) {
+    // PROTOCOL_HYBRID (0x2): no EUAR. The layer must complete as soon as the
+    // final CredSSP message (step 5, authInfo) has been produced; waiting for a
+    // 4-byte EUAR that will never arrive deadlocks the connection.
+    rtsc::security::Config cfg = MakeConfig();
+    cfg.expect_euar = false;
+    std::string why;
+    auto layer = rtsc::security::SecurityLayer::Create(cfg, why);
+    CHECK(layer != nullptr);
+    layer->SetTlsTransportForTest(std::make_unique<ScriptedTls>());
+
+    auto r = layer->Step(nullptr, 0);
+    CHECK(r.want == rtsc::security::Want::kWrite);
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    r = layer->Step(server_hello, sizeof(server_hello));
+    CHECK(r.want == rtsc::security::Want::kWrite);
+
+    TsRequest challenge;
+    challenge.version = 6;
+    challenge.nego_token = ServerChallengeMessage();
+    Bytes ch_der;
+    CHECK(challenge.Encode(ch_der).ok());
+    r = layer->Step(ch_der.data(), ch_der.size());
+    CHECK(r.want == rtsc::security::Want::kWrite);
+
+    Bytes echo = layer->credssp_for_test().MakeServerEchoForTest();
+    TsRequest step4;
+    step4.version = 6;
+    step4.pub_key_auth = echo;
+    Bytes step4_der;
+    CHECK(step4.Encode(step4_der).ok());
+    r = layer->Step(step4_der.data(), step4_der.size());
+    CHECK(r.want == rtsc::security::Want::kWrite);
+    CHECK(!r.to_wire.empty());
+    CHECK(r.to_wire[0] == 0x30);  // CredSSP step 5 (authInfo)
+
+    // No EUAR is coming: pumping with no input must report completion.
+    r = layer->Step(nullptr, 0);
+    CHECK(r.want == rtsc::security::Want::kDone);
+    CHECK(layer->handshake_complete());
+    CHECK(!layer->failed());
+}
+
 RTSC_TEST(security_layer_euar_denied_fails) {
     auto layer = MakeLayer();
     CHECK(layer != nullptr);
@@ -319,6 +362,9 @@ rtsc::security::ConnectionDriver MakeDriver() {
 // 192.168.1.7 (evidence/handshake-001.md).
 const char* kCcfHybridEx = "03 00 00 13 0e d0 00 00 12 34 00 02 0f 08 00 08 00 00 00";
 
+// Connection Confirm selecting PROTOCOL_HYBRID (0x02): no EUAR follows.
+const char* kCcfHybrid = "03 00 00 13 0e d0 00 00 12 34 00 02 0f 08 00 02 00 00 00";
+
 }  // namespace
 
 RTSC_TEST(connection_driver_start_emits_x224_crq) {
@@ -391,6 +437,50 @@ RTSC_TEST(connection_driver_full_handshake_to_mcs_connect_initial) {
     CHECK(!step.to_send.empty());
     CHECK(driver.machine().state().phase ==
           rtsc::proto::ConnectPhase::kAwaitConnectResponse);
+}
+
+RTSC_TEST(connection_driver_hybrid_without_ex_skips_euar) {
+    // A server that selects PROTOCOL_HYBRID (0x2) does not send an EUAR
+    // ([MS-RDPBCGR] 2.2.10.2). The driver must therefore emit the MCS Connect
+    // Initial as soon as CredSSP step 5 is on the wire instead of waiting for a
+    // 4-byte result that will never arrive.
+    auto driver = MakeDriver();
+    driver.Start();
+    const auto ccf = Hex(kCcfHybrid);
+    driver.OnData(ccf.data(), ccf.size());
+
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    driver.OnData(server_hello, sizeof(server_hello));
+
+    TsRequest challenge;
+    challenge.version = 6;
+    challenge.nego_token = ServerChallengeMessage();
+    Bytes ch_der;
+    CHECK(challenge.Encode(ch_der).ok());
+    driver.OnData(ch_der.data(), ch_der.size());
+
+    Bytes echo = driver.security()->credssp_for_test().MakeServerEchoForTest();
+    TsRequest step4;
+    step4.version = 6;
+    step4.pub_key_auth = echo;
+    Bytes step4_der;
+    CHECK(step4.Encode(step4_der).ok());
+    const auto step = driver.OnData(step4_der.data(), step4_der.size());
+    CHECK(!step.failed);
+    CHECK(driver.machine().state().negotiated_protocol ==
+          rtsc::proto::kProtocolHybrid);
+    CHECK(driver.machine().state().phase ==
+          rtsc::proto::ConnectPhase::kAwaitConnectResponse);
+    // The emitted bytes carry both the CredSSP step 5 SEQUENCE and the MCS
+    // Connect Initial TPKT.
+    bool has_tpkt = false;
+    for (size_t i = 0; i + 1 < step.to_send.size(); ++i) {
+        if (step.to_send[i] == 0x03 && step.to_send[i + 1] == 0x00) {
+            has_tpkt = true;
+            break;
+        }
+    }
+    CHECK(has_tpkt);
 }
 
 RTSC_TEST(connection_driver_euar_denied_fails) {
