@@ -10065,3 +10065,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[提交]** 3e0590b "fix: mstsc-quality session chain (double-audit stamped)"，56 文件 +2309/-227（客户端+服务器整链+证据）。
 - **[解散]** 执行 AI ses_e839c4331ffeFM7Mpyirmbn97u、甲 ses_e83c97f59ffe5QukokGpkX36Q1、乙 ses_e83c8bc13ffedmvPmLzSrpgdan 全部 delete（W11 完成后解散；历史留 git/process.md）。
 - **[待办]** 下一批次 N1-N7（32bpp RDP6 planar 解码，动工前走新双审循环）→ 完成后恢复 24+0x0002+0x0009 终态；输入转发实网验证；剪贴板/驱动器/USB enhanced。
+
+## 第555轮：N1-N7 planar 批次派发 + 遗留会话清理
+
+- **[清理]** 修复服务器mstsc黑屏（已终了）ses_e84e12b2dffeCGb40nhputmyZT delete。
+- **[派发]** planar 修复执行代理 ses_e831cef51ffeHuvtdSAkn4cDNt（kiosapi/glm-5.3-flash-free）：N1 逐扫描线模型（FreeRDP planar.c oracle）/N2 段首 run 填充/N3 CD 头路由顺序/N4 规格注记/N5 真机向量 10 f2 11 f2...（64x64 bpp=32 len=513）+合成单测/N6 修复后恢复 24+0x0002+0x0009 终态+真机 32bpp 回归 MUST/N7 红鲱鱼注释清除。
+- **[流程]** 执行收口后开新双审循环复验 → 盖章 → 提交。
