@@ -10113,3 +10113,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[处置]** sleep 58s 排空限流窗口后 prompt 续做（服务器模式甲 + 实网验证）；桌面 screenshot info 确认未锁屏（admin=true, locked=false）→ GUI 验证可继续。
 - **[降并发]** 不新开审计会话：把「扫描码转发修复 + planar 镜像修复」补审（S4/S5）relay 并入组A甲乙，要求给可盖章结论。
 - **[纪律]** provider 限流类错误不换模型（用户已授权 minimax-m3.1-flash-free）；子代理提示加自限流约束（每批 ≤5 调用、每项即报）。
+
+## 第583轮：主代理直做轻量判定 + 剪贴板阻塞点定位 + 范围重切
+
+- **[主代理亲读·关键事实]** cliprdr **已接线**（main.cpp:374 CliprdrClient / :379-383 RegisterChannel→OnChannelData / :392 Start() / :468 BindClipboardToWindows→OnLocalClipboardChanged）→ 排除「GUI 未接线」假设。会话A 统计 local_lists=1、server_caps=1 但 **responses=0**；[MS-RDPECLIP] 2.2.2.3 规定收到 Format List 必回 Format List Response → 断点在协议层（疑 OnPdu 缺 kFormatListResponse 分支 / proto 解析或计数失真）。已作 S6 并入组A。
+- **[主代理直做]** P3/P4/P5 轻量项收归主代理（避免第 6 个会话加剧限流）；P5 前提核查：tests/test_rdp6.cpp **无重复注释行**（重复的是数据行），且末字节 125,13,10（已以 CRLF 结尾）→ 「重复注释块+尾换行」此项**前提不成立**，不做无谓改动（备份已存 .opencode/backups/test_rdp6.cpp.20261028-031226）。
+- **[范围重切]** 实网验证会话收窄为单一目标 P2（扫描码实网：远端敲 'a' 必须出字母 a，不得 F7），做完即报。
+- **[C0]** 全量 build EXIT=0 零警告；ctest 51/51 全绿。
+- **[提交]** e9f01dd（N8 批次 plan + interaction-batch v2 证据入库）。
