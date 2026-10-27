@@ -10039,3 +10039,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[定案修复批次]** D-A（RefreshRect=numberOfAreas+pad3Octets+rects）/D-B（SuppressOutput=allow+pad3+desktopRect 仅 allow=1）/D1（空闲重发与输入解耦）/D2（行宽钳制）/D4（服务器解析 RefreshRect+SuppressOutput 静默标志）/D1a/D3 裁剪/D-C（24bpp+0x0002）/D-D/D-E/D5/D-F。真机回归 MUST：colours 跳变验证重绘生效。
 - **[派发]** 执行代理 ses_e839c4331ffeFM7Mpyirmbn97u（kiosapi/glm-5.3-flash-free），携甲乙 ID 磋商通道。
 - **[清理]** 旧修复代理 ses_e84e12b2dffeCGb40nhputmyZT 任务终了 → aborted（历史保留）。
+
+## 第535轮：执行代理遇阻（凭据拼错）→ 主会话指正
+
+- **[阻塞实因]** 执行代理试 yy520o!/yy5200! 均为错拼；正确密码=yy520o!!（双感叹号、字母 o），主会话今日全程实证有效（多次 130 万非黑渲染）。
+- **[指示]** 单引号传参精确重跑真机回归；禁止尝试变体（锁定风险）；仍拒则停并如实标注未验证。
+- **[进度]** 批次 1-9 项已完成（D-A/D-B 规范字节/D1 解耦/D2 钳宽/D4 服务器应答/D1a/D3 裁剪/D-C/D-D/D-E/D5/D-F）；门禁：ctest 51/51×5 轮、Linux gate PASS 49/49、甲乙 RED 配方复验 FAIL→复原 PASS、零 printf 残留。
