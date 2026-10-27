@@ -9967,3 +9967,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验]** 修复代理 `ses_e878558e8ffeL3341W4gsKduOU` idle（`pending:true`，wrote 1793043507131）；`evidence/mstsc/server-fix.log` 仍仅 `listening on 0.0.0.0:3390`（**无 session accepted**）；diff **+296/-34**。
 - **[处置]** 催办 licensing 0x808 诊断结果（根因 + 修复 + mstsc 重跑 + 构建/ctest/Linux 门禁 + 插桩还原）。
 - **在途**：mstsc licensing 诊断（授权中）。
+
+## 第490轮：模型切换 kiosapi/glm-5.3-flash-free（不改配置）+ 子代理状态核验
+
+- **[核验 get_goal]** orphan_subagents=[]（无孤儿可清）；唯一子代理 ses_e84e12b2dffeCGb40nhputmyZT（licensing0x808诊断修复）busy 在途（pending:true，wrote 1793068315087），非无效，不解散。
+- **[模型]** 当前会话已 kiosapi/glm-5.3-flash-free（loop_rescue.model_key 实证）；在途子代理经 prompt+model 参数切换至同模型（busy 入队）。
+- **[在途]** licensing 0x808 诊断/修复 + mstsc 实网验证。
