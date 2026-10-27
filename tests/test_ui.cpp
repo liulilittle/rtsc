@@ -13,6 +13,17 @@
 #include "test_framework.h"
 #include "test_main.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+// The windows.h CreateWindow{A,W} macro would shadow rtsc::ui::CreateWindow
+// in the tests below; the raw PostMessageW/WMsg constants are all we need.
+#undef CreateWindow
+#endif
+
 using namespace rtsc::ui;
 
 namespace {
@@ -196,6 +207,65 @@ RTSC_TEST(window_win32_backend_creates_a_window) {
     CHECK(w->closed());
 #endif
 }
+
+#if defined(_WIN32)
+RTSC_TEST(window_win32_key_input_reports_set1_scancodes) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        // A session without an interactive desktop must fail with a reason,
+        // not silently return a headless window.
+        CHECK(!why.empty());
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // Real keyboard messages carry the set-1 scancode in lParam bits 16..23.
+    // The RDP fast-path keyboard event needs that scancode, not the virtual
+    // key code ('A' is VK 0x41 but its set-1 scancode is 0x1E; a VK sent as a
+    // scancode types a different key on the remote desktop, e.g. 0x41 is F7).
+    const WPARAM vk_a = 0x41;
+    // WM_KEYDOWN 'A': repeat=1, scancode 0x1E, no context/previous/transition.
+    const LPARAM lp_down = static_cast<LPARAM>(0x00000001u | (0x1Eu << 16));
+    // WM_KEYUP: previous state + transition bits set, same scancode.
+    const LPARAM lp_up = static_cast<LPARAM>(0xC0000001u | (0x1Eu << 16));
+    PostMessageW(hwnd, WM_KEYDOWN, vk_a, lp_down);
+    PostMessageW(hwnd, WM_KEYUP, vk_a, lp_up);
+
+    // Automation may post VK-only messages whose lParam scancode field is 0.
+    // The backend must fall back to the layout mapping (MapVirtualKey), which
+    // for letters is layout-stable.
+    const WPARAM vk_b = 0x42;  // 'B', set-1 scancode 0x30
+    PostMessageW(hwnd, WM_KEYDOWN, vk_b, static_cast<LPARAM>(0xC0000001u));
+    PostMessageW(hwnd, WM_KEYUP, vk_b, static_cast<LPARAM>(0xC0000001u));
+
+    InputEvent ev;
+    bool saw_a_down = false;
+    bool saw_a_up = false;
+    bool saw_b_down = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kKey) continue;
+        if (ev.scancode == 0x1E && !ev.key_release) {
+            saw_a_down = true;
+            CHECK(!ev.key_extended);
+        } else if (ev.scancode == 0x1E && ev.key_release) {
+            saw_a_up = true;
+        } else if (!ev.key_release) {
+            // The VK-only 'B' press: scancode must come from the layout
+            // mapping, never the VK code itself.
+            saw_b_down = true;
+            CHECK_EQ(ev.scancode, static_cast<uint8_t>(0x30));
+            CHECK(ev.scancode != 0x42);
+        }
+    }
+    CHECK(saw_a_down);
+    CHECK(saw_a_up);
+    CHECK(saw_b_down);
+    w->Close();
+    CHECK(w->closed());
+}
+#endif  // defined(_WIN32)
 
 RTSC_TEST(window_x11_backend_creates_a_window_or_reports_why) {
 #if !defined(_WIN32) && defined(RTSC_UI_X11)

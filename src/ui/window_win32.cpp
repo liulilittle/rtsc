@@ -311,7 +311,20 @@ class Win32Window final : public Window {
             case WM_KEYUP: {
                 InputEvent e;
                 e.kind = InputEvent::Kind::kKey;
-                e.scancode = static_cast<uint8_t>(wp & 0xFF);
+                // The fast-path keyboard event carries the set-1 scancode
+                // ([MS-RDPBCGR] 2.2.8.1.2.2), which for real messages lives in
+                // lParam bits 16..23 -- not the wParam virtual-key code ('A'
+                // is VK 0x41 but its set-1 scancode is 0x1E; forwarding the VK
+                // types a different key on the remote, e.g. 0x41 is F7).
+                // VK-only synthetic messages (lParam scancode field 0) fall
+                // back to the layout mapping.
+                uint8_t scancode = static_cast<uint8_t>((lp >> 16) & 0xFF);
+                if (scancode == 0) {
+                    scancode = static_cast<uint8_t>(
+                        MapVirtualKeyW(static_cast<UINT>(wp), MAPVK_VK_TO_VSC) &
+                        0xFF);
+                }
+                e.scancode = scancode;
                 e.key_release = (msg == WM_KEYUP);
                 e.key_extended = (lp & (1 << 24)) != 0;
                 events_.push_back(e);

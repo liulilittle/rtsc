@@ -45,7 +45,16 @@ Status DecodeRdp6Plane(const uint8_t* data, size_t size, bool rle,
     const size_t plane_size = static_cast<size_t>(width) * height;
     if (!rle) {
         if (size < plane_size) return Status::NeedMoreData;
-        out.assign(data, data + plane_size);
+        out.assign(plane_size, 0);
+        // Bottom-up: the first stream scanline is the BOTTOM image row
+        // (FreeRDP planar_decompress passes vFlip=TRUE for bitmap updates;
+        // its own compressor walks source rows bottom-up).
+        for (uint16_t s = 0; s < height; ++s) {
+            const uint8_t* src_row = data + static_cast<size_t>(s) * width;
+            uint8_t* dst_row =
+                out.data() + static_cast<size_t>(height - 1 - s) * width;
+            std::memcpy(dst_row, src_row, width);
+        }
         consumed = plane_size;
         return Status::Ok;
     }
@@ -69,8 +78,13 @@ Status DecodeRdp6Plane(const uint8_t* data, size_t size, bool rle,
     const uint8_t* const end = data + size;
     const uint8_t* previous = nullptr;  // previous reconstructed scanline
 
-    for (uint16_t y = 0; y < height; ++y) {
-        uint8_t* row = out.data() + static_cast<size_t>(y) * width;
+    // Bottom-up: the first stream scanline is the BOTTOM image row (FreeRDP
+    // planar_decompress_plane_rle runs its vFlip=TRUE branch from
+    // nHeight-1 downwards for bitmap updates). The delta chain still
+    // references the previous STREAM scanline, which is the image row below.
+    for (uint16_t s = 0; s < height; ++s) {
+        uint8_t* row =
+            out.data() + static_cast<size_t>(height - 1 - s) * width;
         int pixel = 0;  // running pixel; FreeRDP resets it to 0 every scanline
         size_t x = 0;
         while (x < width) {

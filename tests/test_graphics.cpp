@@ -529,15 +529,16 @@ RTSC_TEST(graphics_routes_32bpp_planar_without_cd_header) {
 
     uint8_t r = 0, gg = 0, b = 0, a = 0;
     CHECK(g.surface().GetPixel(1, 1, r, gg, b, a));
-    CHECK_EQ(r, static_cast<uint8_t>(0x40));
-    CHECK_EQ(gg, static_cast<uint8_t>(0x50));
-    CHECK_EQ(b, static_cast<uint8_t>(0x60));
-    CHECK_EQ(a, static_cast<uint8_t>(0xFF));
-    // Row 1 came out of the signed-delta pass (+1).
-    CHECK(g.surface().GetPixel(2, 2, r, gg, b, a));
+    // Stream rows are bottom-up: the tile's TOP row is the signed-delta
+    // pass (+1), the BOTTOM row is the absolute 40/50/60 row.
     CHECK_EQ(r, static_cast<uint8_t>(0x41));
     CHECK_EQ(gg, static_cast<uint8_t>(0x51));
     CHECK_EQ(b, static_cast<uint8_t>(0x61));
+    CHECK_EQ(a, static_cast<uint8_t>(0xFF));
+    CHECK(g.surface().GetPixel(2, 2, r, gg, b, a));
+    CHECK_EQ(r, static_cast<uint8_t>(0x40));
+    CHECK_EQ(gg, static_cast<uint8_t>(0x50));
+    CHECK_EQ(b, static_cast<uint8_t>(0x60));
 }
 
 RTSC_TEST(graphics_routes_32bpp_planar_even_with_no_hdr_flag) {

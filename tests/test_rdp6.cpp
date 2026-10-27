@@ -133,10 +133,10 @@ RTSC_TEST(rdp6_rle_row_delta_and_run_use_previous_scanline) {
     //    bytes as deltas;
     //  * a run on rows >= 1 repeats the running DELTA, adding it to each
     //    x's own previous-scanline value.
-    // 4x3. Plane R:
-    //   row0: 0x10 (raw AB), 0x03 (run 3)             -> AB AB AB AB
-    //   row1: 0x04 (run 4, pixel=0)                   -> prev+0 = AB AB AB AB
-    //   row2: 0x10 (delta 0x04 = +2), 0x03 (run 3)    -> prev+2 = AD AD AD AD
+    // 4x3. Plane R (stream scanlines are BOTTOM-UP):
+    //   stream row0: 0x10 (raw AB), 0x03 (run 3)     -> image row 2: AB AB AB AB
+    //   stream row1: 0x04 (run 4, pixel=0)           -> image row 1: prev+0 = AB AB AB AB
+    //   stream row2: 0x10 (delta 0x04 = +2), 0x03    -> image row 0: prev+2 = AD AD AD AD
     const std::vector<uint8_t> data = {
         0x30,                                          // RLE, no alpha
         0x10, 0xAB, 0x03, 0x04, 0x10, 0x04, 0x03,      // R
@@ -146,9 +146,10 @@ RTSC_TEST(rdp6_rle_row_delta_and_run_use_previous_scanline) {
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 4, 3, bm) == Status::Ok);
     CHECK_EQ(bm.pixels.size(), static_cast<size_t>(4 * 3 * 4));
-    const uint8_t r_rows[3] = {0xAB, 0xAB, 0xAD};
-    const uint8_t g_rows[3] = {0x10, 0x10, 0x12};
-    const uint8_t b_rows[3] = {0x20, 0x20, 0x22};
+    // Image rows top->bottom = stream rows 2,1,0.
+    const uint8_t r_rows[3] = {0xAD, 0xAB, 0xAB};
+    const uint8_t g_rows[3] = {0x12, 0x10, 0x10};
+    const uint8_t b_rows[3] = {0x22, 0x20, 0x20};
     for (int y = 0; y < 3; ++y) {
         for (int x = 0; x < 4; ++x) {
             const size_t i = (static_cast<size_t>(y) * 4 + x) * 4;
@@ -163,9 +164,10 @@ RTSC_TEST(rdp6_rle_row_delta_and_run_use_previous_scanline) {
 RTSC_TEST(rdp6_rle_row_delta_signed_magnitude) {
     // 2x2. Rows >= 1 carry signed-magnitude deltas (bit 0 = sign, value =
     // delta >> 1, negative adds one): 0x01 -> -1, 0x03 -> -2, 0x02 -> +1.
-    // R: row0 raw FF 0A; row1 deltas 01 03 -> FE 08.
-    // G: row0 raw 00 00; row1 deltas 00 00 -> 00 00.
-    // B: row0 raw 05 06; row1 deltas 02 00 -> 06 06.
+    // Stream rows are BOTTOM-UP: stream row0 (raw FF 0A) -> image row 1,
+    // stream row1 (deltas 01 03 -> FE 08) -> image row 0.
+    // R: stream row0 = FF 0A; stream row1 = FE 08.
+    // G: all zero. B: stream row0 = 05 06; stream row1 = 06 06.
     const std::vector<uint8_t> data = {
         0x30, 0x20, 0xFF, 0x0A, 0x20, 0x01, 0x03, 0x20, 0x00,
         0x00, 0x20, 0x00, 0x00, 0x20, 0x05, 0x06, 0x20, 0x02,
@@ -173,14 +175,16 @@ RTSC_TEST(rdp6_rle_row_delta_signed_magnitude) {
     };
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 2, 2, bm) == Status::Ok);
-    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0xFF));
-    CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0x05));
-    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x0A));
+    // Image row 0 = stream row1: R=FE 08, G=00 00, B=06 06.
+    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0xFE));
+    CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0x06));
+    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x08));
     CHECK_EQ(bm.pixels[6], static_cast<uint8_t>(0x06));
-    CHECK_EQ(bm.pixels[8], static_cast<uint8_t>(0xFE));
+    // Image row 1 = stream row0: R=FF 0A, G=00 00, B=05 06.
+    CHECK_EQ(bm.pixels[8], static_cast<uint8_t>(0xFF));
     CHECK_EQ(bm.pixels[9], static_cast<uint8_t>(0x00));
-    CHECK_EQ(bm.pixels[10], static_cast<uint8_t>(0x06));
-    CHECK_EQ(bm.pixels[12], static_cast<uint8_t>(0x08));
+    CHECK_EQ(bm.pixels[10], static_cast<uint8_t>(0x05));
+    CHECK_EQ(bm.pixels[12], static_cast<uint8_t>(0x0A));
     CHECK_EQ(bm.pixels[14], static_cast<uint8_t>(0x06));
 }
 
@@ -195,9 +199,12 @@ RTSC_TEST(rdp6_rle_delta_clamp_is_truncating) {
     };
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 1, 2, bm) == Status::Ok);
-    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0xF0));
-    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x2F));
-    CHECK_EQ(bm.pixels[5], static_cast<uint8_t>(0x0F));
+    // Bottom-up: image row 0 = stream row1 (the +63 clamped row, and the G
+    // -1 delta row); image row 1 = stream row0.
+    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0x2F));
+    CHECK_EQ(bm.pixels[1], static_cast<uint8_t>(0x0F));
+    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0xF0));
+    CHECK_EQ(bm.pixels[5], static_cast<uint8_t>(0x10));
 }
 
 RTSC_TEST(rdp6_rle_segment_must_not_cross_row_boundary) {
@@ -274,11 +281,13 @@ RTSC_TEST(rdp6_bitmap_raw_argb_with_alpha) {
 }
 
 RTSC_TEST(rdp6_bitmap_rle_with_row_delta) {
-    // 1x2, ARGB, RLE planes. Row 0 absolute, row 1 signed-magnitude delta.
+    // 1x2, ARGB, RLE planes. Stream rows are BOTTOM-UP: the first stream
+    // scanline is the bottom image row, the second is the delta row above.
     // header 0x30 (CLL=0, RLE=1, NA=1). One segment per row (a segment never
     // crosses a scanline). Each plane: cb=0x10 -> 1 raw byte.
     // Delta byte d: bit0=sign, d>>1 magnitude.
-    // R: {0x10, 0x10, 0x10, 0x0A} -> row0 0x10; row1 delta 0x0A -> +5 -> 0x15
+    // R: {0x10, 0x10, 0x10, 0x0A} -> stream row0 0x10 (image bottom);
+    //    stream row1 delta 0x0A -> +5 -> 0x15 (image top)
     // G: {0x10, 0x20, 0x10, 0x06} -> +3 -> {0x20, 0x23}
     // B: {0x10, 0x30, 0x10, 0x02} -> +1 -> {0x30, 0x31}
     const std::vector<uint8_t> data = {0x30, 0x10, 0x10, 0x10, 0x0A, 0x10, 0x20,
@@ -286,26 +295,29 @@ RTSC_TEST(rdp6_bitmap_rle_with_row_delta) {
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 1, 2, bm) == Status::Ok);
     CHECK_EQ(bm.pixels.size(), static_cast<size_t>(8));
-    // Row 0.
-    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0x10));
-    CHECK_EQ(bm.pixels[1], static_cast<uint8_t>(0x20));
-    CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0x30));
-    // Row 1 (delta added).
-    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x15));
-    CHECK_EQ(bm.pixels[5], static_cast<uint8_t>(0x23));
-    CHECK_EQ(bm.pixels[6], static_cast<uint8_t>(0x31));
+    // Image row 0 (top) = stream row1 (delta row).
+    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0x15));
+    CHECK_EQ(bm.pixels[1], static_cast<uint8_t>(0x23));
+    CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0x31));
+    // Image row 1 (bottom) = stream row0 (absolute row).
+    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x10));
+    CHECK_EQ(bm.pixels[5], static_cast<uint8_t>(0x20));
+    CHECK_EQ(bm.pixels[6], static_cast<uint8_t>(0x30));
 }
 
 RTSC_TEST(rdp6_bitmap_rle_negative_delta) {
-    // 1x2, ARGB, RLE: row 1 delta byte 0x07 -> bit0=1 -> -((7>>1)+1) = -4.
-    // R: {0x10, 0x20, 0x10, 0x07} -> {0x20, 0x1C};
+    // 1x2, ARGB, RLE. Stream rows are BOTTOM-UP: stream row0 (0x20) is the
+    // bottom image row; stream row1 delta byte 0x07 -> bit0=1 ->
+    // -((7>>1)+1) = -4 -> 0x20-4 = 0x1C is the TOP image row.
+    // R: {0x10, 0x20, 0x10, 0x07} -> image rows (top,bottom) = {0x1C, 0x20};
     // G: {0x10, 0x20, 0x10, 0x00} -> {0x20, 0x20};
     // B: {0x10, 0x20, 0x10, 0x00} -> {0x20, 0x20}.
     const std::vector<uint8_t> data = {0x30, 0x10, 0x20, 0x10, 0x07, 0x10, 0x20,
                                        0x10, 0x00, 0x10, 0x20, 0x10, 0x00};
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 1, 2, bm) == Status::Ok);
-    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x1C));  // 0x20 - 4
+    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0x1C));  // 0x20 - 4, top row
+    CHECK_EQ(bm.pixels[4], static_cast<uint8_t>(0x20));  // bottom row
 }
 
 RTSC_TEST(rdp6_rle_segment_crossing_rows_is_rejected) {
@@ -357,12 +369,6 @@ RTSC_TEST(rdp6_bitmap_aycocg_negative_chroma_clamps) {
     CHECK_EQ(bm.pixels[1], static_cast<uint8_t>(16));   // G
     CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0));    // B clamped
 }
-
-// ---- Real-machine vectors (captured from 192.168.1.7, 32bpp session) ------
-// Both tiles are 64x64 bpp=32 flags=0x0001 (BITMAP_COMPRESSION, no
-// NO_BITMAP_COMPRESSION_HDR) RDP6 planar streams: the stream starts at the
-// format header 0x10 (CLL=0, CS=0, RLE=1, alpha plane present) with no
-// TS_CD_HEADER. The old whole-plane decoder returned InvalidField on them.
 
 // ---- Real-machine vectors (captured from 192.168.1.7, 32bpp session) ------
 // Both tiles are 64x64 bpp=32 flags=0x0001 (BITMAP_COMPRESSION, no
@@ -527,10 +533,44 @@ RTSC_TEST(rdp6_real_machine_tile_content_1320B) {
     std::sort(colours.begin(), colours.end());
     colours.erase(std::unique(colours.begin(), colours.end()), colours.end());
     CHECK_EQ(colours.size(), static_cast<size_t>(43));
-    // Corner pixels (row 0, first pixel): white content.
-    CHECK_EQ(bm.pixels[0], static_cast<uint8_t>(0xFF));
-    CHECK_EQ(bm.pixels[1], static_cast<uint8_t>(0xFF));
-    CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0xFF));
+    // Bottom-up: the LAST image row carries the first stream scanline, and
+    // the live desktop screenshot confirms the bottom edge is the white
+    // content edge (the top-down reading mirrored the whole desktop).
+    const size_t last_row = (4096 - 4) * 4;
+    CHECK_EQ(bm.pixels[last_row + 0], static_cast<uint8_t>(0xFF));
+    CHECK_EQ(bm.pixels[last_row + 1], static_cast<uint8_t>(0xFF));
+    CHECK_EQ(bm.pixels[last_row + 2], static_cast<uint8_t>(0xFF));
+}
+
+RTSC_TEST(planar_decodes_bottom_up_scanline_order) {
+    // RDP bitmaps are bottom-up: the FIRST stream scanline is the BOTTOM
+    // image row (FreeRDP planar_decompress_plane_rle vFlip=TRUE for bitmap
+    // updates; the shipped compressor walks source rows bottom-up). A stream
+    // whose first scanline is 0xFF and whose later scanlines decode to 0x7E
+    // must therefore paint the BOTTOM image row white and the rows above
+    // 0x7E — a top-down read mirrors the whole desktop (live-machine bug).
+    const uint8_t header = 0x30;  // RLE | NA
+    // Plane stream: row0 = 4x 0xFF (absolute), row1 = 4x delta +127
+    // (0xFE -> 0xFF+127 = 0x7E mod 256), rows 2-3 = run of pixel 0
+    // (previous + 0 = 0x7E).
+    const uint8_t plane[] = {0x40, 0xFF, 0xFF, 0xFF, 0xFF, 0x40, 0xFE, 0xFE,
+                             0xFE, 0xFE, 0x04, 0x04};
+    std::vector<uint8_t> data;
+    data.push_back(header);
+    for (int i = 0; i < 3; ++i) {
+        data.insert(data.end(), std::begin(plane), std::end(plane));
+    }
+
+    DecodedBitmap bm;
+    CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 4, 4, bm) == Status::Ok);
+
+    // Image bottom row (y=3) carries the first stream scanline: white.
+    CHECK_EQ(bm.pixels[(3 * 4 + 0) * 4 + 0], static_cast<uint8_t>(0xFF));
+    CHECK_EQ(bm.pixels[(3 * 4 + 1) * 4 + 0], static_cast<uint8_t>(0xFF));
+    // Image rows 0..2 carry the delta rows: 0x7E.
+    for (int y = 0; y < 3; ++y) {
+        CHECK_EQ(bm.pixels[(y * 4 + 0) * 4 + 0], static_cast<uint8_t>(0x7E));
+    }
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_rdp6_tests"); }
