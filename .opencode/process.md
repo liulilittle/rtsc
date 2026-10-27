@@ -10045,3 +10045,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[阻塞实因]** 执行代理试 yy520o!/yy5200! 均为错拼；正确密码=yy520o!!（双感叹号、字母 o），主会话今日全程实证有效（多次 130 万非黑渲染）。
 - **[指示]** 单引号传参精确重跑真机回归；禁止尝试变体（锁定风险）；仍拒则停并如实标注未验证。
 - **[进度]** 批次 1-9 项已完成（D-A/D-B 规范字节/D1 解耦/D2 钳宽/D4 服务器应答/D1a/D3 裁剪/D-C/D-D/D-E/D5/D-F）；门禁：ctest 51/51×5 轮、Linux gate PASS 49/49、甲乙 RED 配方复验 FAIL→复原 PASS、零 printf 残留。
+
+## 第540轮：甲乙联合裁定备案（真机回归新缺陷 N1-N7）
+
+- **[裁定（甲乙一致，已直复执行 AI）]** D-C 采纳方案 C：highColorDepth=24 + 撤 0x0002 + supportedColorDepths=0x0001（TDD 先红后绿）；**新增缺陷单 N1-N7**：32bpp RDP6 planar 解码（逐扫描线模型/段首 run 填充/CD 头剥离先于 planar 路由 graphics.cpp:344-353/32bpp 压缩无 CD 头/真机向量/验收后恢复 24+0x0002+0x0009 终态/红鲱鱼批注）。证据：rdp6.cpp:60（段首 run InvalidField vs FreeRDP 初始 0 填充）、rdp6.cpp:83-101（整平面 vs 逐扫描线）。
+- **[第10项观测达成]** 24bpp A/B（1285/1285 解码、1306328 non-black）=真机重绘生效实证（RefreshRect 修复后）。
+- **[否决]** A（回退链验收证据充分）、B（独立 TDD 周期不入本批）。
+- **[状态]** 执行 AI 按裁定继续（queued 受理）；甲乙待其回报后复验。
