@@ -10032,3 +10032,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[甲审结论]** RAIL 门控/bitmap+2/HYBRID resume/perfFlags/游标/caps=通过（其两处初疑被规范原文证伪，免改）；**D-A[高→中] RefreshRectPdu 体应为 numberOfAreas(1)+pad3Octects(3)+rects**（我实现 pad1+count+rects → 规范服务器读 count=0 → 刷新永不生效）；**D-B[中] SuppressOutputPdu 规范=allow(1)+pad3(3)+desktopRect(8 仅 allow=1)**（我实现 count32+数组为虚构布局→对规范对端死代码、测试假绿）；D-C highColorDepth=32 越界（应 24+earlyCapabilityFlags 0x0002）；D-D 光标多屏原点/形状丢弃；D-E 零时区=UTC；D-F BOM/parse 不清 out。**驳回(条件)**：显示更新控制子机制须红→绿修复后复验。
 - **[主代理旁证]** 真机观测吻合 D-A：发 RefreshRect 后 826→834 色无重绘（count=0 no-op 解释成立）。甲乙已互发磋商，待收敛定案。
 - **[修复批次预排]** D-A/D-B/D-C + 乙 D1/D2/D4/D1a + D-F 清理 → 收敛后单批修复（先红后绿，真机回归验证重绘生效）。
+
+## 第530轮：双审终报定案承接 + 修复批次派发 + 旧修复代理清理
+
+- **[双审终报（甲汇总/乙确认）]** 服务器变更链**通过**；客户端变更链**条件驳回**（通过部分：RAIL 按需化/bitmap+2/HYBRID 无 EUAR 死锁修复/perfFlags 扩展块/GeneralCaps 1B 支持/游标合成；驳回部分：D-A/D-B 线格式不符规范，测试假绿，三方证据链）。
+- **[定案修复批次]** D-A（RefreshRect=numberOfAreas+pad3Octets+rects）/D-B（SuppressOutput=allow+pad3+desktopRect 仅 allow=1）/D1（空闲重发与输入解耦）/D2（行宽钳制）/D4（服务器解析 RefreshRect+SuppressOutput 静默标志）/D1a/D3 裁剪/D-C（24bpp+0x0002）/D-D/D-E/D5/D-F。真机回归 MUST：colours 跳变验证重绘生效。
+- **[派发]** 执行代理 ses_e839c4331ffeFM7Mpyirmbn97u（kiosapi/glm-5.3-flash-free），携甲乙 ID 磋商通道。
+- **[清理]** 旧修复代理 ses_e84e12b2dffeCGb40nhputmyZT 任务终了 → aborted（历史保留）。
