@@ -10091,3 +10091,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 
 - **[派发]** ses_e8281165affeE1oa6Z20Y7rxaJ（kiosapi/glm-5.3-flash-free）：输入转发（win32+desktop_control 交互观测）/剪贴板双向/rdpdr 驱动器能力核查/RDPSND 协商/化妆项（test_rdp6.cpp 注释块+尾换行）。凭据精确形态+锁定风险提示+用户桌面轻量注入约束。
 - **[流程]** 小修 TDD 直修；大缺陷上报另开双审循环。
+
+## 第580轮：planar 垂直镜像修复提交 1e36719 + 验证代理遗留输入修复承接
+
+- **[镜像修复]** rdp6.cpp bottom-up（vFlip 对齐 FreeRDP；三源证据：planar.c vFlip 分支/压缩器 start_line 递减/用户截图症状）；新方向性单测+重钉 4 个旧期望（含 1320B 真机瓦片角点）；修复 raw 路径 assign 前使用空 vector 的崩溃（C0000005）；ctest 51/51。
+- **[遗留承接]** 验证代理死前修复真实输入缺陷：window_win32.cpp 转发 lParam bits16-23 的 set-1 扫描码（原把 VK 当扫描码：'A'→F7），VK 合成消息回退 MapVirtualKeyW；留下 interaction-batch 证据（surface dump/交互脚本）。随本提交入库，待下轮双审补审。
+- **[重派]** 验证批次重开（新代理）：输入转发（含扫描码修复验证）/剪贴板/rdpdr/RDPSND + win32 截图确认镜像修复。
+- **[教训]** 线格式审计遗漏了行序维度——像素值对≠方向对；此后位图类测试必须含不对称方向断言。
