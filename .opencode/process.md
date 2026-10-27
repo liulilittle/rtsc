@@ -10098,3 +10098,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[遗留承接]** 验证代理死前修复真实输入缺陷：window_win32.cpp 转发 lParam bits16-23 的 set-1 扫描码（原把 VK 当扫描码：'A'→F7），VK 合成消息回退 MapVirtualKeyW；留下 interaction-batch 证据（surface dump/交互脚本）。随本提交入库，待下轮双审补审。
 - **[重派]** 验证批次重开（新代理）：输入转发（含扫描码修复验证）/剪贴板/rdpdr/RDPSND + win32 截图确认镜像修复。
 - **[教训]** 线格式审计遗漏了行序维度——像素值对≠方向对；此后位图类测试必须含不对称方向断言。
+
+## 第581轮：模型切换授权 + 实网验证会话 A 绿证采信 + 两组双审开立
+
+- **[用户授权]** 用户睡觉并授权继续推进；授权模型改为 kiosapi/minimax-m3.1-flash-free（config 已确认该 model-id 存在，**未改配置文件**）。原代理 ses_e8196e3e7ffeQ6oFMqr0FGItFM 因 glm-5.3-flash-free 渠道不可用 APIError 中止；续做时换模型 prompt 恢复。
+- **[会话 A 绿证·主代理独立核验]** evidence/interaction-batch/v2/a1-window-correct.jpg 目验：远程桌面图标/文字/任务栏方向全部正确（**镜像缺陷闭环**）。session-a.log：1299121 non-black/826 colours；lossless 1:1 bit-exact 5242880B；input=1294 channel=14；audio server_formats=1 wave2=7 confirms=7 played=229376 received=yes（44100Hz 2ch 16-bit PCM）；clipboard caps_sent=1 server_caps=1 但 **remote_lists=0/responses=0/data_resp=0**（仅能力交换、无数据往返）；VC chunks rdpdr=2 cliprdr=2（**rdpdr 仅 announce、无设备列表**）。
+- **[发现·功能未接线假绿点]** 主代理检索：GUI/main.cpp 与 client.cpp **零 gateway 引用**（src/proto/gateway.cpp 387行 + src/net/gateway_transport.cpp 203行 均为死代码）；**零 rdpusb 引用**（rdpusb_client.cpp 505行 + usb_win32.cpp 364行 未接线）；main.cpp:377 rdpdr 仅注册计数回调，真实 RdpdrClient 未接线。
+- **[派发·两组双审（W11 角色两两不同）]** 组A=客户端接线缺口（甲 ses_e8150e480ffeaYVZn590wi4msC / 乙 ses_e814fe0b5ffeuO6b2N44YXBEL5）；组B=服务器模式·家庭版解禁+多远程用户（甲 ses_e8150e46bffejlaqmH6jyVSGOK / 乙 ses_e814edb30ffek8HbOpy6hQ4YgZ）；四者均 kiosapi/minimax-m3.1-flash-free、只读审计、路径:行 证据、互告已双向补发（首次 relay 误写不存在的会话 ID，已发更正）。
+- **[教训]** 交接口径必须写进证据：验证代理曾用**不存在的**会话 ID 互告并混淆组别——派发后必须回读每个 task 返回的真实 subagent_id 再补发互告，禁止凭印象拼 ID。
