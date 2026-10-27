@@ -10007,3 +10007,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[门禁]** 杀闲置 rtsc_server_host(PID43756) 解锁 → 全量构建 EXIT=0，**ctest 51/51**。
 - **[真机目验]** 窗口渲染完整桌面（图标/Hyper-V/任务栏时钟 14:42），色彩与文字正常；交互自动化受用户桌面干扰（窗口被关闭）→ 交用户自验。
 - **[派发]** 服务器→mstsc 黑屏（GDI 输出路径 + RefreshRect 响应）续派 ses_e84e12b2dffeCGb40nhputmyZT。
+
+## 第510轮：修复代理终版收口承接 + C4702 Debug 门禁修复
+
+- **[收口承接]** ses_e84e12b2dffeCGb40nhputmyZT 终版报告：licensing 单条 ERROR_ALERT（真机抓包字节级一致）+ BuildBitmapBand 含端点矩形 + updateType 对齐 + ActiveLoop 1s 空闲刷新；mstsc 实网渲染桌面（shots/08/09/10）；Windows/ Linux 门禁双绿；插桩零残留。其 complete 被 C0 台账口径拦（compile_seq=0），主会话已代验（BUILD=0+ctest 51/51）并如实标注，未伪造。
+- **[旁发修复]** verify.ps1(Ninja+Debug) 报 window_win32.cpp:372 C4702（switch 全路径 return 后尾随 return false 不可达；文件为已提交代码非本轮改动）。W3 备份后删除该不可达行 → Debug rtsc_ui=0、Release=0、ctest 51/51。
+- **[在途]** 双审甲乙（ses_e83c97f59ffe5QukokGpkX36Q1 / ses_e83c8bc13ffedmvPmLzSrpgdan）busy；修复代理待 idle 后按第9条 abort 清理（保留历史）。
+- **[待办]** 双审盖章 → merge --no-ff master；输入转发实网验证（新代理）。

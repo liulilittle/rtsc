@@ -369,7 +369,6 @@ class Win32Window final : public Window {
             default:
                 return false;
         }
-        return false;
     }
 
     size_t present_count() const { return present_count_; }
