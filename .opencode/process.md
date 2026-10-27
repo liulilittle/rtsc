@@ -10086,3 +10086,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[解散]** 执行 AI ses_e831cef51ffeHuvtdSAkn4cDNt + 甲 ses_e82baf194ffe7a3FgJo9E42NvP + 乙 ses_e82baf172ffeXLeLhTTn27VOEt 全部 delete。
 - **[里程碑]** 32bpp 会话全链恢复：planar 解码+终态 caps 组合（24+0x0003+0x0009）；客户端与服务器双向实网渲染均实证。
 - **[待办]** 用户目验 32bpp 画质；输入转发实网验证；剪贴板/驱动器/USB enhanced 验证；下批顺带化妆项。
+
+## 第575轮：实网功能验证批次派发
+
+- **[派发]** ses_e8281165affeE1oa6Z20Y7rxaJ（kiosapi/glm-5.3-flash-free）：输入转发（win32+desktop_control 交互观测）/剪贴板双向/rdpdr 驱动器能力核查/RDPSND 协商/化妆项（test_rdp6.cpp 注释块+尾换行）。凭据精确形态+锁定风险提示+用户桌面轻量注入约束。
+- **[流程]** 小修 TDD 直修；大缺陷上报另开双审循环。
