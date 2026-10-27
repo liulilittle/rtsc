@@ -10026,3 +10026,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[乙执行]** 磋商已重发真甲（accepted_busy）；误发修复代理已补发勘误（防误入审计线程）；D6 依 D19 条款结案（ActiveLoop 系读循环 tick 计数、注册/销毁天然成对、单源无队列问题）。
 - **[新增 D1a 低]** 空闲重发 SendFrame() 返回值被忽略（server.cpp:534），发送失败被吞靠传输层后续错误退出——按"每失败路径必须有处理"宜补日志/提前退出；已并入甲复判。
 - **[状态]** 乙静默待甲（正确姿态）；甲 ses_e83c97f59ffe5QukokGpkX36Q1 busy 报告未到。主代理静默等待，不轮询。
+
+## 第525轮：甲审第1轮报告承接（驳回条件：D-A/D-B 线格式）
+
+- **[甲审结论]** RAIL 门控/bitmap+2/HYBRID resume/perfFlags/游标/caps=通过（其两处初疑被规范原文证伪，免改）；**D-A[高→中] RefreshRectPdu 体应为 numberOfAreas(1)+pad3Octects(3)+rects**（我实现 pad1+count+rects → 规范服务器读 count=0 → 刷新永不生效）；**D-B[中] SuppressOutputPdu 规范=allow(1)+pad3(3)+desktopRect(8 仅 allow=1)**（我实现 count32+数组为虚构布局→对规范对端死代码、测试假绿）；D-C highColorDepth=32 越界（应 24+earlyCapabilityFlags 0x0002）；D-D 光标多屏原点/形状丢弃；D-E 零时区=UTC；D-F BOM/parse 不清 out。**驳回(条件)**：显示更新控制子机制须红→绿修复后复验。
+- **[主代理旁证]** 真机观测吻合 D-A：发 RefreshRect 后 826→834 色无重绘（count=0 no-op 解释成立）。甲乙已互发磋商，待收敛定案。
+- **[修复批次预排]** D-A/D-B/D-C + 乙 D1/D2/D4/D1a + D-F 清理 → 收敛后单批修复（先红后绿，真机回归验证重绘生效）。
