@@ -10071,3 +10071,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[清理]** 修复服务器mstsc黑屏（已终了）ses_e84e12b2dffeCGb40nhputmyZT delete。
 - **[派发]** planar 修复执行代理 ses_e831cef51ffeHuvtdSAkn4cDNt（kiosapi/glm-5.3-flash-free）：N1 逐扫描线模型（FreeRDP planar.c oracle）/N2 段首 run 填充/N3 CD 头路由顺序/N4 规格注记/N5 真机向量 10 f2 11 f2...（64x64 bpp=32 len=513）+合成单测/N6 修复后恢复 24+0x0002+0x0009 终态+真机 32bpp 回归 MUST/N7 红鲱鱼注释清除。
 - **[流程]** 执行收口后开新双审循环复验 → 盖章 → 提交。
+
+## 第560轮：N1-N7 执行收口承接 + 主代理核验 + 双审复验循环开启
+
+- **[主代理核验]** BUILD=0；ctest 51/51；rdp6.cpp 逐扫描线状态机+FreeRDP oracle 注释亲读；路由 32bpp→DecodeRdp6Bitmap(274)/≤24bpp→DecodeRleBitmap(283) 亲读；残留 0；10 文件 +643/-160。
+- **[执行收口要点]** N1 逐扫描线重写/N2 段首 run 填充（cb==0 保留 InvalidField）/N3 路由重排/N4 规格注记（docs/spec 两处）/N5 真机向量 513B+1320B 入库（rdp6 25 tests/20685 checks）/N6 终态 24+0x0003+0x0009（0x0003=ERRINFO|WANT_32BPP）/N7 红鲱鱼清除；真机回归 1292 矩形 bpp=32 planar 零解码失败、1306341 non-black、bit-exact。
+- **[双审复验派发]** 甲 ses_e82baf194ffe7a3FgJo9E42NvP（rdp6 vs FreeRDP planar.c 对照/路由/测试质证）+ 乙 ses_e82baf172ffeXLeLhTTn27VOEt（MS-RDPPEGDI 规范/互操作/回归风险）；互告已发。
+- **[在途]** 甲乙独立第1轮 → 磋商收敛 → 联合定案 → 盖章后提交。
