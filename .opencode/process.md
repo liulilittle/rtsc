@@ -10078,3 +10078,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[执行收口要点]** N1 逐扫描线重写/N2 段首 run 填充（cb==0 保留 InvalidField）/N3 路由重排/N4 规格注记（docs/spec 两处）/N5 真机向量 513B+1320B 入库（rdp6 25 tests/20685 checks）/N6 终态 24+0x0003+0x0009（0x0003=ERRINFO|WANT_32BPP）/N7 红鲱鱼清除；真机回归 1292 矩形 bpp=32 planar 零解码失败、1306341 non-black、bit-exact。
 - **[双审复验派发]** 甲 ses_e82baf194ffe7a3FgJo9E42NvP（rdp6 vs FreeRDP planar.c 对照/路由/测试质证）+ 乙 ses_e82baf172ffeXLeLhTTn27VOEt（MS-RDPPEGDI 规范/互操作/回归风险）；互告已发。
 - **[在途]** 甲乙独立第1轮 → 磋商收敛 → 联合定案 → 盖章后提交。
+
+## 第570轮：N1-N7 双审盖章通过 → 提交 b5dd3d8 + 团队解散
+
+- **[联合终报]** 甲乙双审盖章【通过】：六项复验重点全闭合（rdp6.cpp vs FreeRDP master 源码逐分支一致/路由三重证明/真机向量=规范字节+双独立预言机/N6 0x0003+0x0009 规范引证/盖章区域零改动/亲测三套件+51/51+活机三轮）。阻断缺陷 0；化妆级 2+信息项 3 留档下批。
+- **[提交]** b5dd3d8 "feat: 32bpp RDP6 planar per-scanline decoder (N1-N7, double-audit stamped)"，30 文件 +1693/-160。
+- **[解散]** 执行 AI ses_e831cef51ffeHuvtdSAkn4cDNt + 甲 ses_e82baf194ffe7a3FgJo9E42NvP + 乙 ses_e82baf172ffeXLeLhTTn27VOEt 全部 delete。
+- **[里程碑]** 32bpp 会话全链恢复：planar 解码+终态 caps 组合（24+0x0003+0x0009）；客户端与服务器双向实网渲染均实证。
+- **[待办]** 用户目验 32bpp 画质；输入转发实网验证；剪贴板/驱动器/USB enhanced 验证；下批顺带化妆项。
