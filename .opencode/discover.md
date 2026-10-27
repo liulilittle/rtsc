@@ -1179,3 +1179,9 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] A/B worktree + 探针 + git bisect（6 步）定位 53fd68a。
 - [错误] 起初怀疑 licensing（0x808）、EUAR、RefreshRect 时序、色深 24bpp、服务器环境——均非根因；RefreshRect 首版体格式错误（缺 pad1）导致服务器断开。
 - [下一步] 双审（RAIL 按需化 + RefreshRect/SuppressOutput + caps）→ 合并 master；服务器→mstsc 渲染由在途代理处理。
+
+## [2026-10-28][主代理] provider 限流/网关错误打断子代理（并发过载）
+[尝试] 同时开 5 个子会话（1 实网验证 + 2 组双审）跑同一 provider（kiosapi/minimax-m3.1-flash-free）。
+[错误] 两类中断：① ses_e8150e46bffejlaqmH6jyVSGOK 报 APIError「1分钟内最多请求15次」；② ses_e8196e3e7ffeQ6oFMqr0FGItFM 报 APIError Bad Gateway（此前还因 glm-5.3-flash-free 渠道不可用被 APIError 中止）。
+[根因] 并发子会话数超过 provider 每分钟请求预算（15 次/分钟，跨所有子会话共享）；非模型能力问题、非代码问题。
+[下一步] ① 同 provider 并发上限按 ≤3 个子会话控制，本轮已把「扫描码/镜像修复补审」并入现有组A 而非新开会话；② 遇限流先 sleep 排空窗口再 prompt 续做，不换模型（用户已授权模型为 kiosapi/minimax-m3.1-flash-free）；③ 子代理提示词内加入「每批工具调用 ≤5、每完成一项立即 relay」的自限流约束；④ 错误分类：渠道不可用=模型级（需上报），请求数超限/Bad Gateway=并发级（排空+续做即可）。

@@ -10106,3 +10106,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[发现·功能未接线假绿点]** 主代理检索：GUI/main.cpp 与 client.cpp **零 gateway 引用**（src/proto/gateway.cpp 387行 + src/net/gateway_transport.cpp 203行 均为死代码）；**零 rdpusb 引用**（rdpusb_client.cpp 505行 + usb_win32.cpp 364行 未接线）；main.cpp:377 rdpdr 仅注册计数回调，真实 RdpdrClient 未接线。
 - **[派发·两组双审（W11 角色两两不同）]** 组A=客户端接线缺口（甲 ses_e8150e480ffeaYVZn590wi4msC / 乙 ses_e814fe0b5ffeuO6b2N44YXBEL5）；组B=服务器模式·家庭版解禁+多远程用户（甲 ses_e8150e46bffejlaqmH6jyVSGOK / 乙 ses_e814edb30ffek8HbOpy6hQ4YgZ）；四者均 kiosapi/minimax-m3.1-flash-free、只读审计、路径:行 证据、互告已双向补发（首次 relay 误写不存在的会话 ID，已发更正）。
 - **[教训]** 交接口径必须写进证据：验证代理曾用**不存在的**会话 ID 互告并混淆组别——派发后必须回读每个 task 返回的真实 subagent_id 再补发互告，禁止凭印象拼 ID。
+
+## 第582轮：限流中断处置 + 补审并入组A
+
+- **[中断]** 服务器模式甲 ses_e8150e46bffejlaqmH6jyVSGOK 限流（1分钟15次上限）；实网验证 ses_e8196e3e7ffeQ6oFMqr0FGItFM Bad Gateway。均非代码/模型能力问题（provider 并发过载）。
+- **[处置]** sleep 58s 排空限流窗口后 prompt 续做（服务器模式甲 + 实网验证）；桌面 screenshot info 确认未锁屏（admin=true, locked=false）→ GUI 验证可继续。
+- **[降并发]** 不新开审计会话：把「扫描码转发修复 + planar 镜像修复」补审（S4/S5）relay 并入组A甲乙，要求给可盖章结论。
+- **[纪律]** provider 限流类错误不换模型（用户已授权 minimax-m3.1-flash-free）；子代理提示加自限流约束（每批 ≤5 调用、每项即报）。
