@@ -9981,3 +9981,18 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[关键推断]** grep  x808|disconnectReasonLicensingFailed src/ 零命中 → 服务器从不发送 0x808；0x808 为 mstsc 自身 licensing 状态机判定失败（收到非预期/畸形/时序不对的 licensing PDU）。
 - **[处置]** relay 修复代理（busy 入队）：stderr 双捕获、[TEMP2] 断点定位、[MS-RDPELE] 逐字节校验、SEC_LICENSE_PKT 时序/加密、premaster RSA、MAC 误拒排查；重启服务器（当前 3390 未监听、无进程）。
 - **[在途]** licensing 0x808 诊断/修复（子代理 ses_e84e12b2dffeCGb40nhputmyZT busy）。
+
+
+## 第500轮：黑屏根因定位（bisect）→ RAIL 按需化修复 → 真机渲染恢复 ✅
+
+- **[用户痛点]** 客户端连 192.168.1.7 渲染黑屏（surface 0 non-black），mstsc 同刻正常。
+- **[反向取证]** A/B（HEAD worktree vs 当前树）均黑 → 非工作树改动；探针实证服务器发来全屏均色黑 tile（14KB/320 tile，解码 OK）→ 服务器把会话当 RemoteApp 准备。
+- **[bisect]** worktree `regress-check` 6 步探针（2bd66d8 good → 659586a bad）→ **首个坏提交 `53fd68a`（RAIL 客户端集成）**：无条件广播 `rail` 通道 → Client Info 置 INFO_RAIL → Confirm Active 带 TS_RAIL_CAPS → Win11 服务器进入 RemoteApp 会话、桌面永不合成。
+- **[修复（mstsc 对齐）]** RAIL 全面按需化：
+  - `BuildDefaultClientCapabilities(..., bool rail_mode=false)` 门控 TS_RAIL_CAPS（capabilities.{h,cpp}）
+  - `SessionSetupMachine::Config.rail_mode` + `connection_driver.cpp` 依据 channel_names 判断
+  - `tools/rtsc_gui/main.cpp`：默认 channel_names 不含 rail，新增 `--rail`（RemoteApp 模式）
+  - 附带：RefreshRectPdu/SuppressOutputPdu（share.{h,cpp}）+ FontMap 后发 RefreshRect（session_setup.cpp）+ GeneralCaps refresh/suppress support=1 + highColorDepth=32
+- **[TDD]** 红证：Confirm Active 含 kRail（FAIL）+ 4 参签名缺失（C2660）→ 绿证：rail 18/124/0、session 12/65/0。
+- **[验证]** 真机 `surface: 1310720 pixels, 1300282 non-black, 826 colours` ✅；`ctest -C Release` **51/51**；build EXIT=0。
+- **[遗留]** mstsc→rtsc_server 会话窗口活但黑（服务器 GDI 输出版式/位图发送路径，待代理修复）；双审待跑。

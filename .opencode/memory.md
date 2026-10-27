@@ -1856,3 +1856,11 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 202. **REA 工具：全量列表会超响应预算**（2026-10-25）：对 9MB 的 mstscax.dll 调 `list_names`/`list_strings` 返回
     `resource_constraint`（>10MB）。改用 `get_evidence_bundle` + `inspect_analysis_view`（按 evidence 引用）或
     `search_strings`（带 pattern）/`procedure_callees`/`resolve_containing_procedure` 定点查。
+
+## 教训（2026-10-27）：RAIL/RemoteApp 声明必须按需
+
+- **症状**：客户端连真机 Win11 桌面全黑（服务器发全屏均色黑 tile），mstsc 正常。
+- **根因**：客户端无条件广播 `rail` 静态通道 + INFO_RAIL + TS_RAIL_CAPS。Windows 服务器据此准备 RemoteApp 会话，桌面不做合成 → 客户端收到纯黑。
+- **规则**：RAIL 三要素（通道广播 / INFO_RAIL / TS_RAIL_CAPS）必须同一开关门控，仅在 RemoteApp 模式开启（mstsc = remoteapplicationmode:i:1）。默认桌面会话禁止声明。
+- **方法**：A/B（独立 worktree 构建 HEAD）+ git bisect + 探针（tile 级 non-black 计数）可在 ~1h 内定位此类"服务器按客户端声明改变行为"的回归。
+- **附带**：[MS-RDPBCGR] 2.2.11.3 RefreshRect 体 = pad1(1)+count(1)+rects（前导 pad1，写错会触发服务器断开）；GeneralCaps 尾部 refreshRectSupport/suppressOutputSupport 应声明 1；highColorDepth=32（24bpp 会话在部分 Win11 构建渲染异常）。
