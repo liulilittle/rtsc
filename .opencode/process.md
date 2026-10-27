@@ -9973,3 +9973,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[核验 get_goal]** orphan_subagents=[]（无孤儿可清）；唯一子代理 ses_e84e12b2dffeCGb40nhputmyZT（licensing0x808诊断修复）busy 在途（pending:true，wrote 1793068315087），非无效，不解散。
 - **[模型]** 当前会话已 kiosapi/glm-5.3-flash-free（loop_rescue.model_key 实证）；在途子代理经 prompt+model 参数切换至同模型（busy 入队）。
 - **[在途]** licensing 0x808 诊断/修复 + mstsc 实网验证。
+
+## 第491轮：用户实机复现 0x808 + 主代理独立取证 relay 修复代理
+
+- **[用户证据]** mstsc 弹窗 0x808（扩展 0x0，UTC 03:15:45 = 本地 11:15:45），连 127.0.0.1:3390。
+- **[主代理取证]** evidence/mstsc/server-fix2.log（11:14:26）3 次运行全止于 session accepted (count=1)，无 licensing 输出；该日志仅 stdout，server.cpp:503 [TEMP2] 插桩在 stderr 且无 server-fix2.err → 阶段输出疑被丢弃。
+- **[关键推断]** grep  x808|disconnectReasonLicensingFailed src/ 零命中 → 服务器从不发送 0x808；0x808 为 mstsc 自身 licensing 状态机判定失败（收到非预期/畸形/时序不对的 licensing PDU）。
+- **[处置]** relay 修复代理（busy 入队）：stderr 双捕获、[TEMP2] 断点定位、[MS-RDPELE] 逐字节校验、SEC_LICENSE_PKT 时序/加密、premaster RSA、MAC 误拒排查；重启服务器（当前 3390 未监听、无进程）。
+- **[在途]** licensing 0x808 诊断/修复（子代理 ses_e84e12b2dffeCGb40nhputmyZT busy）。
