@@ -9996,3 +9996,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[TDD]** 红证：Confirm Active 含 kRail（FAIL）+ 4 参签名缺失（C2660）→ 绿证：rail 18/124/0、session 12/65/0。
 - **[验证]** 真机 `surface: 1310720 pixels, 1300282 non-black, 826 colours` ✅；`ctest -C Release` **51/51**；build EXIT=0。
 - **[遗留]** mstsc→rtsc_server 会话窗口活但黑（服务器 GDI 输出版式/位图发送路径，待代理修复）；双审待跑。
+
+
+## 第505轮：画质对齐（performanceFlags）+ 远程光标合成 + C0 全绿
+
+- **[画质根因]** Client Info PDU 从不携带 performanceFlags（extended_info 整块缺失）→ 服务器关闭 ClearType 字体平滑与 DWM 桌面合成 → 文字发虚、"像截图"。
+- **[修复（mstsc 对齐）]** connect_machine.cpp：补 extended_info 块（addr/dir/时区(零)/sessionId）+ performanceFlags = ENABLE_FONT_SMOOTHING(0x80)|ENABLE_DESKTOP_COMPOSITION(0x100) + INFO_ENABLE_WINDOWS_KEY；client_info.h 新增 perf 常量命名空间。
+- **[光标合成]** 服务器激活后即发 kPtrDefault/kPtrNull（探针实证 code=6/5），客户端此前不画光标 →"像图片"。实现：graphics 解析 kPtrDefault(0x6)/kPtrNull(0x5)，RenderTo/RenderMonitorTo 合成标准 12x19 箭头（按 ViewTransform 映射），kPtrPosition 移动。
+- **[TDD]** 红证（cursor_visible 未声明 C2039 / Confirm Active 含 kRail / perf 缺失）→ 绿证：graphics **11/308/0**、connect 27/126/0、client_info 30/120/0、rail 18/124/0、session 12/65/0。
+- **[门禁]** 杀闲置 rtsc_server_host(PID43756) 解锁 → 全量构建 EXIT=0，**ctest 51/51**。
+- **[真机目验]** 窗口渲染完整桌面（图标/Hyper-V/任务栏时钟 14:42），色彩与文字正常；交互自动化受用户桌面干扰（窗口被关闭）→ 交用户自验。
+- **[派发]** 服务器→mstsc 黑屏（GDI 输出路径 + RefreshRect 响应）续派 ses_e84e12b2dffeCGb40nhputmyZT。
