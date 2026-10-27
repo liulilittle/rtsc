@@ -10121,3 +10121,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[范围重切]** 实网验证会话收窄为单一目标 P2（扫描码实网：远端敲 'a' 必须出字母 a，不得 F7），做完即报。
 - **[C0]** 全量 build EXIT=0 零警告；ctest 51/51 全绿。
 - **[提交]** e9f01dd（N8 批次 plan + interaction-batch v2 证据入库）。
+
+## 第584轮：组A 双审终报 v3 盖章 + 组B 红证补齐 + 定案 EXEC 批次
+
+- **[组A 终报·乙章 v3]** 3 轮互审收敛，**附录A 撤回 3 条错判据**（DR_OPEN_FILE Information / rdpusb 响应体 8B / FunctionId=0x01）——审计员自身判据也会错，须逐字对规范原文。最终分级：阻断 4（S1 Gateway / S2 rdpusb / S6 剪贴板 / S3-7 路径穿越）+ 高 6 + 中 3；可盖章 2（S4 扫描码本体 / S5 planar 镜像）。假绿清单 F1-F8。执行顺序硬约束 4 条。
+- **[组B 甲补 P 探针红证]** ①uint16 回绕：1400x65535 单连接 3 秒吐 1,074,819,496 B 且 SendFrame 永不返回（生产同证 1,070,182,436 B）；②零宽：SERVER_EXIT=-1073741676(0xC0000094 整数除零)，/O2+NDEBUG 下仍触发（除数来自运行时成员不可常量折叠）；③无上限分配：20000x20000 峰值 3061MB，job object 限 512MB 后 abort（frames=CxxThrowException→terminate→abort），**整进程死、所有会话陪葬**。甲同时自我修正 3 处（致命使用在凭据校验之后，但 accept_any_credentials 默认 true 且 main.cpp 从不 SetAuthenticator → 默认等价任意凭据）。
+- **[定案]** plan.md 新增 N8-EXEC-1 分组：EXEC-A 剪贴板 S6、EXEC-B rdpdr 安全三项、EXEC-C 服务器 H 类崩溃/DoS、EXEC-D drdynvc 串包+AltGr+planar 向量测试。
+- **[主代理]** 熔断验证会话 ses_e8196e3e7ffeQ6oFMqr0FGItFM（连续 5 次零输出），P2 扫描码实网改主代理直做；组B 甲续做 S3 路线/S4 资产盘点（要求先取证再报缺陷）。

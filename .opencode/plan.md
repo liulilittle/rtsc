@@ -317,3 +317,20 @@
 
 ### N8-4 收尾
 - [ ] 用户目验 32bpp 画质（rtsc_gui vs mstsc）；性能基准复测（吞吐/延迟/并发度换算）；多显示器实网。
+
+### N8-EXEC-1 定案（2026-10-28，组A 双审终报 v3 盖章后）
+组A（甲 ses_e8150e480ffeaYVZn590wi4msC / 乙 ses_e814fe0b5ffeuO6b2N44YXBEL5）3 轮互审收敛，乙章 v3 为最终口径：
+- **S6 剪贴板 阻断**：src/channel/cliprdr_client.cpp:309-316 Start() 发送 kMonitorReady（[MS-RDPECLIP] 2.2.2.2 明写 Monitor Ready 是 server→client）→ 方向+时序双反；1.3.2.1 序列应为 ①server CAPS ②server MONITOR_READY ③client CAPS ④client TEMP_DIR ⑤client FORMAT_LIST ⑥server FORMAT_LIST_RESPONSE；OnPdu(:91-117) 缺 kMonitorReady/kFormatListResponse 分支 → 裁决不可观测；客户端从不发 TEMP_DIRECTORY。
+- **S3 rdpdr 高危（安全）**：S3-7 路径穿越 src/channel/rdpdr_client.cpp:333-363（无 .. 消解/越界校验）；S3-8 读缓冲无上限 src/rdpdr/file_system.cpp:171（服务器可控 4GiB）；S3-9 覆盖不截断 file_system.cpp:149-156 + rdpdr_client.cpp:214-215；另 S3-7' DR_CREATE 忽略 DesiredAccess（rdpdr_client.cpp:213-215）；S3-2 初始化顺序偏离 MS-RDPEFS（Capability Response 推迟到 :153-167）；S3-4 Device List Remove(0x444D) 未实现。
+- **S2 rdpusb 阻断**：drdynvc 未请求(main.cpp:161,163)、rtsc_urbrdc/rtsc_usb_win32 未链接、URB 数据通路双向丢数据(rdpusb_client.cpp:350/468-500)、S2-11 drdynvc 串包(drdynvc_client.cpp:113-119)、S2-10 QI/IFACE_RELEASE 缺失、CompleteUrb 恒 hresult=0 且设备未知不发 URBCOMPLETION(:509-542)。
+- **S1 Gateway 阻断**：零接线 + 现有实现是 HTTP CONNECT 代理而非 [MS-TSGU] 3.3.5.1 的 RDGSP(401 挑战/TLS/RDG_OUT_DATA)；Host 头写死路径(gateway.cpp:197)；cookie 硬编码(main.cpp:144)。
+- **可盖章**：S4 扫描码本体（window_win32.cpp:321-329）✅（后续项：AltGr 修法=抑制伪 Ctrl+转发右 Alt 0x38 extended；MapVirtualKeyW 返回 0 无守卫；test_ui.cpp:215-220 early-return 空跑）；S5 RDP6 planar 镜像修复 ✅（不改实现，只补奇数高度+2x2 子采样向量测试）。
+- **执行顺序硬约束**：①S3 安全三项必须先于/同批于 rdpdr 接线；②S2-11 串包修复必须与 S2 接线同批；③S2-P7(FunctionId 有无)先取证再改；④S6 与 S4-AltGr 进第一批红用例。
+- **撤回判据（禁据此改码）**：A1 DR_OPEN_FILE 的 Information 映射（rdpdr_client.cpp:44-50 正确）；A2 RIM_EXCHANGE_CAPABILITY_RESPONSE body=8B（rdpusb.cpp:63-69 正确）；A3 原「FunctionId 必须=0x01」。
+- **假绿清单 F1-F8**：gateway 20/106 全绿但 MockGateway 只回 CONNECT 200；session_info 断言硬编码「没有在使用中」；test_ui early-return；rdp6 合成测试自证式；rdpusb/rdpdr 全绿但 GUI 未链接；gateway 测试链接图≠生产图；test_gateway 不断言 Host。
+
+执行分组（互不共享会话，各自 TDD）：
+- **EXEC-A（S6 剪贴板）**：src/channel/cliprdr_client.cpp + include/rtsc/channel/cliprdr_client.h + tests/test_cliprdr.cpp。
+- **EXEC-B（S3 rdpdr 安全三项+DesiredAccess）**：src/channel/rdpdr_client.cpp + src/rdpdr/file_system.cpp + 对应测试。**待 EXEC-A 或 C 释放配额后派发**。
+- **EXEC-C（服务器 H 类崩溃/DoS）**：src/server/server.cpp + include/rtsc/server/server.h + tools/rtsc_server/main.cpp + 服务器测试。H-1 无上限 CS_CORE 宽高(16GB 分配)+线程无 try/catch(bad_alloc→TerminateProcess 杀全进程)；H-2 SendFrame y uint16 回绕(server.cpp:1117，实测 1400x65535 吐 1.07GB 且死循环)；H-3 零宽→chunk_row=0→server.cpp:1111/:1112 除零(0xC0000094)；H-4 会话对象永不回收+明文凭据驻留(:1411/:1450)。
+- **EXEC-D（S2-11 drdynvc 串包 + S4-AltGr + S5 向量测试）**：后续批。
