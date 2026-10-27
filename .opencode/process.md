@@ -10020,3 +10020,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[乙审结论]** ses_e83c8bc13ffedmvPmLzSrpgdan 盖章"通过"（①licensing 单条 ERROR_ALERT 字节级一致（其自纠 ST_NO_TRANSITION=2）②含端点矩形 ③updateType 恰一次，对齐 FreeRDP 事实实现+真机抓包+实测渲染背书）；六套件亲测全绿。
 - **[缺陷清单]** D1[中]输入期 idle_ticks 清零→活跃期冻结（server.cpp:1105）；D2[中低]宽>~4085px 超 MCS 16383 流损坏；D3[低]licensing.cpp:362-378/649-651 零调用方投机面；D4[低]SuppressOutput(allow=0) 被无视；备案 UpdatePaletteData numberColors u16 vs 规格 u32。均不阻塞盖章链，列入收敛后修复批次。
 - **[流程纠错]** 乙误将磋商发修复代理（主代理任务提示未携带成员 ID，担责）→ 已向乙补发真甲 ID（ses_e83c97f59ffe5QukokGpkX36Q1）+ D19 条款原文；向甲补发乙 ID+要点。待甲报告+双向磋商收敛。
+
+## 第520轮：乙纠错执行完毕（待甲收敛）
+
+- **[乙执行]** 磋商已重发真甲（accepted_busy）；误发修复代理已补发勘误（防误入审计线程）；D6 依 D19 条款结案（ActiveLoop 系读循环 tick 计数、注册/销毁天然成对、单源无队列问题）。
+- **[新增 D1a 低]** 空闲重发 SendFrame() 返回值被忽略（server.cpp:534），发送失败被吞靠传输层后续错误退出——按"每失败路径必须有处理"宜补日志/提前退出；已并入甲复判。
+- **[状态]** 乙静默待甲（正确姿态）；甲 ses_e83c97f59ffe5QukokGpkX36Q1 busy 报告未到。主代理静默等待，不轮询。
