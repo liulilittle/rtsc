@@ -547,13 +547,12 @@ RTSC_TEST(machine_message_channel_joined_when_server_assigns_one) {
 
 RTSC_TEST(machine_client_core_declares_spec_color_depth_combo) {
     // [MS-RDPBCGR] 2.2.1.3.2: highColorDepth has no value 32 (valid: 4, 8, 15,
-    // 16, 24). The session colour depth is advertised as highColorDepth=24,
-    // and supportedColorDepths lists ONLY depths this client can actually
-    // decode. The mstsc-style 32bpp combination (24 + RNS_UD_CS_WANT_32BPP_
-    // SESSION 0x0002 + RNS_UD_32BPP_SUPPORT 0x0008) is deferred until the
-    // RDP6-planar decoder covers 32bpp (dual-audit ruling: a real Windows
-    // server answers that combination with a 32bpp session whose planar
-    // bitmaps this client cannot yet decode).
+    // 16, 24). The mstsc-style 32bpp session combination is highColorDepth=24 +
+    // RNS_UD_CS_WANT_32BPP_SESSION (0x0002) + supportedColorDepths = 24bpp |
+    // 32bpp (0x0009): a real Windows server answers it with a 32bpp session
+    // whose compressed bitmaps are RDP6-planar (dual-audit ruling; the planar
+    // decoder now covers 32bpp, and the real-machine regression confirmed the
+    // rendered session).
     ConnectMachine m(MakeConfig(), MakeCredentials());
     m.Start();
     const auto step = Feed(m, hex(kCcfRdp));
@@ -582,8 +581,9 @@ RTSC_TEST(machine_client_core_declares_spec_color_depth_combo) {
                                      (core->payload[o + 1] << 8));
     };
     CHECK_EQ(rd16(136), static_cast<uint16_t>(24));      // highColorDepth
-    CHECK_EQ(rd16(138), static_cast<uint16_t>(0x0001));  // 24bpp only (decodable)
-    CHECK((rd16(140) & 0x0002) == 0);                    // no WANT_32BPP yet
+    CHECK_EQ(rd16(138), static_cast<uint16_t>(0x0009));  // 24bpp | 32bpp
+    CHECK((rd16(140) & 0x0002) != 0);                    // WANT_32BPP_SESSION
+    CHECK((rd16(140) & 0x0001) != 0);                    // ERRINFO PDU kept
 }
 
 // ---- Guard rails ----------------------------------------------------------

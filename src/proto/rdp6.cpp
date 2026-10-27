@@ -21,50 +21,6 @@ uint8_t Rdp6FormatHeader::encode() const {
                                 ((reserved & 0x03) << 6));
 }
 
-Status DecodeRdp6RleSegments(const uint8_t* data, size_t size, size_t count,
-                             std::vector<uint8_t>& out, size_t& consumed) {
-    out.clear();
-    consumed = 0;
-    if (data == nullptr) return Status::NeedMoreData;
-
-    size_t pos = 0;
-    while (out.size() < count) {
-        if (pos >= size) return Status::NeedMoreData;
-        const uint8_t cb = data[pos++];
-        if (cb == 0) return Status::InvalidField;  // controlByte MUST be nonzero
-
-        // controlByte = nRunLength (low nibble) | cRawBytes (high nibble).
-        // Cross-checked against FreeRDP's PLANAR_CONTROL_BYTE_* macros; the
-        // spec's bitmask diagram is drawn low-bit first.
-        uint8_t n_run = static_cast<uint8_t>(cb & 0x0F);
-        uint8_t c_raw = static_cast<uint8_t>((cb >> 4) & 0x0F);
-
-        uint32_t run = 0;
-        uint32_t raw = c_raw;
-        if (n_run == 1) {
-            run = 16u + c_raw;  // extended long run
-            raw = 0;
-        } else if (n_run == 2) {
-            run = 32u + c_raw;  // extended long run
-            raw = 0;
-        } else {
-            run = n_run;
-        }
-
-        if (raw > 0) {
-            if (pos + raw > size) return Status::NeedMoreData;
-            out.insert(out.end(), data + pos, data + pos + raw);
-            pos += raw;
-        }
-        if (run > 0) {
-            if (out.empty()) return Status::InvalidField;  // run with no base byte
-            out.insert(out.end(), run, out.back());
-        }
-    }
-    consumed = pos;
-    return Status::Ok;
-}
-
 namespace {
 
 uint8_t ClampToByte(int v) {
@@ -80,30 +36,109 @@ int16_t ConvertChroma(uint8_t raw, uint8_t cll) {
         static_cast<uint8_t>(raw << shift)));
 }
 
-// Decodes one 8-bit plane (raw, or RLE followed by the row-delta pass).
-Status DecodeRdp6Plane(const uint8_t* data, size_t size, size_t plane_size,
-                       bool rle, uint16_t width, uint16_t height,
+// Decodes one 8-bit plane: raw bytes, or an RDP6_RLE_SEGMENTS stream run
+// through the per-scanline state machine.
+Status DecodeRdp6Plane(const uint8_t* data, size_t size, bool rle,
+                       uint16_t width, uint16_t height,
                        std::vector<uint8_t>& out, size_t& consumed) {
     consumed = 0;
-    if (rle) {
-        Status s = DecodeRdp6RleSegments(data, size, plane_size, out, consumed);
-        if (s != Status::Ok) return s;
-        // Row 0 is absolute; each later row stores a SIGNED-MAGNITUDE delta
-        // relative to the reconstructed row above (bit 0 is the sign).
-        for (size_t y = 1; y < height; ++y) {
-            for (size_t x = 0; x < width; ++x) {
-                const size_t i = y * width + x;
-                const uint8_t d = out[i];
-                const int delta = (d & 1) ? -static_cast<int>((d >> 1) + 1)
-                                          : static_cast<int>(d >> 1);
-                out[i] = static_cast<uint8_t>(out[i - width] + delta);
-            }
-        }
-    } else {
+    const size_t plane_size = static_cast<size_t>(width) * height;
+    if (!rle) {
         if (size < plane_size) return Status::NeedMoreData;
         out.assign(data, data + plane_size);
         consumed = plane_size;
+        return Status::Ok;
     }
+
+    // Per-scanline state machine ([MS-RDPEGDI] 2.2.2.5.1.2; the oracle is
+    // FreeRDP's planar_decompress_plane_rle in libfreerdp/codec/planar.c).
+    // NOT a whole-plane RLE stream:
+    //   * row 0 carries absolute plane values;
+    //   * rows >= 1 carry signed-magnitude deltas (bit 0 = sign) against the
+    //     same x of the reconstructed row above: value = previous[x] + pixel;
+    //   * the running `pixel` resets to 0 at every row start and persists
+    //     across segments within a row: a raw byte sets it (row 0: the plane
+    //     value itself, rows >= 1: the signed delta), a run repeats it, so a
+    //     run with no preceding raw byte in the row fills with 0 (row 0) or
+    //     with previous[x] (rows >= 1);
+    //   * a segment must not cross a row boundary (FreeRDP rejects it with
+    //     "too many pixels in scanline").
+    out.assign(plane_size, 0);
+    if (plane_size == 0) return Status::Ok;
+    const uint8_t* src = data;
+    const uint8_t* const end = data + size;
+    const uint8_t* previous = nullptr;  // previous reconstructed scanline
+
+    for (uint16_t y = 0; y < height; ++y) {
+        uint8_t* row = out.data() + static_cast<size_t>(y) * width;
+        int pixel = 0;  // running pixel; FreeRDP resets it to 0 every scanline
+        size_t x = 0;
+        while (x < width) {
+            if (src == end) return Status::NeedMoreData;
+            const uint8_t cb = *src++;
+            if (cb == 0) {
+                // An empty segment can never advance the scanline: FreeRDP
+                // would burn input bytes without moving x and eventually fail
+                // on source exhaustion. Failing fast keeps InvalidField for
+                // the malformed stream.
+                return Status::InvalidField;
+            }
+
+            // controlByte = nRunLength (low nibble) | cRawBytes (high nibble).
+            // Cross-checked against FreeRDP's PLANAR_CONTROL_BYTE_* macros; the
+            // spec's bitmask diagram is drawn low-bit first.
+            uint32_t n_run = cb & 0x0F;
+            uint32_t c_raw = (cb >> 4) & 0x0F;
+            if (n_run == 1) {
+                n_run = c_raw + 16;  // extended long run
+                c_raw = 0;
+            } else if (n_run == 2) {
+                n_run = c_raw + 32;  // extended long run
+                c_raw = 0;
+            }
+            if (x + c_raw + n_run > width) {
+                return Status::InvalidField;  // segment crosses the row
+            }
+
+            if (previous == nullptr) {
+                // Row 0: raw bytes are absolute values; a run repeats the
+                // running pixel (0 when the segment has no raw bytes).
+                for (uint32_t i = 0; i < c_raw; ++i) {
+                    if (src == end) return Status::NeedMoreData;
+                    pixel = *src++;
+                    row[x] = static_cast<uint8_t>(pixel);
+                    ++x;
+                }
+                for (uint32_t i = 0; i < n_run; ++i) {
+                    row[x] = static_cast<uint8_t>(pixel);
+                    ++x;
+                }
+            } else {
+                // Rows >= 1: raw bytes are signed-magnitude deltas; a run
+                // repeats the running delta. FreeRDP clamps via a plain cast
+                // ((UINT8)(INT16)value), i.e. modulo 256, not saturation.
+                for (uint32_t i = 0; i < c_raw; ++i) {
+                    if (src == end) return Status::NeedMoreData;
+                    const uint8_t d = *src++;
+                    if (d & 1) {
+                        pixel = -(static_cast<int>(d >> 1) + 1);
+                    } else {
+                        pixel = static_cast<int>(d >> 1);
+                    }
+                    row[x] = static_cast<uint8_t>(
+                        static_cast<int16_t>(previous[x] + pixel));
+                    ++x;
+                }
+                for (uint32_t i = 0; i < n_run; ++i) {
+                    row[x] = static_cast<uint8_t>(
+                        static_cast<int16_t>(previous[x] + pixel));
+                    ++x;
+                }
+            }
+        }
+        previous = row;
+    }
+    consumed = static_cast<size_t>(src - data);
     return Status::Ok;
 }
 
@@ -121,7 +156,6 @@ Status DecodeRdp6Bitmap(const uint8_t* data, size_t size, uint16_t width,
     const size_t plane_size = static_cast<size_t>(width) * height;
     const size_t chroma_w = h.chroma_subsampling ? (width + 1) / 2 : width;
     const size_t chroma_h = h.chroma_subsampling ? (height + 1) / 2 : height;
-    const size_t chroma_size = chroma_w * chroma_h;
     size_t pos = 1;
 
     // The stream order is Alpha (optional), Luma/Red, Orange/Green, Green/Blue.
@@ -132,15 +166,14 @@ Status DecodeRdp6Bitmap(const uint8_t* data, size_t size, uint16_t width,
 
     if (!h.no_alpha) {
         size_t used = 0;
-        s = DecodeRdp6Plane(data + pos, size - pos, plane_size, h.rle, width,
-                            height, alpha, used);
+        s = DecodeRdp6Plane(data + pos, size - pos, h.rle, width, height, alpha,
+                            used);
         if (s != Status::Ok) return s;
         pos += used;
     } else {
         alpha.assign(plane_size, 0xFF);
     }
 
-    const size_t sizes[3] = {plane_size, chroma_size, chroma_size};
     const uint16_t widths[3] = {width, static_cast<uint16_t>(chroma_w),
                                 static_cast<uint16_t>(chroma_w)};
     const uint16_t heights[3] = {height, static_cast<uint16_t>(chroma_h),
@@ -149,8 +182,8 @@ Status DecodeRdp6Bitmap(const uint8_t* data, size_t size, uint16_t width,
     for (int i = 0; i < 3; ++i) {
         if (pos > size) return Status::NeedMoreData;
         size_t used = 0;
-        s = DecodeRdp6Plane(data + pos, size - pos, sizes[i], h.rle, widths[i],
-                            heights[i], *planes[i], used);
+        s = DecodeRdp6Plane(data + pos, size - pos, h.rle, widths[i], heights[i],
+                            *planes[i], used);
         if (s != Status::Ok) return s;
         pos += used;
     }

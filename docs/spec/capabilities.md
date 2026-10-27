@@ -1664,6 +1664,8 @@ GUID 线上字节序：`codecGUID1(4) | codecGUID2(2) | codecGUID3(2) | codecGUI
 | 0x0010 | `ENC_SALTED_CHECKSUM` | 支持 salted MAC 生成（5.3.6.1.1） |
 | 0x0400 | `NO_BITMAP_COMPRESSION_HDR` | 支持省略 8 字节 Compressed Data Header |
 
+> 注：`NO_BITMAP_COMPRESSION_HDR` 只描述 ≤24bpp Interleaved RLE 流（RLE_BITMAP_STREAM）的 8 字节 `TS_CD_HEADER` 取舍。32bpp 压缩位图是 RDP6 planar 流（RDP6_BITMAP_STREAM），从不携带 `TS_CD_HEADER`，与本标志无关（[MS-RDPBCGR] 2.2.9.1.1.3.1.2.2 / 2.2.9.1.1.3.1.2.3；真机 flags=0x0001 抓包证实流首字节即 FormatHeader）。
+
 > 0x0004 在 RDP 4.0/5.0 之外支持；0x0008 / 0x0010 在 RDP 4.0/5.0/5.1 之外支持（S13 原文分档）。
 
 ### 9.2 Bitmap.drawingFlags（2.2.7.1.2，S14）

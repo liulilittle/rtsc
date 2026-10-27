@@ -935,6 +935,8 @@ assert remaining == 0        # 严格相等，多余字节即畸形
 
 `updateData` 总长 = `4 + Σ(20 + bitmapLength)`。
 
+> **32 bpp 压缩流没有 TS_CD_HEADER**（[MS-RDPBCGR] 2.2.9.1.1.3.1.2.2 / 2.2.9.1.1.3.1.2.3）：compressed 且 `bitsPerPixel=32` 时，`bitmapDataStream` 从 RDP6_BITMAP_STREAM 的 `FormatHeader` 开始（压缩方式是 RDP 6.0 Bitmap Compression，不是 Interleaved RLE + RLE_BITMAP_STREAM），8 字节 `bitmapComprHdr` 从不出现——这与 `NO_BITMAP_COMPRESSION_HDR (0x0400)` 无关（真机抓包 flags=0x0001 证实流首字节即 FormatHeader）。解码路由必须先探 32bpp planar，再决定是否剥 TS_CD_HEADER；≤24bpp 压缩流才按 `NO_BITMAP_COMPRESSION_HDR` 决定是否剥 8 字节头。
+
 #### 3.9.3 `TS_FP_UPDATE_SYNCHRONIZE`（2.2.9.1.2.1.3，code 3）
 
 `updateData` **为空**，`size` **必须为 0**。整个更新只有 3 字节（或 4 字节，含 `compressionFlags`）。

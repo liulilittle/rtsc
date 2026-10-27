@@ -1,0 +1,10 @@
+rtsc_server_host 0.1.0 starting
+port=3390 enhanced=true credssp=6 account=rtsc@NTDEV desktop=1280x1024 source=gdi-desktop
+listening on 0.0.0.0:3390
+session accepted (count=1)
+session accepted (count=2)
+session accepted (count=3)
+session accepted (count=4)
+session accepted (count=5)
+session accepted (count=6)
+session accepted (count=7)

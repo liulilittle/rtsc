@@ -484,4 +484,107 @@ RTSC_TEST(graphics_cursor_maps_through_multi_monitor_origin) {
     CHECK((r == 0x11) && (gg == 0x11) && (b == 0x11));
 }
 
+namespace {
+
+// Builds a TS_BITMAP_DATA rectangle carrying an opaque compressed payload.
+std::vector<uint8_t> CompressedRect(int dst_x, int dst_y, uint16_t w, uint16_t h,
+                                    uint16_t bpp, uint16_t flags,
+                                    const std::vector<uint8_t>& payload) {
+    ByteWriter d;
+    d.u16le(static_cast<uint16_t>(dst_x));
+    d.u16le(static_cast<uint16_t>(dst_y));
+    d.u16le(static_cast<uint16_t>(dst_x + w - 1));
+    d.u16le(static_cast<uint16_t>(dst_y + h - 1));
+    d.u16le(w);
+    d.u16le(h);
+    d.u16le(bpp);
+    d.u16le(flags);
+    d.u16le(static_cast<uint16_t>(payload.size()));
+    d.bytes(payload.data(), payload.size());
+    return d.take();
+}
+
+}  // namespace
+
+RTSC_TEST(graphics_routes_32bpp_planar_without_cd_header) {
+    // A 32-bpp compressed bitmapDataStream is an RDP6_BITMAP_STREAM that
+    // starts at the format header: the 8-byte TS_CD_HEADER is never present,
+    // regardless of NO_BITMAP_COMPRESSION_HDR ([MS-RDPBCGR]
+    // 2.2.9.1.1.3.1.2.2/2.2.9.1.1.3.1.2.3). The planar probe must therefore
+    // run before any header strip. flags=0x0001 is the shape captured from the
+    // real server (BITMAP_COMPRESSION set, NO_BITMAP_COMPRESSION_HDR clear).
+    // 2x2 planar RLE, NA=1 (header 0x30): R 40->41, G 50->51, B 60->61.
+    const std::vector<uint8_t> planar = {
+        0x30,
+        0x20, 0x40, 0x40, 0x20, 0x02, 0x02,  // R
+        0x20, 0x50, 0x50, 0x20, 0x02, 0x02,  // G
+        0x20, 0x60, 0x60, 0x20, 0x02, 0x02,  // B
+    };
+    GraphicsPipeline g(8, 8);
+    const auto pdu = FastPathBitmapPdu(
+        {CompressedRect(1, 1, 2, 2, 32, 0x0001, planar)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    CHECK_EQ(g.ApplyFastPathOutput(parsed), 1);
+
+    uint8_t r = 0, gg = 0, b = 0, a = 0;
+    CHECK(g.surface().GetPixel(1, 1, r, gg, b, a));
+    CHECK_EQ(r, static_cast<uint8_t>(0x40));
+    CHECK_EQ(gg, static_cast<uint8_t>(0x50));
+    CHECK_EQ(b, static_cast<uint8_t>(0x60));
+    CHECK_EQ(a, static_cast<uint8_t>(0xFF));
+    // Row 1 came out of the signed-delta pass (+1).
+    CHECK(g.surface().GetPixel(2, 2, r, gg, b, a));
+    CHECK_EQ(r, static_cast<uint8_t>(0x41));
+    CHECK_EQ(gg, static_cast<uint8_t>(0x51));
+    CHECK_EQ(b, static_cast<uint8_t>(0x61));
+}
+
+RTSC_TEST(graphics_routes_32bpp_planar_even_with_no_hdr_flag) {
+    // Same routing with NO_BITMAP_COMPRESSION_HDR set: for 32 bpp the flag is
+    // irrelevant — the stream still has no TS_CD_HEADER to strip.
+    const std::vector<uint8_t> planar = {
+        0x30,
+        0x10, 0x11, 0x10, 0x22, 0x10, 0x33,  // R G B raw 1x1 planes
+    };
+    GraphicsPipeline g(8, 8);
+    const auto pdu = FastPathBitmapPdu(
+        {CompressedRect(3, 3, 1, 1, 32, 0x0401, planar)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    CHECK_EQ(g.ApplyFastPathOutput(parsed), 1);
+
+    uint8_t r = 0, gg = 0, b = 0, a = 0;
+    CHECK(g.surface().GetPixel(3, 3, r, gg, b, a));
+    CHECK_EQ(r, static_cast<uint8_t>(0x11));
+    CHECK_EQ(gg, static_cast<uint8_t>(0x22));
+    CHECK_EQ(b, static_cast<uint8_t>(0x33));
+    CHECK_EQ(a, static_cast<uint8_t>(0xFF));
+}
+
+RTSC_TEST(graphics_still_strips_cd_header_for_24bpp_interleaved) {
+    // The 32-bpp planar shortcut must not disturb <=24 bpp compressed
+    // bitmaps: with BITMAP_COMPRESSION set and NO_BITMAP_COMPRESSION_HDR
+    // clear, the 8-byte TS_CD_HEADER precedes the interleaved RLE stream.
+    // CD header (0,16,2,8) + REGULAR_COLOR_RUN run=2 (header 0x62), BGR 10 20
+    // 30 (the test_bitmap vector, routed through the pipeline).
+    std::vector<uint8_t> payload = {0x00, 0x00, 0x10, 0x00, 0x02, 0x00,
+                                    0x08, 0x00, 0x62, 0x10, 0x20, 0x30};
+    GraphicsPipeline g(8, 8);
+    const auto pdu = FastPathBitmapPdu(
+        {CompressedRect(0, 0, 2, 1, 24, 0x0001, payload)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    CHECK_EQ(g.ApplyFastPathOutput(parsed), 1);
+
+    uint8_t r = 0, gg = 0, b = 0, a = 0;
+    CHECK(g.surface().GetPixel(0, 0, r, gg, b, a));
+    // Wire colour bytes are BGR: 10 20 30 -> surface RGB 30 20 10 (the same
+    // permutation test_bitmap pins for DecodeRleBitmap).
+    CHECK_EQ(r, static_cast<uint8_t>(0x30));
+    CHECK_EQ(gg, static_cast<uint8_t>(0x20));
+    CHECK_EQ(b, static_cast<uint8_t>(0x10));
+    CHECK_EQ(a, static_cast<uint8_t>(0xFF));
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_graphics_tests"); }

@@ -1863,11 +1863,11 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 - **根因**：客户端无条件广播 `rail` 静态通道 + INFO_RAIL + TS_RAIL_CAPS。Windows 服务器据此准备 RemoteApp 会话，桌面不做合成 → 客户端收到纯黑。
 - **规则**：RAIL 三要素（通道广播 / INFO_RAIL / TS_RAIL_CAPS）必须同一开关门控，仅在 RemoteApp 模式开启（mstsc = remoteapplicationmode:i:1）。默认桌面会话禁止声明。
 - **方法**：A/B（独立 worktree 构建 HEAD）+ git bisect + 探针（tile 级 non-black 计数）可在 ~1h 内定位此类"服务器按客户端声明改变行为"的回归。
-- **附带**：[MS-RDPBCGR] 2.2.11.3 RefreshRect 体 = pad1(1)+count(1)+rects（前导 pad1，写错会触发服务器断开）；GeneralCaps 尾部 refreshRectSupport/suppressOutputSupport 应声明 1；highColorDepth=32（24bpp 会话在部分 Win11 构建渲染异常）。
+- **附带**：[MS-RDPBCGR] 2.2.11.3 RefreshRect 体 = pad1(1)+count(1)+rects（前导 pad1，写错会触发服务器断开）；GeneralCaps 尾部 refreshRectSupport/suppressOutputSupport 应声明 1。~~highColorDepth=32（24bpp 会话在部分 Win11 构建渲染异常）~~ **已双审裁定为红鲱鱼并废除（2026-10-27）**：24bpp 会话渲染正常（真机 1306328 non-black 实证），当年"24bpp 黑屏"真凶是 RAIL caps 误声明 + fast-path bitmap offset，与色深无关；勿再以"24bpp 部分构建黑屏"为由规避 24bpp。
 
 ## 教训（2026-10-27）：线格式必须规范原文+多源交叉验证，禁凭记忆
 
 - 事故：RefreshRect 体按记忆写成 pad1+count（FreeRDP 混淆），SuppressOutput 体虚构 count32+数组；双审以 learn 原文+微软 TestSuites+IronRDP+FreeRDP 四源对照抓出（D-A/D-B），真机观测（刷新 no-op 无重绘）佐证。
 - 规则：新 PDU 编解码落地前必须引用规范原文页（learn ID）+至少一个成熟实现（FreeRDP/IronRDP/微软 TestSuites）交叉核对字段序；测试用规范字节写（断言需求不锁定实现）；真机回归观测（colours/rendered 跳变）作为最终验收。
 - 流程有效：双审（甲客户端/乙服务器+交叉磋商+三方证据）在 51/51 全绿的情况下仍抓出 2 个高危线格式缺陷——测试绿≠线格式对。
-- 32bpp 注意：RDP6 planar 解码存在 N1-N7 缺陷（逐扫描线模型/段首 run/CD 头路由），32bpp 会话待 planar 修复；24bpp 全链已实证。
+- 32bpp 注意（2026-10-27 已修复）：RDP6 planar 解码 N1-N7 缺陷（逐扫描线模型/段首 run/CD 头路由）已按 FreeRDP planar.c oracle 修复并经真机 32bpp 会话回归；24bpp 全链已实证。

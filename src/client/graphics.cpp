@@ -262,6 +262,17 @@ bool GraphicsPipeline::ApplyBitmapRect(const proto::BitmapData& rect) {
     if ((rect.flags & proto::kBitmapCompression) == 0) {
         st = proto::DecodeRawBitmap(stream, stream_size, rect.width, rect.height,
                                     rect.bits_per_pixel, decoded, &palette_);
+    } else if (rect.bits_per_pixel == 32) {
+        // A 32-bpp compressed bitmapDataStream IS an RDP6_BITMAP_STREAM, which
+        // starts at the format header: the 8-byte TS_CD_HEADER is never
+        // present, regardless of NO_BITMAP_COMPRESSION_HDR ([MS-RDPBCGR]
+        // 2.2.9.1.1.3.1.2.2 / 2.2.9.1.1.3.1.2.3 — 32-bpp compressed bitmaps use
+        // RDP 6.0 Bitmap Compression, not the Interleaved RLE +
+        // RLE_BITMAP_STREAM framing the TS_CD_HEADER belongs to). The planar
+        // probe must therefore run before any header strip; stripping 8 bytes
+        // here would eat the format header and fail the decode.
+        st = proto::DecodeRdp6Bitmap(stream, stream_size, rect.width, rect.height,
+                                     decoded);
     } else {
         if ((rect.flags & proto::kNoBitmapCompressionHdr) == 0) {
             // The 8-byte Compressed Data Header precedes the stream.
@@ -269,14 +280,9 @@ bool GraphicsPipeline::ApplyBitmapRect(const proto::BitmapData& rect) {
             stream += proto::BitmapCompressedHeader::kSize;
             stream_size -= proto::BitmapCompressedHeader::kSize;
         }
-        if (rect.bits_per_pixel == 32) {
-            st = proto::DecodeRdp6Bitmap(stream, stream_size, rect.width,
-                                         rect.height, decoded);
-        } else {
-            st = proto::DecodeRleBitmap(stream, stream_size, rect.width,
-                                        rect.height, rect.bits_per_pixel,
-                                        decoded, &palette_);
-        }
+        st = proto::DecodeRleBitmap(stream, stream_size, rect.width,
+                                    rect.height, rect.bits_per_pixel,
+                                    decoded, &palette_);
     }
     if (st != proto::Status::Ok) return false;
 

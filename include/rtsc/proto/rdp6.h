@@ -5,8 +5,9 @@
 //
 // RDP6_BITMAP_STREAM = FormatHeader(1) + AlphaPlane? + Luma/RedPlane +
 // Orange/GreenPlane + Green/BluePlane + Pad?. Each plane is either raw bytes or
-// an RDP6_RLE_SEGMENTS stream. This module decodes the format header and the
-// RLE segments; the plane assembly and the AYCoCg -> ARGB transform sit on top.
+// an RDP6_RLE_SEGMENTS stream decoded row by row (the plane's segments never
+// cross a scanline). This module decodes the format header and the RLE planes;
+// the plane assembly and the AYCoCg -> ARGB transform sit on top.
 
 #pragma once
 
@@ -32,15 +33,12 @@ struct Rdp6FormatHeader {
     uint8_t encode() const;
 };
 
-// Decodes an RDP6_RLE_SEGMENTS stream into exactly `count` bytes.
-// `consumed` receives the number of input bytes used. Returns InvalidField when
-// a segment's controlByte is zero or a run has no preceding byte.
-Status DecodeRdp6RleSegments(const uint8_t* data, size_t size, size_t count,
-                             std::vector<uint8_t>& out, size_t& consumed);
-
 // Decodes an RDP6_BITMAP_STREAM into an RGBA bitmap. Only the ARGB color space
 // (CLL == 0) is supported here: four 8-bit planes (alpha optional), each either
-// raw or RLE + delta. AYCoCg (CLL > 0) returns InvalidField.
+// raw or RLE. AYCoCg (CLL > 0) is transformed on top; the RLE planes use the
+// per-scanline state machine of [MS-RDPEGDI] 2.2.2.5.1.2 / FreeRDP planar.c
+// (row 0 absolute; rows >= 1 signed deltas against the row above; the running
+// pixel resets to 0 per row and runs repeat it).
 Status DecodeRdp6Bitmap(const uint8_t* data, size_t size, uint16_t width,
                         uint16_t height, DecodedBitmap& out);
 

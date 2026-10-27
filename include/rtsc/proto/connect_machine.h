@@ -81,16 +81,15 @@ public:
         std::string client_name;
         uint32_t keyboard_layout = 0x00000409;
         // [MS-RDPBCGR] 2.2.1.3.2: highColorDepth has no value 32 (valid: 4, 8,
-        // 15, 16, 24). The session colour depth is advertised as
-        // highColorDepth=24, and supportedColorDepths lists ONLY the depths
-        // this client can decode — 32bpp compressed is RDP6-planar, which the
-        // decoder does not cover yet, and a real Windows server answers a
-        // 32bpp advertisement with a 32bpp session (dual-audit real-machine
-        // evidence). The mstsc-style 32bpp combination (24 + 0x0002 + 0x0009)
-        // returns once the planar decoder lands.
+        // 15, 16, 24). The mstsc-style 32bpp session combination is
+        // highColorDepth=24 + RNS_UD_CS_WANT_32BPP_SESSION (0x0002) +
+        // supportedColorDepths = 24bpp | 32bpp (0x0009): a real Windows server
+        // answers it with a 32bpp session whose compressed bitmaps are
+        // RDP6-planar (dual-audit real-machine evidence). The RDP6 planar
+        // decoder covers 32bpp compressed streams since the N1-N7 fix.
         uint16_t high_color_depth = 24;
-        uint16_t supported_color_depths = 0x0001;
-        uint16_t early_capability_flags = 0x0001;
+        uint16_t supported_color_depths = 0x0009;
+        uint16_t early_capability_flags = 0x0003;
         uint32_t connection_type = 0;
 
         // Multi-monitor: the client's local monitor layout. When non-empty a
