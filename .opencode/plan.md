@@ -288,3 +288,32 @@
   `termsrv` 服务、`TSConnection`/`RDPWD`（监听）、`rdpwsx`、`termdd`、`ntmssvc`；
 - 客户端逆向目标：`mstsc.exe` / `mstscax.dll`（已完成大部分）。
 - **方法**：REA（Ghidra/反编译/取证）+ 规范（[MS-RDPBCGR]/[MS-RDPE*]）+ 真实抓包（pktmon/Wireshark）三重依据。
+
+## 当前批次 N8（2026-10-28）：客户端通道接线补全 + 服务器模式路线
+
+阶段（状态 [ ]/[~]/[x]；每阶段写明「做了什么」+「怎么验证」）：
+
+### N8-0 已提交改动的补审盖章 [~]
+- [~] S4 客户端输入扫描码转发修复（原把 wParam VK 虚拟键码当 set-1 扫描码转发，'A'→F7）——审 src/ui/window_win32.cpp 键盘路径。
+- [~] S5 RDP6 planar bottom-up 镜像修复——审 src/proto/rdp6.cpp 行序（RLE/raw 一致性、delta 链语义、重钉 4 个期望是否掩盖缺陷）。
+- 验证方式：两审计独立出结论（路径:行）→ 互审磋商 → 双方一致方可盖章；审毕由主代理独立复跑 ctest 51/51 + build 零警告。
+
+### N8-1 客户端虚拟通道接线缺口 [~]
+- [~] S1 Gateway（TS Gateway）：src/proto/gateway.cpp + src/net/gateway_transport.cpp **全库零调用点**（死代码）→ 接线 GUI/Client。
+- [~] S2 rdpusb：src/channel/rdpusb_client.cpp + src/usb/usb_win32.cpp **全库零调用点** → 接线。
+- [~] S3 rdpdr：tools/rtsc_gui/main.cpp:377 仅计数回调，真实 RdpdrClient 未接线 → 接线（设备列表→DeviceAnnounce→DeviceReply→handle 读写）。
+- 验证方式：每项先红（补接线前的失败断言/真机统计为 0）后绿；真机统计必须出现对应计数（cliprdr data_req/data_resp>0、rdpdr 设备列表出现、gateway 握手阶段推进）；单测 + ctest 全绿 + Linux 门禁 PASS。
+
+### N8-2 实网交互验证补测 [~]
+- [~] P1 剪贴板实际数据往返（远端 notepad 复制 → 本地 Get-Clipboard；反向 Set-Clipboard → 远端粘贴）；当前会话 A 统计 remote_lists=0/data_resp=0 → 仅能力交换。
+- [~] P2 扫描码实网验证（远端敲 'a' 必须出字母 a，不得 F7）。
+- [~] P3 rdpdr 接线判定；P4 音频播放方向（远端播放 vs 本地回放）；P5 化妆项（test_rdp6.cpp 重复注释块 + 尾换行）。
+- 验证方式：证据 = evidence/interaction-batch/v2/*.log 统计行 + 截图；GUI 会话 Alt+F4 收完整统计。
+
+### N8-3 服务器模式（家庭版解禁 + 多远程用户）路线定案 [ ]
+- [ ] 审计产出：会话并发模型缺陷、DesktopSource 控制台捕获与并发竞态、可复用资产盘点、≥2 条实施路线对比。
+- [ ] 定案后派执行 AI（TDD），验收含：≥2 并发客户端互不干扰（资源所有权/单写者）、断连清理幂等、真机/本地回环验证。
+- 验证方式：并发回环测试（2 客户端同时接入）+ 桌面来源真机抓取实证 + ctest/Linux 门禁。
+
+### N8-4 收尾
+- [ ] 用户目验 32bpp 画质（rtsc_gui vs mstsc）；性能基准复测（吞吐/延迟/并发度换算）；多显示器实网。
