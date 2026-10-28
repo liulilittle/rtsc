@@ -10498,3 +10498,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[甲的重要勘误]** 其先前"滚轮指针跳 (0,0)"结论撤回：`[MS-RDPBCGR]` 明写 WHEEL 时 xPos/yPos **SHOULD be ignored**。
 - **[未验证保留]** `param_1+0x424` 语义、`0x4321DCBA` 含义、归位触发时机、三档 Win 默认归属、mstsc 负 origin 实际 wire、Ctrl+Alt+End→SAS、吞 `WM_SYSKEYDOWN` 能否拦 shell 热键、`INFO_DISABLECTRLALTDEL` 语义。
 - **[产品决策（本次定了，后续可改）]** 滚轮默认转发、缩放改 Ctrl+滚轮；Ctrl+数字默认不吞；Win 默认 kRemote、kLocal 可选；R1 归位而非 R2（R2 需 REA 回证 caller）。
+
+## 第626轮：U7 实测（Win up 被 shell 吃掉 / IME 换 VK_PROCESSKEY）→ 并入执行要求
+
+- **[自建探针实测]** `%TEMP%\opencode\winprobe\probe2.exe`（自建窗口 + SetForegroundWindow + keybd_event + 泵消息）：`A_key: [KEYDOWN 0xE5][KEYUP 0x41]`；`WIN_key: [KEYDOWN 0x5B]`（**无 KEYUP**）。
+- **[结论 1：Win up 不到达]** Win 键的 `WM_KEYDOWN` 能到达普通窗口，但 `WM_KEYUP` 被 shell（开始菜单）消费 → **kRemote 不需 LL hook 即可收到 Win down，但必须自行补 Win up**，否则远端 Win 永久粘滞。这解释了 `FUN_1800e8f08` 的 `+0x41C/+0x420` 记录与 `FUN_1801185e0` 的补 up。
+- **[结论 2：IME 替换 VK]** IME 激活时 `WM_KEYDOWN` 的 `wParam` 可能是 `VK_PROCESSKEY(0xE5)`（A 的 down=0xE5、up=0x41）→ **必须用 lParam bits16..23 扫描码**（A1 的扫描码修复因此是必要的）；但 `vk==0xE5 && 扫描码==0` 时回退 `MapVirtualKeyW(0xE5)` 会得到垃圾 → 必须丢弃。
+- **[已以 relay 并入 A2-1 执行要求]** 新增三条断言：T-WinUp（只发 Win down、失焦必须补 `03 5B`）、T-IME（wParam=0xE5 + lParam 扫描码 0x1E<<16 → 发 0x1E）、T-IME2（wParam=0xE5 + lParam=0 → 丢弃）。
+- **[证据入档]** `docs/spec/input-evidence.md` 新增 E6（提交 a967918），并明确"基于 keybd_event 注入、非物理键；LL hook 能否看到 Win up 未测；三档默认值未知"。
+- **[在途]** A2-1 `ses_e7eef6e8dffeuhgN6mLM0qpjLl`（输入/窗口层 6 项）、A2-2 `ses_e7eef50d9ffe1V1Z1HPO3jDJB1`（视图/坐标层 4 项）；A2 双审甲乙已收敛并盖章（甲终版 D1-D12 + Phase 0-6 顺序）。
