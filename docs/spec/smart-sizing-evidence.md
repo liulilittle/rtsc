@@ -51,3 +51,13 @@ mstscax.dll sha256 d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0ed
 - [x] EnableSmartSizing 精确语义裁定
 - [ ] 对照仓内 fit 语义 → 偏差清单（先红测试：窗口≠桌面且未启用 smart sizing → 期望 1:1）
 - [ ] 最小实现对齐（保留 kCmdFit 但引入 EnableSmartSizing 门控语义）
+## 取证批次 3（2026-10-28 轮次 103）：A6 对齐实施盖章 3414ece
+- (a) 三处默认 fit true→false（view.h ZoomState/graphics.h GraphicsPipeline/window.h ViewMenuState）+注释"默认未启用=1:1"=EnableSmartSizing=0。
+- (b) 翻转 3 断言 + graphics_defaults_to_1to1 改名；红证留存 tests/checks/failing/（入库）。
+- (c) SetViewMenuState 接线（启动+consumed），D5 菜单失同步修复。
+- (d) R1/R2/R3 先绿证明（1:1 裁剪/居中字邮箱契约、resize 不改语义）。
+- 测试 view 56/7203、graphics 15/347、ui 40/226、multimon 24/94、orders 103/5793、client 14/63；全量 build 0err/0warn。双审盖章（甲乙一致）。
+- 遗留非阻塞：N1 全屏菜单 no-op（kCmdToggleFullscreen 无消费、SetFullscreen 零调用）、N2 view_transform 级 resize 链覆盖建议；UNVERIFIED：EnableSmartSizing 构造默认、ZoomLevel≠100 行为、窗口>桌面放置位。
+- [x] EnableSmartSizing 精确语义裁定
+- [x] 对照仓内 fit 语义 → 偏差清单（默认态/菜单态；运行时行为已一致）
+- [x] 最小实现（默认翻转+菜单接线+测试锁定）
