@@ -10256,3 +10256,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[裁决 BuildDynvcPdu(kDataFirst)]** 保留其自动 Length（语义=「单帧完整消息」），头文件注释必须写明仅适用完整消息、分片必须用 BuildDynvcDataFirstPdu 显式 total；生产路径已走 BuildDynvcDataPdus，故 B2 在生产路径闭合。
 - **[网关内存事故后续]** 已派 GW-MEM（ses_e7fd2c9ebffedlmvx6O0uZHZLM）：第 0 步强制安全跑测试（单用例 + 并行内存采样 + >2GB 即 kill），红证用有限恶意输入（Content-Length 0xFFFFFFFF / 头 >64KiB / 256 片后停供），绿证加头 64KiB + CL 64KiB + 单会话 8MiB + 循环次数 + 30s 总时长上限，要求峰值 <100MB。
 - **[复验派发]** 组A乙 复验 rdpdr 当前码 + drdynvc v2 两段（要求重链当前库、禁碰 gateway 套件）。
+
+## 第600轮：审计甲勘误 + rdpdr 盖章 + R1-R4 待修清单
+
+- **[甲认错 1]** W12 的 rdpdr 结论基于**旧二进制**（未在改动后重链接 rdpdr_verify2.exe）→ D1c/D3 三条（盘根误杀/DELETE 计写/MAXIMUM_ALLOWED 漏判）**全部撤回**；重链当前库复跑：42 绕过全拒、9 合法全过、盘根三形态 1/1/1、root C:\share2 不塌缩、GENERIC_WRITE/ALL/FILE_WRITE_DATA/FILE_APPEND_DATA/MAXIMUM_ALLOWED/mstsc 0x0012019F → for_write=1，GENERIC_READ/DELETE/SYNCHRONIZE/FILE_READ_DATA → 0。
+- **[甲认错 2·判据错]** 「无 DATA_FIRST 的纯 DATA → 丢弃 ✓」与 [MS-RDPEDYC] 3.1.5.2.2 / 2.2.3.2 相反 → 其 drdynvc 盖章结论作废（缺陷类型：把"缺失"当"合规"）。甲复验当前码确认已按规范修好：drdynvc.cpp:168-176 kData 直投、:152-166/192-195 三重上限、drdynvc_client.cpp:143-150 走 BuildDynvcDataPdus；实测 drdynvc **16 tests/192 checks/0 fail**、rdpusb 45/192/0。
+- **[唯一不认项]** FILE_WRITE_ATTRIBUTES 0x100 → for_write=0：实现刻意排除（rdpdr_client.cpp:28-30 注释：元数据写不授予数据写、客户端无 delete/set-information IRP）→ 判合规，甲探针判据应删。
+- **[rdpdr 盖章]** 父代理裁定 rdpdr **可盖章**；转入下一批必修清单：**R1** 缺文件回 0xC0000022 应 0xC0000034（rdpdr_client.cpp:376）；**R2** truncate 与 for_write 解耦（file_system.cpp:160-162 中 	runc 仅在 for_write 分支 → 只读+OVERWRITE 静默不截断）；**R3** junction/symlink/reparse 逃逸（全仓 canonical/symlink/junction/reparse 零命中，仅词法归一）→ 接线前加 fs::canonical + 前缀复核；**R4** Close/Write 未知 file_id 应回 0xC0000008（rdpdr_client.cpp:450 无条件 Close 后回 Success）。
+- **[已要求]** 甲按当前代码重给 drdynvc 结论（含 1500/1590/1591/3000 分片发送序列断言），并禁止触碰 gateway 套件（34GB 事故）。
