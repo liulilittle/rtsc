@@ -1255,3 +1255,21 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 让实网验证子会话 ses_e8196e3e7ffeQ6oFMqr0FGItFM 承担 GUI 交互验证（P1-P5），期间先后遇到 APIError：glm-5.3-flash-free 渠道不可用、Bad Gateway、1 分钟最多 15 次请求、Invalid request；我连续多轮用 prompt 唤醒同一会话。
 [错误] 该会话真投递连续 5 次零输出（达熔断阈值），整夜多数轮次消耗在唤醒/换向而非产出；且同期同一 provider 并发 5 个子会话，加剧限流。
 [下一步] ①provider 的 15 次/分钟是硬预算 → 同 provider 并发子会话 ≤3；②某会话连续 2 次真投递零输出即**换向**（把大目标拆小后派新会话），不再反复唤醒同一会话；③长交互任务拆成「单目标单会话」并即时产出，避免整会话产出被中断清零；④能用 headless/统计行判定的通道项优先 headless，GUI 目视仅作辅证。
+
+## [2026-10-28][EXEC-C] H-3 零宽除零：红/绿证据 + 两个环境坑
+- [尝试] 先用已构建的生产二进制验证入口：`rtsc_server_host.exe --width 0 --height 0 --test-pattern --port 3456 --seconds 2`
+  [错误] 红：EXIT=0，日志 `desktop=0x0` + `listening on 0.0.0.0:3456`（静默接受零尺寸，等待首个客户端后在 SendFrame 除零）。注意：`rtsc_connect` 客户端会在 CS_CORE 里声明自身非零宽高，配置 0x0 会被客户端值覆盖，因此不连客户端时看不到 0xC0000094；崩溃必须由「客户端也声明 0」的路径（单测 server_zero_client_geometry_* 之外的 TestPatternSource 直接调用/客户端 0 尺寸）触发。
+  [下一步] 入口三处（Start/Run/ServeOne）共用 ValidateDesktopSize 拒绝 0；SendFrame 除法前显式判 chunk_w/chunk_row != 0；TestPatternSource::Capture 零尺寸直接 false；CLI --width/--height 严格解析 1..65535。
+- [尝试] `cmake --build build --config Release` 直接调用
+  [错误] `cmake 不是 cmdlet`：本机 cmake 不在 PATH
+  [下一步] 用 `C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`（ctest 同目录），后续所有构建/门禁都走绝对路径。
+- [尝试] 全量 `ctest -C Release` 取 51/51 基线（共享工作树，EXEC-A/B 同时改 src/channel）
+  [错误] 两次连跑失败用例在漂移：第一次 `cliprdr`（单跑 31 tests/0 fail 全绿），第二次 `rdpdr`（tests/test_rdpdr_client.cpp:887 由 EXEC-B 新增/在改）。两者都不在我的改动范围（我的 diff 仅 src/server/server.cpp + tests/test_server.cpp + tools/rtsc_server/main.cpp）。
+  [下一步] 共享工作树下「全量 ctest 全绿」会被兄弟代理未提交的在途改动污染；裁决应按「本次改动影响面套件」取证（server/server_multisession/desktop_gdi/gateway 5/5 全绿），并把漂移失败按文件归属上报，不得据他人红用例改自己代码。
+## [2026-10-28][EXEC-A] S6 剪贴板初始化方向修复：C4996 与共享构建漂移
+- [尝试] 用 std::getenv 读 TEMP/TMP/TMPDIR 解析平台临时目录（src/channel/cliprdr_client.cpp，SendTemporaryDirectory 取值来源）
+  [错误] /W4 /WX 下 MSVC 报 warning C4996: 'getenv' unsafe，C2220 警告视为错误 → BUILD EXIT=1
+  [下一步] 改为平台中立 ReadEnvironment()：MSVC 走 _dupenv_s + std::free，其它平台 std::getenv；禁止引入 windows.h（scripts/linux-build-gate.sh 断言 windows.h 不得进入 Linux 构建日志）
+- [尝试] 用全量 ctest -C Release 取证 C0（与另外 2 个执行代理共用 F:\rtsc\build）
+  [错误] 连续两次全量跑失败用例漂移：第一次 server_security + gui_send，第二次 rdpdr + server；单独重跑这 4 个全部 Passed。git status 显示兄弟代理同期在改 src/server/server.cpp、src/channel/rdpdr_client.cpp、src/rdpdr/*、tools/rtsc_server/main.cpp（mtime 08:21-08:32 与跑测重叠）→ 测试二进制在跑测期间被重建/改写在途
+  [下一步] 第三次全量 ctest 得 100% tests passed, 0 tests failed out of 51（EXIT=0）。失败项均不在本次改动范围（我仅改 src/channel/cliprdr_client.cpp、include/rtsc/channel/cliprdr_client.h、tests/test_cliprdr.cpp）；直接证据按影响面口径取 cliprdr 套件 31 tests / 0 failing，全量 51/51 为最终门禁，漂移失败按文件归属上报，未据他人红用例改自己代码

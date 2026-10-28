@@ -10153,3 +10153,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[红证3·长名默认]** 恢复旧乐观默认后 long_format_names_defaults_to_short FAIL:362 (got 1 want 0)；9 failing tests。
 - **[父代理亲核]** include/rtsc/proto/cliprdr.h:22-28 枚举与 [MS-RDPECLIP] 2.2.1 完全一致（kMonitorReady 0x0001 … kTempDirectory 0x0006、kClipCaps 0x0007）→ 测试线值正确，不存在「用错枚举把正确实现判红」。
 - **[纪律要求已下发]** 测试改动台账（6 条改 + 1 条删，逐条 旧断言→新断言→规范理由）；禁止以改期望迁就实现；GREEN 后跑全量 ctest 并贴总结果行。
+
+## 第588轮：并行工作树启动 + EXEC-B/C 里程碑（父代理亲核）
+
+- **[工作树]** 用户授权并行加速：新建 F:\rtsc-wt\{gw,drdynvc,planar}（分支 wt/gateway、wt/drdynvc、wt/planar，基线 47d7c24）；另发现 5 个历史工作树（.worktrees/{multimon,rail,rdpdr,server-sec,usb}，旧提交，待评估是否复用）。
+- **[并发口径]** 同机 6 代理 → 禁止各代理跑全量 ctest（gateway/server 绑相同 localhost 端口 + 主树共用 build 目录）；各代理只跑自己套件，全量 51/51 由父代理串行执行。
+- **[EXEC-C · H-3 完成·已亲核]** server.cpp:117 ValidateDesktopSize（Start/Run/ServeOne 三入口）、:1134 chunk_w==0||chunk_row==0 守卫、:1505 TestPatternSource 零尺寸守卫；tools/rtsc_server/main.cpp:92 ParseDimension（仅十进制 1..65535）。红证:test_server.cpp:949/950/959/960 FAIL + unhandled-SEH(0xC0000005) dump；绿证:13 tests/106 checks 0 fail，CLI width=0/-1/70000/abc 全部 EXIT=2 且信息明确，1280x720 正常。C0:build 零错零警 + ctest 51/51。
+- **[EXEC-C 续派]** H-1（CS_CORE 无上限→17,179,344,900B 分配 + 线程无 try/catch → TerminateProcess 杀全进程）/ H-2（SendFrame y uint16 回绕死循环，实测 3 秒 1.07GB）/ H-4（会话不回收 + 明文凭据驻留 + session_count 累计假绿）+ 默认 accept_any_credentials=true 静默不安全。
+- **[EXEC-B · S3-8 完成]** src/rdpdr/file_system.cpp 新增 kMaxReadLength=1MiB（依据：Windows 重定向器 4KiB..64KiB 粒度、SMB2 读粒度 64KiB、留 16x 余量；响应再复制一份峰值≈2MiB）+ 分配前 length 校验 + bad_alloc/length_error 捕获；rdpdr_client.cpp OnRead 前置校验回 kStatusInvalidParameter。红证:接受 67108864 与 4294967295 两例 + fs.read_calls got 1 want 0；绿证:30 tests/213 checks 0 fail（64MiB 与 4GiB 均被拒、正常 5 字节读仍成功）。剩 S3-9 截断 / S3-7' DesiredAccess 进行中。
+- **[EXEC-A · GREEN 完成]** 31 tests/155 checks 0 fail；实现要点已核对：Start() 不发 MonitorReady、OnPdu 新增 kMonitorReady/kFormatListResponse 分支、SendTemporaryDirectory 520B UTF-16LE（_dupenv_s 避开 windows.h 与 C4996）、long_format_names_ 保守 false + 服务端 caps AND 协商；待 C0 与测试改动台账。
+- **[待办]** 工作树三代理（GW/DVC/PLANAR）在跑；A 待 C0；B 剩两条；C 续三项；随后由父代理串行跑全量 ctest 并提交。
