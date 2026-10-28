@@ -10264,3 +10264,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[唯一不认项]** FILE_WRITE_ATTRIBUTES 0x100 → for_write=0：实现刻意排除（rdpdr_client.cpp:28-30 注释：元数据写不授予数据写、客户端无 delete/set-information IRP）→ 判合规，甲探针判据应删。
 - **[rdpdr 盖章]** 父代理裁定 rdpdr **可盖章**；转入下一批必修清单：**R1** 缺文件回 0xC0000022 应 0xC0000034（rdpdr_client.cpp:376）；**R2** truncate 与 for_write 解耦（file_system.cpp:160-162 中 	runc 仅在 for_write 分支 → 只读+OVERWRITE 静默不截断）；**R3** junction/symlink/reparse 逃逸（全仓 canonical/symlink/junction/reparse 零命中，仅词法归一）→ 接线前加 fs::canonical + 前缀复核；**R4** Close/Write 未知 file_id 应回 0xC0000008（rdpdr_client.cpp:450 无条件 Close 后回 Success）。
 - **[已要求]** 甲按当前代码重给 drdynvc 结论（含 1500/1590/1591/3000 分片发送序列断言），并禁止触碰 gateway 套件（34GB 事故）。
+
+## 第601轮：rdpdr 与 drdynvc 双审一致盖章
+
+- **[双审一致]** 组A乙（重链当前库独立探针）与组A甲（已勘误旧二进制问题）结论一致：
+  - **rdpdr 可盖章**：42 绕过全拒、盘根三形态全接受且归一（rdpdr_client.cpp:172-182）、9 合法全对、DesiredAccess 逐位正确（MAXIMUM_ALLOWED→1、纯 DELETE→0、GENERIC_READ→0、WRITE_DATA/APPEND_DATA→1）、43 tests/282 checks 0 fail、ctest -R ^rdpdr$ 1/1。FILE_WRITE_ATTRIBUTES/WRITE_EA 不计写权限=**双方一致判为正确口径**（无 SetInformation/EA IRP，计入反而越权），要求补注释说明以防回改。
+  - **drdynvc 可盖章**：9/9 探针通过（裸 DATA 直投/连续裸 DATA/1500B 单 PDU/DATA_FIRST+重组/序列后裸 DATA 为新消息/Length=0xFFFFFFFF 被拒且不建状态/交错通道隔离/投递后清零）；发送侧 BuildDynvcDataPdus（≤1590 单 DATA、>1590 DATA_FIRST 总长+DATA）；上限 kMaxMessageLength=16MiB / kMaxPendingChannels=64 / kMaxBufferedBytes=16MiB；16 tests/192 checks 0 fail、rdpusb 45/192 0 fail。
+- **[下批残留（双方一致）]** rdpdr：R-A1 Close 未知 id 回 SUCCESS（:450-454）、R-A2 缺文件应 0xC0000034（:375-377）、R-A3 只读+OVERWRITE 静默不截断（file_system.cpp:160-162，乙倾向"该组合直接拒 INVALID_PARAMETER"）、R-A4 junction/symlink 未覆盖（仅词法）+ FILE_CREATE Stat→Open TOCTOU 未文档化、R-A5 注释补充。drdynvc：R-B1 压缩变体 0x06/0x07 未实现（default 丢弃，应显式拒绝+日志）、R-B2 Soft-Sync 0x08/0x09 未实现、R-B3 max_fragment 1500 偏保守、R-B4 AddListener 单 listener、R-B5 pending 无时间老化。
+- **[已派]** EXEC-B 修 R1/R2/R4/R3（其中 R2 与乙的 R-A3 同源：本次按「truncate 与 for_write 解耦」还是「组合直接拒绝」需执行方给出选择与理由；父代理倾向**解耦**，因为 OVERWRITE+只读访问在真实重定向器里会出现，直接拒会打断删除/覆盖流程）。
+- **[安全监控]** 每轮巡检 Get-Process 峰值内存与 rtsc_* 残留进程（34GB 事故后固化）；本轮无残留、无异常进程。
