@@ -1880,3 +1880,7 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 
 - 32bpp planar 修复后桌面整体垂直镜像：像素算术被双审+预言机验证，但行序（bottom-up vs top-down）三方都漏了——真机向量解码值全对、方向反。
 - 规则：位图类编解码测试必须包含垂直不对称内容断言（首流行 vs 末流行颜色不同），并引用调用方 vFlip 语义（FreeRDP bitmap.c 对位图更新传 vFlip=TRUE；planar.c vFlip 分支 beg=height-1 递减）。
+
+## 环境（2026-10-28）：cmake/ctest 绝对路径
+- cmake 不在 PATH。统一用：C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe（ctest.exe 同目录）。
+- 子代理若报 cmake 找不到，直接用该绝对路径，不要花轮次排查 PATH。

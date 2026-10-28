@@ -10135,3 +10135,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[切换方式]** model 仅在 prompt/task 生效 → 对在跑会话逐个随下一次派发切换：①EXEC-C（H-3 零宽除零）已切；②EXEC-A（cliprdr RED）已切；③EXEC-B（S3-7 路径穿越）已切；④4 个审计会话（组A甲/乙、组B甲/乙）idle，将在其下一次派发（复验/收尾）时同步切换。
 - **[并发纪律]** 同 provider 并发 ≤3：当前仅 EXEC-A/B/C 三个在跑，审计组暂不唤醒。
 - **[上一轮教训已入档]** 测试纪律违规（1e36719 先改实现后重钉期望）与整夜停滞根因（provider 连续故障 + 5 并发超配额 + 反复唤醒死会话）见 discover.md 同日两条。
+
+## 第586轮：EXEC-C 红证达成（H-3 零宽/零尺寸）
+
+- **[红证·真实失败输出]** tests/test_server.cpp 新增 3 用例（不改 CMakeLists）：
+  - server_refuses_zero_desktop_geometry：cfg.desktop_width=0 / desktop_height=0 → 断言 Start() 失败且 error 非空 → 红：FAIL tests/test_server.cpp:949 !server.Start(error) / :950 !error.empty()（两处配置路径各 2 条，共 4 条 FAIL）
+  - server_zero_client_geometry_serves_the_configured_desktop：客户端 CS_CORE 声明 0x0 → 应回落配置 64x48 并出帧（回归守卫）
+  - test_pattern_source_refuses_zero_dimensions：MakeTestPatternSource()->Capture(0,48) 应返回 false → 红：进程级 [crash] unhandled-seh（dump build\Release\crashes\rtsc_server_tests-20261028-082223-42316.dmp），与审计 0xC0000005「空分配后写边框」一致
+  - 其余 12 个既有用例仍 [OK]；BUILD_EXIT=0
+- **[环境事实]** cmake 不在 PATH：C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe（后续各代理统一用此绝对路径）
+- **[待办]** GREEN：server.cpp 入口拒绝零尺寸 + chunk_row>0 守卫 + TestPatternSource 零尺寸守卫 + tools/rtsc_server/main.cpp --width/--height 严格解析；随后绿证 + ctest 51/51。
