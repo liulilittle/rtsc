@@ -10630,3 +10630,7 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **方向B backend**（DropFileList：Win32 CF_HDROP→FileListProvider）：执行子 `ses_e7c8294a5ffeToJLdRon4Agorb` TDD 在途（接口契约已核 d29ec55 的 file_list.h；DROPFILES 布局/pFiles 偏移/双 null 表/fWide 防御/read_range 磁盘读）。
 - **A5 rdpsnd**：CRdpSndPlugin 工厂/主 vtable 定位；TSSNDCAPS 格式数组 search_bytes 无静态匹配 → **运行时构造，转为真机抓包裁决项**（77e0514）。仓内 rdpsnd 实现已有套件 Test #31/#32。
 - 下一步：等方向B 执行子报告→双审→盖章→C0+提交；真机抓包（cliprdr capset/A5 TSSNDCAPS 同为 wire 裁决项）。
+## 第644轮：方向B 执行完成 → 甲乙复核派发
+- 执行子 `ses_e7c8294a5ffeToJLdRon4Agorb` 完成 DropFileList（DROPFILES 头解析/fWide 门/pFiles 防御/basename/惰性 size/read_range append+截断），30/84 绿 + 3 变异红→绿；main.cpp 方向B 集成（WM_CLIPBOARDUPDATE→provider 会话级）；CMake 新增 rtsc_clipboard_tests。
+- 已派甲乙复核（prompt 续 FILECONTENTS 组会话）：甲=解析正确性/生命周期/CMake；乙=分支完备/失败路径/悬垂判定。
+- 下一步：复核章→C0+提交；真机抓包 wire 裁决（cliprdr+rdpsnd）。
