@@ -5,8 +5,10 @@
 #include "rtsc/ui/window.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -62,6 +64,16 @@ class RecordingWindow final : public Window {
     bool closed_ = false;
     size_t bind_count_ = 0;
 };
+
+// An explicit, visible skip. A test case that cannot create a window (no
+// interactive desktop, no display) must never read as a silent pass: the reason
+// is asserted non-empty and printed with the SKIP marker so the log shows the
+// case was not exercised. The harness still prints [ OK ] (nothing failed), so
+// SKIP is the only signal -- which is the point.
+[[maybe_unused]] void SkipTest(const char* test_name, const std::string& why) {
+    CHECK(!why.empty());
+    std::printf("  SKIP %s: %s\n", test_name, why.c_str());
+}
 
 }  // namespace
 
@@ -189,8 +201,8 @@ RTSC_TEST(window_win32_backend_creates_a_window) {
     auto w = CreateWindow(64, 64, "win32", why);
     if (w == nullptr) {
         // A session without an interactive desktop must fail with a reason, not
-        // silently return a headless window.
-        CHECK(!why.empty());
+        // silently return a headless window -- and the skip must be VISIBLE.
+        SkipTest("window_win32_backend_creates_a_window", why);
         return;
     }
     CHECK(std::string(w->backend_name()) == "win32");
@@ -209,13 +221,190 @@ RTSC_TEST(window_win32_backend_creates_a_window) {
 }
 
 #if defined(_WIN32)
+namespace {
+
+uint32_t VkToScancodeFake(uint32_t vk) {
+    return vk == 0x42 ? 0x70u : 0u;  // 'B' -> a deliberately non-real scancode
+}
+
+uint32_t VkToScancodeNone(uint32_t) { return 0u; }
+
+}  // namespace
+
+RTSC_TEST(win32_key_translation_uses_the_lparam_scancode) {
+    // WM_KEYDOWN 'A': repeat=1, set-1 scancode 0x1E, no extended bit.
+    const KeyTranslation a = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x41, static_cast<uint32_t>(0x1Eu << 16));
+    CHECK(a.forward);
+    CHECK_EQ(a.scancode, static_cast<uint8_t>(0x1E));
+    CHECK(!a.extended);
+    CHECK(!a.release);
+    // Never the virtual-key code: 0x41 sent as a scancode types another key
+    // (F7) on the remote.
+    CHECK(a.scancode != 0x41);
+
+    // WM_KEYUP carries the same scancode plus previous-state/transition bits.
+    const KeyTranslation a_up = TranslateWin32KeyMessage(
+        kWin32WmKeyUp, 0x41, 0xC0000001u | (0x1Eu << 16));
+    CHECK(a_up.forward);
+    CHECK_EQ(a_up.scancode, static_cast<uint8_t>(0x1E));
+    CHECK(a_up.release);
+}
+
+RTSC_TEST(win32_key_translation_falls_back_to_the_layout_mapping) {
+    // A VK-only synthetic message (lParam scancode field 0) falls back to the
+    // layout mapper: MapVirtualKeyW(VK_TO_VSC) is layout-stable for letters, so
+    // 'B' -> 0x30.
+    const KeyTranslation b = TranslateWin32KeyMessage(kWin32WmKeyDown, 0x42, 0);
+    CHECK(b.forward);
+    CHECK_EQ(b.scancode, static_cast<uint8_t>(0x30));
+    CHECK(b.scancode != 0x42);
+
+    // The injected mapper is the one consulted when the field is 0.
+    const KeyTranslation fake = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x42, 0, &VkToScancodeFake);
+    CHECK(fake.forward);
+    CHECK_EQ(fake.scancode, static_cast<uint8_t>(0x70));
+
+    // A mapper that cannot translate must DROP the event: forwarding scancode 0
+    // would send a meaningless key instead of failing closed.
+    const KeyTranslation none = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x42, 0, &VkToScancodeNone);
+    CHECK(!none.forward);
+    CHECK_EQ(none.scancode, static_cast<uint8_t>(0));
+}
+
+RTSC_TEST(win32_key_translation_sets_the_extended_bit) {
+    // Right Ctrl (VK_RCONTROL) is scancode 0x1D + extended; it must NOT be
+    // confused with the AltGr pseudo Ctrl and dropped.
+    const KeyTranslation rc = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0xA3, (0x1Du << 16) | (1u << 24));
+    CHECK(rc.forward);
+    CHECK_EQ(rc.scancode, static_cast<uint8_t>(0x1D));
+    CHECK(rc.extended);
+
+    // Left arrow: VK_LEFT, scancode 0x4B + extended.
+    const KeyTranslation left = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x25, (0x4Bu << 16) | (1u << 24));
+    CHECK(left.forward);
+    CHECK_EQ(left.scancode, static_cast<uint8_t>(0x4B));
+    CHECK(left.extended);
+
+    // A non-extended key keeps the flag clear.
+    const KeyTranslation plain = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x41, static_cast<uint32_t>(0x1Eu << 16));
+    CHECK(!plain.extended);
+}
+
+RTSC_TEST(win32_key_translation_altgr) {
+    // AltGr = pseudo Ctrl + right Alt. The pseudo Ctrl (VK_CONTROL and
+    // VK_LCONTROL with the extended bit) is suppressed so the remote does not
+    // see Ctrl+AltGr chords.
+    const KeyTranslation pseudo_ctrl = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x11, (0x1Du << 16) | (1u << 24));
+    CHECK(!pseudo_ctrl.forward);
+    const KeyTranslation pseudo_lctrl = TranslateWin32KeyMessage(
+        kWin32WmKeyUp, 0xA2, 0xC0000001u | (0x1Du << 16) | (1u << 24));
+    CHECK(!pseudo_lctrl.forward);
+
+    // Right Alt arrives as WM_SYSKEYDOWN(VK_RMENU) and is forwarded as set-1
+    // 0x38 + extended.
+    const KeyTranslation ralt = TranslateWin32KeyMessage(
+        kWin32WmSysKeyDown, 0xA5, (0x38u << 16) | (1u << 24));
+    CHECK(ralt.forward);
+    CHECK_EQ(ralt.scancode, static_cast<uint8_t>(0x38));
+    CHECK(ralt.extended);
+    CHECK(!ralt.release);
+
+    // The same key reported as VK_MENU + extended (WM_SYSKEYUP path).
+    const KeyTranslation ralt_menu = TranslateWin32KeyMessage(
+        kWin32WmSysKeyUp, 0x12, 0xC0000001u | (0x38u << 16) | (1u << 24));
+    CHECK(ralt_menu.forward);
+    CHECK_EQ(ralt_menu.scancode, static_cast<uint8_t>(0x38));
+    CHECK(ralt_menu.extended);
+    CHECK(ralt_menu.release);
+
+    // Left Alt must stay non-extended 0x38.
+    const KeyTranslation lalt = TranslateWin32KeyMessage(
+        kWin32WmSysKeyDown, 0x12, static_cast<uint32_t>(0x38u << 16));
+    CHECK(lalt.forward);
+    CHECK_EQ(lalt.scancode, static_cast<uint8_t>(0x38));
+    CHECK(!lalt.extended);
+
+    // Alt+Tab is a WM_SYSKEYDOWN(VK_TAB) with the context bit; the generic
+    // path must forward it as plain 0x0F.
+    const KeyTranslation alt_tab = TranslateWin32KeyMessage(
+        kWin32WmSysKeyDown, 0x09, 0x20000001u | (0x0Fu << 16));
+    CHECK(alt_tab.forward);
+    CHECK_EQ(alt_tab.scancode, static_cast<uint8_t>(0x0F));
+    CHECK(!alt_tab.extended);
+
+    // Alt+F4 (VK_F4 + context bit) is deliberately NOT forwarded: the backend
+    // lets DefWindowProc turn it into the local WM_CLOSE, like mstsc does.
+    const KeyTranslation alt_f4 = TranslateWin32KeyMessage(
+        kWin32WmSysKeyDown, 0x73, 0x20000001u | (0x3Eu << 16));
+    CHECK(!alt_f4.forward);
+
+    // The bare F4 (no Alt) is an ordinary key and must be forwarded.
+    const KeyTranslation f4 = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0x73, static_cast<uint32_t>(0x3Eu << 16));
+    CHECK(f4.forward);
+    CHECK_EQ(f4.scancode, static_cast<uint8_t>(0x3E));
+}
+
+RTSC_TEST(window_win32_forwards_system_keys_and_suppresses_altgr_ctrl) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("window_win32_forwards_system_keys_and_suppresses_altgr_ctrl",
+                 why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // AltGr, as Windows synthesises it: pseudo Ctrl down, right Alt down/up
+    // (WM_SYSKEY*), pseudo Ctrl up.
+    PostMessageW(hwnd, WM_KEYDOWN, VK_CONTROL,
+                 static_cast<LPARAM>((0x1Du << 16) | (1u << 24)));
+    PostMessageW(hwnd, WM_SYSKEYDOWN, VK_RMENU,
+                 static_cast<LPARAM>((0x38u << 16) | (1u << 24)));
+    PostMessageW(hwnd, WM_SYSKEYUP, VK_RMENU,
+                 static_cast<LPARAM>(0xC0000001u | (0x38u << 16) | (1u << 24)));
+    PostMessageW(hwnd, WM_KEYUP, VK_CONTROL,
+                 static_cast<LPARAM>(0xC0000001u | (0x1Du << 16) | (1u << 24)));
+
+    InputEvent ev;
+    bool saw_ctrl = false;
+    bool saw_ralt_down = false;
+    bool saw_ralt_up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kKey) continue;
+        if (ev.scancode == 0x1D) saw_ctrl = true;
+        if (ev.scancode == 0x38 && ev.key_extended) {
+            if (ev.key_release) {
+                saw_ralt_up = true;
+            } else {
+                saw_ralt_down = true;
+            }
+        }
+    }
+    CHECK(!saw_ctrl);      // pseudo Ctrl never reaches the remote
+    CHECK(saw_ralt_down);  // right Alt does, so the remote sees AltGr
+    CHECK(saw_ralt_up);
+    w->Close();
+}
+
+#endif  // defined(_WIN32)
+
+#if defined(_WIN32)
 RTSC_TEST(window_win32_key_input_reports_set1_scancodes) {
     std::string why;
     auto w = CreateWindow(64, 64, "win32", why);
     if (w == nullptr) {
         // A session without an interactive desktop must fail with a reason,
         // not silently return a headless window.
-        CHECK(!why.empty());
+        SkipTest("window_win32_key_input_reports_set1_scancodes", why);
         return;
     }
     const HWND hwnd = static_cast<HWND>(w->native_handle());
@@ -273,8 +462,8 @@ RTSC_TEST(window_x11_backend_creates_a_window_or_reports_why) {
     auto w = CreateWindow(64, 64, "x11", why);
     if (w == nullptr) {
         // No X server (headless CI): must fail with a reason, never silently
-        // fall back to headless.
-        CHECK(!why.empty());
+        // fall back to headless -- and the skip must be VISIBLE.
+        SkipTest("window_x11_backend_creates_a_window_or_reports_why", why);
         return;
     }
     CHECK(std::string(w->backend_name()) == "x11");
@@ -290,8 +479,9 @@ RTSC_TEST(window_wayland_backend_creates_a_window_or_reports_why) {
     std::string why;
     auto w = CreateWindow(64, 64, "wayland", why);
     if (w == nullptr) {
-        // No Wayland compositor (headless CI): must fail with a reason.
-        CHECK(!why.empty());
+        // No Wayland compositor (headless CI): must fail with a reason -- and
+        // the skip must be VISIBLE.
+        SkipTest("window_wayland_backend_creates_a_window_or_reports_why", why);
         return;
     }
     CHECK(std::string(w->backend_name()) == "wayland");

@@ -308,27 +308,31 @@ class Win32Window final : public Window {
                 return false;  // SC_* goes to DefWindowProc
             }
             case WM_KEYDOWN:
-            case WM_KEYUP: {
-                InputEvent e;
-                e.kind = InputEvent::Kind::kKey;
+            case WM_KEYUP:
+            case WM_SYSKEYDOWN:
+            case WM_SYSKEYUP: {
                 // The fast-path keyboard event carries the set-1 scancode
-                // ([MS-RDPBCGR] 2.2.8.1.2.2), which for real messages lives in
-                // lParam bits 16..23 -- not the wParam virtual-key code ('A'
-                // is VK 0x41 but its set-1 scancode is 0x1E; forwarding the VK
-                // types a different key on the remote, e.g. 0x41 is F7).
-                // VK-only synthetic messages (lParam scancode field 0) fall
-                // back to the layout mapping.
-                uint8_t scancode = static_cast<uint8_t>((lp >> 16) & 0xFF);
-                if (scancode == 0) {
-                    scancode = static_cast<uint8_t>(
-                        MapVirtualKeyW(static_cast<UINT>(wp), MAPVK_VK_TO_VSC) &
-                        0xFF);
+                // ([MS-RDPBCGR] 2.2.8.1.2.2), never the virtual-key code; see
+                // TranslateWin32KeyMessage for the AltGr handling.
+                const uint32_t vk = static_cast<uint32_t>(wp);
+                const KeyTranslation key = TranslateWin32KeyMessage(
+                    static_cast<uint32_t>(msg), vk,
+                    static_cast<uint32_t>(lp));
+                if (key.forward) {
+                    InputEvent e;
+                    e.kind = InputEvent::Kind::kKey;
+                    e.scancode = key.scancode;
+                    e.key_release = key.release;
+                    e.key_extended = key.extended;
+                    events_.push_back(e);
                 }
-                e.scancode = scancode;
-                e.key_release = (msg == WM_KEYUP);
-                e.key_extended = (lp & (1 << 24)) != 0;
-                events_.push_back(e);
-                return true;
+                // Alt+F4 stays local: TranslateWin32KeyMessage never forwards
+                // it, and returning false lets DefWindowProc turn the message
+                // into WM_CLOSE, exactly like mstsc. Every other system key
+                // (right Alt, Alt+Space, Alt+<key>) is consumed here after
+                // being forwarded so the local menu bar does not also react.
+                const bool alt_f4 = vk == VK_F4 && ((lp & (1LL << 29)) != 0);
+                return !alt_f4;
             }
             case WM_MOUSEMOVE: {
                 InputEvent e;
@@ -602,6 +606,54 @@ class Win32Window final : public Window {
 };
 
 }  // namespace
+
+KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
+                                        uint32_t lparam,
+                                        uint32_t (*vk_to_scancode)(uint32_t)) {
+    KeyTranslation out;
+    out.release = (msg == kWin32WmKeyUp || msg == kWin32WmSysKeyUp);
+    const bool extended = (lparam & (1u << 24)) != 0;
+
+    // AltGr: Windows injects a pseudo Ctrl for AltGr (VK_CONTROL/VK_LCONTROL
+    // with the extended bit). Drop it, otherwise every AltGr chord arrives as
+    // Ctrl+Alt+key. A real right Ctrl reports VK_RCONTROL and is untouched.
+    if (extended && (vk == VK_CONTROL || vk == VK_LCONTROL)) return out;
+
+    // Right Alt: VK_RMENU, or VK_MENU carrying the extended bit (Windows uses
+    // either depending on the message path), arrives as WM_SYSKEY*. Forward it
+    // as set-1 scancode 0x38 + extended so the remote sees a real AltGr.
+    if (vk == VK_RMENU || (vk == VK_MENU && extended)) {
+        out.forward = true;
+        out.scancode = 0x38;
+        out.extended = true;
+        return out;
+    }
+
+    // Alt+F4 (lParam bit 29 = context code) closes the local session window,
+    // exactly like mstsc. It is never also forwarded, or the remote window
+    // would close too.
+    if (vk == VK_F4 && (lparam & (1u << 29)) != 0) return out;
+
+    // Bits 16..23 of lParam hold the set-1 scancode of a real message ('A' is
+    // VK 0x41 but scancode 0x1E; sending the VK as a scancode types another key
+    // remotely, e.g. 0x41 is F7). VK-only synthetic messages (automation) carry
+    // 0 there and fall back to the layout mapping.
+    uint32_t scancode = (lparam >> 16) & 0xFF;
+    if (scancode == 0) {
+        scancode = (vk_to_scancode != nullptr)
+                       ? vk_to_scancode(vk)
+                       : static_cast<uint32_t>(
+                             MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+        scancode &= 0xFF;
+    }
+    // No mapping: drop the event rather than forward scancode 0, which is not a
+    // key and would type garbage on the remote.
+    if (scancode == 0) return out;
+    out.forward = true;
+    out.scancode = static_cast<uint8_t>(scancode);
+    out.extended = extended;
+    return out;
+}
 
 std::unique_ptr<Window> CreateWin32Window(uint16_t width, uint16_t height,
                                           std::string& why) {

@@ -4,12 +4,139 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "test_framework.h"
 #include "test_main.h"
 
 using namespace rtsc::proto;
+
+namespace {
+
+// ---- Independent orientation oracle (D1) --------------------------------
+//
+// The production decoder must never be its own oracle. This is a literal
+// transcription of FreeRDP's planar_decompress_plane_rle
+// (libfreerdp/codec/planar.c), written from the reference implementation's
+// control flow instead of from src/proto/rdp6.cpp: for bitmap updates FreeRDP
+// passes vFlip=TRUE, so the loop starts at beg = height-1 and walks IMAGE rows
+// downwards (inc = -1) while consuming the stream upwards; a delta row reads
+// the scanline decoded immediately before, rows[nSrcY - inc] -- the image row
+// BELOW. The production decoder uses the opposite formulation (ascending
+// stream counter, dst = height-1-s), so a shared sign/orientation mistake
+// cannot cancel out. Nothing here calls DecodeRdp6Bitmap / DecodeRdp6Plane.
+
+bool ReferenceDecodePlane(const uint8_t* data, size_t size, bool rle,
+                          uint16_t width, uint16_t height,
+                          std::vector<uint8_t>& out, size_t& consumed) {
+    consumed = 0;
+    const size_t plane_size = static_cast<size_t>(width) * height;
+    out.assign(plane_size, 0);
+    const int32_t beg = static_cast<int32_t>(height) - 1;
+    const int32_t end = -1;
+    const int32_t inc = -1;
+    if (!rle) {
+        if (size < plane_size) return false;
+        size_t s = 0;
+        for (int32_t y = beg; y != end; y += inc, ++s) {
+            std::memcpy(out.data() + static_cast<size_t>(y) * width,
+                        data + s * width, width);
+        }
+        consumed = plane_size;
+        return true;
+    }
+    const uint8_t* sptr = data;
+    const uint8_t* const eptr = data + size;
+    for (int32_t y = beg; y != end; y += inc) {
+        uint8_t* const row = out.data() + static_cast<size_t>(y) * width;
+        const uint8_t* const prev =
+            (y == beg) ? nullptr
+                       : out.data() + static_cast<size_t>(y - inc) * width;
+        int32_t pixel = 0;  // FreeRDP resets the running pixel per scanline
+        size_t x = 0;
+        while (x < width) {
+            if (sptr == eptr) return false;
+            const uint32_t cb = *sptr++;
+            if (cb == 0) return false;  // empty segment: FreeRDP would spin
+            uint32_t run = cb & 0x0F;
+            uint32_t raw = (cb >> 4) & 0x0F;
+            if (run == 1) {
+                run = raw + 16;
+                raw = 0;
+            } else if (run == 2) {
+                run = raw + 32;
+                raw = 0;
+            }
+            if (x + raw + run > static_cast<size_t>(width)) return false;
+            for (uint32_t i = 0; i < raw; ++i) {
+                if (sptr == eptr) return false;
+                const uint8_t b = *sptr++;
+                if (prev == nullptr) {
+                    pixel = b;
+                    row[x] = static_cast<uint8_t>(pixel);
+                } else {
+                    pixel = (b & 1) ? -(static_cast<int32_t>(b >> 1) + 1)
+                                    : static_cast<int32_t>(b >> 1);
+                    row[x] = static_cast<uint8_t>(
+                        static_cast<int16_t>(prev[x] + pixel));
+                }
+                ++x;
+            }
+            for (uint32_t i = 0; i < run; ++i) {
+                row[x] = (prev == nullptr)
+                             ? static_cast<uint8_t>(pixel)
+                             : static_cast<uint8_t>(
+                                   static_cast<int16_t>(prev[x] + pixel));
+                ++x;
+            }
+        }
+    }
+    consumed = static_cast<size_t>(sptr - data);
+    return true;
+}
+
+// ARGB (CLL=0) plane assembly on top of the oracle, still production-free.
+struct ReferencePlanes {
+    std::vector<uint8_t> alpha;
+    std::vector<uint8_t> r;
+    std::vector<uint8_t> g;
+    std::vector<uint8_t> b;
+};
+
+bool ReferenceDecodeArgb(const std::vector<uint8_t>& data, uint16_t width,
+                         uint16_t height, ReferencePlanes& out) {
+    if (data.empty()) return false;
+    const uint8_t header = data[0];
+    const bool chroma_subsampling = (header & 0x08) != 0;
+    const bool rle = (header & 0x10) != 0;
+    const bool no_alpha = (header & 0x20) != 0;
+    if ((header & 0x07) != 0 || chroma_subsampling) return false;  // ARGB only
+    size_t pos = 1;
+    if (!no_alpha) {
+        size_t used = 0;
+        if (!ReferenceDecodePlane(data.data() + pos, data.size() - pos, rle,
+                                  width, height, out.alpha, used)) {
+            return false;
+        }
+        pos += used;
+    } else {
+        out.alpha.assign(static_cast<size_t>(width) * height, 0xFF);
+    }
+    std::vector<uint8_t>* const planes[3] = {&out.r, &out.g, &out.b};
+    for (auto* plane : planes) {
+        if (pos > data.size()) return false;
+        size_t used = 0;
+        if (!ReferenceDecodePlane(data.data() + pos, data.size() - pos, rle,
+                                  width, height, *plane, used)) {
+            return false;
+        }
+        pos += used;
+    }
+    return pos == data.size();
+}
+
+}  // namespace
 
 RTSC_TEST(rdp6_format_header_round_trip) {
     // CLL=3, CS=1, RLE=1, NA=0, Reserved=0 -> 0x03 | 0x08 | 0x10 = 0x1B.
@@ -370,6 +497,57 @@ RTSC_TEST(rdp6_bitmap_aycocg_negative_chroma_clamps) {
     CHECK_EQ(bm.pixels[2], static_cast<uint8_t>(0));    // B clamped
 }
 
+RTSC_TEST(rdp6_aycocg_chroma_2x2_with_odd_height) {
+    // D2: AYCoCg + 2x2 chroma subsampling on an ODD 3x3 tile. Per
+    // [MS-RDPEGDI] 2.2.2.5.1 the chroma planes are sampled at even
+    // coordinates: pixel (x, y) reads chroma sample (x/2, y/2), and an odd
+    // extent rounds the plane up to ceil(w/2) x ceil(h/2) = 2x2. Chroma is
+    // therefore shared by each 2x2 block, and the bottom/right pixel (2,2)
+    // still samples block (1,1) -> chroma slot 3. Luma stays full 3x3.
+    // Raw planes are bottom-up like every RDP6 plane, so the luma stream rows
+    // are image rows 2,1,0.
+    //   Y  image rows: y0 = 16 17 18, y1 = 19 20 21, y2 = 22 23 24
+    //   Co image rows: [2 4] (row0), [6 8] (row1) -> raster slots 0..3
+    //   Cg: all 0
+    // Header 0x29 = CLL=1, CS=1, RLE=0, NA=1.
+    const std::vector<uint8_t> data = {
+        0x29,
+        22, 23, 24, 19, 20, 21, 16, 17, 18,  // Y, bottom-up
+        6, 8, 2, 4,                          // Co, bottom-up (row1 then row0)
+        0, 0, 0, 0,                          // Cg
+    };
+    DecodedBitmap bm;
+    CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 3, 3, bm) == Status::Ok);
+    CHECK_EQ(bm.pixels.size(), static_cast<size_t>(3 * 3 * 4));
+
+    // Expected values derived from the sampling coordinates, not from the
+    // production output: with Cg = 0, t = Y, R = t - Co, G = Y, B = t + Co
+    // (inverse AYCoCg; Co/Cg are signed bytes and CLL=1 means no shift).
+    //   y=0: (0,0) Y=16 Co[s0]=2 -> 14,16,18
+    //        (1,0) Y=17 Co[s0]=2 -> 15,17,19
+    //        (2,0) Y=18 Co[s1]=4 -> 14,18,22
+    //   y=1: (0,1) Y=19 Co[s0]=2 -> 17,19,21
+    //        (1,1) Y=20 Co[s0]=2 -> 18,20,22
+    //        (2,1) Y=21 Co[s1]=4 -> 17,21,25
+    //   y=2: (0,2) Y=22 Co[s2]=6 -> 16,22,28
+    //        (1,2) Y=23 Co[s2]=6 -> 17,23,29
+    //        (2,2) Y=24 Co[s3]=8 -> 16,24,32   (edge pixel, last chroma block)
+    const uint8_t want[3][3][3] = {
+        {{14, 16, 18}, {15, 17, 19}, {14, 18, 22}},
+        {{17, 19, 21}, {18, 20, 22}, {17, 21, 25}},
+        {{16, 22, 28}, {17, 23, 29}, {16, 24, 32}},
+    };
+    for (size_t y = 0; y < 3; ++y) {
+        for (size_t x = 0; x < 3; ++x) {
+            const size_t i = (y * 3 + x) * 4;
+            CHECK_EQ(bm.pixels[i + 0], want[y][x][0]);
+            CHECK_EQ(bm.pixels[i + 1], want[y][x][1]);
+            CHECK_EQ(bm.pixels[i + 2], want[y][x][2]);
+            CHECK_EQ(bm.pixels[i + 3], static_cast<uint8_t>(0xFF));
+        }
+    }
+}
+
 // ---- Real-machine vectors (captured from 192.168.1.7, 32bpp session) ------
 // Both tiles are 64x64 bpp=32 flags=0x0001 (BITMAP_COMPRESSION, no
 // NO_BITMAP_COMPRESSION_HDR) RDP6 planar streams: the stream starts at the
@@ -427,10 +605,14 @@ RTSC_TEST(rdp6_real_machine_tile_all_black_513B) {
     }
 }
 
-RTSC_TEST(rdp6_real_machine_tile_content_1320B) {
+namespace {
+
+// The 1320-byte content tile from the 192.168.1.7 capture, shared by the
+// content test and the orientation-oracle tests below.
+const std::vector<uint8_t>& RealMachineTile1320B() {
     // Content tile captured in the same session: rich RGB planes (4042/4096
     // non-black pixels, 43 distinct colours), all-zero alpha plane.
-    const std::vector<uint8_t> data = {
+    static const std::vector<uint8_t> kData = {
         0x10, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2,
         0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2,
         0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2, 0x11, 0xf2,
@@ -514,6 +696,13 @@ RTSC_TEST(rdp6_real_machine_tile_content_1320B) {
         0x1f, 0x04, 0xd2, 0x03, 0x1f, 0x04, 0xd2, 0x03, 0x1f, 0x04, 0xd2, 0x03, 0x1f, 0x06, 0xd2, 0x03,
         0x1f, 0x04, 0xd2, 0x03, 0x1f, 0x02, 0xd2, 0x03, 0x1f, 0x06, 0xd2, 0x03, 0x1f, 0x04, 0xd2, 0x03,
         0x1f, 0x04, 0xd2, 0x03, 0x1f, 0x02, 0xd2, 0x03,    };
+    return kData;
+}
+
+}  // namespace
+
+RTSC_TEST(rdp6_real_machine_tile_content_1320B) {
+    const std::vector<uint8_t>& data = RealMachineTile1320B();
     CHECK_EQ(data.size(), static_cast<size_t>(1320));
     DecodedBitmap bm;
     CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 64, 64, bm) == Status::Ok);
@@ -540,6 +729,129 @@ RTSC_TEST(rdp6_real_machine_tile_content_1320B) {
     CHECK_EQ(bm.pixels[last_row + 0], static_cast<uint8_t>(0xFF));
     CHECK_EQ(bm.pixels[last_row + 1], static_cast<uint8_t>(0xFF));
     CHECK_EQ(bm.pixels[last_row + 2], static_cast<uint8_t>(0xFF));
+}
+
+// ---- D1: orientation pinned by the real capture + an independent oracle ----
+//
+// The 1320B tile is vertically ASYMMETRIC, which is what makes it usable as a
+// direction oracle (the 513B all-black tile is not: every scanline is 0).
+// Every colour plane's FIRST RLE segment is `1f ff ...`: one raw 0xFF followed
+// by a 47+17 extended run = 64 white pixels, while the LAST stream scanline
+// decodes to 0xED / 0xEB / 0xE8. The captured desktop's white content edge is
+// at the BOTTOM of it (evidence/interaction-batch/v2/a1-window-correct.jpg is
+// the corrected, unmirrored session), so a correct decode puts that all-white
+// first scanline in image row 63 and the delta rows above it.
+
+RTSC_TEST(rdp6_real_tile_1320B_oracle_matches_production) {
+    const std::vector<uint8_t>& data = RealMachineTile1320B();
+    ReferencePlanes ref;
+    CHECK(ReferenceDecodeArgb(data, 64, 64, ref));
+
+    // The oracle consumed the whole tile: 4 planes + the format header.
+    // (ReferenceDecodeArgb only returns true on exact consumption.)
+    CHECK_EQ(ref.r.size(), static_cast<size_t>(64 * 64));
+
+    // The capture can decide orientation: first stream scanline = 0xFF,
+    // last stream scanline = 0xED -- not symmetric.
+    CHECK_EQ(ref.r[(64 - 1) * 64 + 0], static_cast<uint8_t>(0xFF));
+    CHECK_EQ(ref.r[0 * 64 + 0], static_cast<uint8_t>(0xED));
+    CHECK(ref.r[(64 - 1) * 64 + 0] != ref.r[0 * 64 + 0]);
+
+    DecodedBitmap bm;
+    CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 64, 64, bm) == Status::Ok);
+    CHECK_EQ(bm.pixels.size(), static_cast<size_t>(64 * 64 * 4));
+    // Cross-check: the production decoder must agree with the oracle on every
+    // plane of the real tile. An orientation sign error in either direction
+    // shows up as a byte mismatch somewhere in this tile.
+    size_t r_mismatch = 0;
+    size_t g_mismatch = 0;
+    size_t b_mismatch = 0;
+    size_t a_mismatch = 0;
+    for (size_t i = 0; i < static_cast<size_t>(64 * 64); ++i) {
+        if (bm.pixels[i * 4 + 0] != ref.r[i]) ++r_mismatch;
+        if (bm.pixels[i * 4 + 1] != ref.g[i]) ++g_mismatch;
+        if (bm.pixels[i * 4 + 2] != ref.b[i]) ++b_mismatch;
+        if (bm.pixels[i * 4 + 3] != ref.alpha[i]) ++a_mismatch;
+    }
+    CHECK_EQ(r_mismatch, static_cast<size_t>(0));
+    CHECK_EQ(g_mismatch, static_cast<size_t>(0));
+    CHECK_EQ(b_mismatch, static_cast<size_t>(0));
+    CHECK_EQ(a_mismatch, static_cast<size_t>(0));
+}
+
+RTSC_TEST(planar_stream_scanline_zero_is_image_bottom_row) {
+    // ③ Explicit direction on the real capture: the wire's first scanline is
+    // all-white and must land in the BOTTOM image row; the last stream
+    // scanline (0xED/0xEB/0xE8) must land in the TOP row. A top-down read
+    // would swap the two and mirror the captured desktop.
+    const std::vector<uint8_t>& data = RealMachineTile1320B();
+    DecodedBitmap bm;
+    CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 64, 64, bm) == Status::Ok);
+    for (size_t x = 0; x < 64; ++x) {
+        const size_t bottom = (static_cast<size_t>(64 - 1) * 64 + x) * 4;
+        CHECK_EQ(bm.pixels[bottom + 0], static_cast<uint8_t>(0xFF));
+        CHECK_EQ(bm.pixels[bottom + 1], static_cast<uint8_t>(0xFF));
+        CHECK_EQ(bm.pixels[bottom + 2], static_cast<uint8_t>(0xFF));
+        const size_t top = x * 4;
+        CHECK_EQ(bm.pixels[top + 0], static_cast<uint8_t>(0xED));
+        CHECK_EQ(bm.pixels[top + 1], static_cast<uint8_t>(0xEB));
+        CHECK_EQ(bm.pixels[top + 2], static_cast<uint8_t>(0xE8));
+    }
+}
+
+RTSC_TEST(planar_synthetic_asymmetric_stream_matches_reference_oracle) {
+    // A synthetic stream whose four scanlines each carry a DIFFERENT absolute
+    // value, so only the row mapping can make top and bottom differ. Each row
+    // is one raw byte + a run of 3; rows >= 1 are signed-magnitude deltas
+    // (delta byte 0x20 = +16, 0x02 = +1, 0x04 = +2).
+    //   R stream rows: 0x30 0x40 0x50 0x60
+    //   G stream rows: 0x80 0x81 0x82 0x83
+    //   B stream rows: 0x01 0x03 0x05 0x07
+    const std::vector<uint8_t> r_plane = {0x10, 0x30, 0x03, 0x10, 0x20, 0x03,
+                                          0x10, 0x20, 0x03, 0x10, 0x20, 0x03};
+    const std::vector<uint8_t> g_plane = {0x10, 0x80, 0x03, 0x10, 0x02, 0x03,
+                                          0x10, 0x02, 0x03, 0x10, 0x02, 0x03};
+    const std::vector<uint8_t> b_plane = {0x10, 0x01, 0x03, 0x10, 0x04, 0x03,
+                                          0x10, 0x04, 0x03, 0x10, 0x04, 0x03};
+    std::vector<uint8_t> data = {0x30};  // RLE, no alpha
+    data.insert(data.end(), r_plane.begin(), r_plane.end());
+    data.insert(data.end(), g_plane.begin(), g_plane.end());
+    data.insert(data.end(), b_plane.begin(), b_plane.end());
+
+    std::vector<uint8_t> ref_r, ref_g, ref_b;
+    size_t used = 0;
+    CHECK(ReferenceDecodePlane(r_plane.data(), r_plane.size(), true, 4, 4,
+                               ref_r, used));
+    CHECK_EQ(used, r_plane.size());
+    CHECK(ReferenceDecodePlane(g_plane.data(), g_plane.size(), true, 4, 4,
+                               ref_g, used));
+    CHECK_EQ(used, g_plane.size());
+    CHECK(ReferenceDecodePlane(b_plane.data(), b_plane.size(), true, 4, 4,
+                               ref_b, used));
+    CHECK_EQ(used, b_plane.size());
+
+    // The oracle says: stream row 0 (0x30) is the BOTTOM image row (y=3) and
+    // stream row 3 (0x60) is the TOP image row (y=0).
+    CHECK_EQ(ref_r[3 * 4 + 0], static_cast<uint8_t>(0x30));
+    CHECK_EQ(ref_r[0 * 4 + 0], static_cast<uint8_t>(0x60));
+
+    DecodedBitmap bm;
+    CHECK(DecodeRdp6Bitmap(data.data(), data.size(), 4, 4, bm) == Status::Ok);
+    for (size_t y = 0; y < 4; ++y) {
+        for (size_t x = 0; x < 4; ++x) {
+            const size_t i = y * 4 + x;
+            CHECK_EQ(bm.pixels[i * 4 + 0], ref_r[i]);
+            CHECK_EQ(bm.pixels[i * 4 + 1], ref_g[i]);
+            CHECK_EQ(bm.pixels[i * 4 + 2], ref_b[i]);
+        }
+    }
+    // ③ The same claim in literal form: stream scanline 0 -> image row 3.
+    CHECK_EQ(bm.pixels[(3 * 4 + 0) * 4 + 0], static_cast<uint8_t>(0x30));
+    CHECK_EQ(bm.pixels[(3 * 4 + 0) * 4 + 1], static_cast<uint8_t>(0x80));
+    CHECK_EQ(bm.pixels[(3 * 4 + 0) * 4 + 2], static_cast<uint8_t>(0x01));
+    CHECK_EQ(bm.pixels[(0 * 4 + 0) * 4 + 0], static_cast<uint8_t>(0x60));
+    CHECK_EQ(bm.pixels[(0 * 4 + 0) * 4 + 1], static_cast<uint8_t>(0x83));
+    CHECK_EQ(bm.pixels[(0 * 4 + 0) * 4 + 2], static_cast<uint8_t>(0x07));
 }
 
 RTSC_TEST(planar_decodes_bottom_up_scanline_order) {

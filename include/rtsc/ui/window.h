@@ -140,6 +140,43 @@ struct InputEvent {
     uint8_t command = 0;
 };
 
+#if defined(_WIN32)
+// ---- Win32 key-message translation -------------------------------------
+//
+// The Win32 backend turns WM_KEYDOWN / WM_KEYUP / WM_SYSKEYDOWN / WM_SYSKEYUP
+// into set-1 scancode key events ([MS-RDPBCGR] 2.2.8.1.2.2). The translation is
+// a pure function of (message, virtual key, lParam) so it is testable without an
+// HWND or an interactive desktop. The four message ids are mirrored as plain
+// constants so this header stays free of windows.h.
+//
+// `vk_to_scancode` is the layout mapper (MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+// nullptr selects it. Tests inject a fake so the mapper's behaviour and its
+// zero result are exercised deterministically.
+struct KeyTranslation {
+    // False when the message must be DROPPED instead of forwarded: the AltGr
+    // pseudo-Ctrl, and any key whose scancode cannot be resolved (a scancode of
+    // 0 on the wire is not a key and would type garbage remotely).
+    bool forward = false;
+    uint8_t scancode = 0;
+    bool release = false;
+    bool extended = false;
+};
+
+inline constexpr uint32_t kWin32WmKeyDown = 0x0100;
+inline constexpr uint32_t kWin32WmKeyUp = 0x0101;
+inline constexpr uint32_t kWin32WmSysKeyDown = 0x0104;
+inline constexpr uint32_t kWin32WmSysKeyUp = 0x0105;
+
+// AltGr reaches Windows as a pseudo Ctrl (VK_CONTROL / VK_LCONTROL with the
+// extended bit set) plus a right Alt (VK_RMENU, or VK_MENU with the extended
+// bit, delivered as WM_SYSKEYDOWN). The pseudo Ctrl is dropped so the remote
+// does not see Ctrl+AltGr chords; the right Alt is forwarded as set-1 scancode
+// 0x38 with the extended flag. A real right Ctrl (VK_RCONTROL) is unaffected.
+KeyTranslation TranslateWin32KeyMessage(
+    uint32_t msg, uint32_t vk, uint32_t lparam,
+    uint32_t (*vk_to_scancode)(uint32_t vk) = nullptr);
+#endif  // defined(_WIN32)
+
 class Window {
  public:
     virtual ~Window() = default;
