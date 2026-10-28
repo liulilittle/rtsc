@@ -10459,3 +10459,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[全量验证（父代理串行）]** 清空 `rtsc*` 后：`cmake --build build --config Release` → **FULL_BUILD=0（零 error 零 warning）**；`ctest -C Release` → **100% tests passed, 51/51**。至此 A1 缩放批次可在干净树上复现全绿。
 - **[本日已入库 4 笔]** `3ec4d66` 服务器+端口、`c08df4f` 网关内存上限（2745MB→9.9MB）、`5b1e00a` 缩放重采样（二进制对齐）、`26bf98c` 协调日志。
 - **[下一步]** 转入 **A2 输入/快捷键对齐**：证据文档 `docs/spec/input-evidence.md` 已含 E1-E4（`FUN_1801185e0` 用 `MapVirtualKeyW(vk,MAPVK_VK_TO_VSC)` + `FUN_1800e8dfc(inst,0x100/0x101,vk,sc)` 合成键消息；右 Win 置 `|0x8100`；焦点变化时重放 Shift/Win 归位并清零 `+0x414/+0x418`；本地 `keybd_event` 恒带 `dwExtraInfo=0x4321DCBA`；`FUN_180118940` 用 `0x414/0x418` 跟踪 LWIN/RWIN）。
+
+## 第621轮：A1 完成（乙二次盖章）→ 转入 A2 输入/快捷键对齐，双审已派
+
+- **[A1 状态]** 审计乙二次盖章，绑定 hash `5b1e00a`（resample.cpp `f52ab0c8…`、resample.h `b868d414…`、view.cpp `dbd7481d…`、view.h `9206f984…`、test_view.cpp `b62ab855…`）；依据 32/32 独立断言、边界 5 类、mutC 变异转红、46/6529/0、ctest 4/4、性能全在 E15/E17 内。
+- **[全量门禁]** 父代理串行：`cmake --build build --config Release` **零 error 零 warning**；`ctest -C Release` **51/51 passed**。
+- **[A2 派发]** 组A=输入/快捷键对齐，甲 `ses_e7f015642ffegVUtm2xZmQuwTE`、乙 `ses_e7f00d819ffe7Zcg98uyLMsmuE`（互相独立，已双向告知 ID）。审计重点：①`TranslateWin32KeyMessage` 全分支（set-1/extended/AltGr/WM_SYSKEY*/Alt+F4）；②FastPath 编码与 [MS-RDPBCGR] 2.2.8.1.2.2 一致性；③Win 键转发（mstsc 有 `keybd_event(VK_LWIN, EXTENDED)` + `Win+L` 合成）；④**修饰键归位**（mstsc 焦点变化时重放 Shift/LWIN/RWIN 并清零 `+0x414/+0x418`）；⑤输入坐标逆映射（与 A1 的 `ViewTransform` 联动）；⑥Ctrl+Alt+End / Alt+Tab 可达性。
+- **[父代理初步观察（待审计确认）]** 全仓 `VK_LWIN|VK_RWIN|0x5B|0x5C|resync|release.*modifier` 零命中 → 疑似完全没有 Win 键转发与修饰键归位；`input.cpp:78-85` 已有 Ctrl+Alt+Del 合成序列可作参照。
