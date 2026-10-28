@@ -87,3 +87,35 @@ if (*(int *)(param_1 + 0x4e0) != 0) {
 
 - 任何「mstsc 如何处理 X 快捷键」的实现，必须引用本文 E1-E4 的具体地址与语句；无证据者不得写入。
 - 若决定对齐 Win 键/修饰键归位行为，先补**确定性单测**（`TranslateWin32KeyMessage` 纯函数层面），期望值来自本文观察，不得用生产输出反推。
+### E5 mstsc 的键盘消息分派与发送（REA 反编译 `mstscax.dll!FUN_1800e8f08`，20,577 字节）
+
+**观察（伪代码原文要点）**：
+
+```c
+// 键盘分支：normal + sys 两种消息都处理
+else if ((uVar10 == 0x100) || (uVar10 == 0x101) || (uVar10 == 0x104) || (uVar10 == 0x105)) {
+    ...
+    // 0x101(W_KEYUP) 或 0x105(WM_SYSKEYUP)：掩码 & 0xfffffffb 后比较
+    if ((local_a0 - 0x101 & 0xfffffffb) == 0) { /* "up" */ }
+    if (local_a8 == 0xE7) {            // VK_PACKET：Unicode 输入分支
+        uVar9 = uVar12 >> 0x10 & 0xffff;
+        local_60._0_6_ = CONCAT24(uVar15, 2);
+    }
+    ...
+}
+// 统一发送点（所有键盘消息都走到这里，**没有 0x5B/0x5C 排除分支**）
+iVar5 = (**(code **)(*plVar11 + 0x38))(plVar11, &local_60, -(*(int *)(param_1 + 0x424) != 0) & 2);
+if (-1 < iVar5) {                       // 发送成功后才记录状态
+    if (pwVar8 == 0x5B) *(uint *)(param_1 + 0x41C) = (uint)(uVar10 == 0x100);   // LWIN 按下态
+    else if (pwVar8 == 0x5C) *(uint *)(param_1 + 0x420) = (uint)(uVar10 == 0x100); // RWIN
+}
+```
+
+**结论（可引用）**：
+1. mstsc 处理 `WM_KEYDOWN(0x100)`、`WM_KEYUP(0x101)`、`WM_SYSKEYDOWN(0x104)`、`WM_SYSKEYUP(0x105)` —— 正常键与系统键走同一分支。
+2. **Win 键（VK_LWIN=0x5B / VK_RWIN=0x5C）会被发送到远端**：发送点无排除分支；`+0x41C/+0x420` 的赋值发生在**发送成功之后**，是"记录已发给远端的按下态"，供 `FUN_1801185e0` 在焦点变化时补发 up。
+3. `VK_PACKET(0xE7)` 有独立分支 → mstsc 支持 Unicode 键注入路径。
+4. extended 位取自 lParam bit24（`uVar15 = lParam>>16`，bit8 = lParam bit24）。
+5. 发送调用的第三参数 `-(*(int*)(param_1+0x424) != 0) & 2`：某字段非零时传 2，否则 0（含义**未验证**，疑为 fastpath/抑制本地标志）。
+
+**仍未验证**：0x424 字段语义；`0x4321DCBA` 的含义；焦点/失焦触发归位的**确切时机**（`FUN_1801185e0` 的 caller 未定位）；三档 Win 策略的默认与归属。
