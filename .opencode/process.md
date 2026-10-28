@@ -10539,3 +10539,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[模型]** 用户确认 `unorouter-ai/deepseek-v4.1-flash` 恢复可用；minimax 甲（`ses_e7e865b02ffeQWqZICCt6vYVG7`）已 abort，改派 unorouter。
 - **[在途]** 甲 `ses_e7e842838ffeIGRQcbegi1aB5n`（逐条断言 + 变异反证）／乙 `ses_e7e8419cdffeeERUqrk1CUc63H`（需求反推 + 分支完备 + 状态机收敛），审 `959aaa7` + `2368b88`；组内 ID 已双向补发。
 - **[待办]** 磋商定案后：若驳回则回①修复→复验；通过则由甲乙一致盖章，再推进 A4-A7。
+
+## 第631轮：甲回复核复审 → 双驳回 → 派执行修复
+
+- **甲乙双审结论**：`959aaa7` + `2368b88` **双驳回**，磋商收敛无未决点（`ses_e7e842838ffeIGRQcbegi1aB5n` 甲、`ses_e7e8419cdffeeERUqrk1CUc63H` 乙，均 taotoken/deepseek-flash）。
+- **P0×2**：①SAS/Pause 断链（`main.cpp` kUiCommand 无消费→SendCtrlAltDel/SendPauseKey 接通）；②X 键字节（PTRFLAGS 0x1000/0x2000 ⇒ 规范 PTRXFLAGS 0x0001/0x0002，X1 down=0x8001、up=0x0001；X2=0x8002/0x0002；server.cpp kMouseX 同步）。
+- **P1×4**：NumLock/numpad 扩展位回归（真实消息只信 bit24，删 VK_NUMLOCK，禁 MAPVK）；Capture 生命周期（WM_CAPTURECHANGED/失焦释放+位图，防计数>0 粘滞）+ 负坐标 GET_X/Y_LPARAM clamp；HWHEEL 能力门（TS_INPUT_FLAG_MOUSE_HWHEEL 0x0100｜解析服务端 InputCapabilitySet）。
+- **P2**：滚轮量化累积/delta0 不事件；Ctrl+wheel 极限 consume；Pause 跨失焦复位；SAS End 泄漏补 up；P3 wp→lp 同批。
+- **执行**：`ses_e7dedad5affeah0vJuuPnNXnxg`（taotoken）已派发，定案 TDD + 变异探针 + 全量 build；甲乙已被通知复核。
+- 全程 C0 门：执行在途，主侧未改代码；记忆文件本轮只增台账，无裁剪。
