@@ -10402,3 +10402,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[GW 红证复测]** 修复前副本重跑：case1（CL=4294967295）`peakPriv=2744.5MB killed`、case2（头 85,109B）`peakPriv=1989.5MB killed` → 无界性稳定成立。修复后 41 条用例单跑全绿，`max peakWS=9.9MB / max peakPriv=5.4MB`；ctest gateway 1/1（childPeakWS=11.0MB）。
 - **[调度失误（已入档）]** 同时派 EXEC-PORT 与 EXEC-C 改同一 `tests/test_server.cpp` → 冲突（3 处 C2039 + 1 个非法 UTF-8 字节）；EXEC-C 做最小外科修复并上报。教训：**并行隔离单位是文件，不是功能**；编辑后必须校验 UTF-8。
 - **[待处理]** 主树 `tests/test_main.h`/`tests/test_gateway.cpp` 的改动来源是其他代理（非 GW-MEM），GW-MEM 的 4 处根因修复仍只在 `F:\rtsc-wt\gw` 工作树，**尚未合并**；合并需选择合入点避免与主树在跑代理冲突（当前有代理在反复创建 `rtsc_server_tests` 进程）。
+
+## 第615轮：EXEC-A1 交付（三态分派 + resample 内核 + 五套变异反证）；派第三方审计丙独立复验
+
+- **[交付内容·父代理亲核]** `src/client/resample.cpp`(16.6KB)/`resample.h`(1.7KB) 新增，`resample.h` 为 rtsc_client PRIVATE include（公共 API 仍只有 `ScaleSurface`/`ChooseResample`）；`view.cpp:87-98` `ChooseResample` 三态（**尺寸相等→kExact**（E5，非零偏移）；**任一轴缩小→kArea**；否则 kNearest）；`ScaleSurface:130-142` 三态分派；**双线性已彻底移除**（`bilinear` 计数 0、`what mstsc does` 计数 0）。
+- **[关键技术点]** ①kNearest：整数倍（kx==ky，2..64）走 k×k 专用内层（先展开一行再 memcpy k 次）；非整数走 E8 相位 `((2d+1)S-1)/(2D)` 且索引一次性预计算。②kArea：覆盖面积加权、整数权重（单位和 1/dn 源像素、权重和恒等于 sn）、两趟按目标行融合（**不写 33MB 中间缓冲**）、四通道同权、**一次** round-half-up；整数比缩小走 kx×ky 求和快路径。③kExact：逐行 memcpy，**读写都带 vt.x/vt.y 偏移**（D7 修复）。
+- **[判别性自测]** `probe_prodmap.exe` 链接真实 `rtsc_client.lib`：3→5 / 8→11 / 8→13 / 1920→2630 / 1920→2560 / 200→333 / 127→191 等 11 组 **E8 失配全 0**；若用 floor，1920→2630 错 **950 列**、1920→2560 错 **640 列** → 证明落地的是 C 式。
+- **[实现中发现并修掉 3 个真实缺陷]** ①水平趟舍入常数写错（`>>8` 配 `2^15` 应为 `2^7`）→ 0.8x ramp 得 167/243（应 166/242）；②行和缓存用 `static thread_local` 跨帧污染 → 条纹得 3、alpha 得 254，改为函数内局部缓存（**像素派生数据不得跨调用存活**）；③0.5x/4K 首版 25.76ms 超预算 → 整数比快路径 + 去中间缓冲后 9.43ms。
+- **[性能]** 1:1 0.13ms（预算 1.0）、letterbox 0.13ms（0.6，**原 1.92ms**）、2x 2.51ms（8）、0.8x 13.06ms（22）、0.5x 4K 9.43ms（25）、**1.33x 0.94ms（10，原 46.9-66.8）**、1.125x 0.66ms。
+- **[变异反证 5/5 全红]** A 相位(→floor) 1 failing/10 checks；B 截断舍入 3 failing/241；C alpha 左上角 1 failing；D 抽点 8 failing/722；E 只放宽不改偏移 4 failing/389。恢复后 43 tests/6502 checks/0 failing。
+- **[待裁决 2 点]** ①`scale_x/scale_y` 仅赋值未被 `ChooseResample` 读取（执行 AI 按 E5 用尺寸相等判定，理由：浮点 1.0 会漏掉 lround 后的差异）——父代理认同；②0.8x 13.06ms 未达早期 <12ms 但达最终工单 ≤22ms——父代理接受，不再追 SIMD。
+- **[派第三方审计丙]** `ses_e88...`（新建，与甲/乙无接触），八项 V1-V8 独立复验（相位落地/1:1 不越界/降采样手算/alpha/变异守卫/性能/测试质量/回归），要求"契约也可被推翻，但必须有数据"。
