@@ -10466,3 +10466,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[全量门禁]** 父代理串行：`cmake --build build --config Release` **零 error 零 warning**；`ctest -C Release` **51/51 passed**。
 - **[A2 派发]** 组A=输入/快捷键对齐，甲 `ses_e7f015642ffegVUtm2xZmQuwTE`、乙 `ses_e7f00d819ffe7Zcg98uyLMsmuE`（互相独立，已双向告知 ID）。审计重点：①`TranslateWin32KeyMessage` 全分支（set-1/extended/AltGr/WM_SYSKEY*/Alt+F4）；②FastPath 编码与 [MS-RDPBCGR] 2.2.8.1.2.2 一致性；③Win 键转发（mstsc 有 `keybd_event(VK_LWIN, EXTENDED)` + `Win+L` 合成）；④**修饰键归位**（mstsc 焦点变化时重放 Shift/LWIN/RWIN 并清零 `+0x414/+0x418`）；⑤输入坐标逆映射（与 A1 的 `ViewTransform` 联动）；⑥Ctrl+Alt+End / Alt+Tab 可达性。
 - **[父代理初步观察（待审计确认）]** 全仓 `VK_LWIN|VK_RWIN|0x5B|0x5C|resync|release.*modifier` 零命中 → 疑似完全没有 Win 键转发与修饰键归位；`input.cpp:78-85` 已有 Ctrl+Alt+Del 合成序列可作参照。
+
+## 第622轮：A1 收口（双审已解散）+ A2 输入双审在途
+
+- **[A1 最终状态]** 乙三次发送同一盖章文本（内容一致、hash 未变），已判定闭环；对应的两个审计会话与执行会话已 delete 解散（按第 9 条：任务完成后清理）。
+- **[当前树]** `git status` 空、无 `rtsc*` 残留进程、Free 27.8GB。全量构建零 error 零 warning、ctest **51/51**。
+- **[A2 在途]** 甲 `ses_e7f015642ffegVUtm2xZmQuwTE` / 乙 `ses_e7f00d819ffe7Zcg98uyLMsmuE`（均 busy），已双向通告知会话 ID；审计重点为 `TranslateWin32KeyMessage` 全分支、FastPath 编码与 [MS-RDPBCGR] 2.2.8.1.2.2 一致性、Win 键转发、修饰键归位、坐标逆映射、Ctrl+Alt+End/Alt+Tab。
+- **[待确认事实]** 全仓 `VK_LWIN|VK_RWIN|0x5B|0x5C|resync|release.*modifier` 零命中（父代理亲检）→ 疑似完全没有 Win 键转发与修饰键归位；`input.cpp:78-85` 已有 Ctrl+Alt+Del 合成序列可参照。
