@@ -10575,3 +10575,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **批次状态**：A2 输入（SAS/Pause/X键/HWHEEL/capture/NumLock/坐标/clamp）**闭环完成**。
 - **历史实现批次待审**：`5b1e00a` 缩放、`c08df4f` 网关内存、`3ec4d66` 服务器生命周期此前为父代理单人（模型阻塞期），未走双审——与 FB 一致的补审另行排期。
 - **下一步**：排期项（P3 观察 1-7）或 A4-A7 新功能；真机验证 A2 输入批次。
+
+## 第636轮：A4 cliprdr 取证启动（REA 打开 mstscax.dll d73c76d6…）
+
+- 复验 `G:\sre` 无目标 → 用 `C:\Windows\System32\mstscax.dll`（9,166,848B，sha256 前缀 d73c76d65721043c 与立项一致）。
+- **取证锚点**：通道字符串 "CLIPRDR"@0x1807f8150、"RdpClipRdrWindowClass"@0x1807f82d0、dispatcher 工厂串@0x1807f8600；构造器 FUN_180658114（类型标记 0xdbcaabcd）。
+- **关键发现**：CClientClipRdrPduDispatcher 三虚表（0x1806991a8/1c8/0x18066f120）已解码；`FUN_180658eb0`=Init 按 **event source ID 0x9b/0x9c…** 创建 FORMAT_LIST/RESPONSE 等事件源；`FUN_180659680`=析构逐源移除。**mstsc cliprdr 是事件驱动异步发送架构**，与仓内同步 OnPdu 直发不同——列为差异点待对照决策。
+- 证据已入 `docs/spec/cliprdr-evidence.md`（commit 4c49c41）。
+- **下一步**：分派表取证（FORMAT_DATA_REQUEST/RESPONSE/锁/TempDir）→ Capability set 固定值 → 与 cliprdr_client.cpp 对照出偏差清单。
+- 本互审计流程：A4 为主代理取证（REA 仅主侧）；取证书面后如需改代码再走 W11（审计成对）。
