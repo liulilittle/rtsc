@@ -10649,3 +10649,7 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 下一步：A6 对齐实现（先红测试：未启用 smart sizing + resize → 期望 1:1）需 W11 定案（涉 UI 行为），下轮开。
 - 环境：il2cpp 仍占 CPU（5 进程 97+%），view 独占复跑待争用消退。
 - 在途：无子代理（全部 idle）。已归档 4 证据文档（scaling/input/bitmap/cliprdr/rdpsnd/smart-sizing）。
+## 第647轮：A6 SmartSizing 双审定案派发
+- 甲 `ses_e7c538e60ffeowybLvadUBYoH4`（语义对照/测试设计）、乙 `ses_e7c53662effeV20xc90AEk5qbL`（消费方/状态机）已开跑；成员 ID 双向补发。
+- 输入：反汇编证据（FUN_18003444c 门控缩放 vs 1:1）→ 仓内 view 现状（ComputeViewTransform fit/zoom/默认 1.0）。核心判别=窗口 resize 后仓内是否错误自动缩放。
+- 下一步：双审定案（无需改动|需改动）→ 执行/测试 → 双审盖章。
