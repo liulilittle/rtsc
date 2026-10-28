@@ -51,6 +51,30 @@ void AppendCrLf(ByteWriter& w) {
     w.u8('\n');
 }
 
+// Validates the Content-Length claims of a message against the entity ceiling.
+// The check runs while the digits are scanned, so an announced length is
+// rejected before anything is sized from it: `length` never holds a value that
+// already failed the ceiling, so the multiply cannot overflow.
+Status CheckContentLength(const std::vector<HttpHeader>& headers,
+                          const HttpLimits& limits) {
+    bool has_length = false;
+    size_t length = 0;
+    for (const HttpHeader& header : headers) {
+        if (ToLower(header.name) != "content-length") continue;
+        if (header.value.empty()) return Status::InvalidField;
+        size_t value = 0;
+        for (char c : header.value) {
+            if (c < '0' || c > '9') return Status::InvalidField;
+            value = value * 10 + static_cast<size_t>(c - '0');
+            if (value > limits.max_entity_bytes) return Status::InvalidLength;
+        }
+        if (has_length && value != length) return Status::InvalidField;
+        length = value;
+        has_length = true;
+    }
+    return Status::Ok;
+}
+
 }  // namespace
 
 const char* to_string(TransportType t) {
@@ -100,38 +124,69 @@ Status HttpRequestLine::parse(const uint8_t* data, size_t size,
 
 Status HttpMessage::parse(const uint8_t* data, size_t size, HttpMessage& out,
                           size_t& consumed) {
+    return HttpMessage::parse(data, size, out, consumed, HttpLimits{});
+}
+
+Status HttpMessage::parse(const uint8_t* data, size_t size, HttpMessage& out,
+                          size_t& consumed, const HttpLimits& limits) {
     consumed = 0;
-    // The response head ends at the first empty line (CRLF CRLF).
-    size_t head_end = std::string::npos;
+    // The response head ends at the first empty line (CRLF CRLF). Every step is
+    // bounded before it can grow anything: the status line, each header line and
+    // the completed head are all checked against the configured ceilings, and a
+    // violation is a hard failure rather than NeedMoreData (waiting for more
+    // bytes is what would keep growing the caller's buffer).
+    const size_t status_eol = FindCrLf(data, size, 0);
+    if (status_eol == std::string::npos) {
+        return size > limits.max_head_bytes ? Status::InvalidLength
+                                            : Status::NeedMoreData;
+    }
+    if (status_eol + 2 > limits.max_head_bytes) return Status::InvalidLength;
+
     size_t status_consumed = 0;
     HttpRequestLine status;
     const Status st = HttpRequestLine::parse(data, size, status, status_consumed);
     if (st != Status::Ok) return st;
     if (status.method.rfind("HTTP/", 0) != 0) return Status::InvalidType;
 
-    // The status line carries the code and the reason phrase.
-    out.status_code = std::atoi(status.target.c_str());
-    out.reason = Trim(status.version);
+    // The status line carries the code and the reason phrase. Build into a local
+    // message so a failed parse never leaves stale headers behind.
+    HttpMessage message;
+    message.status_code = std::atoi(status.target.c_str());
+    message.reason = Trim(status.version);
 
     size_t offset = status_consumed;
+    size_t count = 0;
     for (;;) {
         const size_t eol = FindCrLf(data, size, offset);
-        if (eol == std::string::npos) return Status::NeedMoreData;
-        if (eol == offset) {
-            head_end = eol;
-            break;
+        if (eol == std::string::npos) {
+            return size > limits.max_head_bytes ? Status::InvalidLength
+                                                : Status::NeedMoreData;
         }
+        if (eol == offset) {
+            const size_t head_end = offset + 2;
+            if (head_end > limits.max_head_bytes) return Status::InvalidLength;
+            const Status entity = CheckContentLength(message.headers, limits);
+            if (entity != Status::Ok) return entity;
+            out = std::move(message);
+            consumed = head_end;
+            return Status::Ok;
+        }
+        // A head with more lines than the ceiling is rejected on the count alone,
+        // even when it fits the byte ceiling: each line costs a std::string plus
+        // a vector slot.
+        if (count >= limits.max_header_count) return Status::InvalidLength;
         const std::string line = BytesToString(data + offset, eol - offset);
         const size_t colon = line.find(':');
         if (colon == std::string::npos) return Status::InvalidField;
         HttpHeader h;
         h.name = Trim(line.substr(0, colon));
         h.value = Trim(line.substr(colon + 1));
-        out.headers.push_back(std::move(h));
+        if (h.name.empty()) return Status::InvalidField;
+        message.headers.push_back(std::move(h));
+        ++count;
         offset = eol + 2;
+        if (offset > limits.max_head_bytes) return Status::InvalidLength;
     }
-    consumed = head_end + 2;
-    return Status::Ok;
 }
 
 const HttpHeader* HttpMessage::find(const std::string& name) const {

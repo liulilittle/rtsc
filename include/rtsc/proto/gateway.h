@@ -77,6 +77,27 @@ struct HttpHeader {
     std::string value;
 };
 
+// Hard ceilings for the HTTP message parser. They are enforced before anything
+// is allocated, so a peer that announces a huge length cannot make the client
+// reserve in proportion to it.
+//
+// The head (status line plus every header line) is limited to 64 KiB, the
+// Content-Length entity to 128 KiB, and the header count to 512 (each line costs
+// a std::string plus a vector slot, so a flood of one-byte headers has to be
+// rejected on the count alone).
+inline constexpr size_t kMaxHttpHeaderBytes = 64 * 1024;
+inline constexpr size_t kMaxHttpEntityBytes = 128 * 1024;
+inline constexpr size_t kMaxHttpHeaderCount = 512;
+
+// Explicit ceilings for one parse. The defaults are the memory-safety bounds;
+// a caller that legitimately needs a larger message can raise them per parse
+// instead of having the limit hard-coded into the wire layer.
+struct HttpLimits {
+    size_t max_head_bytes = kMaxHttpHeaderBytes;
+    size_t max_entity_bytes = kMaxHttpEntityBytes;
+    size_t max_header_count = kMaxHttpHeaderCount;
+};
+
 // An HTTP/1.1 response: status line + headers (the body is out of scope; the
 // tunnel switches to the RDP byte stream after the blank line).
 struct HttpMessage {
@@ -88,6 +109,11 @@ struct HttpMessage {
     // terminating blank line. `consumed` is the number of header bytes.
     static Status parse(const uint8_t* data, size_t size, HttpMessage& out,
                         size_t& consumed);
+    // Same, with caller-supplied ceilings. A limit violation is a hard failure
+    // (InvalidLength), never NeedMoreData: waiting for more bytes is exactly the
+    // behaviour that lets a peer grow the buffer without bound.
+    static Status parse(const uint8_t* data, size_t size, HttpMessage& out,
+                        size_t& consumed, const HttpLimits& limits);
 
     const HttpHeader* find(const std::string& name) const;
     std::string header_or(const std::string& name,

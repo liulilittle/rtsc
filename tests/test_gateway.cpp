@@ -1,5 +1,6 @@
 // RD Gateway ([MS-TSGU]) and RDP-UDP ([MS-RDPEUDP]) tests.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -90,12 +91,15 @@ std::vector<uint8_t> HttpResponse(int code, const char* reason) {
 // gateway relays the RDP stream.
 class MockGateway {
  public:
+    // `gateway_port` may be 0: the kernel then picks a free port and bound_port()
+    // reports which one. `server_port` is the real server the gateway relays to.
     MockGateway(uint16_t gateway_port, uint16_t server_port)
         : gateway_port_(gateway_port), server_port_(server_port) {}
 
     bool Start(std::string& error) {
         listener_ = rtsc::net::ListenTcp("127.0.0.1", gateway_port_, error);
         if (!listener_) return false;
+        gateway_port_ = listener_->local_port();
         thread_ = std::thread([this] { Run(); });
         return true;
     }
@@ -105,6 +109,7 @@ class MockGateway {
         if (thread_.joinable()) thread_.join();
     }
 
+    uint16_t bound_port() const { return gateway_port_; }
     unsigned connect_requests() const { return connect_requests_; }
 
  private:
@@ -598,11 +603,8 @@ RTSC_TEST(udp_transport_reliable_retransmits_a_dropped_datagram) {
 }
 
 RTSC_TEST(gateway_tunnel_end_to_end_against_the_in_tree_server) {
-    const uint16_t server_port = 3401;
-    const uint16_t gateway_port = 3402;
-
     rtsc::server::ServerConfig scfg;
-    scfg.port = server_port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     auto source = rtsc::server::MakeTestPatternSource();
@@ -613,7 +615,9 @@ RTSC_TEST(gateway_tunnel_end_to_end_against_the_in_tree_server) {
     CHECK(server.Start(error));
     std::thread server_thread([&server]() { server.Run(); });
 
-    MockGateway gateway(gateway_port, server_port);
+    // Both listeners bind an ephemeral port, so two concurrent runs of this
+    // suite (or any other process on the machine) can no longer collide.
+    MockGateway gateway(/*gateway_port=*/0, server.bound_port());
     CHECK(gateway.Start(error));
 
     ConnectMachine::Config mcfg;
@@ -633,12 +637,14 @@ RTSC_TEST(gateway_tunnel_end_to_end_against_the_in_tree_server) {
     rtsc::client::Client client(std::move(driver), 64, 48);
 
     std::string cerr;
-    auto tcp = rtsc::net::ConnectTcp("127.0.0.1", gateway_port, cerr);
+    auto tcp = rtsc::net::ConnectTcp("127.0.0.1", gateway.bound_port(), cerr);
     CHECK(tcp != nullptr);
     if (tcp != nullptr) {
         GatewayTunnel::Config tcfg;
         tcfg.target = "127.0.0.1:3389";
-        tcfg.gateway_host = "127.0.0.1:3402";
+        const std::string gateway_host =
+            "127.0.0.1:" + std::to_string(gateway.bound_port());
+        tcfg.gateway_host = gateway_host;
         tcfg.user_agent = "rtsc";
         tcfg.connect_timeout_ms = 5000;
         GatewayTunnel tunnel(*tcp, tcfg);
@@ -668,6 +674,352 @@ RTSC_TEST(gateway_tunnel_end_to_end_against_the_in_tree_server) {
     gateway.Stop();
     server.Stop();
     server_thread.join();
+}
+
+// ---------------------------------------------------------------------------
+// Memory ceilings. Each case feeds a bounded but hostile input and requires the
+// parser/tunnel to fail fast instead of growing in proportion to what the peer
+// claims. They are deliberately small so a regression fails here, fast and under
+// a memory watchdog, instead of taking the machine down again.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<uint8_t> Bytes(const std::string& text) {
+    return std::vector<uint8_t>(text.begin(), text.end());
+}
+
+// Serves `script` in `chunk`-byte slices, then goes silent: Read() keeps
+// returning kReadTimeout (never EOF), optionally sleeping so the caller sees a
+// real blocking socket's cadence. served() counts the bytes actually handed out,
+// which is how a test proves the tunnel stopped reading instead of accumulating.
+class ScriptedStallTransport : public Transport {
+ public:
+    ScriptedStallTransport(std::vector<uint8_t> script, size_t chunk,
+                           int stall_ms = 0)
+        : script_(std::move(script)), chunk_(chunk), stall_ms_(stall_ms) {}
+
+    int Read(uint8_t* buf, size_t size) override {
+        ++reads_;
+        if (offset_ < script_.size()) {
+            const size_t n = (std::min)((std::min)(chunk_, size),
+                                        script_.size() - offset_);
+            std::memcpy(buf, script_.data() + offset_, n);
+            offset_ += n;
+            served_ += n;
+            return static_cast<int>(n);
+        }
+        if (stall_ms_ > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms_));
+        }
+        return kReadTimeout;
+    }
+    bool Write(const uint8_t*, size_t) override { return true; }
+    void Close() override {}
+
+    size_t served() const { return served_; }
+    unsigned reads() const { return reads_; }
+
+ private:
+    std::vector<uint8_t> script_;
+    size_t chunk_;
+    int stall_ms_;
+    size_t offset_ = 0;
+    size_t served_ = 0;
+    unsigned reads_ = 0;
+};
+
+}  // namespace
+
+RTSC_TEST(http_message_rejects_a_huge_content_length) {
+    // 4294967295 is the classic 4 GiB announcement. It must be rejected from the
+    // header alone; nothing may be sized from it.
+    const std::vector<uint8_t> wire =
+        Bytes("HTTP/1.1 200 OK\r\nContent-Length: 4294967295\r\n\r\n");
+    HttpMessage out;
+    size_t consumed = 0;
+    const Status st = HttpMessage::parse(wire.data(), wire.size(), out, consumed);
+    std::printf("  huge content-length: status=%s consumed=%zu\n", to_string(st),
+                consumed);
+    CHECK(st == Status::InvalidLength);
+    CHECK_EQ(consumed, static_cast<size_t>(0));
+    CHECK(out.headers.size() <= 1);
+}
+
+RTSC_TEST(http_message_rejects_an_oversized_header_block) {
+    // A head past the 64 KiB ceiling is a hard failure, never NeedMoreData:
+    // waiting for more bytes is exactly what would keep growing the buffer.
+    std::vector<uint8_t> wire = Bytes("HTTP/1.1 200 OK\r\n");
+    for (size_t i = 0; i < 400; ++i) {
+        const std::vector<uint8_t> line =
+            Bytes("X-Pad-" + std::to_string(i) + ": " + std::string(200, 'a') +
+                  "\r\n");
+        wire.insert(wire.end(), line.begin(), line.end());
+    }
+    const std::vector<uint8_t> blank = Bytes("\r\n");
+    wire.insert(wire.end(), blank.begin(), blank.end());
+    std::printf("  oversized head: %zu bytes\n", wire.size());
+    CHECK(wire.size() > 64u * 1024u);
+
+    HttpMessage out;
+    size_t consumed = 0;
+    const Status st = HttpMessage::parse(wire.data(), wire.size(), out, consumed);
+    std::printf("  oversized head: status=%s\n", to_string(st));
+    CHECK(st == Status::InvalidLength);
+}
+
+RTSC_TEST(http_message_rejects_too_many_headers) {
+    // Byte size alone is not enough: 600 tiny headers fit well inside 64 KiB but
+    // each costs a std::string plus a vector slot, so the count ceiling has to
+    // reject them on its own.
+    std::vector<uint8_t> wire = Bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n");
+    const std::vector<uint8_t> tiny = Bytes("a: b\r\n");
+    for (size_t i = 0; i < 600; ++i) {
+        wire.insert(wire.end(), tiny.begin(), tiny.end());
+    }
+    const std::vector<uint8_t> blank = Bytes("\r\n");
+    wire.insert(wire.end(), blank.begin(), blank.end());
+    CHECK(wire.size() < 64u * 1024u);
+
+    HttpMessage out;
+    size_t consumed = 0;
+    const Status st = HttpMessage::parse(wire.data(), wire.size(), out, consumed);
+    std::printf("  header count: bytes=%zu status=%s headers=%zu\n", wire.size(),
+                to_string(st), out.headers.size());
+    CHECK(st == Status::InvalidLength);
+    CHECK(out.headers.size() <= 512);
+}
+
+RTSC_TEST(gateway_tunnel_stops_buffering_at_the_head_ceiling) {
+    // 256 slices of 4 KiB (1 MiB) behind a head that never terminates, then
+    // silence with the connection still open. The client must stop at its own
+    // head ceiling instead of accumulating every slice or waiting for a blank
+    // line that never arrives.
+    std::vector<uint8_t> script = Bytes("HTTP/1.1 200 OK\r\nX-Pad: ");
+    script.resize(script.size() + 256 * 4096, 'a');
+    ScriptedStallTransport inner(std::move(script), 4096);
+
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    config.connect_timeout_ms = 5000;
+    config.session_timeout_ms = 5000;
+
+    const auto start = std::chrono::steady_clock::now();
+    GatewayTunnel tunnel(inner, config);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    std::printf("  head ceiling: served=%zu reads=%u elapsed_ms=%lld error=%s\n",
+                inner.served(), inner.reads(),
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                        .count()),
+                tunnel.error().c_str());
+
+    CHECK(!tunnel.open());
+    // The 64 KiB head ceiling plus at most one 4 KiB read of overshoot: the
+    // transport offered 1 MiB, and the client stopped near 64 KiB.
+    CHECK(inner.served() <= 64u * 1024u + 4096u);
+    CHECK(tunnel.error().find("size limit") != std::string::npos);
+    // Both deadlines were 5 s, so this proves the ceiling and not a timeout ended
+    // it.
+    CHECK(elapsed < std::chrono::milliseconds(500));
+}
+
+RTSC_TEST(gateway_tunnel_gives_up_when_the_peer_stops_making_progress) {
+    // The peer stops sending mid-head while the connection stays open. The
+    // overall CONNECT deadline is 3 s and the inactivity deadline is 300 ms, so
+    // only the inactivity deadline can end this quickly -- and it must report
+    // itself as such, not as a size or budget failure.
+    std::vector<uint8_t> script = Bytes("HTTP/1.1 200 OK\r\nX-Partial: ");
+    script.resize(script.size() + 100, 'a');
+    ScriptedStallTransport inner(std::move(script), 4096, 5);
+
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.connect_timeout_ms = 3000;
+    config.session_timeout_ms = 300;
+
+    const auto start = std::chrono::steady_clock::now();
+    GatewayTunnel tunnel(inner, config);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    std::printf("  no progress: served=%zu reads=%u elapsed_ms=%lld bytes_read=%zu error=%s\n",
+                inner.served(), inner.reads(),
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                        .count()),
+                tunnel.bytes_read(), tunnel.error().c_str());
+
+    CHECK(!tunnel.open());
+    CHECK(elapsed < std::chrono::milliseconds(2000));
+    CHECK(tunnel.error().find("no progress") != std::string::npos);
+    CHECK(tunnel.error().find("read budget") == std::string::npos);
+    // Nothing beyond the head/message ceilings was ever accumulated.
+    CHECK(tunnel.bytes_read() <= 64u * 1024u + 4096u);
+}
+
+RTSC_TEST(gateway_tunnel_stops_at_the_session_read_budget) {
+    // A well-formed 200 opens the tunnel; the gateway then keeps sending bytes.
+    // The session byte budget is a hardening switch (default 0 = unlimited), so
+    // this test asks for it explicitly and requires a distinct budget error that
+    // is not the inactivity one.
+    std::vector<uint8_t> script =
+        Bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    script.resize(script.size() + 64 * 1024, 0x41);
+    ScriptedStallTransport inner(std::move(script), 4096, 5);
+
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    config.connect_timeout_ms = 2000;
+    config.max_session_read_bytes = 8 * 1024;
+
+    GatewayTunnel tunnel(inner, config);
+    CHECK(tunnel.open());
+
+    size_t delivered = 0;
+    int last = 0;
+    for (int loops = 0; loops < 1024; ++loops) {
+        uint8_t buf[4096];
+        last = tunnel.Read(buf, sizeof(buf));
+        if (last == kReadTimeout) break;
+        if (last < 0) break;
+        delivered += static_cast<size_t>(last);
+    }
+    std::printf("  read budget: delivered=%zu bytes_read=%zu reads=%zu error=%s\n",
+                delivered, tunnel.bytes_read(), tunnel.read_calls(),
+                tunnel.error().c_str());
+
+    CHECK_EQ(last, -1);
+    CHECK(tunnel.error().find("read budget") != std::string::npos);
+    CHECK(tunnel.error().find("no progress") == std::string::npos);
+    // A 4 KiB read is in flight when the budget is crossed: at most one read of
+    // overshoot, and nothing proportional to what the peer offered (64 KiB).
+    CHECK(delivered <= config.max_session_read_bytes + 4096);
+    CHECK(tunnel.bytes_read() <= config.max_session_read_bytes + 4096);
+    CHECK(tunnel.read_calls() <= 3u);
+}
+
+RTSC_TEST(gateway_limits_are_configurable_per_instance) {
+    // The ceilings are parameters, not baked-in policy: the same hostile wire is
+    // rejected under the defaults and accepted when the caller raises them, so a
+    // deployment (or a test) can retune the envelope without patching the parser.
+    std::vector<uint8_t> head = Bytes("HTTP/1.1 200 OK\r\n");
+    for (size_t i = 0; i < 400; ++i) {
+        const std::vector<uint8_t> line =
+            Bytes("X-Pad-" + std::to_string(i) + ": " + std::string(200, 'a') +
+                  "\r\n");
+        head.insert(head.end(), line.begin(), line.end());
+    }
+    const std::vector<uint8_t> blank = Bytes("\r\n");
+    head.insert(head.end(), blank.begin(), blank.end());
+    CHECK(head.size() > 64u * 1024u);
+    std::printf("  configurable: head=%zu bytes\n", head.size());
+
+    HttpMessage out;
+    size_t consumed = 0;
+    CHECK(HttpMessage::parse(head.data(), head.size(), out, consumed) ==
+          Status::InvalidLength);
+    HttpLimits loose_head;
+    loose_head.max_head_bytes = 128 * 1024;
+    CHECK(HttpMessage::parse(head.data(), head.size(), out, consumed, loose_head) ==
+          Status::Ok);
+    CHECK_EQ(out.headers.size(), static_cast<size_t>(400));
+
+    // Entity ceiling: the claim is rejected while the digits are scanned, so
+    // nothing is ever sized from it. Raising the ceiling accepts the claim.
+    const std::vector<uint8_t> entity =
+        Bytes("HTTP/1.1 200 OK\r\nContent-Length: 200000\r\n\r\n");
+    CHECK(HttpMessage::parse(entity.data(), entity.size(), out, consumed) ==
+          Status::InvalidLength);
+    HttpLimits loose_entity;
+    loose_entity.max_entity_bytes = 256 * 1024;
+    CHECK(HttpMessage::parse(entity.data(), entity.size(), out, consumed,
+                             loose_entity) == Status::Ok);
+
+    // Header count ceiling: 600 one-byte headers must be rejected on the count
+    // alone even though they fit the byte ceiling.
+    std::vector<uint8_t> many = Bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n");
+    const std::vector<uint8_t> tiny = Bytes("a: b\r\n");
+    for (size_t i = 0; i < 600; ++i) {
+        many.insert(many.end(), tiny.begin(), tiny.end());
+    }
+    many.insert(many.end(), blank.begin(), blank.end());
+    CHECK(many.size() < 64u * 1024u);
+    CHECK(HttpMessage::parse(many.data(), many.size(), out, consumed) ==
+          Status::InvalidLength);
+    HttpLimits loose_count;
+    loose_count.max_header_count = 1024;
+    CHECK(HttpMessage::parse(many.data(), many.size(), out, consumed, loose_count) ==
+          Status::Ok);
+    CHECK_EQ(out.headers.size(), static_cast<size_t>(601));
+
+    // The tunnel uses the same knobs: a 400-header response that fits the raised
+    // head ceiling is accepted end-to-end, which proves Config is wired into the
+    // parser rather than ignored.
+    MockTransport inner;
+    inner.to_read = head;
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    config.connect_timeout_ms = 1000;
+    config.max_head_bytes = 128 * 1024;
+    GatewayTunnel tunnel(inner, config);
+    CHECK(tunnel.open());
+    CHECK_EQ(tunnel.status_code(), 200);
+}
+
+RTSC_TEST(gateway_tunnel_returns_after_the_supply_stops) {
+    // The incident shape, bounded: the scripted transport offers 256 slices of
+    // 4 KiB (1 MiB) and then no more data at all, with the connection left open.
+    // The head is well formed, so the tunnel opens and reads that data; when the
+    // supply stops the inactivity deadline must end the wait instead of waiting
+    // forever, and nothing may be read past what was offered.
+    std::vector<uint8_t> script =
+        Bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    const size_t kSlices = 256;
+    const size_t kSlice = 4096;
+    script.resize(script.size() + kSlices * kSlice, 0x5A);
+    ScriptedStallTransport inner(std::move(script), kSlice, 5);
+
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    config.connect_timeout_ms = 5000;
+    config.session_timeout_ms = 300;  // inactivity, not a lifetime cap
+
+    GatewayTunnel tunnel(inner, config);
+    CHECK(tunnel.open());
+
+    size_t delivered = 0;
+    int last = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (int loops = 0; loops < 4096; ++loops) {
+        uint8_t buf[4096];
+        last = tunnel.Read(buf, sizeof(buf));
+        if (last == kReadTimeout) continue;
+        if (last < 0) break;
+        delivered += static_cast<size_t>(last);
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    std::printf(
+        "  supply stops: delivered=%zu bytes_read=%zu reads=%zu "
+        "elapsed_ms=%lld error=%s\n",
+        delivered, tunnel.bytes_read(), tunnel.read_calls(),
+        static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()),
+        tunnel.error().c_str());
+
+    CHECK_EQ(last, -1);
+    CHECK(tunnel.error().find("no progress") != std::string::npos);
+    // Exactly the supply was consumed: no retry amplification, no overshoot.
+    CHECK(tunnel.bytes_read() <= kSlices * kSlice + 64);
+    CHECK(inner.served() <= kSlices * kSlice + 64);
+    CHECK(elapsed < std::chrono::milliseconds(3000));
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }
