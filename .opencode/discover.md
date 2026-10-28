@@ -1418,3 +1418,8 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 两个执行代理因 API key 计费组无可用 provider 而中断，留下 10 个已改文件。
 [错误] 工作树**不可构建**：头文件改了 4 参签名而实现仍是 3 参（C2668 歧义）；`EncodePauseKey` 停在 RED 版本；`MapViewportPoint`/`MapMonitorPointToDesktop` 停在显式标注的 "RED PHASE"；`main.cpp` 未接线。若直接 `git add -A` 提交会把不可构建状态入库。
 [下一步] ①接手被中断批次的**第一步永远是构建**（`FULL_BUILD`）+ 跑受影响套件，用红清单定位未完成点；②优先找显式 RED 标记（本轮 4 处均有注释或失败用例指向）；③修完必须重跑全量 ctest 再提交；④计费/额度类 APIError 一律停止重派并上报用户。
+
+## 2026-10-28 view_scale_benchmark 0.8x 超预算（非代码回归）
+- [尝试] ctest -R ^view$ 重跑以复现 view 套件红
+  [错误] 0.8x bench 25.58ms > 22.00ms 预算，其余用例全绿；同期 F:\il2cpp 项目 6+ cmake 构建进程占满 CPU(LoadPercentage=100)
+  [下一步] 确认这是环境争用：il2cpp 构建并行抢 CPU 导致基准计时膨胀；非代码回归。等争用进程消失后独占重跑应为绿。教训：跑性能基准前必须确认 `Get-CimInstance Win32_Processor LoadPercentage` 无高负载，且有非 RTSC 大构建在跑时基准结果作废。
