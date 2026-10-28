@@ -10548,3 +10548,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **P2**：滚轮量化累积/delta0 不事件；Ctrl+wheel 极限 consume；Pause 跨失焦复位；SAS End 泄漏补 up；P3 wp→lp 同批。
 - **执行**：`ses_e7dedad5affeah0vJuuPnNXnxg`（taotoken）已派发，定案 TDD + 变异探针 + 全量 build；甲乙已被通知复核。
 - 全程 C0 门：执行在途，主侧未改代码；记忆文件本轮只增台账，无裁剪。
+
+## 第632轮：甲乙收口确认
+
+- 甲/乙收到派发通知均确认：终审定案无异议、全部断言有探针实证、执行报告到达后按逐条判定项独立复验（先红/绿再判断）才盖章。
+- 在途：执行 `ses_e7dedad5affeah0vJuuPnNXnxg` TDD 修复中；甲乙待其报告复核。主侧无代码改动，静默待命。
