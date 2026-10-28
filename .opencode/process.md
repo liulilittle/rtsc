@@ -10560,3 +10560,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **待复核**：甲乙已从执行子报告收到，进入复核。
 - **旧批次子代理**：`ses_e7eef50d9ffe1V1Z1HPO3jDJB1`（视图坐标层修复）报额度硬阻塞（usage up），其任务范围已被 fb20d65 整批覆盖且无未提交代码 → **abort 清理**；`ses_e7eef6e8dffeuhgN6mLM0qpjLl`（输入窗口层修复）pending，已 relay 核对是否重叠，待回报决定（abort/prompt）。
 - **上报用户**：旧子代理额度 `Your subscription allowance for this period is used up`——免费模型仍可用；现役执行/审计均用 taotoken/deepseek-flash 未受阻塞，仅旧批次冗余子代理受影响。
+
+## 第634轮：旧批次清理完成 + 派甲乙复核 fb20d65
+
+- 旧批次两个子代理（视图坐标层 `ses_e7eef50d9ffe1V1Z1HPO3jDJB1`、输入窗口层 `ses_e7eef6e8dffeuhgN6mLM0qpjLl`）均报额度硬阻塞（usage up，free models still work）；两者任务范围均已被 fb20d65 整批覆盖、无未提交代码 → 已 abort 清理。
+- **甲乙复核已派发**（prompt 续既有会话，taotoken/deepseek-flash）：要求逐条亲证（红绿/探针），重点含执行子自述的 5 处偏离（server up 缺 button、滚轮量化、delta0 语义、SAS End 防御分支、HWHEEL 门禁连接期默认、desktop 尺寸协商）。
+- **上报用户**（额度阻塞）：旧批次冗余子代理受影响已清理；现役审计/执行均为 taotoken/deepseek-flash（free）无阻塞。若后续需非免费模型并行扩能，需用户处理额度。
+- 在途：甲乙复核中。
