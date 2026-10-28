@@ -10163,3 +10163,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[EXEC-B · S3-8 完成]** src/rdpdr/file_system.cpp 新增 kMaxReadLength=1MiB（依据：Windows 重定向器 4KiB..64KiB 粒度、SMB2 读粒度 64KiB、留 16x 余量；响应再复制一份峰值≈2MiB）+ 分配前 length 校验 + bad_alloc/length_error 捕获；rdpdr_client.cpp OnRead 前置校验回 kStatusInvalidParameter。红证:接受 67108864 与 4294967295 两例 + fs.read_calls got 1 want 0；绿证:30 tests/213 checks 0 fail（64MiB 与 4GiB 均被拒、正常 5 字节读仍成功）。剩 S3-9 截断 / S3-7' DesiredAccess 进行中。
 - **[EXEC-A · GREEN 完成]** 31 tests/155 checks 0 fail；实现要点已核对：Start() 不发 MonitorReady、OnPdu 新增 kMonitorReady/kFormatListResponse 分支、SendTemporaryDirectory 520B UTF-16LE（_dupenv_s 避开 windows.h 与 C4996）、long_format_names_ 保守 false + 服务端 caps AND 协商；待 C0 与测试改动台账。
 - **[待办]** 工作树三代理（GW/DVC/PLANAR）在跑；A 待 C0；B 剩两条；C 续三项；随后由父代理串行跑全量 ctest 并提交。
+
+## 第589轮：EXEC-A 收口（S6）+ 双审复验启动 + EXEC-C 续 H-1/H-2/H-4
+
+- **[EXEC-A · 完成]** cliprdr 3 文件 +462/-25（h +82 / cpp +164 / test +241-25），未 git 操作。实现：OnPdu 补 kMonitorReady/kFormatListResponse 分支；RunInitializationSequence 一次守卫发 [ClipCaps→TempDirectory→FormatList]；Start 不再发 MonitorReady；SendTemporaryDirectory 520B UTF-16LE（_dupenv_s 规避 C4996 与 windows.h）；long_format_names_ 保守 false + 服务端 caps AND 协商；OnLocalClipboardChanged 门禁改 init_sequence_done_。
+  台账：**删除 1 条**（start_sends_ready_caps_and_format_list，声称实质断言全部迁移保留）/ **修改 6 条**（均只加 FeedMonitorReady 触发点、断言数值未动）/ **新增 9 条**；红证 3 组（C2039 + 8 failing/23 failed checks + 长名默认 9 failing）、绿证 31 tests/155 checks 0 fail；自报 4 个既存缺口（GUI 无 RequestRemoteFormat 调用点 / Clipboard::write 单格式替换 / pending_format_ 单值 / FAIL 无后续动作）与 2 个文件剪贴板缺口（CF_HDROP 未实现）。
+- **[W11 ⑤ 双审复验启动]** 组A 甲 ses_e8150e480ffeaYVZn590wi4msC 与 乙 ses_e814fe0b5ffeuO6b2N44YXBEL5 **各自独立**复验 S6（V/A1-A6 六项：规范比对、测试台账防弱化、红绿真实性、异常路径、GUI 契约、原判据是否闭合）；均换 unorouter-ai/deepseek-v4.1-flash。
+- **[组B 乙复验 H-3]** ses_e814edb30ffek8HbOpy6hQ4YgZ 复核零宽修复（B1-B5：红证与自身探针一致性、三入口覆盖、反例自测、正常尺寸回归、未修项确认），并要求其列出对 H-1/H-2/H-4 的复验要点供执行 AI 避坑。
+- **[EXEC-C 续派]** H-1（CS_CORE 无上限 → 17,179,344,900B + 线程无 try/catch → TerminateProcess）/ H-2（y uint16 回绕，实测 3 秒 1.07GB）/ H-4（会话不回收 + 明文凭据 + 计数假绿）/ 默认 accept_any_credentials。
+- **[并发]** 8 个代理在跑（主树 B/C + 工作树 GW/DVC/PLANAR + 复验 3）；全量 ctest 仍由父代理串行执行。
