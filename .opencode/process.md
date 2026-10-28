@@ -10210,3 +10210,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[EXEC-C · H-1/H-2/H-4 绿证]** 本体 rtsc_server_tests 17 tests/134 checks 0 fail（新增 4 例全 OK、原 13 例零回归）、multisession 3 tests/49 checks 0 fail（3 处断言改 total_session_count）。亲核：server.cpp:123 FrameBufferBytes（除法式溢出检查）、:136 ClampDesktopSize（轴钳制→像素预算等比缩放）、:949 应用于 CS_CORE、:574 ScrubCredentials、:1226 y 改 uint32、:1470 shared_ptr 会话表。待办：④ main.cpp 凭据策略（默认 false + SetAuthenticator + --allow-any-credentials）。另清掉滞留进程 rtsc_server_host PID 56844（8:50 起，占用 exe 导致链接失败）。
 - **[EXEC-PLANAR · D1 完成（测试纪律欠账闭合）]** 真机 1320B tile **垂直不对称可判定方向**（流第0扫描线 = 1f ff d2 03 → 64 像素全白 0xFF；流末扫描线 = 0xED/0xEB/0xE8）；测试内新增 ReferenceDecodePlane/ReferenceDecodeArgb（按 FreeRDP planar.c vFlip=TRUE 语义转写，**父代理亲核函数体内零生产解码调用**，即将生产实现的"升序流+height-1-s"与预言机的"beg=height-1 递减"作为两种不同源写法）；新增 3 用例（真机 1320B 逐字节交叉验证 / 显式断言 image[63][*]=0xFF 与 image[0][*]=0xED / 合成 4x4 不对称流）；**变异反证**：把预言机改 top-down → 2372/2384/2384 处不一致（证明独立性）；绿证 30 tests/21190 checks 0 fail；src/proto/rdp6.cpp 零改动（git diff 空）。
 - **[在做]** EXEC-C ④凭据策略；EXEC-DVC GREEN；EXEC-GW RDGSP；组A 甲/乙复验 rdpdr（C1-C7 / D1-D6）；组B 乙复验 H-3+H-1/H-2/H-4。
+
+## 第595轮：EXEC-C 四项全部完成（H-1/H-2/H-4 + 凭据策略）+ EXEC-PLANAR D2 + GW 续做
+
+- **[EXEC-C · 完成]** 改动 5 文件（server.h、server.cpp、tools/rtsc_server/main.cpp、tests/test_server.cpp、tests/test_server_multisession.cpp），未 git 操作。
+  ① H-1：server.h:118-120 上限常量（8192²/32MiB，注释含 [MS-RDPBCGR] 2.2.1.3.2 依据）；server.cpp:123 FrameBufferBytes 除法式溢出检查、:136 ClampDesktopSize（轴钳制→像素预算等比缩放，20000²→8192²→2896²）、:949 写入并 Demand Active 通告、:161 配置尺寸 0/超限则拒绝（客户端钳制/配置拒绝的非对称策略，待审计裁定）；:1543/:1592 线程与 ServeOne try/catch → 仅该会话失败（stderr [rtsc-server] session failed），红证是 [crash] abort(bad_alloc 逃线程)、绿证第二客户端仍 active。
+  ② H-2：:1226 y 改 uint32 + dest_y static_cast（钳制后 ≤8192 不可能回绕）；红证 2 秒读超 64MiB、绿证远低。
+  ③ H-4：:1470 shared_ptr 会话表、:574 ScrubCredentials(memset)、结束序列 Stop→scrub→erase→live--（:1565）；session_count=活跃、total_session_count=累计；multisession 3 处断言改 total（理由：并发结束时活跃数可能为 0）。
+  ④ 凭据：库默认未改（避免破坏既有测试）；main.cpp 默认 ccept_any_credentials=false + SetAuthenticator 校验 Client Info 账号（--user/--domain，大小写不敏感，接受 DOMAIN\user；--any-user 放行任意账号）；新增 --allow-any-credentials 并打印 WARNING。红证：旧二进制 otheruser@WRONGDOM 可 ACTIVE；绿证：MISMATCH_EXIT=1 + peer closed、MATCH_EXIT=0 + ACTIVE、ALLOWANY 有显式 WARNING。**已知边界**：只校验账号不校验密码（密码由 CredSSP/NTLM credential_lookup 校验），已注明。
+  C0：构建三目标零错零警；ctest -R server 3/3；17 tests/134 checks 0 fail；3 tests/49 checks 0 fail；Linux 四文件 -Werror 语法门禁通过。
+- **[EXEC-PLANAR · D2 完成]** 新增 rdp6_aycocg_chroma_2x2_with_odd_height（3x3 奇数、CLL=1/CS=1/RLE=0/NA=1，header 0x29；色度 ceil(3/2)²=2x2；采样 (x/2,y/2) 按 [MS-RDPEGDI] 2.2.2.5.1 手推期望）；红证=把 Co 平面临时改 top-down 顺序 → 18 failed checks；绿证 30 tests/21190 checks 0 fail。结论与审计一致：rdp6.cpp:225-227 ci=(y/2)*chroma_w+(x/2) 自洽，不改实现。
+- **[EXEC-GW · 续做]** 上回合 UnknownError 中断；已落地 gateway.h(+184) 与 test_gateway.cpp(+781/-156，新用例 :888 认证+RDG 通道 / :962 401 需凭据 / :980 非 200 拒绝)，但 src/proto/gateway.cpp 与 src/net/gateway_transport.cpp **尚未实现** → 已 prompt 从 RED 取证继续。

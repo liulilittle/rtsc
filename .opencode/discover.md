@@ -1277,3 +1277,20 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 依赖平台静默死亡通知判断子会话死活，并按其提示逐次 prompt 唤醒。
 [错误] 本轮 EXEC-C、组A乙 均被判定静默死亡，但随后两者都发来**正常的状态报告**（EXEC-C: H-1/H-2/H-4 已落地声明改动、正在写红证）。实际原因是长任务（读大量源码 + 构建 + 跑测试）单回合耗时超过巡检宽限，不是真的挂死。
 [下一步] ①收到静默死亡通知时，先 get_goal 看 status/pending/wrote 与 recent 输出，再决定是否唤醒；wrote 时间戳在近期增长即视为存活，不要重复 prompt（重复 prompt 会打断/污染在途工作）。②同 provider 并发上限按需放宽（用户已授权并行），但每次派发仍要求「每完成一里程碑立即 relay」，用 relay 频率而非存活探测判断进度。
+
+## [2026-10-28][EXEC-C] H-1/H-2/H-4 + 凭据策略：设计取舍与两个共享工作树坑
+- [尝试] H-1 客户端声明 20000x20000 时的红证测试：直接用 TestPatternSource 会真分配 1.6GB
+  [错误] 红跑会先把机器拖慢，且 pre-fix 进程可能 abort（bad_alloc 逃线程），红证变成「进程死」而不是可读断言
+  [下一步] 用可脚本化 DesktopSource：先记录 (w,h) 再返回 false（不分配、不出帧）。这样红证是**纯断言 FAIL**（通告尺寸/捕获尺寸超上限），且不花内存；绿证再断言 ≤ kMaxDesktopWidth/Height 与 ≤ kMaxFramebufferBytes。给 DriveToActive 加 expect_frame=false 变体（走完 Confirm Active+Font List 但不读帧），避免 5 秒读超时拖慢用例。
+- [尝试] 上限语义：客户端声明超限时「拒绝」还是「钳制」
+  [错误] 拒绝会让 8000x6000 这类合法大桌面整个连不上；而直接采纳就是 16GiB
+  [下一步] 分开：**客户端声明 → 钳制**（不可信输入，钳制后仍可服务，且 Demand Active 通告钳制值让客户端自适应）；**config 配置 → 拒绝**（运维自己的请求，不能服务就明确报错）。钳制先按轴（8192x8192）再按 32MiB 像素预算等比缩放（std::sqrt 保纵横比；20000x20000→2896x2896）。除法式溢出检查 FrameBufferBytes 必须在 Capture **之前**调用（原实现是先 Capture 后算 need）。
+- [尝试] 把 session_count() 语义从累计改成活跃
+  [错误] 会连带 main.cpp 日志（"session accepted (count=N)" 在断开时打印 count=0，语义反了）与 tests/test_server_multisession.cpp 三处断言（客户端断开后活跃数可能为 0，测试会假红/抖动）
+  [下一步] 同批改：日志改为 live=N total=M 双值；multisession 三处断言改 total_session_count()（保留「计数达到 N」原意）。H-4 的用例只断言 session_count() 断开后回 0（活跃语义），累计值用 total_session_count() 另测。
+- [尝试] 线程结束即释放会话：raw pointer + delete 会与 Stop() 的遍历竞态（UAF）
+  [错误] Stop() 需要「遍历在线会话并 Stop()」，而线程结束时 delete 会让 Stop() 拿到悬垂指针
+  [下一步] 改 shared_ptr：注册表只是弱语义的「可达集合」，线程自己从注册表 erase，Stop() 先取 shared_ptr 快照（保活）再 stop+join；最后一个 shared_ptr 释放即析构。凭据擦除在 erase 之前（ScrubCredentials：memset 密码字节 + clear），避免 Stop 快照延长驻留。
+- [尝试] `cmake --build ... --target rtsc_server_host` 连续两次 LNK1104 无法打开 rtsc_server_host.exe
+  [错误] 不是 MSB3021/构建配置问题：另一个代理的探针进程 PID 56844（`--width 1 --height 48 --port 51667 --seconds 0`，非我的参数、非我的端口）正在运行该 exe，Windows 锁定映像；期间该 exe 仍是**旧版本**，反而可用来取 ④ 的红证（旧二进制默认接受 otheruser@WRONGDOM → ACTIVE，日志无凭据策略行）
+  [下一步] 禁止强杀他人进程；隔 25s 重试（第 2 次成功）。同时利用锁定窗口先跑红探针，再重试构建，避免空等。
