@@ -10507,3 +10507,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[已以 relay 并入 A2-1 执行要求]** 新增三条断言：T-WinUp（只发 Win down、失焦必须补 `03 5B`）、T-IME（wParam=0xE5 + lParam 扫描码 0x1E<<16 → 发 0x1E）、T-IME2（wParam=0xE5 + lParam=0 → 丢弃）。
 - **[证据入档]** `docs/spec/input-evidence.md` 新增 E6（提交 a967918），并明确"基于 keybd_event 注入、非物理键；LL hook 能否看到 Win up 未测；三档默认值未知"。
 - **[在途]** A2-1 `ses_e7eef6e8dffeuhgN6mLM0qpjLl`（输入/窗口层 6 项）、A2-2 `ses_e7eef50d9ffe1V1Z1HPO3jDJB1`（视图/坐标层 4 项）；A2 双审甲乙已收敛并盖章（甲终版 D1-D12 + Phase 0-6 顺序）。
+
+## 第627轮：模型计费组硬阻塞（子代理全挂）→ 父代理亲自收口 A2 并提交 959aaa7
+
+- **[阻塞上报]** 子代理全部因 `APIError: API key pinned to a billing group with no available provider for "deepseek-v4.1-flash"` 失败（账户/额度类硬阻塞，重试必再失败）→ 已停止派发。用户重新唤醒后由**父代理亲自完成** A2 收口。
+- **[修复半成品]** 执行代理留下不可构建状态：①`input.h` 已改 4 参 `EncodeKeyboardEvent(..., bool extended1=false)` 而 `.cpp` 仍 3 参 → **C2668 重载歧义**；②`EncodePauseKey()` 停在 RED 版本（单 `0x45`）；③`MapViewportPoint`/`MapMonitorPointToDesktop` 停在 "RED PHASE" 旧实现（测试已按 E8/union 写好，4 个用例红）；④`main.cpp` 未接线（仍是 `m.left` 直接相加 + 滚轮先被 zoom 吞）。
+- **[父代理修复]** ①`.cpp` 补 4 参定义 + `kKbdExtended1` 置位；②Pause 改 `CTRL(0x1D,EXT1)↓ / 0x45↓ / CTRL↑ / 0x45↑`（字节 `04 1D`/`00 45`/`05 1D`/`01 45`，`kScancodeNumLock` 不存在 → 复用 `kScancodePause=0x45`）；③`MapViewportPoint` 改 E8 中心相位 `((2d+1)S-1)/(2D)`；④`MapMonitorPointToDesktop` 改 `monitor_left - origin_x + local_x`（去 u16 强转）；⑤`main.cpp` 用 union 原点（`min(left)`/`max(right-origin+1)`）并接线 `MapMonitorPointToDesktop`；⑥滚轮路由改「普通滚轮转发 / Ctrl+滚轮缩放」。
+- **[A2-1 已落地部分（父代理亲核）]** 命令 ID 唯一化（SAS=19 / winKey=20 / help=21 / pause=22）、`WM_KILLFOCUS`+`WM_ACTIVATE` 归位、`win_key_mode_` 默认 `kRemote`、SAS chord → `PushCommand(kCmdSendCtrlAltDel)`、`VK_PROCESSKEY(0xE5)` 特判、Pause 特判、合成键固有扩展表。
+- **[验证]** `FULL_BUILD=0`；`ctest -C Release` **51/51 passed**；view **50/6564/0**、ui **27/141/0**、input **12/42/0**。提交 `959aaa7`（10 文件）。工作树干净。
+- **[教训]** 计费组阻塞期间必须先查子代理错误类型再决定"重试 vs 上报"；且**执行代理被中断会留下不可构建的半成品**（本轮 4 处），父代理接手时必须先构建并以测试红清单定位未完之处。
