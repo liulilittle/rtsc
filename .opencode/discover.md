@@ -1394,3 +1394,17 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 连跑 12 次 rtsc_server_tests 得到 11 次失败（含 unhandled-seh），一度判为代码回归。
 [错误] 真因是上一轮探针留下的僵尸 `rtsc_server_tests.exe`（PID 34960）仍占用 3395 端口，导致 `server_suppress_output_gates_refresh`（`test_server.cpp:774 cfg.port=3395`）监听失败并连锁错乱。杀掉后 12/12、再 40/40 全绿。
 [下一步] ①跑测试前必须检查并清理 `rtsc*` 残留（`Get-Process | ? ProcessName -like "rtsc*"`）；②测试端口写死且非密闭是根因，已派 EXEC-PORT 改运行时分配；③报告"回归"前必须先排除环境污染，否则会误导整条决策链。
+
+## [2026-10-28][EXEC-C] R-A-1/R-B-1：计数交接原子化 + 共享文件并发写冲突
+- [尝试] R-A 修复用「启动失败则 erase + --live 回滚」
+  [错误] 若 launcher 已把 body 跑起来后才返回 false/抛异常（线程池入队成功再抛、或 join 后 return false），body 收尾已扣一次、回滚再扣一次 → size_t 下溢。红证 `live_after_launcher_failed=18446744073709551615`（SIZE_MAX），Stop() 的 cv.wait 永久阻塞（与审计 probe_r5 一致）。
+  [下一步] 计数交接原子化：`shared_ptr<atomic<bool>> counted`，`exchange(false)` 成功者独占扣减；body 收尾与回滚块调同一个 `release()`，任何交错下 --live 只执行一次。不要依赖 launcher 诚实度。
+- [尝试] 把 erase 与 --live 放同一 try（原 :1606-1613），回滚块不加 try
+  [错误] erase（vector::erase 可抛，且持锁）一旦抛就跳过 --live → Stop() 等不到；回滚块无 try 则异常逃出 accept 循环 → terminate。
+  [下一步] erase 单独 try（失败只留下注册表条目，无害）；--live 用 atomic fetch_sub 且与锁解耦（连 lock 失败都兜底再扣一次）；notify_all 独立 try。Registry::live 改 std::atomic<size_t>。
+- [尝试] 本轮构建 `tests/test_server.cpp` 连续 C4828 + C2039
+  [错误] **不是我的改动**：另一代理同时在把测试端口改为 ephemeral（`cfg.port=0` + `bound_port()`），并 (a) 写入 1 个非法字节（em dash 被写坏成 E9 88 3F）→ /WX 下 C4828；(b) 把我 unique_ptr 上的 `server->bound_port()` 误替换成 `server.bound_port()` → 3 处 C2039。
+  [下一步] 只做最小外科修复（字节级替换恢复 " -"，2 处改回 `server->bound_port()`），不重写他人内容；共享工作树下改共享测试文件前先 grep 冲突标记与新接口（bound_port 等），构建报错先判归属再动手；如他人仍在改写，优先改我自己的用例段（:1282/:1329/:1403）。
+- [尝试] 顺带项 `accept_any_credentials` 默认 true
+  [错误] 嵌入方会静默 accept-all；但直接改 false 可能破坏依赖默认的既有测试
+  [下一步] 已改 false 并重写注释（口令校验必须走 CredSSP）；实测 server 20 tests / multisession 3 tests 全绿，无测试需改动；Start() 的 accept-all WARNING 保留。

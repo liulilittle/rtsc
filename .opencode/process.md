@@ -10393,3 +10393,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[测试缺口]** 现有用例只测"不启动即 false"，测不到"启动后报失败"。要求新增第二分支：launcher `thread(body).join(); return false;` → 断言 `live==0`、`total==0`、`Stop()` 1s 内返回、后续连接仍可服务。
 - **[审计自我更正（好行为）]** 其首次 12 次跑得 11 次失败（含 unhandled-seh），查因是**上一轮探针僵尸进程 PID 34960 占用 3395 端口**；杀掉后 12/12 + 40/40 全绿，主动撤回。→ 已入 discover.md，并强化 EXEC-PORT 的必要性。
 - **[仍存风险]** `server.h:69 accept_any_credentials` 仍为 true（嵌入方静默 accept-all）；Standard RDP 路径只校验用户名/域不校验口令。已要求同批处理。
+
+## 第614轮：服务器批次全绿（含 R-A/R-B 与默认值）+ GW-MEM 收尾 41/41 + 发现主树未含 GW 改动
+
+- **[服务器批次·父代理亲核]** `server.cpp:1607 counted = make_shared<atomic<bool>>(true)`、`:1620 if (counted->exchange(false, acq_rel))`、`:1625/:1629 fetch_sub 双路径兜底；`Registry::live` 改 `std::atomic<size_t>`（`:1489`）；`server.h:73 accept_any_credentials = false`（原 true，嵌入方不再静默 accept-all）。全仓 UTF-8 合法性检查通过（无非法字节）。
+- **[服务器绿证]** server **20 tests/186 checks/0 fail**（`handles: baseline=116 after8=116`）、multi 3/52/0、security 7/60/0、`ctest -R server` 3/3、Linux 四文件 -Werror 通过；CLI 探针：`otheruser@WRONG` 被拒（`MISMATCH_EXIT=1` + peer closed）、`rtsc@NTDEV` 通过（`MATCH_EXIT=0` + ACTIVE）、stdout `credentials: enforced (account rtsc@NTDEV from the Client Info PDU)`。
+- **[GW-MEM 收尾]** `:718` 断言按授权改为 `headers.size()==2`（保留 `X-First==nullptr` 防残留核心）；`max_session_read_bytes` 默认改 **0=不限**（理由：内存安全由每消息上限保证，会话累计与内存无关；1GiB 仍是魔法数会在长会话误杀）；两类失败拆开报错（`exceeded its configured read budget` vs `stopped sending data within the session deadline`）；新增 `http_message_rejects_too_many_headers`（600 条被条数上限独立拒绝、`max_header_count=1024` 时接受）与 `session_ceiling_defaults_to_unlimited`（实测读 9,437,637 B = 9.0MiB > 旧 8MiB，证明确已不限）。
+- **[GW 红证复测]** 修复前副本重跑：case1（CL=4294967295）`peakPriv=2744.5MB killed`、case2（头 85,109B）`peakPriv=1989.5MB killed` → 无界性稳定成立。修复后 41 条用例单跑全绿，`max peakWS=9.9MB / max peakPriv=5.4MB`；ctest gateway 1/1（childPeakWS=11.0MB）。
+- **[调度失误（已入档）]** 同时派 EXEC-PORT 与 EXEC-C 改同一 `tests/test_server.cpp` → 冲突（3 处 C2039 + 1 个非法 UTF-8 字节）；EXEC-C 做最小外科修复并上报。教训：**并行隔离单位是文件，不是功能**；编辑后必须校验 UTF-8。
+- **[待处理]** 主树 `tests/test_main.h`/`tests/test_gateway.cpp` 的改动来源是其他代理（非 GW-MEM），GW-MEM 的 4 处根因修复仍只在 `F:\rtsc-wt\gw` 工作树，**尚未合并**；合并需选择合入点避免与主树在跑代理冲突（当前有代理在反复创建 `rtsc_server_tests` 进程）。
