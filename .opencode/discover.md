@@ -1313,3 +1313,14 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [错误] 实测 Get-Process 发现 tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"几十个 G"），系统 Free 仅剩约 21GB（总 63.69GB）。已 Kill 该进程，Free 回到 41.6GB。该子代理随后报 UnknownError: unknown certificate verification error 被中断。
 [根因（待修复批次实证）] 网关链路的 HTTP 读取缺少硬上限：gateway.cpp:93/111-129（按 Content-Length 追加实体）、gateway_transport.cpp:23/74/278/391/423/466 多处 or(;;) 读循环无「单次/累计字节上限 + 次数上限 + 超时」；测试侧 MockGateway 也会无限产出/回放。此前审计 F1 已指出 test_gateway 是假绿（MockGateway 只回 CONNECT 200），本次改造后暴露该无界路径。
 [下一步] ①**任何网关相关测试/探针在加上限前禁止再跑**；②修复必须包含：HTTP 头总长上限、Content-Length 上限（如 64 KiB，超出即失败）、单次 read 上限、循环次数上限、读取总时长上限，并有"恶意 Content-Length=0xFFFFFFFF"与"无限 200 实体"的红→绿用例；③进程管理纪律：所有测试二进制运行时必须能用 Get-Process 快照监控峰值内存，发现 WS>2GB 立即 kill 并记录；④给所有子代理补充"禁止跑无上限读取的循环、跑测试前先设 job object 内存上限（512MB）"的硬约束。
+
+## [2026-10-28][EXEC-C] H-4 复验驳回项：线程句柄每连接 +1（detach + live 计数）
+- [尝试] 用 `GetProcessHandleCount` 差值做红证：2 轮预热取基线，再 8 轮连接/断开
+  [错误] 红：`handles: baseline=118 after8=126`（严格 +8），`FAIL test_server.cpp:1318 after <= baseline + 3`。根因确认：`impl_->threads.emplace_back(...)` 只增不减，`std::thread` 析构要求已 join/detach，而唯一 join 在 Stop()。
+  [下一步] 选 b 方案（detach + 自管 live 计数）而非 a（erase 自己）：a 需要「先 detach 再 erase 自己」，但 erase 时线程仍在执行 erase 之后的语句，`std::thread` 对象被销毁即要求「已 join 或 detach」——顺序上必须先 detach，且并发 erase/遍历需额外索引管理，易错；b 把线程对象本身即抛即弃（临时对象 detach 后立即析构），live 计数进注册表，Stop() 用 condition_variable 等 live==0，语义与 join 等价且保持 server.h 契约。
+- [尝试] detach 后 Stop() 直接返回
+  [错误] 会退化为「不等待线程退出」，违反 server.h:207 契约，且 Impl 析构时线程仍可能访问它
+  [下一步] 注册表改为 `shared_ptr<Impl::Registry>` 被线程捕获（线程最后一句才释放），Stop() 先 Close 监听、快照并 Stop 各会话，再 `cv.wait(live==0)`；session_count() 改读注册表 live（加锁）。
+- [尝试] 顺带项：库默认 accept_any_credentials=true 静默不安全
+  [错误] 若直接改 false 会破坏既有服务器测试（它们依赖默认接受）与外部调用契约
+  [下一步] 不改默认值，改为 Start() 一次 WARNING（`warned_accept_all` 去重），说明 accept_any_credentials/authenticator 状态；CLI 已显式设 false + SetAuthenticator，故 CLI 路径不打印（实测 stderr 为空）。测试套件因用默认配置会打印该 WARNING（属预期）。
