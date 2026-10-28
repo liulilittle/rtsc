@@ -10657,3 +10657,7 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 甲/乙复验盖章（默认翻转无消费方回归、菜单接线完整、R3 语义正确、红证真实、bench flake 与本批无关）。
 - 主侧：build 0err/0warn；提交 3414ece（fix: smart-sizing defaults align with mstsc）+ 证据文档；工作树净。
 - 遗留：N1 全屏 no-op、N2 view_transform resize 链、view 独占复跑待争用。
+## 第649轮：N1 全屏接线执行子派发 + A7 目标确认
+- N1：执行子 `ses_e7c293be1ffedqG5mqX44lcMy0`（修复全屏菜单 no-op：main.cpp kUiCommand 分支加 kCmdToggleFullscreen→SetFullscreen；Window 接口加 fullscreen() 查询；unit+命令级测试+变异反证）。根因由 A6 审计乙定位。
+- A7：目标 mstsc.exe（C:\Windows\System32, 1,114,112B）确认存在；A7 为窗口管理行为取证，产出=理解文档（仓内 rtsc_gui 自绘不直接复用），拟作独立批次。
+- 在途：N1 执行子。
