@@ -10172,3 +10172,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[组B 乙复验 H-3]** ses_e814edb30ffek8HbOpy6hQ4YgZ 复核零宽修复（B1-B5：红证与自身探针一致性、三入口覆盖、反例自测、正常尺寸回归、未修项确认），并要求其列出对 H-1/H-2/H-4 的复验要点供执行 AI 避坑。
 - **[EXEC-C 续派]** H-1（CS_CORE 无上限 → 17,179,344,900B + 线程无 try/catch → TerminateProcess）/ H-2（y uint16 回绕，实测 3 秒 1.07GB）/ H-4（会话不回收 + 明文凭据 + 计数假绿）/ 默认 accept_any_credentials。
 - **[并发]** 8 个代理在跑（主树 B/C + 工作树 GW/DVC/PLANAR + 复验 3）；全量 ctest 仍由父代理串行执行。
+
+## 第590轮：EXEC-C 状态确认（非死亡）+ EXEC-A 会话清理
+
+- **[误报确认]** EXEC-C ses_e80388cc9ffeToQZynG1kjILfL 与组A乙 ses_e814fe0b5ffeuO6b2N44YXBEL5 均被判静默死亡，实际都在正常工作（EXEC-C 已落地 server.h 上限常量 kMaxDesktopWidth/Height=8192、kMaxFramebufferBytes=32MiB、session_count 语义改活跃+total_session_count，正在写 H-1 红证）。
+- **[EXEC-C 计划（已报）]** ①H-1 红证（20000x20000 → 钳制 ≤8192/≤32MiB、进程存活、bad_alloc 自定义 DesktopSource 下会话失败但进程存活且第二客户端可服务）→ ClampDesktopSize + 64 位溢出检查 + 线程 try/catch；②H-2 红证（1400x65535 有界）→ y 改 uint32 + 上限联动；③H-4 红证（断开后 session_count 回 0、total 累计）→ shared_ptr 会话自注销 + 凭据擦除 + 同步更新 multisession 3 处断言；④凭据策略（main.cpp 默认 accept_any_credentials=false + SetAuthenticator，新增 --allow-any-credentials 并明示）。
+- **[EXEC-A 收口]** S6 修复已交付且会话闲置 → abort 清理（task_id 保留，必要时可恢复）。
+- **[在跑]** EXEC-B（S3-9/DesiredAccess）、EXEC-C（H-1/H-2/H-4）、GW、DVC、PLANAR、组A甲、组A乙、组B乙（复验 H-3）。

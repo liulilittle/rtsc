@@ -1273,3 +1273,7 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] 用全量 ctest -C Release 取证 C0（与另外 2 个执行代理共用 F:\rtsc\build）
   [错误] 连续两次全量跑失败用例漂移：第一次 server_security + gui_send，第二次 rdpdr + server；单独重跑这 4 个全部 Passed。git status 显示兄弟代理同期在改 src/server/server.cpp、src/channel/rdpdr_client.cpp、src/rdpdr/*、tools/rtsc_server/main.cpp（mtime 08:21-08:32 与跑测重叠）→ 测试二进制在跑测期间被重建/改写在途
   [下一步] 第三次全量 ctest 得 100% tests passed, 0 tests failed out of 51（EXIT=0）。失败项均不在本次改动范围（我仅改 src/channel/cliprdr_client.cpp、include/rtsc/channel/cliprdr_client.h、tests/test_cliprdr.cpp）；直接证据按影响面口径取 cliprdr 套件 31 tests / 0 failing，全量 51/51 为最终门禁，漂移失败按文件归属上报，未据他人红用例改自己代码
+## [2026-10-28][主代理] 「静默死亡」判定在新 provider 长任务下大量误报
+[尝试] 依赖平台静默死亡通知判断子会话死活，并按其提示逐次 prompt 唤醒。
+[错误] 本轮 EXEC-C、组A乙 均被判定静默死亡，但随后两者都发来**正常的状态报告**（EXEC-C: H-1/H-2/H-4 已落地声明改动、正在写红证）。实际原因是长任务（读大量源码 + 构建 + 跑测试）单回合耗时超过巡检宽限，不是真的挂死。
+[下一步] ①收到静默死亡通知时，先 get_goal 看 status/pending/wrote 与 recent 输出，再决定是否唤醒；wrote 时间戳在近期增长即视为存活，不要重复 prompt（重复 prompt 会打断/污染在途工作）。②同 provider 并发上限按需放宽（用户已授权并行），但每次派发仍要求「每完成一里程碑立即 relay」，用 relay 频率而非存活探测判断进度。
