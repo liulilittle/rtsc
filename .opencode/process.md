@@ -10273,3 +10273,15 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[下批残留（双方一致）]** rdpdr：R-A1 Close 未知 id 回 SUCCESS（:450-454）、R-A2 缺文件应 0xC0000034（:375-377）、R-A3 只读+OVERWRITE 静默不截断（file_system.cpp:160-162，乙倾向"该组合直接拒 INVALID_PARAMETER"）、R-A4 junction/symlink 未覆盖（仅词法）+ FILE_CREATE Stat→Open TOCTOU 未文档化、R-A5 注释补充。drdynvc：R-B1 压缩变体 0x06/0x07 未实现（default 丢弃，应显式拒绝+日志）、R-B2 Soft-Sync 0x08/0x09 未实现、R-B3 max_fragment 1500 偏保守、R-B4 AddListener 单 listener、R-B5 pending 无时间老化。
 - **[已派]** EXEC-B 修 R1/R2/R4/R3（其中 R2 与乙的 R-A3 同源：本次按「truncate 与 for_write 解耦」还是「组合直接拒绝」需执行方给出选择与理由；父代理倾向**解耦**，因为 OVERWRITE+只读访问在真实重定向器里会出现，直接拒会打断删除/覆盖流程）。
 - **[安全监控]** 每轮巡检 Get-Process 峰值内存与 rtsc_* 残留进程（34GB 事故后固化）；本轮无残留、无异常进程。
+
+## 第602轮：转向「按 mstsc 二进制对齐」——首个取证结论：缩放用 GDI HALFTONE，不是双线性/最近邻
+
+- **[用户裁定]** 「系统性研究微软 MSTSC 的反汇编，先把代码跟他们对齐改好了，再说」；并指出 mstsc 的绘图不是贴图，是按原生桌面体验（平滑缩放）。父代理承认：`src/client/view.cpp:144-148` 的注释「Bilinear ... is what mstsc does」是**无证据断言**，与镜像/剪贴板方向/裸 DATA 同族。
+- **[REA 取证·可复核]** 目标 `C:\Windows\System32\mstscax.dll`（9,166,848 B，sha256 前缀 d73c76d65721043c），Ghidra 12.1.4 + PDB mstscax.pdb。
+  - 主绘制 `FUN_18003444c`（24,062 字节反编译）：缩放前 **`SetStretchBltMode(hdc, 4)`（HALFTONE）+ `SetBrushOrgEx(hdc,0,0,NULL)`**；仅当 **`param_7 == 1.0f && param_8 == 1.0f`** 走 `BitBlt(...,0xcc0020)`（SRCCOPY），否则 `StretchBlt(...,0xcc0020)`——**整数倍 2x/3x 也走 HALFTONE**。
+  - 该函数另从属性读 `EnableSmartSizing`、`ZoomLevel`（与 100 比较，100=1:1）；另有 `SetTimer(...,2,200,...)` 与 `_guard_dispatch_icall`。
+  - 独立佐证：`FUN_180191d30`（worker DC）同样 `SetStretchBltMode(hdc,4)`；`FUN_1804cfb98` 在尺寸不同时 `mode = SetStretchBltMode(param_2,4)` 并结束后 `SetStretchBltMode(param_2,mode)` 恢复。
+  - StretchBlt 全部调用点共 8 处，归属 4 个函数：0x18003444c(2)、0x180068828(2)、0x180191d30(2)、0x1804cfb98(1)，另 1 处不在函数内。
+- **[推定契约（待双审确认）]** scale==1.0 → 精确逐像素；scale!=1.0（含整数倍）→ 面积平均/HALFTONE 式平滑重采样。当前实现（1:1 精确 + 整数倍最近邻块扩展 + 非整数倍双线性）与 mstsc **三处不一致**。
+- **[已入库]** 三个双审盖章批次：`5e7c76b`（服务器 H-1/H-2/H-3/H-4 + 凭据）、`5abfbb8`（rdpdr 路径包含/读上限/截断/句柄 + reparse）、`6c7362f`（drdynvc 重组/1590 分界/三重上限）、`8d2b946`（planar 真机向量方向 + 键盘映射可测化 + 假绿跳过显式化）。
+- **[在途]** 缩放对齐双审（甲 ses_e7fb2490effeJgCGsavfDsvKQW / 乙 ses_e7fb24879ffetg6Blk7N5nlBc2），任务为「现状 vs 二进制契约」差距清单 + 最小修正 + 先红后绿验收（**尚未实现**，父代理已更正先前笔误）。
