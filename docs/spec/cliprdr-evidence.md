@@ -144,3 +144,14 @@ proto enum（include/rtsc/proto/cliprdr.h）含 kFileContentsRequest=0x0008 / kF
 1. `docs/spec/cliprdr-evidence.md` 已有 dispatch 表、event-source 架构、偏差清单 v0.1、wire 裁决清单。
 2. **偏差结论（代码层）**：仓内缺 DATA_CHANNEL（0xC/0xD，大剪贴板分片）与 FILECONTENTS（0x8/0x9，文件拖放/目录枚举）两条线协议路径；UNKNOWN_PDU 静默 vs mstsc 显式上报。
 3. **决策建议（下一阶段）**：FILECONTENTS 与目标「剪贴板=文件重定向」直接挂钩，建议优先；DATA_CHANNEL 次之。两者均需在 client 增加 OnPdu 分支 + 发送支持（复用事件源架构可选）。
+## 6. FILECONTENTS 实现定案与盖章（2026-10-28，提交 d29ec55）
+
+双审定案：甲(wire/集成) + 乙(状态机/失败路径)，两轮磋商收敛。
+
+方向 A（客户端取回远端文件）= 完整；方向 B（服务器抓取本地文件）接口+serve 门落地，Win32 DROPFILES backend 独立 ticket。
+
+wire：CB_FILECONTENTS_REQUEST=0x0008（24B，可选尾部 4B clipDataId=28B，无 presence 字）；RESPONSE=0x0009（OK/FAIL，SIZE 成功恰 8B u64、RANGE 至多 cbRequested、FAIL dataLen=4）。
+请求校验失败表：body 仅 24/28 合法；msgFlags!=0 忽略（宽松）；两旗同置/零旗/0x3 外位→FAIL；SIZE 须 cb==8 且 pos==0；lindex<0 或越界→FAIL；带 clipDataId 无锁→FAIL；FORMAT_LIST 被拒→全 FAIL；offset==size→OK+0B / >size→FAIL / +count>size→截断 EOF。
+C++ 接口：proto 层 CliprdrFileContentsRequest/Response + CliprdrFileDescriptor(592B 固定布局) + CliprdrFileList；channel 层 EnableFileClip(0x04)/EnableHugeFileSupport(0x20)/RequestRemoteFileList/RequestRemoteFile/SetTransferTimeoutMs(30s)/Poll/Cancel/诊断计数；clipboard 层 FileListProvider(file_count/file_info/read_range)。
+测试：31/155 → 105/546（rtsc_cliprdr_tests）；全量 ctest 51/51；build 0err/0warn。
+审计遗留 ticket：方向B backend；真机抓包（UNVERIFIED：RANGE 分块/0x046C0000 实际值/CACHED 语义/目录枚举 0x4/mstsc capset 固定值）；D4 可选加固（单槽抢占）。
