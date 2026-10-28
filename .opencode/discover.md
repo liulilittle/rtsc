@@ -1349,3 +1349,23 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 依赖单次 `ctest` 全绿（18/166/0）作为「服务器批次稳定」的证据。
 [错误] 甲、乙各自独立复验，**都**指向同一处：`server.cpp` 的 `++registry->live` 位于 `std::thread` 构造**之前**，线程创建失败（`std::system_error`／句柄耗尽——正是本批在治的资源面）时 `live` 永久为 1 且无线程递减 → `Stop()` 的 `cv.wait(live==0)` 永久阻塞；异常还会冒出 `Run()` 的 accept 循环（该段无 try/catch）。同时两人都独立测出 `tests/test_server.cpp:854 CHECK(inputs >= 10)` 零余量（3000ms 窗口 / 300ms 超时 = 理论上限 10），实测 20 次跑挂 3 次（≈15%）。
 [下一步] ①**单次测试通过不构成稳定性证据**：门禁类判定必须多次运行并给分布（本轮实测 17/20、18/22）；②任何「期望值」必须 ≤ 理论最大值的 1/2，禁止让断言等于理论上限；③资源计数（`++live`/`++count`）必须在**资源真正创建成功之后**递增，或用作用域守卫在失败时回滚；④detached 线程的收尾（减计数 + notify）必须放在 noexcept 兜底内，保证必达。
+
+## [2026-10-28][EXEC-C] R-A/R-B/R-C/R-D/D-1：线程启动失败回滚 + detached 收尾兜底
+- [尝试] 直接「把 ++live 移到线程构造成功后」来修 R-A
+  [错误] 会引入反向竞态：线程可能先跑完并执行 `--live`，而主线程尚未 ++（size_t 下溢 → live 变成极大值 → Stop() 的 cv.wait(live==0) 永不满足）。即「先减后加」与「先加后减」两侧都危险。
+  [下一步] 保持「先注册 ++live，再启动线程」的顺序，改为**启动失败显式回滚**（erase + --live + notify_all + continue）。这样线程一旦存在必然已计数，线程不存在则必定回滚，两个方向都无窗口。新增 `ServerConfig::SessionThreadLauncher` 作为可注入失败点（测试用返回 false 的 launcher），生产默认 `std::thread(body).detach()` 并 try/catch(std::exception)。
+- [尝试] 红证注入失败时直接 `server->Stop()`（期望它不挂起）
+  [错误] pre-fix live 泄漏为 1，Stop() 的 cv.wait 会**永久阻塞**，红跑会整轮 hang 而不是 FAIL。
+  [下一步] 红证断言「live==0 / total==0 / 连接被关闭」，若 live!=0 则 `runner.detach(); server.release();` 主动放弃并继续报 FAIL（避免 hang 掩盖结论）；绿证再走完整 Stop()+join 并断言 `session_count()==0`，且切换 launcher 成功后新连接仍能到 active（证明 accept 循环未停摆）。
+- [尝试] detached 线程里只 try 包住 Run()
+  [错误] `Stop()/ScrubCredentials()/erase+--live` 都在 try 外，任一抛 → 逃出 detached 线程 → std::terminate 杀全进程（比 H-1 的线程内异常更隐蔽）。
+  [下一步] 整个 body 标 `noexcept`，Run/Stop/ScrubCredentials/加锁 erase/notify_all **逐段 try-catch(...) 兜底**，保证 `--live` 与 `notify_all()` 必执行；ScrubCredentials 标 noexcept。
+- [尝试] 用 std::memset 擦凭据后 clear()
+  [错误] 擦完立即 clear 释放，memset 可能被视为死存储被优化掉；且只擦 password 漏掉 user/domain/alternate_shell/working_dir。
+  [下一步] SecureWipe：volatile char* 逐字节写 0 再 clear（不可被优化掉），擦全部 5 个字段；~RdpSession() 再兜底调一次。
+- [尝试] multisession 三处改 total_session_count 后不再断言活跃数
+  [错误] 「断连后 live 归零」失去覆盖，R-A/R-B 类回归无法被发现。
+  [下一步] 每个 runner.join() 之后补 CHECK_EQ(server.session_count(), 0)（join 后无竞态）。
+- [尝试] tests/test_server.cpp:854 `CHECK(inputs >= 10)` 维持原样
+  [错误] 窗口 3000ms / poller 超时 300ms / 每轮至多 +1 → 理论上限恰为 10，零余量，实测 22 次跑挂 3 次（≈14% 假红）。
+  [下一步] 改为 >= 5（理论最大值的 1/2，留 2× 余量），注释写明推导与「不得为通过而无意义弱化」（仍要求 ≥5 次真实输入，才能证明输入持续流动）。
