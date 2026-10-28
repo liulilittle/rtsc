@@ -10187,3 +10187,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[EXEC-C · H-1/H-2/H-4 红证·已亲核工件]** tests/test_server.cpp:1070 server_clamps_oversized_client_geometry（FAIL :1095/:1096/:1098/:1104/:1105/:1107 六条）、:1113 server_tall_client_geometry_frame_stays_bounded（FAIL :1136/:1156/:1157，2 秒窗口读取超 64MiB 上限）、:1164 server_releases_session_when_the_client_disconnects（FAIL :1194 released / :1183 session_count got 2 want 1）、:1201 server_session_exception_only_fails_that_session（[crash] abort：bad_alloc 逃出线程 → terminate，与审计 job-object 复现一致）；其余 13 个既有用例 [OK]。
 - **[EXEC-C 常量·已亲核]** include/rtsc/server/server.h:118-120 kMaxDesktopWidth=8192 / kMaxDesktopHeight=8192 / kMaxFramebufferBytes=32MiB（注释含依据：TS_CLIENT_CORE_DATA uint16 上限 65535、65535²×4=17,179,344,900B；8192 覆盖 8K UHD；32MiB 覆盖 4K UHD 31.6MiB）；:222 session_count=活跃、:226 total_session_count=累计。
 - **[状态]** EXEC-C 进入实现（ClampDesktopSize + 溢出检查 + 线程 try/catch + y uint32 + shared_ptr 会话自注销 + 凭据擦除 + main.cpp 凭据策略）；EXEC-B 进入 S3-7' DesiredAccess；GW/DVC/PLANAR 与三个复验会话在跑。
+
+## 第592轮：审计乙复验 S6 → 可盖章（待甲一致）
+
+- **[判定表 V1-V6 全通过]** V1 规范比对（1.3.2.1 六步顺序实测 [ClipCaps,TempDirectory,FormatList]、客户端不再发 MONITOR_READY、520B 定长 UTF-16LE+双字节 NUL+剩余全 0、服务器 FORMAT_LIST_RESPONSE 可观测且不污染发送侧计数）；V2 测试台账**无弱化**（HEAD 23 → 31 = 删1+增9 精确吻合；被删用例的 16B CAPS 精确字节 CHECK_BYTES 与 2*6 长名列表原样迁入新用例；改的 6 条均追加式，36B 短名/回声抑制/读失败守卫/零长度不循环未动）；V3 红→绿真实（红证取自 47d7c24 早于修复；绿证独立重跑 31 tests/155 checks 0 fail）；V4 自写独立探针 s6_verify.cpp 30 断言全通过（旧探针因 IFileSystem::Open 增参无法重链）；V5 异常路径（重复 MR 只初始化一次/MR 早于 Start 补发一次/无 TEMP 省略 TempDir 仍发 FormatList/长名 false→36B/FAIL 可观测）；V6 自报 4 缺口全部属实。
+- **[残留（下批，非阻塞）]** R1 SendClipCaps 未按服务器能力收敛广告位（3.2.5.1.3 SHOULD，应与 server_flags_ AND）；R2 「无临时目录」分支无仓库测试（探针已验行为正确）；R3 TempDirectory 未校验绝对路径、超长静默省略；R4 cliprdr 三文件末尾换行被删（风格回归，提交前应恢复）；R5 既有缺口（GUI 无 RequestRemoteFormat 调用点 / Clipboard::write 单格式 / pending_format_ 单值 / FAIL 无后续动作）。
+- **[唯一偏离判定]** V1 中 CB_USE_LONG_FORMAT_NAMES 无条件广告属 SHOULD 级偏离，不构成驳回。
+- **[下一步]** 等组A甲独立复验一致 → 双章 → 提交 S6（提交前修 R4 尾换行）。
