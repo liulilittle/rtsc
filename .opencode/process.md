@@ -10373,3 +10373,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[实现落点]** proto：`kMaxHttpHeaderBytes=64KiB`/`kMaxHttpHeaderCount=512`/`kMaxHttpEntityBytes=128KiB` + `HttpLimits` 4 参 `parse()` 重载（原 3 参保留）；`ParseHttpHead` 修 `offset = line_end + 2`(:125)；`HttpStatusLine` 修 `compare(0,5,"HTTP/")`(:223)；`ReadEntity` 解析 CL 即拒绝、**绝不 allocate(length)**(:153)。net：`ReadChunk()` 统一预算（字节/次数/无进展时长）；`ReadResponse`/`ProcessIncoming`/`Read`/`Exchange` 全部有界；`InvalidLength` 报 "exceeded a size limit" **不重试放大**。动态配置经 `Limits()` 注入，有专门用例证明「默认拒 200000B → 抬到 256KiB 后放行」。
 - **[父代理裁决]** ①`http_message_parse_does_not_keep_stale_headers:718` 的 `size()==1` 是**笔误**（该 wire 实含 `X-Second` + `Content-Length` 两条），授权改为 2 并加注释（保留 `X-First==nullptr` 防残留断言）；②`max_session_read_bytes` 默认 8MiB 对真实会话过小，内存安全实际由每消息上限保证 → 改为 0(不限) 或 1GiB（说明理由），测试侧显式传值验证上限仍有效；③`session_timeout_ms` 实现为**无进展超时**正确，保留。
 - **[测试端口]** 全仓硬编码端口清单已摸清：`test_server.cpp` 3390-3398/3480-3488（18 处）、`test_gateway.cpp:601-602` 3401/3402、`test_gui_send.cpp:90` 3396、`test_rdp_standard_security.cpp:259/326` 3394/3395。已派 EXEC-PORT `ses_e7f660d3effeTggdZeeKXYivMV` 改为运行时分配（推荐 ServerConfig.port=0 + 暴露 bound_port()，无 TOCTOU），要求 RED（外部占端口→用例失败）+ GREEN（30 次连跑 0 失败 + 并发两份各 5 次 0 失败）。
+
+## 第612轮：A1 双审完全收敛，契约锁定 E13/E14/E15（三条正交验收判据）
+
+- **[双审收敛]** 甲、乙就以下四点完全一致（各自独立探针互证）：①**E8=C 式**（`((2d+1)*S-1)/(2D)`，双轴同式）；②**降采样=面积平均**（乙 `evidence.exe` P-A：0.5x 条纹 ours 全 0 vs area 128×8、0.25x ramp ours `0 128` vs area `48 176`、0.8x ours `0 64 128 191` vs area `10 71 133 194`）；③**D7 必须修 x+y 双偏移**（乙 P-C：naive 放宽 `vt=1920x1080@(0,60)` 越界 60 行、错 2,071,680 像素）；④**`test_view.cpp:477-504` 需重写**（乙 P-D4b：ours `(142,170,170)` vs GDI/E8 `(255,0,0)`）。
+- **[E13 三条正交判据（取代"⊆ 源集合"）]** (A) **低频内容**必须逐像素等于 E8/C 相位（生产宽度 4 组 `maxdiff=0`，可作黄金标准）；(B) **变异守卫**：`dst` 颜色集合 ⊆ `src`，新值占比必须 0（不依赖 GDI；nearest 恒 0%，双线性/面积 >0）；(C) **1px 2D 棋盘不设断言**，仅记偏离（乙扫描 S=2..482：`≤46→128`、`50..122→0/255`、`≥130→128`；甲 ≤48/56..128/≥160，结论一致）。
+- **[E14 单轴/双轴区分]** `16x8: 单轴(→8x8)=127, 双轴(→8x4)=128`（16x16/16x32 同型）。本仓统一 round-half-up，单轴也得 128 → **有意偏离 D-1**，测试按实现口径写并注释 GDI 单轴为 127。
+- **[E15 非整数相位容差]** `1.375x`(8→11) GDI `0 36 36 72 108 108 144 180 216 216 252` ≠ 端点锚定式（差 1 格）→ 非整数升采样按 E8 实现、验收允许 **≤1 源像素差**；整数倍与 1.5x/2x/3x 仍精确断言。
+- **[乙的关键洞察·写入 E13-B]** GDI 在二维高频内容上注入 1.71% 源外新值（P-H，`natural 1920x240→3840x480` GDI-vs-C `maxdiff=36`）→ **GDI 不能作唯一黄金标准**，必须配"不依赖 GDI 的变异守卫"。
+- **[在途]** EXEC-A1 已收到 E13/E14/E15 全部口径，继续红用例→实现→绿证→五套变异反证。EXEC-PORT 同步在改测试端口为运行时分配（消除伪造失败）。
