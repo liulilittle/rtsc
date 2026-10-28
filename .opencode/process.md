@@ -10634,3 +10634,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 执行子 `ses_e7c8294a5ffeToJLdRon4Agorb` 完成 DropFileList（DROPFILES 头解析/fWide 门/pFiles 防御/basename/惰性 size/read_range append+截断），30/84 绿 + 3 变异红→绿；main.cpp 方向B 集成（WM_CLIPBOARDUPDATE→provider 会话级）；CMake 新增 rtsc_clipboard_tests。
 - 已派甲乙复核（prompt 续 FILECONTENTS 组会话）：甲=解析正确性/生命周期/CMake；乙=分支完备/失败路径/悬垂判定。
 - 下一步：复核章→C0+提交；真机抓包 wire 裁决（cliprdr+rdpsnd）。
+## 第645轮：方向B 双审盖章入库 b09c4cf
+- 甲乙一致盖章（甲：解析/生命周期/CMake 全过 + D-B1 复验；乙：分支完备/失败路径 + D-B1 端到端 FAIL）。返修 1 项（缺失文件 SIZE MUST FAIL）。
+- 主侧 C0：build 0err/0warn；ctest 52 套件中 51 绿，view bench 因外部 il2cpp 构建 CPU 争用红（已知非代码，discover.md）。
+- 提交 b09c4cf（direction-B backend）+ 证据文档。
+- 剩余：①view 独占复跑待争用窗口；②真机 wire 裁决（cliprdr capset/rdpsnd TSSNDCAPS）；③GUI 真拖放端到端；④A5-A7 富余项（EnableSmartSizing/多屏 UI）。
