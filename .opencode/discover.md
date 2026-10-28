@@ -1324,3 +1324,7 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] 顺带项：库默认 accept_any_credentials=true 静默不安全
   [错误] 若直接改 false 会破坏既有服务器测试（它们依赖默认接受）与外部调用契约
   [下一步] 不改默认值，改为 Start() 一次 WARNING（`warned_accept_all` 去重），说明 accept_any_credentials/authenticator 状态；CLI 已显式设 false + SetAuthenticator，故 CLI 路径不打印（实测 stderr 为空）。测试套件因用默认配置会打印该 WARNING（属预期）。
+## [2026-10-28][网关] 34GB 内存事故根因：header 循环不推进 offset
+[尝试] 按「Content-Length 无上限」方向修网关内存问题（先加实体大小上限）。
+[错误] 真正的无界点在 `ParseHttpHead` 的 header 循环：`offset` 从未推进，带任何一个 header 的响应都会把同一行无限 append（CDB 栈 `ParseHttpHead+0x153 [gateway.cpp @100]` → `BytesToString` 每轮 RtlAllocateHeap）。因此 40 字节的最小响应即可活锁；只加 CL 上限不能阻止该路径。
+[下一步] ①任何「解析循环」必须先审查迭代变量是否推进（本轮同类：drdynvc 重组、rdpdr 目录枚举）；②上限要覆盖三处：解析块长度、元素个数（防 1 字节 header 洪泛）、实体长度；③传输层必须有单会话总字节/次数/时长预算，禁止只依赖对端关闭；④跑网关类测试必须用 `RTSC_TEST_FILTER` 单用例 + watchdog，禁止整套一次性跑。

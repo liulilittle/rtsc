@@ -10295,3 +10295,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[H-4 驳回·新发现]** 会话对象已即时释放（3 轮 `session_count()==0`、`total`=1,2,3 单调、ScrubCredentials :1554、erase :1560），但**每连接净泄漏 1 个线程句柄**：8 轮 HandleCount 107→111,113,114,115..119（第 3 轮起严格 +1），Threads 恒 5，Stop 后不回落。根因 `server.cpp:1543` `threads.emplace_back` 永不清理（仅 `:1611-1616` Stop 时 join）→ `threads` 向量无界增长。已派修（线程自摘除或 jthread+live 计数，Stop 仍须等待退出）。
 - **[凭据可盖章·附嵌入方风险]** 默认 enforced（日志 `credentials: enforced (account rtsc@NTDEV ...)`）；不匹配 → `handshake failed ... peer closed`，live 1→0；`--allow-any-credentials` → 显式 WARNING 且任意账号可连。**库默认 `server.h:66 accept_any_credentials = true` 仍不安全**（嵌入方静默 accept-all）→ 建议改 false 或加显式策略开关。
 - **[F7 红证归属确认]** dump `...082223-42316.txt`：`exception_code=0xC0000005`、`param[0]=0x1`（写违例）→ **H-1a TestPattern 空 vector 越界写**（width==0 且 height>0）；`0xC0000094` 是 **H-1b**（width==0 且 height==0 走到 `65535/chunk_row` 除零）。二者根因/位置不同，禁止合并叙述；现均已封堵（:1214 守卫、:1640 TestPattern 守卫、:1226 y 改 uint32）。
+
+## 第604轮：34GB 内存事故根因已定位并修复（网关 proto 层）
+
+- **[根因·可执行定位]** `src/proto/gateway.cpp` `ParseHttpHead` 的 header 循环**从不推进 offset**（缺 `offset = line_end + 2`）→ 任何带 ≥1 个 header 的响应会把同一行无限 `push_back` 到 `headers`，内存无界增长。CDB 现场栈：`rtsc::proto::ParseHttpHead+0x153 [gateway.cpp @100]` ← `HttpMessage::parse+0x8a [@240]`，栈顶 `BytesToString` 每轮 `RtlAllocateHeap`。
+- **[第二个缺陷]** `HttpStatusLine::parse` 用 `line.compare(0, first, "HTTP/")`（token 长度 8 比 5 字符字面量）→ 恒 InvalidType，正常响应一律解析失败。
+- **[第三个缺陷]** 传输层旧实现只有 `kMaxBuffered=256KiB` + connect 超时，**无**单会话总字节/读取次数/总时长上限；`Read()`/`ProcessIncoming()`/`Exchange()` 三个 `for(;;)` 只靠对端关闭退出。
+- **[红证·有限恶意输入]** ①`Content-Length: 4294967295`（47B wire）→ 3.03s/peakPriv 363.5MB 被 300MB 闸刀 kill；②头 85,109B → 0.53s/340MB kill；③**单条 header 即活锁**（40B wire）→ 0.37s/363MB kill。整套跑在 watchdog 512MB 下 3s 内 kill（peakWS 628.8MB/peakPriv 815.7MB），停在 `http_message_consumes_the_content_length_entity`。
+- **[修复·已亲核]** `gateway.cpp:125` `offset = line_end + 2`（注释直指该缺陷）+ 双上限 `kMaxHttpHeaderBytes=64KiB`、`kMaxHttpHeaderCount=512`；`gateway.h:73` `kMaxHttpEntityBytes=128KiB`（依据 RDG HTTP_DATA_PACKET 合法上限 65,545B）；`ReadEntity` 解析 CL 时即拒绝，绝不 `allocate(length)`；`gateway_transport.cpp:499-520` `ReadChunk` 统一预算（8MiB 总字节 / 32Ki 次数 / 30s 总时长 / 4KiB 固定栈缓冲），四个循环全部改有界。
+- **[绿证]** 单用例 watchdog 200MB：peakWS 1.9~7.0MB、peakPriv 0.4~1.4MB，全 [OK]。4 条安全用例已就位（`:1316/1330/1348/1373`），待补第 3 条（4KiB×256 片停供）与分批全套绿证。
+- **[测试基建]** 新增 `tests/test_main.h` 的 `RTSC_TEST_FILTER`（默认行为不变）→ 单用例隔离跑，避免整套触发事故。
+- **[基线红项·不属本任务]** `http_message_parse_does_not_keep_stale_headers`（`test_gateway.cpp:605` 期望 1 条，实际 2 条；与 `:581` 自相矛盾）属 RDGSP 功能任务未完成期望，本任务不改。
