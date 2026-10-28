@@ -10608,3 +10608,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **A5 rdpsnd**：`docs/spec/rdpsnd-evidence.md`（0e96110）锚点：rdpsnd 通道串 @0x1807e6xxx、"CRdpSndPlugin"@0x1807e7020、插件工厂 FUN_1804f5274、通道初始化 FUN_1804f3d18（本批发现其仅生命周期日志，非格式协商→需更深层定位 TSSNDCAPS 构造）。
 - **C0**：去重 view bench 已确认非代码（il2cpp 争用）；50/51 绿基线。
 - **下一步**：等 FILECONTENTS 双审定案 → 报主定案 → 执行 TDD → 双审复核 → 盖章；A5 TSSNDCAPS 深挖。
+
+## 第640轮：FILECONTENTS 执行完成 + 甲乙复核派发
+
+- 执行子 `ses_e7cda5bbeffeX4X5wjC9sjeRSC` 完成方向 A（86/422，5 变异红→绿）：proto+channel+clipboard 接口、F1-F15、Serve/Take 门、4 缺陷修复、main.cpp 接线（EnableFileClip+Poll）。工作树 7 文件改动未提交。
+- **执行子登记 2 处需审计裁决**：①FCR parse 白名单扩到 {24,32}（删 28-32 判定取舍）；②§6 测试清单未逐条对表（缺失测试风险）。
+- 甲乙复核已派发（prompt 续既有会话）：甲对 §6 逐条对表+FCR 白名单 wire 裁决；乙独立探针抽查 F 路径+状态机收敛。
+- **下一步**：复核结果→若驳回转执行子修→盖章后我做 C0 全量+提交。
