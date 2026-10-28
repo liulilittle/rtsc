@@ -165,12 +165,14 @@ struct InputEvent {
     uint16_t x = 0;
     uint16_t y = 0;
 
-    // kMouseButton (button: 1 = left, 2 = right, 3 = middle)
+    // kMouseButton (button: 1 = left, 2 = right, 3 = middle, 4 = X1, 5 = X2)
     uint8_t button = 0;
     bool button_down = false;
 
-    // kMouseWheel (positive = up)
+    // kMouseWheel (positive = up / right). `horizontal` selects the HWHEEL
+    // pointer flag; Win32 delivers horizontal scrolling as WM_MOUSEHWHEEL.
     int16_t wheel_delta = 0;
+    bool horizontal = false;
 
     // kUiCommand: one of the kCmd* ids above (zoom preset index, fit, smart
     // sizing, fullscreen, connection info, smart card).

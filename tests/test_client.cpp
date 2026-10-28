@@ -145,6 +145,47 @@ RTSC_TEST(client_encodes_mouse_wheel) {
     CHECK_EQ(pdu[4], static_cast<uint8_t>(0x03));
 }
 
+RTSC_TEST(client_encodes_mouse_hwheel) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.horizontal = true;
+    w.wheel_delta = 1;  // scroll right
+    const auto pdu = c.EncodeInput(w);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(9));
+    // PTRFLAGS_HWHEEL (0x0400) | 1 = 0x0401. A horizontal wheel must not carry
+    // PTRFLAGS_WHEEL (0x0200), or the remote scrolls vertically instead.
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x01));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x04));
+}
+
+RTSC_TEST(client_encodes_xbuttons_as_extended_mouse_events) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent x1;
+    x1.kind = InputEvent::Kind::kMouseButton;
+    x1.button = 4;  // X1
+    x1.button_down = true;
+    const auto pdu = c.EncodeInput(x1);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(9));
+    // eventCode 2 = MOUSEX (0x40 in the header byte), so X buttons are not
+    // indistinguishable from the left button.
+    CHECK_EQ(pdu[2], static_cast<uint8_t>(0x40));
+    // PTRFLAGS_DOWN (0x8000) | PTRFLAGS_BUTTON1 (0x1000) = 0x9000.
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x00));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x90));
+
+    InputEvent x2;
+    x2.kind = InputEvent::Kind::kMouseButton;
+    x2.button = 5;  // X2
+    x2.button_down = true;
+    const auto pdu2 = c.EncodeInput(x2);
+    CHECK_EQ(pdu2.size(), static_cast<size_t>(9));
+    CHECK_EQ(pdu2[2], static_cast<uint8_t>(0x40));
+    // PTRFLAGS_DOWN | PTRFLAGS_BUTTON2 (0x2000) = 0xA000.
+    CHECK_EQ(pdu2[3], static_cast<uint8_t>(0x00));
+    CHECK_EQ(pdu2[4], static_cast<uint8_t>(0xA0));
+}
+
 RTSC_TEST(client_ignores_close_event) {
     Client c(MakeDriver(), 16, 16);
     InputEvent e;

@@ -210,11 +210,21 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             if (ev.button == 1) flags |= proto::kPtrButton1;
             if (ev.button == 2) flags |= proto::kPtrButton2;
             if (ev.button == 3) flags |= proto::kPtrButton3;
+            // X1/X2 reuse BUTTON1/BUTTON2 on a POINTERX event, which is what
+            // distinguishes them from the left/right buttons ([MS-RDPBCGR]
+            // 2.2.8.1.1.3.1.1.3: the extended mouse event carries the same
+            // button bits plus the XBUTTON semantics).
+            const bool extended =
+                (ev.button == 4 || ev.button == 5);
+            if (ev.button == 4) flags |= proto::kPtrButton1;
+            if (ev.button == 5) flags |= proto::kPtrButton2;
             if (ev.button_down) flags |= proto::kPtrDown;
-            return EncodeFastPathInputPdu({EncodeMouseEvent(flags, ev.x, ev.y)});
+            return EncodeFastPathInputPdu(
+                {EncodeMouseEvent(flags, ev.x, ev.y, extended)});
         }
         case ui::InputEvent::Kind::kMouseWheel: {
-            uint16_t flags = proto::kPtrWheel;
+            uint16_t flags =
+                ev.horizontal ? proto::kPtrHwheel : proto::kPtrWheel;
             const int16_t delta = ev.wheel_delta;
             const int16_t magnitude =
                 static_cast<int16_t>(delta < 0 ? -delta : delta);

@@ -420,25 +420,57 @@ class Win32Window final : public Window {
             case WM_RBUTTONDOWN:
             case WM_RBUTTONUP:
             case WM_MBUTTONDOWN:
-            case WM_MBUTTONUP: {
+            case WM_MBUTTONUP:
+            case WM_XBUTTONDOWN:
+            case WM_XBUTTONUP: {
                 InputEvent e;
                 e.kind = InputEvent::Kind::kMouseButton;
                 e.x = static_cast<uint16_t>(LOWORD(lp));
                 e.y = static_cast<uint16_t>(HIWORD(lp));
-                e.button = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)
-                               ? 1
-                               : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? 2
-                                                                                : 3;
-                e.button_down = (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN ||
-                                 msg == WM_MBUTTONDOWN);
+                if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP) {
+                    // GET_XBUTTON_WPARAM is 1 for X1 and 2 for X2.
+                    e.button = static_cast<uint8_t>(
+                        3 + GET_XBUTTON_WPARAM(wp));
+                } else {
+                    e.button = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)
+                                   ? 1
+                                   : (msg == WM_RBUTTONDOWN ||
+                                      msg == WM_RBUTTONUP)
+                                         ? 2
+                                         : 3;
+                }
+                const bool down = (msg == WM_LBUTTONDOWN ||
+                                   msg == WM_RBUTTONDOWN ||
+                                   msg == WM_MBUTTONDOWN ||
+                                   msg == WM_XBUTTONDOWN);
+                e.button_down = down;
+                // Capture while a button is held so a drag that leaves the
+                // window still delivers the release; otherwise the remote side
+                // stays stuck in a drag. Released once every button is up.
+                if (down) {
+                    if (capture_buttons_ == 0) SetCapture(hwnd_);
+                    ++capture_buttons_;
+                } else if (capture_buttons_ > 0) {
+                    if (--capture_buttons_ == 0) ReleaseCapture();
+                }
                 events_.push_back(e);
                 return true;
             }
-            case WM_MOUSEWHEEL: {
+            case WM_MOUSEWHEEL:
+            case WM_MOUSEHWHEEL: {
                 InputEvent e;
                 e.kind = InputEvent::Kind::kMouseWheel;
                 e.wheel_delta =
                     static_cast<int16_t>(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
+                e.horizontal = (msg == WM_MOUSEHWHEEL);
+                // The pointer position has to travel with the wheel event: the
+                // remote decides where to scroll from it. WM_MOUSEWHEEL carries
+                // *screen* coordinates, unlike the other mouse messages.
+                POINT pt{GET_X_LPARAM(wp), GET_Y_LPARAM(wp)};
+                if (::ScreenToClient(hwnd_, &pt)) {
+                    e.x = static_cast<uint16_t>(pt.x < 0 ? 0 : pt.x);
+                    e.y = static_cast<uint16_t>(pt.y < 0 ? 0 : pt.y);
+                }
                 events_.push_back(e);
                 return true;
             }
@@ -686,6 +718,9 @@ class Win32Window final : public Window {
     std::function<void()> clipboard_callback_;
     WinKeyMode win_key_mode_ = WinKeyMode::kRemote;
     Win32KeyState key_state_;
+    // How many mouse buttons are currently held; the first one installs
+    // SetCapture so a drag out of the window still delivers the release.
+    int capture_buttons_ = 0;
     bool pause_down_ = false;
     bool fullscreen_ = false;
     RECT saved_rect_{};
