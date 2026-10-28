@@ -49,6 +49,11 @@ struct SessionSetupState {
     // size, but the server's answer is authoritative for a lossless 1:1 view.
     uint16_t desktop_width = 0;
     uint16_t desktop_height = 0;
+    // The server's advertised Input capability flags (TS_INPUT_CAPABILITYSET
+    // inputFlags, [MS-RDPBCGR] 2.2.7.1.6). Gates client input features the
+    // server did not accept, e.g. PTRFLAGS_HWHEEL MUST NOT be sent unless
+    // INPUT_FLAG_MOUSE_HWHEEL (0x0100) is set.
+    uint16_t server_input_flags = 0;
     // Multi-monitor layout reported by the server's optional Monitor Layout PDU
     // (2.2.12.1). Empty until that PDU arrives; a single-monitor session never
     // sends it, so the client keeps its single-surface path.

@@ -125,14 +125,22 @@ SessionStep SessionSetupMachine::HandleDemandActive(const uint8_t* data,
     // The server's answer is authoritative for the desktop size: the client
     // advertises a size, but the Demand Active bitmap capability is what the
     // session actually uses, and a 1:1 lossless view must match it exactly.
+    // Both the Bitmap and the Input sets are consumed; the Input flags gate
+    // client-sent features, so the scan must not break at the first match.
     for (const auto& set : da.capabilities.sets) {
+        if (set.type == CapabilityType::kInput) {
+            InputCapabilitySet input;
+            if (InputCapabilitySet::parse(set, input) == Status::Ok) {
+                state_.server_input_flags = input.input_flags;
+            }
+            continue;
+        }
         if (set.type != CapabilityType::kBitmap) continue;
         BitmapCapabilitySet bmp;
         if (BitmapCapabilitySet::parse(set, bmp) == Status::Ok) {
             state_.desktop_width = bmp.desktop_width;
             state_.desktop_height = bmp.desktop_height;
         }
-        break;
     }
 
     // Build Confirm Active.

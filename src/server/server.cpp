@@ -1392,9 +1392,20 @@ class RdpSession {
                     }
                     if ((pf & proto::kPtrDown) != 0) {
                         ev.button_down = true;
-                        if ((pf & proto::kPtrButton3) != 0) ev.button = 3;
-                        else if ((pf & proto::kPtrButton2) != 0) ev.button = 2;
-                        else if ((pf & proto::kPtrButton1) != 0) ev.button = 1;
+                        if (static_cast<proto::FastPathInputEventCode>(code) ==
+                            proto::FastPathInputEventCode::kMouseX) {
+                            // PTRXFLAGS ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.4):
+                            // X1 = 0x0001, X2 = 0x0002. Decoding the PTRFLAGS
+                            // bits here aliased X2 on the right button.
+                            if ((pf & proto::kPtrXButton2) != 0) ev.button = 5;
+                            else if ((pf & proto::kPtrXButton1) != 0) ev.button = 4;
+                        } else if ((pf & proto::kPtrButton3) != 0) {
+                            ev.button = 3;
+                        } else if ((pf & proto::kPtrButton2) != 0) {
+                            ev.button = 2;
+                        } else if ((pf & proto::kPtrButton1) != 0) {
+                            ev.button = 1;
+                        }
                     }
                     break;
                 }

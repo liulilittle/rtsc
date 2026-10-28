@@ -189,7 +189,7 @@ struct InputEvent {
     // kMouse / kWheel
     uint16_t x = 0;
     uint16_t y = 0;
-    uint16_t button = 0;   // 1 = left, 2 = middle, 3 = right
+    uint16_t button = 0;   // 1 = left, 2 = right, 3 = middle, 4 = X1, 5 = X2
     bool button_down = false;
     int16_t wheel_delta = 0;
 

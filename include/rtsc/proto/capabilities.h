@@ -222,11 +222,16 @@ struct InputCapabilitySet {
     static constexpr uint16_t kInputFlagMouse = 0x0002;
     static constexpr uint16_t kInputFlagMouseX = 0x0004;
     static constexpr uint16_t kInputFlagUnicode = 0x0010;
+    static constexpr uint16_t kInputFlagMouseHWheel = 0x0100;
     static constexpr uint16_t kInputFlagQoeTimestamps = 0x0200;
 
-    // At a minimum INPUT_FLAG_SCANCODES MUST be set.
+    // At a minimum INPUT_FLAG_SCANCODES MUST be set. INPUT_FLAG_MOUSE_HWHEEL is
+    // advertised because the client can send PTRFLAGS_HWHEEL; [MS-RDPBCGR]
+    // 2.2.8.1.1.3.1.1.1 forbids sending it to a server that did not indicate
+    // support in its own Input Capability Set.
     uint16_t input_flags = kInputFlagScancodes | kInputFlagMouse |
-                           kInputFlagMouseX | kInputFlagUnicode;
+                           kInputFlagMouseX | kInputFlagUnicode |
+                           kInputFlagMouseHWheel;
     uint32_t keyboard_layout = 0x00000409;
     uint32_t keyboard_type = 4;  // IBM enhanced 101/102
     uint32_t keyboard_sub_type = 0;

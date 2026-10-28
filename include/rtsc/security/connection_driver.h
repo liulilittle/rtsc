@@ -123,6 +123,15 @@ class ConnectionDriver {
 
     bool session_active() const { return session_ != nullptr && session_->active(); }
 
+    // Whether the server advertised INPUT_FLAG_MOUSE_HWHEEL (0x0100) in the
+    // Demand Active Input capability set. False before the Demand Active PDU is
+    // processed; [MS-RDPBCGR] forbids sending PTRFLAGS_HWHEEL otherwise.
+    bool server_supports_hwheel() const {
+        if (session_ == nullptr) return false;
+        return (session_->state().server_input_flags &
+                proto::InputCapabilitySet::kInputFlagMouseHWheel) != 0;
+    }
+
     // The desktop size the server granted, taken from the Demand Active bitmap
     // capability set. Before that PDU is processed this falls back to the size
     // the client advertised (machine_config_), so a caller can always size its

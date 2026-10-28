@@ -98,6 +98,34 @@ SessionSetupMachine::Config MakeConfig() {
     return c;
 }
 
+// A minimal TS_DEMAND_ACTIVE_PDU carrying exactly `sets`, wrapped in the MCS
+// Send Data frame SessionSetupMachine::OnPdu consumes.
+std::vector<uint8_t> DemandActiveWithSets(
+    const std::vector<CapabilitySet>& sets) {
+    ByteWriter caps;
+    uint16_t count = 0;
+    uint16_t combined = 0;
+    WriteCapabilitySets(caps, sets, count, combined);
+    const std::string src = "RTSC";
+    ByteWriter w;
+    // totalLength = share control (6) + shareID (4) + lenSrc/lenCombined (4)
+    //             + src + numberCap/pad2 (4, inside combined) + sets + sessionId.
+    w.u16le(static_cast<uint16_t>(14 + src.size() + combined + 4));
+    w.u16le(0x0011);  // pduType: type 1 (Demand Active), version 1
+    w.u16le(0x03EA);  // pduSource = server channel
+    w.u32le(0x000103EA);  // shareID
+    w.u16le(static_cast<uint16_t>(src.size()));
+    w.u16le(combined);
+    if (!src.empty()) {
+        w.bytes(reinterpret_cast<const uint8_t*>(src.data()), src.size());
+    }
+    w.u16le(count);
+    w.u16le(0);  // pad2Octets
+    w.bytes(caps.data().data(), caps.size());
+    w.u32le(0);  // sessionId
+    return ServerPdu(w.take());
+}
+
 }  // namespace
 
 RTSC_TEST(session_setup_starts_waiting_for_demand_active) {
@@ -105,6 +133,32 @@ RTSC_TEST(session_setup_starts_waiting_for_demand_active) {
     CHECK(m.state().phase == SessionPhase::kInit);
     m.Start();
     CHECK(m.state().phase == SessionPhase::kWaitDemandActive);
+}
+
+RTSC_TEST(session_setup_stores_server_input_flags) {
+    // The Input capability set parsing is what gates client-sent features like
+    // PTRFLAGS_HWHEEL: a server that advertises INPUT_FLAG_MOUSE_HWHEEL
+    // (0x0100) is recorded as supporting it, one that does not stays clear.
+    InputCapabilitySet in;  // the default client set includes 0x0100
+    CHECK((in.input_flags & InputCapabilitySet::kInputFlagMouseHWheel) != 0);
+
+    SessionSetupMachine supported(MakeConfig());
+    supported.Start();
+    const std::vector<uint8_t> with_wire = DemandActiveWithSets({in.encode()});
+    auto step = supported.OnPdu(with_wire.data(), with_wire.size());
+    CHECK(!step.failed);
+    CHECK((supported.state().server_input_flags &
+           InputCapabilitySet::kInputFlagMouseHWheel) != 0);
+
+    InputCapabilitySet bare;
+    bare.input_flags = in.input_flags & ~InputCapabilitySet::kInputFlagMouseHWheel;
+    SessionSetupMachine unsupported(MakeConfig());
+    unsupported.Start();
+    const std::vector<uint8_t> no_wire = DemandActiveWithSets({bare.encode()});
+    step = unsupported.OnPdu(no_wire.data(), no_wire.size());
+    CHECK(!step.failed);
+    CHECK((unsupported.state().server_input_flags &
+           InputCapabilitySet::kInputFlagMouseHWheel) == 0);
 }
 
 RTSC_TEST(session_setup_demand_active_emits_finalization_batch) {

@@ -343,6 +343,24 @@ RTSC_TEST(input_set_is_88_bytes_and_requires_scancodes) {
     CHECK_EQ(back.ime_file_name.size(), static_cast<size_t>(64));
 }
 
+RTSC_TEST(input_set_advertises_and_roundtrips_hwheel_flag) {
+    // The client can emit PTRFLAGS_HWHEEL, so its own Input capability set must
+    // claim INPUT_FLAG_MOUSE_HWHEEL (0x0100) and the parse must preserve it.
+    InputCapabilitySet i;
+    CHECK((i.input_flags & InputCapabilitySet::kInputFlagMouseHWheel) != 0);
+    InputCapabilitySet back;
+    CHECK(InputCapabilitySet::parse(i.encode(), back) == Status::Ok);
+    CHECK_EQ(back.input_flags, i.input_flags);
+
+    // A flag combination without 0x0100 parses with the bit clear.
+    InputCapabilitySet bare;
+    bare.input_flags = InputCapabilitySet::kInputFlagScancodes |
+                       InputCapabilitySet::kInputFlagMouse;
+    InputCapabilitySet back_bare;
+    CHECK(InputCapabilitySet::parse(bare.encode(), back_bare) == Status::Ok);
+    CHECK((back_bare.input_flags & InputCapabilitySet::kInputFlagMouseHWheel) == 0);
+}
+
 RTSC_TEST(pointer_set_is_10_bytes) {
     PointerCapabilitySet p;
     p.color_pointer_cache_size = 32;

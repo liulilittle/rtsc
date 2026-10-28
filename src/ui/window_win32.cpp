@@ -90,6 +90,11 @@ bool HasSystemItems(HMENU menu) {
 // messages (lParam scancode field 0) do not, and the virtual key still tells us
 // the key is extended. VK_LCONTROL/VK_CONTROL are deliberately absent: 0x1D is
 // shared with VK_RCONTROL, which is listed.
+//
+// VK_NUMLOCK is deliberately absent: NumLock is never extended, and Pause (its
+// scancode twin 0x45) is handled on its own two-key path. VK_SNAPSHOT is kept
+// because PrintScreen's set-1 scancode (0x37) can be 0xE0-prefixed on some
+// keyboards, but that classification is UNVERIFIED against a real machine.
 bool IsInherentExtendedVirtualKey(uint32_t vk) {
     switch (vk) {
         case VK_RCONTROL:
@@ -106,8 +111,7 @@ bool IsInherentExtendedVirtualKey(uint32_t vk) {
         case VK_UP:
         case VK_RIGHT:
         case VK_DOWN:
-        case VK_NUMLOCK:
-        case VK_SNAPSHOT:
+        case VK_SNAPSHOT:  // unverified: may be 0xE0 0x37 or plain 0x37
         case VK_DIVIDE:
             return true;
         default:
@@ -275,6 +279,7 @@ class Win32Window final : public Window {
 
     void Close() override {
         ReleaseHeldKeys();
+        ReleaseHeldButtons();
         if (hwnd_ != nullptr) {
             DestroyWindow(hwnd_);
             hwnd_ = nullptr;
@@ -293,16 +298,23 @@ class Win32Window final : public Window {
         switch (msg) {
             case WM_CLOSE:
                 ReleaseHeldKeys();
+                ReleaseHeldButtons();
                 closed_ = true;
                 PostQuitMessage(0);
                 return false;  // DefWindowProc destroys the window
             case WM_KILLFOCUS:
                 ReleaseHeldKeys();
+                ReleaseHeldButtons();
                 return false;
             case WM_ACTIVATE:
                 // WA_INACTIVE is the observable focus-loss path for backends
-                // that get WM_ACTIVATE without a WM_KILLFOCUS.
-                if (LOWORD(wp) == WA_INACTIVE) ReleaseHeldKeys();
+                // that get WM_ACTIVATE without a WM_KILLFOCUS. Both the held
+                // keys and the held mouse buttons are released so the remote
+                // does not keep them latched.
+                if (LOWORD(wp) == WA_INACTIVE) {
+                    ReleaseHeldKeys();
+                    ReleaseHeldButtons();
+                }
                 return false;
             case WM_SIZE: {
                 const int w = LOWORD(lp);
@@ -410,8 +422,14 @@ class Win32Window final : public Window {
             case WM_MOUSEMOVE: {
                 InputEvent e;
                 e.kind = InputEvent::Kind::kMouseMove;
-                e.x = static_cast<uint16_t>(LOWORD(lp));
-                e.y = static_cast<uint16_t>(HIWORD(lp));
+                // lParam position is signed 16-bit; at the left/upper screen
+                // edge it can go negative and LOWORD/HIWORD wrap it to ~65535.
+                const int mx = GET_X_LPARAM(lp);
+                const int my = GET_Y_LPARAM(lp);
+                last_mouse_x_ = mx;
+                last_mouse_y_ = my;
+                e.x = static_cast<uint16_t>(mx < 0 ? 0 : mx);
+                e.y = static_cast<uint16_t>(my < 0 ? 0 : my);
                 events_.push_back(e);
                 return true;
             }
@@ -425,8 +443,13 @@ class Win32Window final : public Window {
             case WM_XBUTTONUP: {
                 InputEvent e;
                 e.kind = InputEvent::Kind::kMouseButton;
-                e.x = static_cast<uint16_t>(LOWORD(lp));
-                e.y = static_cast<uint16_t>(HIWORD(lp));
+                // Same signed-position handling as WM_MOUSEMOVE.
+                const int bx = GET_X_LPARAM(lp);
+                const int by = GET_Y_LPARAM(lp);
+                last_mouse_x_ = bx;
+                last_mouse_y_ = by;
+                e.x = static_cast<uint16_t>(bx < 0 ? 0 : bx);
+                e.y = static_cast<uint16_t>(by < 0 ? 0 : by);
                 if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP) {
                     // GET_XBUTTON_WPARAM is 1 for X1 and 2 for X2.
                     e.button = static_cast<uint8_t>(
@@ -444,32 +467,65 @@ class Win32Window final : public Window {
                                    msg == WM_MBUTTONDOWN ||
                                    msg == WM_XBUTTONDOWN);
                 e.button_down = down;
-                // Capture while a button is held so a drag that leaves the
-                // window still delivers the release; otherwise the remote side
-                // stays stuck in a drag. Released once every button is up.
+                // Track the held buttons in a bitmask and derive the capture
+                // lifetime from it: the first press installs SetCapture so a
+                // drag that leaves the window still delivers the release, and
+                // the last release drops it. A release that is lost (capture
+                // stolen, see WM_CAPTURECHANGED) never strands the counter: the
+                // mask is cleared and the missing up synthesised there.
+                const uint32_t bit = 1u << e.button;
                 if (down) {
-                    if (capture_buttons_ == 0) SetCapture(hwnd_);
-                    ++capture_buttons_;
-                } else if (capture_buttons_ > 0) {
-                    if (--capture_buttons_ == 0) ReleaseCapture();
+                    if (held_buttons_ == 0) SetCapture(hwnd_);
+                    held_buttons_ |= bit;
+                } else {
+                    held_buttons_ &= ~bit;
+                    if (held_buttons_ == 0) ReleaseCapture();
                 }
                 events_.push_back(e);
                 return true;
             }
+            case WM_CAPTURECHANGED: {
+                // The window lost the mouse capture (it was stolen by another
+                // window, or released earlier). Any button that is still held
+                // has lost its natural release message, so synthesise the ups
+                // and clear the set; the next press re-arms SetCapture. A
+                // normal ReleaseCapture at the last real up already cleared the
+                // mask, so nothing is emitted here in the common case.
+                ReleaseHeldButtons();
+                return false;  // DefWindowProc keeps the bookkeeping
+            }
             case WM_MOUSEWHEEL:
             case WM_MOUSEHWHEEL: {
+                // Sub-notch mice report deltas of a fraction of WHEEL_DELTA
+                // (120); the old integer division truncated 40/120 to 0 and
+                // silently dropped the scroll. The raw delta is accumulated per
+                // axis and an event is emitted only whenever a whole notch
+                // crosses, carrying the sign; a delta that does not reach a
+                // notch produces no event at all.
+                const int raw_delta = GET_WHEEL_DELTA_WPARAM(wp);
+                int& accum =
+                    (msg == WM_MOUSEHWHEEL) ? wheel_accum_h_ : wheel_accum_v_;
+                accum += raw_delta;
+                const int steps = accum / WHEEL_DELTA;
+                if (steps == 0) return true;
+                accum -= steps * WHEEL_DELTA;
                 InputEvent e;
                 e.kind = InputEvent::Kind::kMouseWheel;
-                e.wheel_delta =
-                    static_cast<int16_t>(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
+                const int16_t capped =
+                    static_cast<int16_t>(steps > 32767 ? 32767
+                                          : steps < -32768 ? -32768 : steps);
+                e.wheel_delta = capped;
                 e.horizontal = (msg == WM_MOUSEHWHEEL);
                 // The pointer position has to travel with the wheel event: the
                 // remote decides where to scroll from it. WM_MOUSEWHEEL carries
-                // *screen* coordinates, unlike the other mouse messages.
-                POINT pt{GET_X_LPARAM(wp), GET_Y_LPARAM(wp)};
+                // *screen* coordinates in lParam, unlike the other mouse
+                // messages (reading them from wParam always yielded (0,0)).
+                POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 if (::ScreenToClient(hwnd_, &pt)) {
                     e.x = static_cast<uint16_t>(pt.x < 0 ? 0 : pt.x);
                     e.y = static_cast<uint16_t>(pt.y < 0 ? 0 : pt.y);
+                    last_mouse_x_ = pt.x;
+                    last_mouse_y_ = pt.y;
                 }
                 events_.push_back(e);
                 return true;
@@ -654,6 +710,33 @@ class Win32Window final : public Window {
         for (const InputEvent& e : key_state_.ReleaseAll()) {
             events_.push_back(e);
         }
+        // The Pause press latch is keyed off a down/up pair like any other key:
+        // focus loss may eat the up (WM_KEYUP never arrives after WM_KILLFOCUS),
+        // so without this reset the next Pause after refocus would be swallowed
+        // and the Pause command lost.
+        pause_down_ = false;
+    }
+
+    // Releases every mouse button still held (synthesising the missing up) and
+    // clears the capture. Called on focus loss / close / WM_CAPTURECHANGED so a
+    // drag that never delivered its release cannot leave the remote latched.
+    void ReleaseHeldButtons() {
+        const bool was_held = held_buttons_ != 0;
+        for (uint8_t b = 1; b <= 5; ++b) {
+            if ((held_buttons_ & (1u << b)) == 0) continue;
+            InputEvent e;
+            e.kind = InputEvent::Kind::kMouseButton;
+            e.button = b;
+            e.button_down = false;
+            e.x = static_cast<uint16_t>(last_mouse_x_ < 0 ? 0 : last_mouse_x_);
+            e.y = static_cast<uint16_t>(last_mouse_y_ < 0 ? 0 : last_mouse_y_);
+            events_.push_back(e);
+        }
+        held_buttons_ = 0;
+        if (was_held && hwnd_ != nullptr &&
+            ::GetCapture() == hwnd_) {
+            ::ReleaseCapture();
+        }
     }
 
     void Destroy() {
@@ -718,9 +801,18 @@ class Win32Window final : public Window {
     std::function<void()> clipboard_callback_;
     WinKeyMode win_key_mode_ = WinKeyMode::kRemote;
     Win32KeyState key_state_;
-    // How many mouse buttons are currently held; the first one installs
-    // SetCapture so a drag out of the window still delivers the release.
-    int capture_buttons_ = 0;
+    // Which mouse buttons are currently held (bit N == button N, 1..5). The
+    // capture lifetime is derived from it: the first press installs SetCapture
+    // so a drag out of the window still delivers the release, the last release
+    // drops it, and WM_CAPTURECHANGED / focus loss clear it and synthesise the
+    // missing ups (a lost release used to leave the counter permanently > 0).
+    uint32_t held_buttons_ = 0;
+    int last_mouse_x_ = 0;  // last known pointer position (signed client coords)
+    int last_mouse_y_ = 0;
+    // Residual wheel deltas for sub-notch mice (a delta of 40 is a third of a
+    // WHEEL_DELTA notch); an event leaves only the remainder here.
+    int wheel_accum_v_ = 0;
+    int wheel_accum_h_ = 0;
     bool pause_down_ = false;
     bool fullscreen_ = false;
     RECT saved_rect_{};
@@ -740,19 +832,39 @@ Win32KeyAction Win32KeyState::Process(const KeyTranslation& key) {
     if (!key.forward) return Win32KeyAction::kIgnore;
 
     // Ctrl+Alt+End -> SAS is a PRODUCT REQUIREMENT, not mstsc evidence (there
-    // is no binary proof of mstsc's Ctrl+Alt+End mapping). Swallow the End key
-    // for the whole chord (auto-repeat downs included) so the remote never sees
-    // a bare End scancode; raise the command only once per press.
+    // is no binary proof of mstsc's Ctrl+Alt+End mapping). The End key is
+    // swallowed for the whole chord so the remote never sees a bare End
+    // scancode; the SAS command is raised only once, on a fresh press.
     const bool ctrl_down = IsDown(kWin32ScancodeCtrl, false) ||
                            IsDown(kWin32ScancodeCtrl, true);
     const bool alt_down = IsDown(kWin32ScancodeAlt, false) ||
                           IsDown(kWin32ScancodeAlt, true);
     if (key.scancode == kWin32ScancodeEnd && key.extended) {
+        // The End was tracked as forwarded-down (pre-pressed before the chord):
+        // swallowing its release would leak it into down_ and emit a phantom
+        // key-up on focus loss. Remove the tracking record and forward the up
+        // so the remote (which already saw the End down) sees the release too.
+        const bool end_was_tracked = IsDown(kWin32ScancodeEnd, true);
         if (sas_end_held_) {
-            if (key.release) sas_end_held_ = false;
+            if (key.release) {
+                sas_end_held_ = false;
+                if (end_was_tracked) {
+                    for (auto it = down_.begin(); it != down_.end(); ++it) {
+                        if (it->scancode == kWin32ScancodeEnd && it->extended) {
+                            down_.erase(it);
+                            break;
+                        }
+                    }
+                    return Win32KeyAction::kForward;
+                }
+            }
             return Win32KeyAction::kIgnore;
         }
-        if (!key.release && ctrl_down && alt_down) {
+        // A held End auto-repeats while Ctrl+Alt is held: the repeat is NOT a
+        // new SAS press, so it must not raise the command again (and must be
+        // forwarded like any other auto-repeat). Only a truly new End down --
+        // one not already tracked -- raises the SAS.
+        if (!key.release && ctrl_down && alt_down && !end_was_tracked) {
             sas_end_held_ = true;
             return Win32KeyAction::kSendCtrlAltDel;
         }
@@ -829,6 +941,7 @@ KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
     // remotely, e.g. 0x41 is F7). VK-only synthetic messages (automation) carry
     // 0 there and fall back to the layout mapping.
     uint32_t scancode = (lparam >> 16) & 0xFF;
+    const bool scancode_in_lparam = scancode != 0;
     if (scancode == 0) {
         // VK_PROCESSKEY (0xE5) is an IME marker with no key of its own. With no
         // scancode in lParam there is nothing real to send; mapping 0xE5 would
@@ -845,10 +958,15 @@ KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
     // key and would type garbage on the remote.
     if (scancode == 0) return out;
 
-    // Synthetic / automation messages can omit lParam bit24; the virtual key
-    // still identifies keys whose scancode is inherently 0xE0-prefixed.
-    if (IsInherentExtendedVirtualKey(vk) || scancode == 0x5B ||
-        scancode == 0x5C) {
+    // A real message's bit24 is authoritative: the set-1 scancode cannot tell
+    // numpad-off Home (0x47, not extended) from the nav-cluster Home
+    // (0xE0 0x47, extended), and NumLock (0x45) is never extended. Only
+    // synthetic / automation messages (lParam scancode field 0) fall back to
+    // the virtual-key table, which lists keys whose scancode is inherently
+    // 0xE0-prefixed.
+    if (!scancode_in_lparam &&
+        (IsInherentExtendedVirtualKey(vk) || scancode == 0x5B ||
+         scancode == 0x5C)) {
         extended = true;
     }
 

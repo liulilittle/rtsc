@@ -118,6 +118,20 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
         // This is the precondition that broke the old GUI send path.
         CHECK(client.driver().security() == nullptr);
 
+        // Horizontal wheel: the in-tree server advertises INPUT_FLAG_MOUSE_HWHEEL
+        // (0x0100), so the client must encode the PTRFLAGS_HWHEEL event
+        // (0x0400 | 1 = 0x0401), not gate it away.
+        rtsc::ui::InputEvent hwheel;
+        hwheel.kind = rtsc::ui::InputEvent::Kind::kMouseWheel;
+        hwheel.horizontal = true;
+        hwheel.wheel_delta = 1;
+        const auto hwheel_pdu = client.EncodeInput(hwheel);
+        CHECK(hwheel_pdu.size() == static_cast<size_t>(9));
+        if (hwheel_pdu.size() == 9) {
+            CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[3]), static_cast<uint8_t>(0x01));
+            CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[4]), static_cast<uint8_t>(0x04));
+        }
+
         // 1) Keyboard input through the same Client method the GUI calls.
         rtsc::ui::InputEvent key;
         key.kind = rtsc::ui::InputEvent::Kind::kKey;

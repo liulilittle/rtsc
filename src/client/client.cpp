@@ -210,19 +210,24 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             if (ev.button == 1) flags |= proto::kPtrButton1;
             if (ev.button == 2) flags |= proto::kPtrButton2;
             if (ev.button == 3) flags |= proto::kPtrButton3;
-            // X1/X2 reuse BUTTON1/BUTTON2 on a POINTERX event, which is what
-            // distinguishes them from the left/right buttons ([MS-RDPBCGR]
-            // 2.2.8.1.1.3.1.1.3: the extended mouse event carries the same
-            // button bits plus the XBUTTON semantics).
-            const bool extended =
-                (ev.button == 4 || ev.button == 5);
-            if (ev.button == 4) flags |= proto::kPtrButton1;
-            if (ev.button == 5) flags |= proto::kPtrButton2;
+            // A MOUSEX event (eventCode 2) carries PTRXFLAGS, not PTRFLAGS:
+            // X1/X2 are PTRXFLAGS_BUTTON1/2 = 0x0001/0x0002 ([MS-RDPBCGR]
+            // 2.2.8.1.1.3.1.1.4). The 0x1000/0x2000 PTRFLAGS bits belong to the
+            // plain POINTER event, where they are the left/right buttons; using
+            // them on X events aliased X1 on the left button on the server.
+            const bool extended = (ev.button == 4 || ev.button == 5);
+            if (ev.button == 4) flags |= proto::kPtrXButton1;
+            if (ev.button == 5) flags |= proto::kPtrXButton2;
             if (ev.button_down) flags |= proto::kPtrDown;
             return EncodeFastPathInputPdu(
                 {EncodeMouseEvent(flags, ev.x, ev.y, extended)});
         }
         case ui::InputEvent::Kind::kMouseWheel: {
+            // [MS-RDPBCGR] 2.2.8.1.1.3.1.1.1: PTRFLAGS_HWHEEL MUST NOT be sent
+            // to a server that did not indicate support in its Input
+            // Capability Set. A vertical wheel is an ordinary MOUSE event and
+            // is never gated.
+            if (ev.horizontal && !driver_.server_supports_hwheel()) return {};
             uint16_t flags =
                 ev.horizontal ? proto::kPtrHwheel : proto::kPtrWheel;
             const int16_t delta = ev.wheel_delta;
@@ -279,6 +284,11 @@ bool Client::SendChannelPdu(net::Transport& transport, uint16_t channel_id,
 
 bool Client::SendCtrlAltDel(net::Transport& transport, std::string& error) {
     return SendPdu(transport, EncodeCtrlAltDel(), error);
+}
+
+bool Client::SendPauseKey(net::Transport& transport, std::string& error) {
+    return SendPdu(
+        transport, proto::EncodeFastPathInputPdu(proto::EncodePauseKey()), error);
 }
 
 }  // namespace rtsc::client

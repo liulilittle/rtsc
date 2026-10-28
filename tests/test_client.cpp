@@ -58,13 +58,15 @@ ConnectionDriver MakeDriver() {
 // outcomes (data / bounded-wait timeout / disconnect) can be tested without a
 // socket. `timeout_budget` makes the first N reads report kReadTimeout before
 // falling back to `next`, which models a peer that is briefly silent and then
-// closes.
+// closes. Every Write is also recorded (last_write) so the exact PDUs a Client
+// method puts on the wire can be asserted.
 class ScriptedTransport final : public rtsc::net::Transport {
  public:
     int next = 0;
     int reads = 0;
     int writes = 0;
     int timeout_budget = -1;  // -1 = never time out
+    std::vector<uint8_t> last_write;
 
     int Read(uint8_t*, size_t) override {
         ++reads;
@@ -74,12 +76,23 @@ class ScriptedTransport final : public rtsc::net::Transport {
         }
         return next;
     }
-    bool Write(const uint8_t*, size_t) override {
+    bool Write(const uint8_t* data, size_t size) override {
         ++writes;
+        last_write.assign(data, data + size);
         return true;
     }
     void Close() override {}
 };
+
+std::string Hex(const std::vector<uint8_t>& b) {
+    static const char* k = "0123456789abcdef";
+    std::string s;
+    for (uint8_t c : b) {
+        s.push_back(k[c >> 4]);
+        s.push_back(k[c & 0xF]);
+    }
+    return s;
+}
 
 }  // namespace
 
@@ -145,34 +158,44 @@ RTSC_TEST(client_encodes_mouse_wheel) {
     CHECK_EQ(pdu[4], static_cast<uint8_t>(0x03));
 }
 
-RTSC_TEST(client_encodes_mouse_hwheel) {
+RTSC_TEST(client_hwheel_is_gated_on_server_support) {
+    // [MS-RDPBCGR] 2.2.8.1.1.3.1.1.1: PTRFLAGS_HWHEEL MUST NOT be sent to a
+    // server that did not advertise INPUT_FLAG_MOUSE_HWHEEL in its Input
+    // Capability Set. Before the Demand Active PDU is processed the client has
+    // no server capability, so a horizontal wheel must not produce a PDU --
+    // while a vertical wheel (an ordinary MOUSE event) still does. The positive
+    // direction is covered end to end in test_gui_send (the in-tree server
+    // advertises 0x0100).
     Client c(MakeDriver(), 16, 16);
-    InputEvent w;
-    w.kind = InputEvent::Kind::kMouseWheel;
-    w.horizontal = true;
-    w.wheel_delta = 1;  // scroll right
-    const auto pdu = c.EncodeInput(w);
-    CHECK_EQ(pdu.size(), static_cast<size_t>(9));
-    // PTRFLAGS_HWHEEL (0x0400) | 1 = 0x0401. A horizontal wheel must not carry
-    // PTRFLAGS_WHEEL (0x0200), or the remote scrolls vertically instead.
-    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x01));
-    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x04));
+    InputEvent h;
+    h.kind = InputEvent::Kind::kMouseWheel;
+    h.horizontal = true;
+    h.wheel_delta = 1;
+    CHECK(c.EncodeInput(h).empty());
+
+    InputEvent v;
+    v.kind = InputEvent::Kind::kMouseWheel;
+    v.wheel_delta = 1;
+    CHECK(!c.EncodeInput(v).empty());
 }
 
 RTSC_TEST(client_encodes_xbuttons_as_extended_mouse_events) {
     Client c(MakeDriver(), 16, 16);
+    // MOUSEX events carry PTRXFLAGS, not PTRFLAGS ([MS-RDPBCGR]
+    // 2.2.8.1.1.3.1.1.4): PTRXFLAGS_BUTTON1 = 0x0001, PTRXFLAGS_BUTTON2 =
+    // 0x0002. The 0x1000/0x2000 pointer-button bits are for the plain POINTER
+    // event and would alias the left/right buttons on the server.
     InputEvent x1;
     x1.kind = InputEvent::Kind::kMouseButton;
     x1.button = 4;  // X1
     x1.button_down = true;
     const auto pdu = c.EncodeInput(x1);
     CHECK_EQ(pdu.size(), static_cast<size_t>(9));
-    // eventCode 2 = MOUSEX (0x40 in the header byte), so X buttons are not
-    // indistinguishable from the left button.
+    // eventCode 2 = MOUSEX (0x40 in the header byte).
     CHECK_EQ(pdu[2], static_cast<uint8_t>(0x40));
-    // PTRFLAGS_DOWN (0x8000) | PTRFLAGS_BUTTON1 (0x1000) = 0x9000.
-    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x00));
-    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x90));
+    // PTRXFLAGS_DOWN (0x8000) | PTRXFLAGS_BUTTON1 (0x0001) = 0x8001.
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x01));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x80));
 
     InputEvent x2;
     x2.kind = InputEvent::Kind::kMouseButton;
@@ -181,9 +204,56 @@ RTSC_TEST(client_encodes_xbuttons_as_extended_mouse_events) {
     const auto pdu2 = c.EncodeInput(x2);
     CHECK_EQ(pdu2.size(), static_cast<size_t>(9));
     CHECK_EQ(pdu2[2], static_cast<uint8_t>(0x40));
-    // PTRFLAGS_DOWN | PTRFLAGS_BUTTON2 (0x2000) = 0xA000.
-    CHECK_EQ(pdu2[3], static_cast<uint8_t>(0x00));
-    CHECK_EQ(pdu2[4], static_cast<uint8_t>(0xA0));
+    // PTRXFLAGS_DOWN | PTRXFLAGS_BUTTON2 (0x0002) = 0x8002.
+    CHECK_EQ(pdu2[3], static_cast<uint8_t>(0x02));
+    CHECK_EQ(pdu2[4], static_cast<uint8_t>(0x80));
+
+    // Release events carry the button bit alone (no PTRXFLAGS_DOWN).
+    InputEvent x1_up = x1;
+    x1_up.button_down = false;
+    const auto pdu1u = c.EncodeInput(x1_up);
+    CHECK_EQ(pdu1u.size(), static_cast<size_t>(9));
+    CHECK_EQ(pdu1u[2], static_cast<uint8_t>(0x40));
+    CHECK_EQ(pdu1u[3], static_cast<uint8_t>(0x01));  // X1 up: 0x0001
+    CHECK_EQ(pdu1u[4], static_cast<uint8_t>(0x00));
+
+    InputEvent x2_up = x2;
+    x2_up.button_down = false;
+    const auto pdu2u = c.EncodeInput(x2_up);
+    CHECK_EQ(pdu2u.size(), static_cast<size_t>(9));
+    CHECK_EQ(pdu2u[2], static_cast<uint8_t>(0x40));
+    CHECK_EQ(pdu2u[3], static_cast<uint8_t>(0x02));  // X2 up: 0x0002
+    CHECK_EQ(pdu2u[4], static_cast<uint8_t>(0x00));
+}
+
+RTSC_TEST(client_send_sas_and_pause_write_the_expected_pdus) {
+    Client c(MakeDriver(), 16, 16);
+    ScriptedTransport t;
+    std::string error;
+    // Mirrors the GUI command dispatch (tools/rtsc_gui/main.cpp): a kUiCommand
+    // carrying kCmdSendCtrlAltDel / kCmdSendPause is routed to the matching
+    // Client method instead of the ordinary input path.
+    const auto dispatch = [&](const InputEvent& ev, std::string& err) {
+        if (ev.command == kCmdSendCtrlAltDel) return c.SendCtrlAltDel(t, err);
+        if (ev.command == kCmdSendPause) return c.SendPauseKey(t, err);
+        return false;
+    };
+
+    InputEvent sas;
+    sas.kind = InputEvent::Kind::kUiCommand;
+    sas.command = kCmdSendCtrlAltDel;
+    CHECK(dispatch(sas, error));
+    // The six-scancode SAS (Ctrl/Alt/Delete down, Delete/Alt/Ctrl up) framed as
+    // one Fast-Path input PDU ([MS-RDPBCGR] 2.2.8.1.2).
+    CHECK(Hex(t.last_write) == "180e001d0038025303530138011d");
+
+    InputEvent pause;
+    pause.kind = InputEvent::Kind::kUiCommand;
+    pause.command = kCmdSendPause;
+    CHECK(dispatch(pause, error));
+    // Pause = CTRL(EXTENDED1)+NUMLOCK sequence (04 1d / 00 45 / 05 1d / 01 45)
+    // framed as one Fast-Path input PDU.
+    CHECK(Hex(t.last_write) == "100a041d0045051d0145");
 }
 
 RTSC_TEST(client_ignores_close_event) {

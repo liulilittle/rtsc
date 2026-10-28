@@ -44,6 +44,14 @@ enum PointerFlag : uint16_t {
     kPtrWheelRotationMask = 0x01FF,
 };
 
+// pointerFlags for TS_FP_POINTERX_EVENT ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.4): the
+// button bits are PTRXFLAGS, NOT the PTRFLAGS above. X1/X2 are 0x0001/0x0002;
+// a 0x1000/0x2000 X event would be decoded as left/right by a PTRFLAGS reader.
+enum PointerXFlag : uint16_t {
+    kPtrXButton1 = 0x0001,
+    kPtrXButton2 = 0x0002,
+};
+
 // ---- individual event encoders --------------------------------------------
 // Each returns the complete event bytes (eventHeader included).
 

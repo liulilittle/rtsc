@@ -109,6 +109,13 @@ RTSC_TEST(pause_key_uses_the_extended1_ctrl_numlock_sequence) {
     }
 }
 
+RTSC_TEST(pause_key_pdu_matches_the_expected_sequence) {
+    // The whole Pause two-key sequence framed as one Fast-Path input PDU:
+    // header 10 (4 events), length 0a, then 04 1d / 00 45 / 05 1d / 01 45.
+    const auto pdu = EncodeFastPathInputPdu(EncodePauseKey());
+    CHECK(Hex(pdu) == "100a041d0045051d0145");
+}
+
 RTSC_TEST(fastpath_input_pdu_frames_one_event) {
     const auto pdu = EncodeFastPathInputPdu({EncodeMouseEvent(kPtrMove, 683, 367)});
     // header(1) + length(1) + event(7) = 9.

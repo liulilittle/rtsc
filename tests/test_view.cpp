@@ -927,8 +927,76 @@ RTSC_TEST(zoom_wheel_clamps_at_max) {
     ui::InputEvent wheel;
     wheel.kind = ui::InputEvent::Kind::kMouseWheel;
     wheel.wheel_delta = 120;
-    CHECK(!ApplyZoomInput(wheel, zs));  // already at the maximum
+    // Already at the maximum: the wheel must be CONSUMED (so the front-end does
+    // not forward it as a remote-desktop scroll), and the zoom must not change.
+    CHECK(ApplyZoomInput(wheel, zs));
     CHECK_EQ(zs.zoom, 5.0);
+}
+
+RTSC_TEST(zoom_wheel_at_both_limits_is_consumed) {
+    ZoomState zs;
+    zs.zoom = 5.0;
+    zs.fit = false;
+    ui::InputEvent wheel;
+    wheel.kind = ui::InputEvent::Kind::kMouseWheel;
+    wheel.wheel_delta = 120;   // would zoom past the 500% ceiling
+    CHECK(ApplyZoomInput(wheel, zs));
+    CHECK_EQ(zs.zoom, 5.0);
+
+    zs.zoom = 0.5;             // at the 50% floor
+    wheel.wheel_delta = -120;  // would zoom past it
+    CHECK(ApplyZoomInput(wheel, zs));
+    CHECK_EQ(zs.zoom, 0.5);
+}
+
+RTSC_TEST(zoom_wheel_zero_delta_is_ignored) {
+    ZoomState zs;
+    zs.zoom = 2.0;
+    zs.fit = false;
+    ui::InputEvent wheel;
+    wheel.kind = ui::InputEvent::Kind::kMouseWheel;
+    wheel.wheel_delta = 0;
+    CHECK(!ApplyZoomInput(wheel, zs));  // not consumed, zoom untouched
+    CHECK_EQ(zs.zoom, 2.0);
+
+    // Same with Ctrl held (the fine step): a zero delta must not move zoom to
+    // 1.975 as a negative step would.
+    ZoomState c;
+    c.zoom = 2.0;
+    c.ctrl = true;
+    CHECK(!ApplyZoomInput(wheel, c));
+    CHECK_EQ(c.zoom, 2.0);
+}
+
+RTSC_TEST(view_map_monitor_point_clamps_into_union) {
+    // The documented contract (view.h): the resulting desktop point is clamped
+    // to the monitors' union. The old implementation voided union_w/union_h and
+    // passed oversized or wrapped locals straight through, so a monitor left of
+    // the primary wrapped the pointer to ~65531.
+    int dx = 0, dy = 0;
+    MapMonitorPointToDesktop(0, 0, 0, 0, 1920, 1080, 5000, 9000, dx, dy);
+    CHECK_EQ(dx, 1919);
+    CHECK_EQ(dy, 1079);
+
+    // The 16-bit wire wrap: -5/-3 arrive as 65531/65533 unsigned and are
+    // clamped back into the union.
+    MapMonitorPointToDesktop(0, 0, 0, 0, 1920, 1080, 65531, 65533, dx, dy);
+    CHECK_EQ(dx, 1919);
+    CHECK_EQ(dy, 1079);
+
+    // Negative values clamp to the union origin.
+    MapMonitorPointToDesktop(0, 0, 0, 0, 1920, 1080, -50, -20, dx, dy);
+    CHECK_EQ(dx, 0);
+    CHECK_EQ(dy, 0);
+
+    // A monitor left of the primary (origin at -1920, union 3840 wide): valid
+    // local points still map through the union offset.
+    MapMonitorPointToDesktop(-1920, 0, -1920, 0, 3840, 1080, 0, 0, dx, dy);
+    CHECK_EQ(dx, 0);   // -1920 - (-1920) + 0
+    CHECK_EQ(dy, 0);
+    MapMonitorPointToDesktop(-1920, 0, -1920, 0, 3840, 1080, 4000, 5000, dx, dy);
+    CHECK_EQ(dx, 3839);  // clamped into the union
+    CHECK_EQ(dy, 1079);
 }
 
 RTSC_TEST(zoom_menu_presets) {

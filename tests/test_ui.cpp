@@ -323,6 +323,73 @@ RTSC_TEST(win32_key_translation_sets_the_extended_bit) {
     CHECK(!plain.extended);
 }
 
+RTSC_TEST(win32_real_numpad_keys_respect_lparam_bit24) {
+    // A real message's bit24 is authoritative: numpad-off Home is scancode 0x47
+    // WITHOUT the 0xE0 prefix even though the nav-cluster Home shares the
+    // scancode. Previously the inherent-extended table forced ext=1 for every
+    // VK_HOME regardless of the message, so numpad-off Home was remoted as a
+    // nav-cluster Home and NumLock (0x45) as an extended key.
+    const KeyTranslation home = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_HOME, static_cast<uint32_t>(0x47u << 16));
+    CHECK(home.forward);
+    CHECK_EQ(home.scancode, static_cast<uint8_t>(0x47));
+    CHECK(!home.extended);
+
+    // numpad-on numpad7 reports the same scancode (0x47) with no extended bit.
+    const KeyTranslation num7 = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_NUMPAD7, static_cast<uint32_t>(0x47u << 16));
+    CHECK(num7.forward);
+    CHECK_EQ(num7.scancode, static_cast<uint8_t>(0x47));
+    CHECK(!num7.extended);
+
+    // A real NumLock press is scancode 0x45 (shared with Pause) and is never
+    // extended.
+    const KeyTranslation numlock = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_NUMLOCK, static_cast<uint32_t>(0x45u << 16));
+    CHECK(numlock.forward);
+    CHECK_EQ(numlock.scancode, static_cast<uint8_t>(0x45));
+    CHECK(!numlock.extended);
+
+    // The nav-cluster End with bit24 set is extended.
+    const KeyTranslation nav_end = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_END, static_cast<uint32_t>((0x4Fu << 16) | (1u << 24)));
+    CHECK(nav_end.forward);
+    CHECK_EQ(nav_end.scancode, static_cast<uint8_t>(0x4F));
+    CHECK(nav_end.extended);
+}
+
+RTSC_TEST(win32_synthetic_nav_keys_use_the_extended_table) {
+    // A synthetic VK-only message (lParam scancode field 0) has no bit24, so it
+    // falls back to the inherent-extended table: nav-cluster keys are extended,
+    // NumLock and numpad digits are not.
+    const KeyTranslation del = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_DELETE, 0);
+    CHECK(del.forward);
+    CHECK(del.extended);
+
+    const KeyTranslation home = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_HOME, 0);
+    CHECK(home.forward);
+    CHECK_EQ(home.scancode, static_cast<uint8_t>(0x47));
+    CHECK(home.extended);
+
+    // Synthetic numpad7 (VK_NUMPAD7 maps to scancode 0x47) must stay
+    // non-extended: it is the numpad digit, not the nav-cluster Home.
+    const KeyTranslation num7 = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_NUMPAD7, 0);
+    CHECK(num7.forward);
+    CHECK_EQ(num7.scancode, static_cast<uint8_t>(0x47));
+    CHECK(!num7.extended);
+
+    // Synthetic NumLock is never extended either (it was removed from the
+    // inherent-extended table).
+    const KeyTranslation numlock = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_NUMLOCK, 0);
+    CHECK(numlock.forward);
+    CHECK_EQ(numlock.scancode, static_cast<uint8_t>(0x45));
+    CHECK(!numlock.extended);
+}
+
 RTSC_TEST(win32_key_translation_altgr) {
     // AltGr = pseudo Ctrl + right Alt. The pseudo Ctrl (VK_CONTROL and
     // VK_LCONTROL with the extended bit) is suppressed so the remote does not
@@ -691,6 +758,418 @@ RTSC_TEST(win32_ime_processkey_uses_the_lparam_scancode) {
     const KeyTranslation none =
         TranslateWin32KeyMessage(kWin32WmKeyDown, 0xE5u, 0);
     CHECK(!none.forward);
+}
+#endif  // defined(_WIN32)
+
+#if defined(_WIN32)
+RTSC_TEST(win32_mouse_negative_coordinates_clamp_to_zero) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_mouse_negative_coordinates_clamp_to_zero", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // A pointer at (-5,-3): the 16-bit lParam fields read as 0xFFFB/0xFFFD,
+    // which wrapped to 65531/65533 when cast straight to uint16_t.
+    const LPARAM lp = MAKELPARAM(-5, -3);
+    PostMessageW(hwnd, WM_MOUSEMOVE, 0, lp);
+
+    InputEvent ev;
+    bool saw_move = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kMouseMove) continue;
+        saw_move = true;
+        CHECK_EQ(ev.x, static_cast<uint16_t>(0));
+        CHECK_EQ(ev.y, static_cast<uint16_t>(0));
+    }
+    CHECK(saw_move);
+    w->Close();
+}
+
+RTSC_TEST(win32_button_negative_coordinates_clamp_to_zero) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_button_negative_coordinates_clamp_to_zero", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    PostMessageW(hwnd, WM_LBUTTONDOWN,
+                 static_cast<WPARAM>(MK_LBUTTON),
+                 static_cast<LPARAM>(MAKELPARAM(-2, -4)));
+    PostMessageW(hwnd, WM_LBUTTONUP, 0,
+                 static_cast<LPARAM>(MAKELPARAM(-2, -4)));
+
+    InputEvent ev;
+    bool down = false;
+    bool up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kMouseButton || ev.button != 1) continue;
+        if (ev.button_down) {
+            down = true;
+            CHECK_EQ(ev.x, static_cast<uint16_t>(0));
+            CHECK_EQ(ev.y, static_cast<uint16_t>(0));
+        } else {
+            up = true;
+        }
+    }
+    CHECK(down);
+    CHECK(up);
+    w->Close();
+}
+
+RTSC_TEST(win32_capture_released_after_last_button_up) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_capture_released_after_last_button_up", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // The first press installs the capture; the last release drops it.
+    PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON,
+                 static_cast<LPARAM>(MAKELPARAM(10, 10)));
+    // Poll the down so the message is dispatched (the capture calls happen in
+    // the backend, not on PostMessageW).
+    InputEvent ev;
+    while (w->PollEvent(ev)) {
+    }
+    CHECK(::GetCapture() == hwnd);
+
+    PostMessageW(hwnd, WM_LBUTTONUP, 0, static_cast<LPARAM>(MAKELPARAM(10, 10)));
+    while (w->PollEvent(ev)) {
+    }
+    CHECK(::GetCapture() != hwnd);
+
+    // Two buttons held at once: capture stays until the second one is up.
+    PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON,
+                 static_cast<LPARAM>(MAKELPARAM(10, 10)));
+    PostMessageW(hwnd, WM_RBUTTONDOWN, MK_RBUTTON,
+                 static_cast<LPARAM>(MAKELPARAM(12, 12)));
+    while (w->PollEvent(ev)) {
+    }
+    CHECK(::GetCapture() == hwnd);
+    PostMessageW(hwnd, WM_RBUTTONUP, 0, static_cast<LPARAM>(MAKELPARAM(12, 12)));
+    while (w->PollEvent(ev)) {
+    }
+    CHECK(::GetCapture() == hwnd);  // left is still held
+    PostMessageW(hwnd, WM_LBUTTONUP, 0, static_cast<LPARAM>(MAKELPARAM(10, 10)));
+    while (w->PollEvent(ev)) {
+    }
+    CHECK(::GetCapture() != hwnd);
+    w->Close();
+}
+
+RTSC_TEST(win32_capture_changed_synthesises_missing_button_up) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_capture_changed_synthesises_missing_button_up", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // A drag that ends because the capture is stolen (another window took it)
+    // never delivers the release; the backend must synthesise the up so the
+    // remote does not stay in a drag.
+    const LPARAM down_lp = static_cast<LPARAM>(MAKELPARAM(10, 10));
+    PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, down_lp);
+    InputEvent ev;
+    bool left_down = false;
+    bool left_up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kMouseButton || ev.button != 1) continue;
+        if (ev.button_down) left_down = true;
+        else left_up = true;
+    }
+    PostMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
+    PostMessageW(hwnd, WM_XBUTTONDOWN, MAKEWPARAM(MK_XBUTTON1, XBUTTON1),
+                 static_cast<LPARAM>(MAKELPARAM(20, 20)));
+
+    bool x1_down = false;
+    InputEvent e;
+    while (w->PollEvent(e)) {
+        if (e.kind != InputEvent::Kind::kMouseButton) continue;
+        if (e.button == 1 && e.button_down) {
+            left_down = true;
+        } else if (e.button == 1) {
+            left_up = true;
+        } else if (e.button == 4 && e.button_down) {
+            x1_down = true;
+        }
+    }
+    CHECK(left_down);
+    CHECK(left_up);   // synthesised by WM_CAPTURECHANGED
+    CHECK(x1_down);   // a fresh press still works after the capture change
+    w->Close();
+}
+
+RTSC_TEST(win32_focus_loss_releases_held_mouse_buttons) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_focus_loss_releases_held_mouse_buttons", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON,
+                 static_cast<LPARAM>(MAKELPARAM(10, 10)));
+    InputEvent ev;
+    bool left_down = false;
+    bool left_up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kMouseButton || ev.button != 1) continue;
+        if (ev.button_down) left_down = true;
+        else left_up = true;
+    }
+    PostMessageW(hwnd, WM_ACTIVATE, static_cast<WPARAM>(WA_INACTIVE), 0);
+
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kMouseButton || ev.button != 1) continue;
+        if (ev.button_down) left_down = true;
+        else left_up = true;
+    }
+    CHECK(left_down);
+    CHECK(left_up);
+    w->Close();
+}
+
+RTSC_TEST(win32_wheel_event_reads_coordinates_from_lparam) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_wheel_event_reads_coordinates_from_lparam", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // WM_MOUSEWHEEL/HWHEEL carry the *screen* position in lParam; the backend
+    // converts it back to client coordinates. Reading wp instead produced
+    // (0,0) for every wheel event. A client point 100,100 -> screen must come
+    // back as exactly 100,100 regardless of where the window sits.
+    POINT pt{100, 100};
+    CHECK(::ClientToScreen(hwnd, &pt) != 0);
+    PostMessageW(hwnd, WM_MOUSEWHEEL,
+                 static_cast<WPARAM>(MAKEWPARAM(0, WHEEL_DELTA)),
+                 static_cast<LPARAM>(MAKELPARAM(pt.x, pt.y)));
+    PostMessageW(hwnd, WM_MOUSEHWHEEL,
+                 static_cast<WPARAM>(MAKEWPARAM(0, WHEEL_DELTA)),
+                 static_cast<LPARAM>(MAKELPARAM(pt.x, pt.y)));
+
+    bool saw_vertical = false;
+    bool saw_horizontal = false;
+    InputEvent e;
+    while (w->PollEvent(e)) {
+        if (e.kind != InputEvent::Kind::kMouseWheel) continue;
+        CHECK_EQ(e.x, static_cast<uint16_t>(100));
+        CHECK_EQ(e.y, static_cast<uint16_t>(100));
+        CHECK_EQ(e.wheel_delta, static_cast<int16_t>(1));
+        if (e.horizontal) saw_horizontal = true;
+        else saw_vertical = true;
+    }
+    CHECK(saw_vertical);
+    CHECK(saw_horizontal);
+    w->Close();
+}
+
+RTSC_TEST(win32_xbuttons_forward_as_buttons_four_and_five) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_xbuttons_forward_as_buttons_four_and_five", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    PostMessageW(hwnd, WM_XBUTTONDOWN, MAKEWPARAM(MK_XBUTTON1, XBUTTON1),
+                 static_cast<LPARAM>(MAKELPARAM(5, 6)));
+    PostMessageW(hwnd, WM_XBUTTONUP, MAKEWPARAM(MK_XBUTTON1, XBUTTON1),
+                 static_cast<LPARAM>(MAKELPARAM(5, 6)));
+    PostMessageW(hwnd, WM_XBUTTONDOWN, MAKEWPARAM(MK_XBUTTON2, XBUTTON2),
+                 static_cast<LPARAM>(MAKELPARAM(7, 8)));
+    PostMessageW(hwnd, WM_XBUTTONUP, MAKEWPARAM(MK_XBUTTON2, XBUTTON2),
+                 static_cast<LPARAM>(MAKELPARAM(7, 8)));
+
+    bool x1_down = false, x1_up = false, x2_down = false, x2_up = false;
+    InputEvent e;
+    while (w->PollEvent(e)) {
+        if (e.kind != InputEvent::Kind::kMouseButton) continue;
+        if (e.button == 4) {
+            if (e.button_down) x1_down = true;
+            else x1_up = true;
+        } else if (e.button == 5) {
+            if (e.button_down) x2_down = true;
+            else x2_up = true;
+        }
+    }
+    CHECK(x1_down);
+    CHECK(x1_up);
+    CHECK(x2_down);
+    CHECK(x2_up);
+    w->Close();
+}
+#endif  // defined(_WIN32)
+
+#if defined(_WIN32)
+RTSC_TEST(win32_pause_command_repeats_after_focus_loss) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_pause_command_repeats_after_focus_loss", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // First Pause press without a release: the command is raised once and
+    // pause_down_ is set.
+    PostMessageW(hwnd, WM_KEYDOWN, VK_PAUSE, KeyLParam(0x45, false, false));
+    InputEvent ev;
+    int commands = 0;
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kUiCommand && ev.command == kCmdSendPause) {
+            ++commands;
+        }
+    }
+    CHECK_EQ(commands, 1);
+
+    // Focus is lost while Pause is still "down"; the backend must reset its
+    // press latch so the next Pause after refocus raises the command again
+    // (ReleaseHeldKeys previously left pause_down_ stuck true).
+    PostMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+    while (w->PollEvent(ev)) {
+    }
+    PostMessageW(hwnd, WM_KEYDOWN, VK_PAUSE, KeyLParam(0x45, false, false));
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kUiCommand && ev.command == kCmdSendPause) {
+            ++commands;
+        }
+    }
+    CHECK_EQ(commands, 2);
+    w->Close();
+}
+
+RTSC_TEST(win32_wheel_accumulates_sub_notch_deltas) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_wheel_accumulates_sub_notch_deltas", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    POINT origin{0, 0};
+    CHECK(::ClientToScreen(hwnd, &origin) != 0);
+    const LPARAM lp = static_cast<LPARAM>(MAKELPARAM(origin.x, origin.y));
+
+    int events = 0;
+    int last_delta = 0;
+    const auto drain = [&]() {
+        InputEvent e;
+        while (w->PollEvent(e)) {
+            if (e.kind != InputEvent::Kind::kMouseWheel) continue;
+            ++events;
+            last_delta = e.wheel_delta;
+        }
+    };
+
+    // Two sub-notch ticks (40 + 40 < 120) must not emit anything: the old
+    // integer division truncated 40/120 to 0.
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, 40)), lp);
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, 40)), lp);
+    drain();
+    CHECK_EQ(events, 0);
+
+    // A third tick crosses the notch: exactly one event, delta +1.
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, 40)), lp);
+    drain();
+    CHECK_EQ(events, 1);
+    CHECK_EQ(last_delta, 1);
+
+    // A full notch arrives as one event too.
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, 120)), lp);
+    drain();
+    CHECK_EQ(events, 2);
+    CHECK_EQ(last_delta, 1);
+
+    // Downward sub-notch accumulation produces a negative event only when the
+    // full -120 is crossed.
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, -40)), lp);
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, -40)), lp);
+    drain();
+    CHECK_EQ(events, 2);
+    PostMessageW(hwnd, WM_MOUSEWHEEL, static_cast<WPARAM>(MAKEWPARAM(0, -40)), lp);
+    drain();
+    CHECK_EQ(events, 3);
+    CHECK_EQ(last_delta, -1);
+    w->Close();
+}
+
+RTSC_TEST(win32_key_state_sas_repeat_does_not_raise_sas) {
+    // Pre-pressed End (already forwarded, tracked in down_), then Ctrl+Alt join
+    // the chord, then the hardware auto-repeat of End arrives. The repeat must
+    // NOT raise a second SAS, and the genuine release must still forward the
+    // End up so the tracking set is drained (the old code latched sas_end_held_
+    // on the repeat, swallowed the up and left a stale End in down_).
+    Win32KeyState ks;
+    KeyTranslation end_down;
+    end_down.forward = true;
+    end_down.scancode = kWin32ScancodeEnd;
+    end_down.extended = true;
+    KeyTranslation end_up = end_down;
+    end_up.release = true;
+    KeyTranslation ctrl;
+    ctrl.forward = true;
+    ctrl.scancode = kWin32ScancodeCtrl;
+    KeyTranslation alt;
+    alt.forward = true;
+    alt.scancode = kWin32ScancodeAlt;
+
+    CHECK(ks.Process(end_down) == Win32KeyAction::kForward);  // pre-pressed
+    CHECK(ks.Process(ctrl) == Win32KeyAction::kForward);
+    CHECK(ks.Process(alt) == Win32KeyAction::kForward);
+    CHECK(ks.Process(end_down) == Win32KeyAction::kForward);  // repeat: not SAS
+    CHECK_EQ(ks.down_count(), static_cast<size_t>(3));        // End+Ctrl+Alt held
+    CHECK(ks.Process(end_up) == Win32KeyAction::kForward);    // real release passes
+    CHECK_EQ(ks.down_count(), static_cast<size_t>(2));        // Ctrl+Alt only: no leak
+}
+
+RTSC_TEST(win32_key_state_sas_swallows_only_fresh_end_press) {
+    // The standard chord: Ctrl+Alt down first, then a fresh End down raises the
+    // SAS command and its up is swallowed (the key was never forwarded, so no
+    // up must reach the remote either).
+    Win32KeyState ks;
+    KeyTranslation end_down;
+    end_down.forward = true;
+    end_down.scancode = kWin32ScancodeEnd;
+    end_down.extended = true;
+    KeyTranslation end_up = end_down;
+    end_up.release = true;
+    KeyTranslation ctrl;
+    ctrl.forward = true;
+    ctrl.scancode = kWin32ScancodeCtrl;
+    KeyTranslation alt;
+    alt.forward = true;
+    alt.scancode = kWin32ScancodeAlt;
+
+    CHECK(ks.Process(ctrl) == Win32KeyAction::kForward);
+    CHECK(ks.Process(alt) == Win32KeyAction::kForward);
+    CHECK(ks.Process(end_down) == Win32KeyAction::kSendCtrlAltDel);
+    CHECK_EQ(ks.down_count(), static_cast<size_t>(2));  // End was not forwarded
+    CHECK(ks.Process(end_up) == Win32KeyAction::kIgnore);
 }
 #endif  // defined(_WIN32)
 

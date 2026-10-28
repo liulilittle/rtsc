@@ -174,26 +174,44 @@ void MapMonitorPointToDesktop(int monitor_left, int monitor_top, int origin_x,
                               int origin_y, int union_w, int union_h,
                               int local_x, int local_y, int& desktop_x,
                               int& desktop_y) {
-    (void)union_w;
-    (void)union_h;
     // Pointer events carry a 16-bit unsigned position relative to the top-left
     // corner of the *union* of all monitors ([MS-RDPBCGR]: TS_FP_POINTER_EVENT
     // xPos/yPos, and the desktop is the union), while a monitor's left/top is a
     // signed offset from the primary. Subtracting the union origin is what keeps
     // a monitor placed left of or above the primary from wrapping (a -1920 left
-    // edge used to become 63616).
+    // edge used to become 63616). The result is clamped to the union bounds
+    // (view.h promises), so a wrapped unsigned position (~65531 from a negative
+    // local coordinate) or an oversized input can never escape the union.
     desktop_x = monitor_left - origin_x + local_x;
     desktop_y = monitor_top - origin_y + local_y;
+    if (union_w > 0) {
+        if (desktop_x < 0) desktop_x = 0;
+        if (desktop_x >= union_w) desktop_x = union_w - 1;
+    } else if (desktop_x < 0) {
+        desktop_x = 0;
+    }
+    if (union_h > 0) {
+        if (desktop_y < 0) desktop_y = 0;
+        if (desktop_y >= union_h) desktop_y = union_h - 1;
+    } else if (desktop_y < 0) {
+        desktop_y = 0;
+    }
 }
 
 bool ApplyZoomInput(const ui::InputEvent& ev, ZoomState& state) {
     using Kind = ui::InputEvent::Kind;
     switch (ev.kind) {
         case Kind::kMouseWheel: {
+            // A zero delta is not a view event: never zoom and never claim it
+            // (the Win32 backend no longer emits one; this guards other
+            // sources). At a zoom limit the wheel is CONSUMED so the front-end
+            // does not forward it as a remote-desktop scroll: it could not
+            // have changed the zoom, so there is nothing more to do with it.
+            if (ev.wheel_delta == 0) return false;
             const double step = state.ctrl ? kWheelFineStep : kWheelStep;
             const double next =
                 ClampZoom(state.zoom + (ev.wheel_delta > 0 ? step : -step));
-            if (next == state.zoom) return false;
+            if (next == state.zoom) return true;
             state.zoom = next;
             state.fit = false;
             return true;

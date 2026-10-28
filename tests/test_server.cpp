@@ -626,6 +626,73 @@ RTSC_TEST(server_input_event_callback) {
     runner.join();
 }
 
+RTSC_TEST(server_decodes_mousex_buttons_with_ptrxflags) {
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    rtsc::server::DesktopSource* source = pattern.get();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+
+    RdpServer server(cfg);
+    server.SetDesktopSource(source);
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    // MOUSEX carries PTRXFLAGS ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.4): X1 = 0x0001,
+    // X2 = 0x0002, plus PTRXFLAGS_DOWN = 0x8000 on presses. A plain POINTER
+    // left click (0x9000) is included to prove the left path is untouched.
+    const std::vector<uint8_t> fp = rtsc::proto::EncodeFastPathInputPdu({
+        rtsc::proto::EncodeMouseEvent(0x8001, 10, 20, true),   // X1 down
+        rtsc::proto::EncodeMouseEvent(0x8002, 11, 21, true),   // X2 down
+        rtsc::proto::EncodeMouseEvent(0x0001, 10, 20, true),   // X1 up
+        rtsc::proto::EncodeMouseEvent(0x0002, 11, 21, true),   // X2 up
+        rtsc::proto::EncodeMouseEvent(0x9000, 30, 40, false),  // left down
+    });
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel, fp)));
+
+    struct Seen {
+        bool x1_down = false, x2_down = false, left_down = false;
+        int nondown_mouse = 0;  // the two X releases arrive as plain mouse ups
+    } seen;
+    for (int i = 0;
+         i < 100 && !(seen.x1_down && seen.x2_down && seen.left_down &&
+                      seen.nondown_mouse >= 2);
+         ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        for (const auto& ev : events) {
+            if (ev.kind != rtsc::server::InputEvent::Kind::kMouse) continue;
+            if (ev.button_down) {
+                if (ev.button == 4) seen.x1_down = true;
+                if (ev.button == 5) seen.x2_down = true;
+                if (ev.button == 1) seen.left_down = true;
+            } else {
+                ++seen.nondown_mouse;
+            }
+        }
+    }
+    CHECK(seen.x1_down);   // PTRXFLAGS_BUTTON1 (0x0001) -> X1, not left
+    CHECK(seen.x2_down);   // PTRXFLAGS_BUTTON2 (0x0002) -> X2, not right
+    CHECK(seen.left_down);  // the plain POINTER left path is untouched
+    CHECK(seen.nondown_mouse >= 2);
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_interop_with_client_machine) {
     // Drive the server with the project's own client connection machine, so the
     // X.224 / MCS / Client Info exchange is checked against the code the real

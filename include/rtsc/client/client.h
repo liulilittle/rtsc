@@ -105,6 +105,11 @@ class Client {
     // with `error` set on a write failure.
     bool SendCtrlAltDel(net::Transport& transport, std::string& error);
 
+    // Sends the Pause/Break two-key sequence (Ctrl(EXTENDED1) + NumLock) as a
+    // Fast-Path input PDU through the security layer. Returns false with
+    // `error` set on a write failure.
+    bool SendPauseKey(net::Transport& transport, std::string& error);
+
     ui::Surface& surface() { return graphics_.surface(); }
     GraphicsPipeline& graphics() { return graphics_; }
     bool active() const { return driver_.session_active(); }

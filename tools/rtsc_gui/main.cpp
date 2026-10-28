@@ -523,6 +523,29 @@ int main(int argc, char** argv) {
                     for (auto& w : windows) w->Close();
                     break;
                 }
+                // SAS / Pause are client-side commands the window raises
+                // (Ctrl+Alt+End, and the Pause/Break key). They must reach the
+                // protocol as dedicated PDUs (EncodeCtrlAltDel / EncodePauseKey),
+                // never as ordinary forwarded input, so they are dispatched here
+                // before the view controls and the send path, in every window
+                // mode (a plain input event would encode to nothing).
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    (ev.command == rtsc::ui::kCmdSendCtrlAltDel ||
+                     ev.command == rtsc::ui::kCmdSendPause)) {
+                    std::string cmd_error;
+                    const bool sent =
+                        ev.command == rtsc::ui::kCmdSendCtrlAltDel
+                            ? client.SendCtrlAltDel(*transport, cmd_error)
+                            : client.SendPauseKey(*transport, cmd_error);
+                    if (!sent) {
+                        std::printf("input write failed: %s\n",
+                                    cmd_error.c_str());
+                        for (auto& w : windows) w->Close();
+                        break;
+                    }
+                    ++input_sends;
+                    continue;
+                }
                 bool consumed = false;
                 if (multi_window) {
                     // Each window is 1:1 with its monitor, so the local pointer
