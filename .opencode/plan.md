@@ -367,3 +367,10 @@
 - **流程强制**：取证 → 证据条目（`docs/spec/<area>-evidence.md`）→ 先红测试（期望来自证据）→ 最小实现 → 双审独立复验（含变异反证）→ 盖章提交。
 - **禁止**：改实现后重钉期望；用生产输出当期望；在注释写无证据的「mstsc 行为」。
 - **当前取证基线**：mstscax.dll d73c76d6…；缩放 = HALFTONE（`FUN_18003444c`）；输入 API 调用点已计数待定位。
+
+## 【纪律生效】所有后续批次的前置门（用户 2026-10-28）
+
+- 批次开工前必须先在 `docs/spec/<area>-evidence.md` 落证据；**没有证据文档的批次不得进入实现**。
+- 交付物必须包含：证据引用（`模块!函数@地址` + 片段）、先红测试（期望来自证据）、变异反证（改回旧行为必须转红）。
+- 已建证据文档：`docs/spec/scaling-evidence.md`（A1 缩放）、`docs/spec/input-evidence.md`（A2 输入/快捷键）。
+- 待建：A3 位图与 order、A4 cliprdr 实偏差、A5 rdpsnd 默认值、A6 EnableSmartSizing 语义、A7 窗口/多屏 UI。

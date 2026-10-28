@@ -1907,3 +1907,27 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 - `FUN_18003444c`：`SetStretchBltMode(hdc,4)` + `SetBrushOrgEx(hdc,0,0,NULL)`；仅 `param_7==1.0f && param_8==1.0f` 走 `BitBlt(0xcc0020)`，否则 `StretchBlt(0xcc0020)`；属性 `EnableSmartSizing`、`ZoomLevel`（100=1:1）。
 - 佐证：`FUN_180191d30`、`FUN_1804cfb98` 同样 `SetStretchBltMode(...,4)`；StretchBlt 共 8 个调用点分布在 4 个函数。
 - 输入相关 API 调用点计数：`keybd_event` 10、`SendInput` 4、`SetCursorPos` 7、`MapVirtualKeyW` 126（待逐个定位）。
+
+## 【最高纪律·2026-10-28 用户裁定】本项目是逆向工程：禁止 AI 自行编造，必须对齐反汇编证据
+
+**用户原话**：「本工程最顶级纪律这是逆向工程，禁止AI自己乱编，必须对齐反汇编证据。」
+
+### 规则（高于一般工程习惯；违反则该批次作废并回溯已合并内容）
+1. **任何关于微软行为的论断必须附二进制证据**：`模块!函数名` + 地址 + 伪代码/汇编片段（或 `亿evidence_id`），或 pktmon/Wireshark 抓包字节。三者皆无 → 不得写进代码、注释、测试期望、提交信息、报告。
+2. **规范只是下限**：`[MS-RDPBCGR]`/`[MS-RDPECLIP]` 等规定「必须如何」；「微软实际选了什么」（滤波器、常量、默认值、顺序、降级路径、边界）只能来自二进制。二者冲突以二进制为准，并在注释中同时标注两者。
+3. **测试期望禁止由生产实现反推**：期望只可来自 ①二进制取证 ②规范原文 ③真机抓包/真机截图 ④独立参考实现（不得调用被测代码）。「先改实现再重钉期望」＝造假。
+4. **注释中的「mstsc 是 X」必须附地址**；无证据者删除或标 `UNVERIFIED:`。
+5. **每批对齐必须产出证据文档** `docs/spec/<area>-evidence.md`：问题 / 证据（地址+片段）/ 结论（与推断分开）/ 对应实现位置 / 验证方式 / 变异反证方案。
+6. **不得用「成熟实现（FreeRDP/IronRDP）」替代 mstsc 证据**：它们可作为交叉参考，但不得作为「微软行为」的唯一依据。
+
+### 已发生的 4 次乱编事故（永久反例）
+- planar 行序：凭 FreeRDP 记忆推断，未对齐 mstsc → 活机整屏垂直镜像。
+- cliprdr 方向：凭错误记忆让客户端发 Monitor Ready，违反 [MS-RDPECLIP] 2.2.2.2（Server Monitor Ready）。
+- drdynvc 裸 DATA：审计与实现都判「无 DATA_FIRST 的 DATA 丢弃」为合规，违反 [MS-RDPEDYC] 3.1.5.2.2。
+- 缩放插值：`src/client/view.cpp:144-148` 注释断言「Bilinear ... is what mstsc does」；二进制证明是 `SetStretchBltMode(hdc,4)`=HALFTONE（`FUN_18003444c`）。
+
+### 已取证事实（可直接引用，勿再猜）
+- mstscax.dll sha256 前缀 `d73c76d65721043c`，PDB `mstscax.pdb`。
+- 缩放：`FUN_18003444c` `SetStretchBltMode(hdc,4)`(HALFTONE) + `SetBrushOrgEx(0,0)`；仅 x/y 比例均 1.0f 走 `BitBlt(0xcc0020)`，否则 `StretchBlt(0xcc0020)`；属性 `EnableSmartSizing`/`ZoomLevel`(100)。佐证 `FUN_180191d30`、`FUN_1804cfb98`。
+- 输入：`FUN_1801185e0` 用 `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)` 取扫描码并由 `FUN_1800e8dfc(inst,0x100/0x101,vk,sc)` 合成键消息；右 Win 置 `|0x8100`；焦点变化时重放 Shift/Win 归位并清零 `+0x414/+0x418`；本地 `keybd_event` 一律带 `dwExtraInfo=0x4321DCBA`；`FUN_180118940` 用 `0x414/0x418` 跟踪 LWIN/RWIN 按下态。
+- 调用点分布：keybd_event 10 / SendInput 4 / SetCursorPos 7 / MapVirtualKeyW 126。
