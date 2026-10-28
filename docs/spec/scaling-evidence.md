@@ -94,3 +94,28 @@ if (!bVar3) SetStretchBltMode(param_2, mode);   /* 恢复 */
 - 新期望值必须来自本文件 E1/E2（HALFTONE 语义 + 1.0 边界），**禁止**用生产实现输出当期望。
 - 必须覆盖：1:1 逐字节相等；2x 输出**不得**为块复制（相邻像素不得成块相等）；0.5x 体现面积平均；1.5x 平滑；alpha 一并处理；1px/奇数边界。
 - 变异反证：把实现改回块复制/双线性时，新用例必须转红。
+### E5 1:1 守卫判定器 `FUN_180036ba0`（0x180036ba0）
+
+```c
+undefined4 FUN_180036ba0(longlong param_1, int param_2, int param_3) {
+    ...
+    uVar1 = 0; uVar2 = 0;
+    if ((((*(int *)(param_1 + 0x68) - *(int *)(param_1 + 0x60) == param_2) &&
+         (uVar2 = uVar1, *(int *)(param_1 + 0x6c) - *(int *)(param_1 + 100) == param_3)) &&
+        (*(int *)(param_1 + 0x50) == 0)) &&
+       (((*(int *)(param_1 + 0x58) == param_2 && (*(int *)(param_1 + 0x54) == 0)) &&
+        (*(int *)(param_1 + 0x5c) == param_3)))) {
+        uVar2 = 1;
+    }
+    ...
+    return uVar2;
+}
+```
+
+语义（观察 + 推断标注）：**当前桌面宽高必须等于目标宽高**（两个差值为 0），且四个偏移/尺寸字段全为 0，才返回 1。E1 中该返回值决定走 `BitBlt` 还是 `StretchBlt`（`if ((local_108 == 100) && (local_e0 == 0 || FUN_180036ba0(...) != 0))`）。→ **1:1 是严格相等判定，不是"接近 1"**。
+
+### E6 相关属性字符串（只读证据）
+
+`ZoomLevel`(0x1806adfe0)、`EnableSmartSizing`(0x1806adff0)、`DesktopScaleFactor`(0x1806b9928)、`DeviceScaleFactor`(0x1806b9978)、`puDesktopScaleFactor`/`puDeviceScaleFactor`(0x1806c4d68/0x1806c4d80)、`"SetZoomLevel failed!"`(0x1807a39c0)。
+
+→ `DesktopScaleFactor` / `DeviceScaleFactor` 在 mstsc 中是**独立于 ZoomLevel 的 DPI 缩放维度**；本仓目前只有单一 zoom 标量。**待评估是否需要建模**（先取证其用途，再决定）。
