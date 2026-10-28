@@ -67,3 +67,40 @@ mstscax.dll sha256 `d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0e
 - [ ] Capability set 固定值与协商默认
 - [ ] 格式名长短默认、CF_HDROP 路径、TempDir
 - [ ] 与 cliprdr_client.cpp 对照出"规范之上偏差"清单
+
+## 取证批次 3（2026-10-28 轮次 100）：onPDU dispatch 表完整解码
+
+`FUN_180658670`（11798B）= CClientClipRdrPduDispatcher::OnPDU 主分派（param_2=CLIPRDR_HEADER 指针，uVar1=*param_2 ushort）。
+
+### msgType → handler 完整映射（伪代码分支 uVar1==N）
+| uVar1 | handler（失败串） | 规范 [MS-RDPECLIP] 2.2.2 |
+|---|---|---|
+| 1 | FORMAT_LIST | CB_FORMAT_LIST=0x0001（规范） |
+| 2 | FORMAT_LIST_RESPONSE | CB_FORMAT_LIST_RESPONSE=0x0002 |
+| 3 | FORMAT_DATA_REQUEST | CB_FORMAT_DATA_REQUEST=0x0003 |
+| 4 | FORMAT_DATA_RESPONSE | CB_FORMAT_DATA_RESPONSE=0x0004 |
+| 5 | CLIP_CAPS | CB_CLIP_CAPS=0x0007 |
+| (无6) | （temp directory 无独立分派） | CB_TEMP_DIRECTORY=0x0006 |
+| 7 | FILECONTENTS_REQUEST | CB_FILECONTENTS_REQUEST=0x0008 |
+| 8 | FILECONTENTS_RESPONSE | CB_FILECONTENTS_RESPONSE=0x0009 |
+| 10 | LOCK_CLIPDATA | CB_LOCK_CLIPDATA=0x000A |
+| 11 | UNLOCK_CLIPDATA | CB_UNLOCK_CLIPDATA=0x000B |
+| 12 | DATA_CHANNEL_REQUEST | （非基础规范；大剪贴板分片扩展） |
+| 13 | DATA_CHANNEL_RESPONSE | （同上） |
+| else | UNKNOWN_PDU（有独立 handler，记录未知类） | |
+
+### 对照 `include/rtsc/proto/cliprdr.h` enum（仓内实现）
+仓内：kFormatList=2、kFormatDataRequest=3、…=按规范 1 起。
+
+**疑似差异（需抓包/wire 确证，否则只可标 UNVERIFIED）**：
+- A) mstsc 的 uVar1 直接用于分支且**无-1 调整**；若 wire 字节 == 规范值（FORMAT_LIST=0x0001），则 mstsc 的 CLIP_CAPS=5 ≠ 规范 7、FILECONTENTS=7≠8 → mstsc 用**自定义 msgType 表**？
+- 但更可能：Ghidra 把 CLIPRDR_HEADER.msgType(高字)读作 uVar1 时语义已对齐规范 1-5；则 case5=CLIP_CAPS 意味规范 CLIP_CAPS=7 错位 → 矛盾。
+- **裁决路径**：抓真实会话的 cliprdr 字节（FORMAT_LIST PDU 首 4 字节），或查发送函数写入的常量。
+- B) mstsc 有 **DATA_CHANNEL_REQUEST/RESPONSE(0xC/0xD)** 扩展，**仓内缺失**。
+- C) mstsc **无独立 TEMP_DIRECTORY 分派**（0x6 无 case），TempDir 处理可能并入其他地方。
+
+### 待办
+- [x] 分派表（FORMAT_DATA_REQUEST/RESPONSE/锁/FILECONTENTS/CLIP_CAPS/DATA_CHANNEL/UNKNOWN）
+- [ ] 发送方向：FORMAT_LIST 发送时 msgType 字段写入值（裁决 A）
+- [ ] Capability set 固定值（版本/长度）
+- [ ] 与 cliprdr_client.cpp 对照出偏差清单
