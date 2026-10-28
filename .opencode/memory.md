@@ -1931,3 +1931,9 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 - 缩放：`FUN_18003444c` `SetStretchBltMode(hdc,4)`(HALFTONE) + `SetBrushOrgEx(0,0)`；仅 x/y 比例均 1.0f 走 `BitBlt(0xcc0020)`，否则 `StretchBlt(0xcc0020)`；属性 `EnableSmartSizing`/`ZoomLevel`(100)。佐证 `FUN_180191d30`、`FUN_1804cfb98`。
 - 输入：`FUN_1801185e0` 用 `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)` 取扫描码并由 `FUN_1800e8dfc(inst,0x100/0x101,vk,sc)` 合成键消息；右 Win 置 `|0x8100`；焦点变化时重放 Shift/Win 归位并清零 `+0x414/+0x418`；本地 `keybd_event` 一律带 `dwExtraInfo=0x4321DCBA`；`FUN_180118940` 用 `0x414/0x418` 跟踪 LWIN/RWIN 按下态。
 - 调用点分布：keybd_event 10 / SendInput 4 / SetCursorPos 7 / MapVirtualKeyW 126。
+
+## 教训（2026-10-28）：计数必须后置、收尾必须必达、稳定性必须多次采样
+- **计数后置**：`++live`／`++count` 之类别在资源创建（`std::thread`、socket、句柄）**之前**递增；创建失败时无人递减 → 等待方永久阻塞。要么后置，要么作用域守卫回滚 + notify。
+- **收尾必达**：detached 线程的「减计数 + notify_all」若放在 try 之外，异常即 `std::terminate` 杀全进程或永久挂起。收尾必须 noexcept（内部 try/catch 兜底）。
+- **稳定性采样**：单次全绿 ≠ 稳定。零余量断言（期望 == 理论上限）在 Windows 定时器粒度（~15.6ms）下约 15% 概率失败。门禁判定要求：断言留 ≥2× 余量 + 多次运行给分布。
+- **交叉验证价值**：两位审计用各自探针独立命中同一缺陷（R-A）与同一抖动（D-1），比单方报告可信度高一档；但也说明「单方全绿」可能是运气。

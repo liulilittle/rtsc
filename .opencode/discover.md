@@ -1345,3 +1345,7 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] 核对 detach 后是否仍有 `Impl` 裸引用
   [错误] 无：lambda 捕获 `[registry, session]`（:1568），体内只用这两个 + `registry->mu/cv/sessions/live`；`RdpSession` 的 `config_` 是**值拷贝**（:542 `config_(config)`）、`source_` 是调用方指针。因此 `Stop()` 返回后线程继续跑剩余几条语句也不会碰已析构的 `Impl`
   [下一步] 但"`Stop()` 只等 live==0、不等 `Run()` 的调用方线程"仍是既有契约缺口：不 join 就析构 `RdpServer` 时，accept 循环若正好在 `impl_->running`/`impl_->listener` 上 → UAF。文档应写明"用完必须 join Run()"或让 Run 也持 `shared_ptr<Impl>`
+## [2026-10-28][双审交叉] 两位审计**独立**发现同一死锁路径与同一抖动测试
+[尝试] 依赖单次 `ctest` 全绿（18/166/0）作为「服务器批次稳定」的证据。
+[错误] 甲、乙各自独立复验，**都**指向同一处：`server.cpp` 的 `++registry->live` 位于 `std::thread` 构造**之前**，线程创建失败（`std::system_error`／句柄耗尽——正是本批在治的资源面）时 `live` 永久为 1 且无线程递减 → `Stop()` 的 `cv.wait(live==0)` 永久阻塞；异常还会冒出 `Run()` 的 accept 循环（该段无 try/catch）。同时两人都独立测出 `tests/test_server.cpp:854 CHECK(inputs >= 10)` 零余量（3000ms 窗口 / 300ms 超时 = 理论上限 10），实测 20 次跑挂 3 次（≈15%）。
+[下一步] ①**单次测试通过不构成稳定性证据**：门禁类判定必须多次运行并给分布（本轮实测 17/20、18/22）；②任何「期望值」必须 ≤ 理论最大值的 1/2，禁止让断言等于理论上限；③资源计数（`++live`/`++count`）必须在**资源真正创建成功之后**递增，或用作用域守卫在失败时回滚；④detached 线程的收尾（减计数 + notify）必须放在 noexcept 兜底内，保证必达。
