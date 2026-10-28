@@ -268,6 +268,12 @@ target_include_directories(rtsc_rop_tests PRIVATE tests)
 add_executable(rtsc_ui_tests tests/test_ui.cpp)
 target_link_libraries(rtsc_ui_tests PRIVATE rtsc_ui rtsc_util)
 target_include_directories(rtsc_ui_tests PRIVATE tests)
+# The fullscreen-dispatch regression guard in test_ui.cpp reads the one
+# front-end file the suite cannot link (rtsc_gui is an executable running a
+# full network client). CMake reports CMAKE_CURRENT_SOURCE_DIR with forward
+# slashes, so the definition is directly usable as a C++ string literal.
+target_compile_definitions(rtsc_ui_tests PRIVATE
+                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
 add_executable(rtsc_graphics_tests tests/test_graphics.cpp)
 target_link_libraries(rtsc_graphics_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)

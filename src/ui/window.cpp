@@ -88,4 +88,10 @@ std::unique_ptr<Window> CreateWindow(uint16_t width, uint16_t height,
     return nullptr;
 }
 
+void ToggleFullscreen(const std::vector<std::unique_ptr<Window>>& windows) {
+    for (const auto& w : windows) {
+        w->SetFullscreen(!w->fullscreen());
+    }
+}
+
 }  // namespace rtsc::ui

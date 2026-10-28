@@ -6,7 +6,9 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -183,6 +185,28 @@ RTSC_TEST(window_resize_changes_the_surface) {
     CHECK_EQ(w->surface().width(), static_cast<uint16_t>(16));
 }
 
+RTSC_TEST(window_fullscreen_default_is_false) {
+    // The base Window contract: fullscreen() is false until a backend flips it.
+    // RecordingWindow does not override it, so this exercises the interface
+    // default; the headless backend has no native window and keeps it too.
+    std::string why;
+    auto headless = CreateWindow(8, 8, "headless", why);
+    CHECK(headless != nullptr);
+    CHECK(!headless->fullscreen());
+
+    std::vector<std::unique_ptr<Window>> windows;
+    windows.push_back(std::make_unique<RecordingWindow>(8, 8));
+    CHECK(!windows[0]->fullscreen());
+    windows.pop_back();
+    windows.push_back(std::move(headless));
+    CHECK(!windows[0]->fullscreen());
+
+    // Toggling over a backend with no native window is a safe no-op: it must
+    // not crash and must not claim a state it cannot reach.
+    rtsc::ui::ToggleFullscreen(windows);
+    CHECK(!windows[0]->fullscreen());
+}
+
 RTSC_TEST(window_rejects_unknown_backend_and_zero_size) {
     std::string why;
     auto w = CreateWindow(8, 8, "bogus-backend", why);
@@ -219,6 +243,53 @@ RTSC_TEST(window_win32_backend_creates_a_window) {
     CHECK(w->closed());
 #endif
 }
+
+#if defined(_WIN32)
+RTSC_TEST(window_win32_fullscreen_tracks_state) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        // No interactive desktop: the backend cannot create a real window, so
+        // the state tracking cannot be exercised either. The skip is VISIBLE.
+        SkipTest("window_win32_fullscreen_tracks_state", why);
+        return;
+    }
+    CHECK(!w->fullscreen());
+    w->SetFullscreen(true);
+    CHECK(w->fullscreen());
+    w->SetFullscreen(false);
+    CHECK(!w->fullscreen());
+    // Re-entering fullscreen after a plain restore lands back on the state it
+    // started from; asking for the same state again is a guarded no-op.
+    w->SetFullscreen(true);
+    CHECK(w->fullscreen());
+    w->SetFullscreen(true);
+    CHECK(w->fullscreen());
+    w->Close();
+    CHECK(w->closed());
+}
+
+RTSC_TEST(window_win32_toggle_fullscreen_flips_both_ways) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("window_win32_toggle_fullscreen_flips_both_ways", why);
+        return;
+    }
+    // The front-end command dispatch (tools/rtsc_gui/main.cpp) toggles every
+    // window from its own state on kCmdToggleFullscreen. Two toggles must land
+    // back on the initial state, or the menu item cannot round-trip.
+    std::vector<std::unique_ptr<Window>> windows;
+    windows.push_back(std::move(w));
+    CHECK(!windows[0]->fullscreen());
+    rtsc::ui::ToggleFullscreen(windows);
+    CHECK(windows[0]->fullscreen());
+    rtsc::ui::ToggleFullscreen(windows);
+    CHECK(!windows[0]->fullscreen());
+    windows[0]->Close();
+    CHECK(windows[0]->closed());
+}
+#endif  // defined(_WIN32)
 
 #if defined(_WIN32)
 namespace {
@@ -1259,6 +1330,25 @@ RTSC_TEST(clipboard_callback_bound_before_a_rebuild_is_lost) {
     static_cast<RecordingWindow*>(windows[0].get())->FireClipboardChange();
 
     CHECK_EQ(fired, 0);  // the rebuilt window never received the callback
+}
+
+RTSC_TEST(gui_dispatch_explicitly_consumes_fullscreen_command) {
+    // The rtsc_gui executable cannot be linked into the suite (its main() runs
+    // a full RDP client, network included), so its input dispatch is guarded
+    // structurally: the kUiCommand branch must explicitly own
+    // kCmdToggleFullscreen and run the window toggle, or the command silently
+    // falls through EncodeInput's {}-returning default and the "目标" menu item
+    // becomes the N1 no-op. This is the regression guard for that dispatch.
+    std::ifstream in(RTSC_SOURCE_DIR "/tools/rtsc_gui/main.cpp");
+    if (!in) {
+        SkipTest("gui_dispatch_explicitly_consumes_fullscreen_command",
+                 "cannot open tools/rtsc_gui/main.cpp");
+        return;
+    }
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    CHECK(src.find("kCmdToggleFullscreen") != std::string::npos);
+    CHECK(src.find("ToggleFullscreen(") != std::string::npos);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }

@@ -333,4 +333,11 @@ class Window {
 std::unique_ptr<Window> CreateWindow(uint16_t width, uint16_t height,
                                      const std::string& backend, std::string& why);
 
+// Toggles fullscreen on every window (borderless, covering its monitor, caption
+// and menu hidden). Each window flips from its own current state, so a
+// multi-monitor session enters and leaves fullscreen together. The front-end
+// raises this from kCmdToggleFullscreen; the toggle is a kUiCommand and must
+// never reach the input encoder (EncodeInput turns it into nothing).
+void ToggleFullscreen(const std::vector<std::unique_ptr<Window>>& windows);
+
 }  // namespace rtsc::ui

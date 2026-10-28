@@ -590,6 +590,19 @@ int main(int argc, char** argv) {
                     ++input_sends;
                     continue;
                 }
+                // Fullscreen is a window-owner command the 目标(M) menu raises
+                // (kCmdToggleFullscreen). It must never fall through to the
+                // send path: EncodeInput turns kUiCommand into nothing, so
+                // without this branch the menu item was a silent no-op. Every
+                // window toggles together; the View menu tick follows the state
+                // of the first window (they all share it).
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdToggleFullscreen) {
+                    rtsc::ui::ToggleFullscreen(windows);
+                    menu_state.fullscreen = windows[0]->fullscreen();
+                    windows[0]->SetViewMenuState(menu_state);
+                    continue;
+                }
                 bool consumed = false;
                 if (multi_window) {
                     // Each window is 1:1 with its monitor, so the local pointer
