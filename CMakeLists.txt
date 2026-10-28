@@ -411,8 +411,10 @@ else()
     target_sources(rtsc_gateway PRIVATE src/net/udp_posix.cpp)
 endif()
 
-add_library(rtsc_client STATIC src/client/graphics.cpp src/client/client.cpp src/client/view.cpp src/client/session_info.cpp)
+add_library(rtsc_client STATIC src/client/graphics.cpp src/client/client.cpp src/client/view.cpp src/client/resample.cpp src/client/session_info.cpp)
 target_include_directories(rtsc_client PUBLIC include)
+# view.cpp includes "resample.h" from its own directory.
+target_include_directories(rtsc_client PRIVATE src/client)
 target_link_libraries(rtsc_client PUBLIC rtsc_proto rtsc_render rtsc_ui rtsc_security rtsc_net rtsc_rail)
 # RtlGetVersion (the connection-information dialog's local-OS field) lives in
 # ntdll.dll. GetVersionExW is the alternative but is deprecated and trips C4996,

@@ -26,7 +26,25 @@ struct ViewTransform {
     int width = 0;
     int height = 0;
     double scale = 1.0;
+    // Actual per-axis ratios (width/src_w, height/src_h). `scale` is the
+    // requested zoom factor; when the destination size is rounded these can
+    // differ slightly, and exactness is judged on the integer sizes, not on
+    // `scale` (docs/spec/scaling-evidence.md E5).
+    double scale_x = 1.0;
+    double scale_y = 1.0;
 };
+
+// Which resampling rule a view uses. The three cases mirror the measured
+// reference behaviour (docs/spec/scaling-evidence.md section 2):
+//   kExact  - destination size equals source size: pixel-exact copy.
+//   kNearest- enlargement: every destination pixel is a copy of a source pixel.
+//   kArea   - reduction: coverage-weighted area average.
+enum class Resample { kExact, kNearest, kArea };
+
+// Picks the rule for a transform. `sw`/`sh` are the source dimensions. A view
+// whose size matches the source is exact even when it is offset (letterbox):
+// the criterion is size equality, not a zero origin.
+Resample ChooseResample(const ViewTransform& vt, int sw, int sh);
 
 // Clamps a zoom factor to the supported range (mstsc's 50% .. 500%).
 double ClampZoom(double zoom);
@@ -55,13 +73,18 @@ ViewTransform ComputeViewTransform(int src_w, int src_h, int dst_w, int dst_h,
                                    double zoom, bool fit);
 
 // Scales an RGBA8888 source into `dst` at (vt.x, vt.y) with size
-// vt.width x vt.height. Three paths, in order:
-//   1:1 (vt is an exact copy)  -> a plain row blit, bit-exact (no loss);
-//   integer scale (2x, 3x, ..) -> an exact k x k block copy per source pixel;
-//   anything else              -> bilinear interpolation (smooth, lossy).
+// vt.width x vt.height, following the sampling behaviour measured for mstsc:
+//   1:1 (destination size == source size)      -> exact row copy (no loss);
+//   scale > 1 (any factor, incl. 2x/3x/1.37x)  -> nearest-neighbour block copy;
+//   scale < 1                                  -> area average (coverage weighted,
+//                                                 half-pixel centred).
+// The 1:1 case is the BitBlt(SRCCOPY) branch of mstscax!FUN_18003444c; the
+// upscale case is the nearest-neighbour behaviour of GDI HALFTONE measured at
+// 2x/3x/1.37x. Downscale area averaging is an intentional improvement over
+// GDI's approximate box (deviation D-1), and alpha is averaged with the same
+// weight as R/G/B (deviation D-2). See docs/spec/scaling-evidence.md.
 // Destination pixels outside the viewport are clipped. The default view is 1:1,
-// so the common path is the exact blit; interpolation only runs when the user
-// zooms to a non-integer factor.
+// so the common path is the exact copy.
 void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
                   const ViewTransform& vt);
 

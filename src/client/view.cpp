@@ -1,4 +1,14 @@
 // View scaling: maps a remote-desktop surface into a window-sized viewport.
+//
+// Sampling contract (docs/spec/scaling-evidence.md):
+//   scale == 1.0 (both axes) -> exact copy        (BitBlt SRCCOPY, E1/E5)
+//   scale > 1                -> nearest-neighbour (GDI HALFTONE measured, E7/E8)
+//   scale < 1                -> area average      (intentional improvement)
+// Deliberate deviations from mstsc, all documented in the evidence file:
+//   D-1 downscale uses an exact box average; GDI's HALFTONE box is approximate.
+//   D-2 alpha is resampled with the same weight as R/G/B; GDI ignores alpha.
+//   D-3 integer upscales keep the k x k block fast path (same result, faster).
+// Do not describe any of these as "the same as mstsc".
 
 #include "rtsc/client/view.h"
 
@@ -9,6 +19,8 @@
 #include <vector>
 
 #include "rtsc/ui/window.h"
+
+#include "resample.h"
 
 namespace rtsc::client {
 
@@ -62,12 +74,28 @@ ViewTransform ComputeViewTransform(int src_w, int src_h, int dst_w, int dst_h,
     vt.height = static_cast<int>(std::lround(src_h * scale));
     if (vt.width < 1) vt.width = 1;
     if (vt.height < 1) vt.height = 1;
+    vt.scale_x = static_cast<double>(vt.width) / static_cast<double>(src_w);
+    vt.scale_y = static_cast<double>(vt.height) / static_cast<double>(src_h);
 
     vt.x = (dst_w - vt.width) / 2;
     vt.y = (dst_h - vt.height) / 2;
     if (vt.x < 0) vt.x = 0;
     if (vt.y < 0) vt.y = 0;
     return vt;
+}
+
+Resample ChooseResample(const ViewTransform& vt, int sw, int sh) {
+    if (sw <= 0 || sh <= 0 || vt.width <= 0 || vt.height <= 0) {
+        return Resample::kExact;
+    }
+    // Size equality, not a zero origin: a centred view with letterbox bars is
+    // still a 1:1 copy (docs/spec/scaling-evidence.md E5 / D7).
+    if (vt.width == sw && vt.height == sh) return Resample::kExact;
+    // Any shrinking axis takes the area average, even when the other axis is
+    // growing or unchanged: averaging is what the reference does for a
+    // reduction, and per-axis mixing would smear the axis that is enlarging.
+    if (vt.width < sw || vt.height < sh) return Resample::kArea;
+    return Resample::kNearest;
 }
 
 void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
@@ -83,138 +111,36 @@ void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
     const int y1 = std::min<int>(dst.height(), vt.y + vt.height);
     if (x0 >= x1 || y0 >= y1) return;
 
+    detail::ScaleRect r;
+    r.sw = src_w;
+    r.sh = src_h;
+    r.dw = vt.width;
+    r.dh = vt.height;
+    r.dx = vt.x;
+    r.dy = vt.y;
+    r.x0 = x0;
+    r.y0 = y0;
+    r.x1 = x1;
+    r.y1 = y1;
+
     const uint8_t* sdata = src.data();
     uint8_t* ddata = dst.data();
+    const int stride = dst.width();
 
-    // Fast path 1: a 1:1 view (the default) is a plain row blit. Every
-    // destination pixel is an exact copy of one source pixel, so the rendered
-    // frame is bit-identical to the remote desktop (no scaling loss). This is
-    // the path that makes the default view lossless.
-    if (vt.x == 0 && vt.y == 0 && vt.width == src_w && vt.height == src_h) {
-        const size_t bytes = static_cast<size_t>(x1 - x0) * 4;
-        for (int y = y0; y < y1; ++y) {
-            const uint8_t* s = sdata + static_cast<size_t>(y) * src_w * 4;
-            uint8_t* d = ddata + static_cast<size_t>(y) * dst.width() * 4;
-            std::memcpy(d, s, bytes);
-        }
-        return;
-    }
-
-    // Fast path 2: an integer scale factor (2x, 3x, ...) expands each source
-    // pixel to an exact k x k block. One expanded row is built once and copied
-    // k times, so the result is exact (no interpolation) and avoids the
-    // per-pixel division of the generic path.
-    if (vt.width % src_w == 0 && vt.height % src_h == 0 &&
-        vt.width / src_w == vt.height / src_h) {
-        const int k = vt.width / src_w;
-        if (k >= 1 && k <= 64) {
-            const int dx = std::max(x0, vt.x);
-            const int ex0 = dx - vt.x;
-            const int ex1 = std::min(x1, vt.x + vt.width) - vt.x;
-            const size_t bytes = static_cast<size_t>(ex1 - ex0) * 4;
-            const size_t stride = static_cast<size_t>(dst.width()) * 4;
-            std::vector<uint8_t> row(static_cast<size_t>(vt.width) * 4);
-            for (int sy = 0; sy < src_h; ++sy) {
-                const uint8_t* srow =
-                    sdata + static_cast<size_t>(sy) * src_w * 4;
-                for (int sx = 0; sx < src_w; ++sx) {
-                    const uint8_t* s = srow + static_cast<size_t>(sx) * 4;
-                    uint8_t* d = row.data() + static_cast<size_t>(sx) * k * 4;
-                    for (int i = 0; i < k; ++i) {
-                        d[i * 4 + 0] = s[0];
-                        d[i * 4 + 1] = s[1];
-                        d[i * 4 + 2] = s[2];
-                        d[i * 4 + 3] = s[3];
-                    }
-                }
-                const int dy0 = std::max(y0, vt.y + sy * k);
-                const int dy1 = std::min(y1, vt.y + sy * k + k);
-                if (ex0 >= ex1) continue;
-                const uint8_t* r = row.data() + static_cast<size_t>(ex0) * 4;
-                uint8_t* dline = ddata + (static_cast<size_t>(dy0) * dst.width() + dx) * 4;
-                for (int dy = dy0; dy < dy1; ++dy) {
-                    std::memcpy(dline, r, bytes);
-                    dline += stride;
-                }
-            }
+    switch (ChooseResample(vt, src_w, src_h)) {
+        case Resample::kExact:
+            // BitBlt(SRCCOPY) branch of mstscax!FUN_18003444c: pixel-exact.
+            detail::CopyExact(sdata, r, ddata, stride);
             return;
-        }
-    }
-
-    // Generic path (a user-initiated non-integer zoom): precompute the source
-    // coordinate of every destination row and column once, then
-    // bilinear-interpolate. Bilinear is smoother than nearest-neighbour, which
-    // is what mstsc does for its scaled output. The 1:1 and integer paths above
-    // stay exact; only this path interpolates.
-    const int nw = x1 - x0;
-    const int nh = y1 - y0;
-    std::vector<int> ix0(nw), ix1(nw), iy0(nh), iy1(nh);
-    std::vector<double> wx(nw), wy(nh);
-    for (int i = 0; i < nw; ++i) {
-        const double uu =
-            static_cast<double>(x0 + i - vt.x) * src_w / vt.width;
-        int a = static_cast<int>(std::floor(uu));
-        double f = uu - a;
-        if (a < 0) {
-            a = 0;
-            f = 0.0;
-        }
-        if (a > src_w - 1) {
-            a = src_w - 1;
-            f = 0.0;
-        }
-        int b = a + 1;
-        if (b > src_w - 1) b = src_w - 1;
-        ix0[i] = a;
-        ix1[i] = b;
-        wx[i] = f;
-    }
-    for (int j = 0; j < nh; ++j) {
-        const double vv =
-            static_cast<double>(y0 + j - vt.y) * src_h / vt.height;
-        int a = static_cast<int>(std::floor(vv));
-        double f = vv - a;
-        if (a < 0) {
-            a = 0;
-            f = 0.0;
-        }
-        if (a > src_h - 1) {
-            a = src_h - 1;
-            f = 0.0;
-        }
-        int b = a + 1;
-        if (b > src_h - 1) b = src_h - 1;
-        iy0[j] = a;
-        iy1[j] = b;
-        wy[j] = f;
-    }
-    for (int j = 0; j < nh; ++j) {
-        const int sy0 = iy0[j];
-        const int sy1 = iy1[j];
-        const double fy = wy[j];
-        uint8_t* drow =
-            ddata + (static_cast<size_t>(y0 + j) * dst.width() + x0) * 4;
-        for (int i = 0; i < nw; ++i) {
-            const int sx0 = ix0[i];
-            const int sx1 = ix1[i];
-            const double fx = wx[i];
-            const uint8_t* p00 =
-                sdata + (static_cast<size_t>(sy0) * src_w + sx0) * 4;
-            const uint8_t* p10 =
-                sdata + (static_cast<size_t>(sy0) * src_w + sx1) * 4;
-            const uint8_t* p01 =
-                sdata + (static_cast<size_t>(sy1) * src_w + sx0) * 4;
-            const uint8_t* p11 =
-                sdata + (static_cast<size_t>(sy1) * src_w + sx1) * 4;
-            uint8_t* d = drow + static_cast<size_t>(i) * 4;
-            for (int c = 0; c < 3; ++c) {
-                const double top = p00[c] * (1.0 - fx) + p10[c] * fx;
-                const double bot = p01[c] * (1.0 - fx) + p11[c] * fx;
-                d[c] = static_cast<uint8_t>(
-                    std::lround(top * (1.0 - fy) + bot * fy));
-            }
-            d[3] = p00[3];
-        }
+        case Resample::kNearest:
+            // GDI HALFTONE replicates source pixels when enlarging (E7/E8).
+            detail::ResampleNearest(sdata, r, ddata, stride);
+            return;
+        case Resample::kArea:
+            // Intentional improvement: exact coverage average, alpha included
+            // (D-1/D-2). GDI's own reduction is only approximately this.
+            detail::ResampleArea(sdata, r, ddata, stride);
+            return;
     }
 }
 

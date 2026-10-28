@@ -1,9 +1,10 @@
-// View scaling: ComputeViewTransform / ScaleSurface, the zoom input controller,
+﻿// View scaling: ComputeViewTransform / ScaleSurface, the zoom input controller,
 // and GraphicsPipeline::RenderTo.
 
 #include "rtsc/client/graphics.h"
 #include "rtsc/client/view.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -47,9 +48,591 @@ bool IsBlack(const Surface& s, int x, int y) {
     return s.GetPixel(x, y, r, g, b, a) && r == 0 && g == 0 && b == 0;
 }
 
-}  // namespace
+// ---------------------------------------------------------------------------
+// Independent references for the rescale contract. These exist so a test can
+// state an expected value derived from the documented rule instead of from the
+// production output (writing the expectation from ScaleSurface's own result
+// would make every test tautological).
+// ---------------------------------------------------------------------------
 
-RTSC_TEST(view_nearest_neighbor_2x_maps_a_2x2_block) {
+// E8 (docs/spec/scaling-evidence.md): the source index GDI HALFTONE samples for
+// destination index d when upscaling S -> D. Measured over 44 size pairs with
+// zero mismatch; the "plain floor" variant is wrong at 3->5 and 8->13.
+int E8Index(int d, int S, int D) { return ((2 * d + 1) * S - 1) / (2 * D); }
+
+// Builds the transform for an explicit destination size (used by the one-axis
+// cases, which a single uniform zoom factor cannot express).
+ViewTransform MakeVT(int sw, int sh, int dw, int dh) {
+    ViewTransform vt;
+    vt.width = dw;
+    vt.height = dh;
+    vt.scale = static_cast<double>(dw) / static_cast<double>(sw);
+    (void)sh;
+    (void)dh;
+    return vt;
+}
+
+// Independent reference for the downscale path: exact coverage-weighted box,
+// half-pixel centred, separable, round-half-up, all four channels. Pure double
+// arithmetic, so it shares no code with the integer-weight implementation.
+void BoxPass(const std::vector<double>& in, int sn, int dn, int rows,
+             std::vector<double>& out) {
+    out.assign(static_cast<size_t>(dn) * rows, 0.0);
+    for (int r = 0; r < rows; ++r) {
+        for (int d = 0; d < dn; ++d) {
+            const double lo = static_cast<double>(d) * sn / dn;
+            const double hi = static_cast<double>(d + 1) * sn / dn;
+            double acc = 0.0, wsum = 0.0;
+            for (int s = 0; s < sn; ++s) {
+                const double a = std::max(lo, static_cast<double>(s));
+                const double b = std::min(hi, static_cast<double>(s) + 1.0);
+                if (b > a) {
+                    acc += in[static_cast<size_t>(r) * sn + s] * (b - a);
+                    wsum += b - a;
+                }
+            }
+            out[static_cast<size_t>(r) * dn + d] = acc / wsum;
+        }
+    }
+}
+
+std::vector<uint8_t> ReferenceArea(const Surface& src, int dw, int dh, int c) {
+    const int sw = src.width();
+    const int sh = src.height();
+    std::vector<double> chan(static_cast<size_t>(sw) * sh);
+    for (int y = 0; y < sh; ++y) {
+        for (int x = 0; x < sw; ++x) {
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            src.GetPixel(x, y, r, g, b, a);
+            chan[static_cast<size_t>(y) * sw + x] =
+                c == 0 ? r : c == 1 ? g : c == 2 ? b : a;
+        }
+    }
+    std::vector<double> horiz;
+    BoxPass(chan, sw, dw, sh, horiz);
+    // Transpose so the vertical pass is the same 1-D box.
+    std::vector<double> tr(static_cast<size_t>(sh) * dw);
+    for (int y = 0; y < sh; ++y)
+        for (int x = 0; x < dw; ++x)
+            tr[static_cast<size_t>(x) * sh + y] = horiz[static_cast<size_t>(y) * dw + x];
+    std::vector<double> vert;
+    BoxPass(tr, sh, dh, dw, vert);
+    std::vector<uint8_t> out(static_cast<size_t>(dw) * dh);
+    for (int y = 0; y < dh; ++y)
+        for (int x = 0; x < dw; ++x) {
+            const double v = vert[static_cast<size_t>(x) * dh + y];
+            out[static_cast<size_t>(y) * dw + x] =
+                static_cast<uint8_t>(v + 0.5);
+        }
+    return out;
+}
+
+uint8_t ChannelOf(const Surface& s, int x, int y, int c) {
+    uint8_t r = 0, g = 0, b = 0, a = 0;
+    s.GetPixel(x, y, r, g, b, a);
+    return c == 0 ? r : c == 1 ? g : c == 2 ? b : a;
+}
+
+}  // namespace
+RTSC_TEST(view_downscale_contract_literals_hand_computed) {
+    // Contract literals (E13). All three are hand-computable, non-integer or
+    // single-axis reductions that the uniform 2-D box does not cover.
+
+    // 0.8x ramp 5 -> 4, source 51*i = 0,51,102,153,204. Coverage weights are
+    // exact overlaps with denominator 5:
+    //   d=0: (0*4 + 51*1)/5 =  10.2 -> 10
+    //   d=1: (51*3 + 102*2)/5 = 71.4 -> 71
+    //   d=2: (102*2 + 153*3)/5 = 132.6 -> 133
+    //   d=3: (153*1 + 204*4)/5 = 193.8 -> 194
+    {
+        Surface src(5, 1);
+        for (int x = 0; x < 5; ++x) {
+            const uint8_t v = static_cast<uint8_t>(51 * x);
+            src.SetPixel(x, 0, v, v, v, 255);
+        }
+        Surface dst(4, 1);
+        ScaleSurface(src, dst, MakeVT(5, 1, 4, 1));
+        static const uint8_t expect[4] = {10, 71, 133, 194};
+        for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 0), expect[x]);
+    }
+
+    // 7x5 -> 3x2 with the x ramp 36*i (0,36,72,108,144,180,216), constant in y:
+    //   d=0: (3/7)*(0 + 36 + 72/3)   = 25.71 -> 26
+    //   d=1: (3/7)*(72*2/3 + 108 + 144*2/3) = 108
+    //   d=2: (3/7)*(144/3 + 180 + 216)      = 190.29 -> 190
+    // The vertical 5 -> 2 pass sees identical rows, so both output rows match.
+    {
+        Surface src(7, 5);
+        for (int y = 0; y < 5; ++y) {
+            for (int x = 0; x < 7; ++x) {
+                const uint8_t v = static_cast<uint8_t>(36 * x);
+                src.SetPixel(x, y, v, v, v, 255);
+            }
+        }
+        Surface dst(3, 2);
+        ScaleSurface(src, dst, MakeVT(7, 5, 3, 2));
+        static const uint8_t expect[3] = {26, 108, 190};
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 3; ++x) CHECK_EQ(ChannelOf(dst, x, y, 0), expect[x]);
+    }
+    // 1x8 -> 1x3 with a constant column of 28 in the middle band. The middle
+    // destination row covers source rows ~2.67..5.33, so a constant column must
+    // reproduce 28 exactly there (weights sum to the axis length). The band
+    // edges prove the same for the partially covered rows.
+    {
+        Surface src(1, 8);
+        src.Fill(28, 28, 28, 255);
+        Surface dst(1, 3);
+        ScaleSurface(src, dst, MakeVT(1, 8, 1, 3));
+        for (int y = 0; y < 3; ++y) CHECK_EQ(ChannelOf(dst, 0, y, 0), 28);
+    }
+}
+
+RTSC_TEST(view_downscale_2x2_to_1x1_averages_all_four) {
+    // (0 + 100 + 128 + 255) / 4 = 120.75 -> 121 with round-half-up.
+    // Hand-computed; the two-pass separable form also yields 121.
+    Surface src(2, 2);
+    src.SetPixel(0, 0, 0, 0, 0, 255);
+    src.SetPixel(1, 0, 100, 100, 100, 255);
+    src.SetPixel(0, 1, 128, 128, 128, 255);
+    src.SetPixel(1, 1, 255, 255, 255, 255);
+
+    Surface dst(1, 1);
+    const auto vt = ComputeViewTransform(2, 2, 1, 1, 0.5, false);
+    CHECK_EQ(vt.width, 1);
+    CHECK_EQ(vt.height, 1);
+    ScaleSurface(src, dst, vt);
+
+    const uint8_t r = ChannelOf(dst, 0, 0, 0);
+    CHECK_EQ(r, 121);  // contract value: (0+100+128+255)/4 = 120.75 -> 121
+    CHECK_EQ(ChannelOf(dst, 0, 0, 1), r);  // grey: all colour channels agree
+}
+
+RTSC_TEST(view_downscale_1px_stripes_average_to_half) {
+    // 16 alternating black/white pixels -> 8. Each destination pixel covers one
+    // black + one white source pixel: (0 + 255) / 2 = 127.5 -> 128. A point
+    // sampler would output 0 (it only ever hits the even, black source pixel).
+    Surface src(16, 1);
+    for (int x = 0; x < 16; ++x) {
+        const uint8_t v = (x % 2) ? 255 : 0;
+        src.SetPixel(x, 0, v, v, v, 255);
+    }
+    Surface dst(8, 1);
+    ScaleSurface(src, dst, MakeVT(16, 1, 8, 1));
+    for (int x = 0; x < 8; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 0), 128);
+}
+
+RTSC_TEST(view_downscale_checkerboard_averages_to_mid_grey) {
+    // 32x32 one-pixel checker -> 4x4. Every destination pixel covers 8x8 = 64
+    // source pixels, exactly 32 black + 32 white: (0*32 + 255*32) / 64 = 127.5
+    // -> 128 for all 16 output pixels.
+    Surface src(32, 32);
+    for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 32; ++x) {
+            const uint8_t v = ((x + y) % 2) ? 255 : 0;
+            src.SetPixel(x, y, v, v, v, 255);
+        }
+    }
+    Surface dst(4, 4);
+    ScaleSurface(src, dst, MakeVT(32, 32, 4, 4));
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, y, 0), 128);
+}
+
+RTSC_TEST(view_downscale_single_axis_also_rounds_half_up) {
+    // A reduction on one axis only must average that axis. E14 records that GDI
+    // yields 127 for the single-axis shapes (16xH -> 8xH) and 128 for the
+    // two-axis ones; this project rounds half up everywhere, so both give 128.
+    // That difference from GDI is a documented rounding convention (D-1), not a
+    // claim of byte equality.
+    struct Case {
+        int sw, sh, dw, dh;
+    };
+    static const Case cases[] = {{16, 8, 8, 8}, {16, 16, 8, 16}, {16, 32, 8, 32},
+                                 {16, 8, 8, 4}, {16, 16, 8, 8},  {16, 32, 8, 16}};
+    for (const Case& c : cases) {
+        Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));
+        for (int y = 0; y < c.sh; ++y) {
+            for (int x = 0; x < c.sw; ++x) {
+                const uint8_t v = (x % 2) ? 255 : 0;
+                src.SetPixel(x, y, v, v, v, 255);
+            }
+        }
+        Surface dst(static_cast<uint16_t>(c.dw), static_cast<uint16_t>(c.dh));
+        ScaleSurface(src, dst, MakeVT(c.sw, c.sh, c.dw, c.dh));
+        for (int y = 0; y < c.dh; ++y)
+            for (int x = 0; x < c.dw; ++x) CHECK_EQ(ChannelOf(dst, x, y, 0), 128);
+    }
+}
+
+RTSC_TEST(view_upscale_never_invents_a_colour) {
+    // Mutation guard that does not depend on any measured value: enlargement is
+    // nearest, so the destination palette is a subset of the source palette and
+    // no new colour appears. An interpolating implementation fails this on a
+    // non-integer factor (1.33x / 1.37x), where it must blend.
+    struct Case {
+        int sw, sh, dw, dh;
+    };
+    static const Case cases[] = {{1920, 1080, 2560, 1440}, {100, 100, 137, 137},
+                                 {37, 23, 51, 31}};
+    for (const Case& c : cases) {
+        Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));
+        for (int y = 0; y < c.sh; ++y) {
+            for (int x = 0; x < c.sw; ++x) {
+                // Low-frequency ramp with a hard palette, so a blend would be
+                // obvious; the checker of different colours also proves the
+                // guard is not accidentally trivially satisfiable.
+                const uint8_t v = static_cast<uint8_t>((x * 7 + y * 13) % 5 * 63);
+                src.SetPixel(x, y, v, static_cast<uint8_t>(255 - v), 17, 255);
+            }
+        }
+        // E13(B): compare whole colour tuples, not individual channel values.
+        // A per-channel subset test is weaker: a blend of two source colours can
+        // land on values that each exist somewhere in the source palette while
+        // the (R,G,B,A) tuple itself is new.
+        std::vector<uint64_t> src_colours;
+        for (int y = 0; y < c.sh; ++y) {
+            for (int x = 0; x < c.sw; ++x) {
+                uint64_t key = 0;
+                for (int ch = 0; ch < 4; ++ch) {
+                    key = (key << 8) | ChannelOf(src, x, y, ch);
+                }
+                src_colours.push_back(key);
+            }
+        }
+        std::sort(src_colours.begin(), src_colours.end());
+        src_colours.erase(std::unique(src_colours.begin(), src_colours.end()),
+                          src_colours.end());
+
+        Surface dst(static_cast<uint16_t>(c.dw), static_cast<uint16_t>(c.dh));
+        ScaleSurface(src, dst, MakeVT(c.sw, c.sh, c.dw, c.dh));
+        int invented = 0;
+        for (int y = 0; y < c.dh; ++y) {
+            for (int x = 0; x < c.dw; ++x) {
+                uint64_t key = 0;
+                for (int ch = 0; ch < 4; ++ch) {
+                    key = (key << 8) | ChannelOf(dst, x, y, ch);
+                }
+                if (!std::binary_search(src_colours.begin(),
+                                        src_colours.end(), key)) {
+                    ++invented;
+                }
+            }
+        }
+        CHECK_EQ(invented, 0);
+    }
+}
+
+RTSC_TEST(view_letterbox_1to1_does_not_read_outside_the_source) {
+    // D7: widening the exact-copy test to "destination size == source size" is
+    // only correct if both the read and the write carry the view offset. A
+    // 16x8 source placed at y = 2 in a 16x12 viewport previously read source
+    // rows 2..9 (two rows past the end) and copied the wrong pixels.
+    Surface src(16, 8);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            src.SetPixel(x, y, static_cast<uint8_t>(x), static_cast<uint8_t>(y),
+                         static_cast<uint8_t>(x ^ y), 255);
+        }
+    }
+    Surface dst(16, 12);
+    dst.Fill(0xAA, 0xAA, 0xAA, 0xAA);  // marker: untouched rows must stay 0xAA
+    ViewTransform vt;
+    vt.x = 0;
+    vt.y = 2;
+    vt.width = 16;
+    vt.height = 8;
+    CHECK(ChooseResample(vt, 16, 8) == Resample::kExact);
+    ScaleSurface(src, dst, vt);
+
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                CHECK_EQ(ChannelOf(dst, x, y + 2, c), ChannelOf(src, x, y, c));
+            }
+        }
+    }
+    // The bars (rows 0..1 and 10..11) must not have been written.
+    for (int y : {0, 1, 10, 11}) {
+        for (int x = 0; x < 16; ++x) {
+            for (int c = 0; c < 4; ++c) CHECK_EQ(ChannelOf(dst, x, y, c), 0xAA);
+        }
+    }
+}
+
+RTSC_TEST(view_downscale_ramp_matches_hand_computed_area) {
+    // 16x1 ramp v[i] = 3*i + 1 (1 .. 46) -> 8x1. Destination pixel d covers
+    // sources 2d and 2d+1, so the value is the mean of two odd-spaced samples,
+    // always x.5 and rounded up:
+    //   (1+4)/2=2.5->3   (7+10)/2=8.5->9   (13+16)/2=14.5->15  (19+22)/2=20.5->21
+    //   (25+28)/2=26.5->27 (31+34)/2=32.5->33 (37+40)/2=38.5->39 (43+46)/2=44.5->45
+    Surface src(16, 1);
+    for (int x = 0; x < 16; ++x) {
+        const uint8_t v = static_cast<uint8_t>(3 * x + 1);
+        src.SetPixel(x, 0, v, v, v, 255);
+    }
+    Surface dst(8, 1);
+    ScaleSurface(src, dst, MakeVT(16, 1, 8, 1));
+    static const uint8_t expect[8] = {3, 9, 15, 21, 27, 33, 39, 45};
+    for (int x = 0; x < 8; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 0), expect[x]);
+}
+
+RTSC_TEST(view_downscale_keeps_odd_single_pixel_line) {
+    // White 16x4 field with a single black column at x = 7 (an odd column, so a
+    // point sampler drops it entirely). At 0.5x destination column 3 covers
+    // sources 6 and 7: (255 + 0) / 2 = 127.5 -> 128, i.e. a visible grey line
+    // in [96, 160]; it must never stay pure white.
+    Surface src(16, 4);
+    src.Fill(255, 255, 255, 255);
+    for (int y = 0; y < 4; ++y) src.SetPixel(7, y, 0, 0, 0, 255);
+
+    Surface dst(8, 4);
+    ScaleSurface(src, dst, MakeVT(16, 4, 8, 4));
+    for (int y = 0; y < 4; ++y) {
+        const uint8_t v = ChannelOf(dst, 3, y, 0);
+        CHECK_EQ(v, 128);  // contract value: (255+0)/2 = 127.5 -> 128 (round half up)
+        CHECK(v != 255);
+        CHECK_EQ(ChannelOf(dst, 0, y, 0), 255);  // untouched white stays white
+    }
+}
+
+RTSC_TEST(view_downscale_alpha_uses_the_same_weights) {
+    // Alpha is resampled exactly like R/G/B here (deliberate improvement D-2;
+    // GDI leaves alpha untouched). Source alpha 0,0,0,255,255,255,255,255 at
+    // 0.5x -> (0+0)/2=0, (0+255)/2=127.5->128, 255, 255.
+    // This shape is one row, so it exercises the generic tap path only; the 2-D
+    // uniform fast path has its own case right below.
+    Surface src(8, 1);
+    for (int x = 0; x < 8; ++x) {
+        src.SetPixel(x, 0, 200, 100, 50, x < 3 ? 0 : 255);
+    }
+    Surface dst(4, 1);
+    ScaleSurface(src, dst, MakeVT(8, 1, 4, 1));
+    static const uint8_t expect[4] = {0, 128, 255, 255};
+    for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 3), expect[x]);
+}
+
+RTSC_TEST(view_downscale_2d_fast_path_averages_alpha) {
+    // Regression guard for the kx x ky uniform fast path (the specialisation
+    // that used to be the only untested branch): 8x2 -> 4x1 shrinks both axes, so
+    // it takes that path. A mutant that copies the block's corner alpha instead
+    // of averaging it produces 0 0 255 255 here while the 1-D case above still
+    // passes -- which is exactly why this case must exist.
+    Surface src(8, 2);
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            src.SetPixel(x, y, 200, 100, 50, x < 3 ? 0 : 255);
+        }
+    }
+    Surface dst(4, 1);
+    ScaleSurface(src, dst, MakeVT(8, 2, 4, 1));
+    static const uint8_t expect[4] = {0, 128, 255, 255};
+    for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 3), expect[x]);
+}
+
+RTSC_TEST(view_downscale_exact_half_tie_rounds_up) {
+    // F1 regression guard: an exact .5 average must round up. 1440x900 downscaled
+    // by the standard 75% preset gives vt = 1080x675 at (180,112); destination
+    // pixel (0,0) then covers 1.3333x1.3333 source pixels, so a single grey 56
+    // source pixel at (0,0) contributes 56 * (0.75*0.75) = 31.5 exactly.
+    //   exact half-up            -> 32
+    //   double acc * (1/total)   -> 31.499999999999996 + 0.5 -> trunc 31  (F1)
+    // total = 1440*900 = 1296000, weight = 729000 = 1296000 * 0.5625.
+    Surface src(1440, 900);
+    src.Fill(0, 0, 0, 255);
+    src.SetPixel(0, 0, 56, 56, 56, 255);
+
+    Surface dst(1440, 900);
+    const auto vt = ComputeViewTransform(1440, 900, 1440, 900, 0.75, false);
+    CHECK_EQ(vt.width, 1080);
+    CHECK_EQ(vt.height, 675);
+    CHECK_EQ(vt.x, 180);
+    CHECK_EQ(vt.y, 112);
+    ScaleSurface(src, dst, vt);
+    CHECK_EQ(ChannelOf(dst, 180, 112, 0), 32);
+
+    // The neighbours are pure black, so the tie is not contaminated by them.
+    CHECK_EQ(ChannelOf(dst, 181, 112, 0), 0);
+    CHECK_EQ(ChannelOf(dst, 180, 113, 0), 0);
+}
+
+RTSC_TEST(view_downscale_non_integer_08x_matches_reference) {
+    // 5 -> 4 is not an integer ratio. The expectations below are hand-computed
+    // coverage averages (denominator is the source pixel count, 5):
+    //   d=0: (0*4 + 64*1)/5 = 12.8  -> 13
+    //   d=1: (64*3 + 128*2)/5 = 89.6 -> 90
+    //   d=2: (128*2 + 192*3)/5 = 166.4 -> 166
+    //   d=3: (192*1 + 255*4)/5 = 242.4 -> 242
+    Surface src(5, 1);
+    static const uint8_t ramp[5] = {0, 64, 128, 192, 255};
+    for (int x = 0; x < 5; ++x) src.SetPixel(x, 0, ramp[x], ramp[x], ramp[x], 255);
+
+    Surface dst(4, 1);
+    ScaleSurface(src, dst, MakeVT(5, 1, 4, 1));
+    static const uint8_t expect[4] = {13, 90, 166, 242};
+    for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 0), expect[x]);
+
+    // Cross-check against the independent double-precision reference.
+    const std::vector<uint8_t> ref = ReferenceArea(src, 4, 1, 0);
+    for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 0), ref[static_cast<size_t>(x)]);
+}
+
+RTSC_TEST(view_upscale_non_integer_uses_e8_index_map) {
+    // 3 -> 5 and 8 -> 13 are the two sizes that distinguish the measured E8
+    // map from a plain floor(d*S/D). E8: 0 0 1 2 2  vs floor: 0 0 1 1 2, and
+    // E8: 0 0 1 2 2 3 3 4 5 5 6 7 7 vs floor: 0 0 1 1 2 3 3 4 4 5 6 6 7.
+    Surface a(3, 1);
+    for (int x = 0; x < 3; ++x) {
+        const uint8_t v = static_cast<uint8_t>(x);
+        a.SetPixel(x, 0, v, v, v, 255);
+    }
+    Surface da(5, 1);
+    ScaleSurface(a, da, MakeVT(3, 1, 5, 1));
+    static const uint8_t expect_a[5] = {0, 0, 1, 2, 2};
+    for (int x = 0; x < 5; ++x) CHECK_EQ(ChannelOf(da, x, 0, 0), expect_a[x]);
+
+    Surface b(8, 1);
+    for (int x = 0; x < 8; ++x) {
+        const uint8_t v = static_cast<uint8_t>(x);
+        b.SetPixel(x, 0, v, v, v, 255);
+    }
+    Surface db(13, 1);
+    ScaleSurface(b, db, MakeVT(8, 1, 13, 1));
+    for (int x = 0; x < 13; ++x)
+        CHECK_EQ(ChannelOf(db, x, 0, 0), static_cast<uint8_t>(E8Index(x, 8, 13)));
+
+    // 8 -> 11 (1.375x) is the third discriminating size: E8 gives
+    // 0 1 1 2 3 3 4 5 6 6 7 here.
+    Surface dc(11, 1);
+    ScaleSurface(b, dc, MakeVT(8, 1, 11, 1));
+    static const uint8_t expect_c[11] = {0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7};
+    for (int x = 0; x < 11; ++x) {
+        CHECK_EQ(ChannelOf(dc, x, 0, 0), static_cast<uint8_t>(E8Index(x, 8, 11)));
+        CHECK_EQ(ChannelOf(dc, x, 0, 0), expect_c[x]);
+    }
+}
+
+RTSC_TEST(view_choose_resample_covers_every_axis_combination) {
+    // The rule is per axis, not per "zoom factor": a view that shrinks on one
+    // axis must average even when the other axis is unchanged or growing, while
+    // a view that only grows or keeps a size must replicate.
+    struct Case {
+        int sw, sh, dw, dh;
+        Resample want;
+    };
+    static const Case cases[] = {
+        {8, 8, 8, 8, Resample::kExact},    // 1:1
+        {8, 8, 4, 4, Resample::kArea},     // both shrink
+        {8, 8, 4, 8, Resample::kArea},     // one shrinks, one unchanged
+        {8, 8, 4, 16, Resample::kArea},    // one shrinks, one grows
+        {8, 8, 10, 8, Resample::kNearest}, // one grows, one unchanged
+        {8, 8, 12, 12, Resample::kNearest},
+        {8, 8, 16, 16, Resample::kNearest},
+        {1, 200, 1, 333, Resample::kNearest},
+    };
+    for (const Case& c : cases) {
+        CHECK(ChooseResample(MakeVT(c.sw, c.sh, c.dw, c.dh), c.sw, c.sh) == c.want);
+    }
+    // A centred 1:1 view is still exact: the size matches, only the origin moved.
+    ViewTransform centred;
+    centred.x = 2;
+    centred.y = 2;
+    centred.width = 4;
+    centred.height = 4;
+    CHECK(ChooseResample(centred, 4, 4) == Resample::kExact);
+}
+
+RTSC_TEST(view_integer_2x_equals_reference_nearest) {
+    // Regression guard: 2x must stay an exact block copy equal to an
+    // independently computed nearest-neighbour image (E8 at an integer factor).
+    // If the upscale path is ever "improved" to interpolate, this fails.
+    Surface src(4, 4);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            const uint8_t v = static_cast<uint8_t>(x * 16 + y);
+            src.SetPixel(x, y, v, static_cast<uint8_t>(255 - v), v / 2, 255);
+        }
+    }
+    Surface dst(8, 8);
+    ScaleSurface(src, dst, MakeVT(4, 4, 8, 8));
+
+    Surface ref(8, 8);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            src.GetPixel(E8Index(x, 4, 8), E8Index(y, 4, 8), r, g, b, a);
+            ref.SetPixel(x, y, r, g, b, a);
+        }
+    }
+    CHECK(std::memcmp(dst.data(), ref.data(), ref.size()) == 0);
+}
+
+RTSC_TEST(view_upscale_1x200_to_1x333_is_monotone) {
+    // A vertical 0..199 ramp enlarged to 333 rows must stay non-decreasing and
+    // keep its endpoints: nearest sampling never reorders and never invents a
+    // value outside the source set.
+    Surface src(1, 200);
+    for (int y = 0; y < 200; ++y) {
+        const uint8_t v = static_cast<uint8_t>(y);
+        src.SetPixel(0, y, v, v, v, 255);
+    }
+    Surface dst(1, 333);
+    ScaleSurface(src, dst, MakeVT(1, 200, 1, 333));
+    CHECK_EQ(ChannelOf(dst, 0, 0, 0), 0);
+    CHECK_EQ(ChannelOf(dst, 0, 332, 0), 199);
+    for (int y = 1; y < 333; ++y) {
+        CHECK(ChannelOf(dst, 0, y, 0) >= ChannelOf(dst, 0, y - 1, 0));
+    }
+}
+
+RTSC_TEST(view_upscale_1x1_replicates_the_pixel) {
+    // A single source pixel must fill the whole destination at every upscale
+    // factor (2, 7, 31), all four channels included.
+    for (int n : {2, 7, 31}) {
+        Surface src(1, 1);
+        src.SetPixel(0, 0, 77, 88, 99, 255);
+        Surface dst(static_cast<uint16_t>(n), static_cast<uint16_t>(n));
+        ScaleSurface(src, dst, MakeVT(1, 1, n, n));
+        for (int y = 0; y < n; ++y) {
+            for (int x = 0; x < n; ++x) {
+                CHECK_EQ(ChannelOf(dst, x, y, 0), 77);
+                CHECK_EQ(ChannelOf(dst, x, y, 1), 88);
+                CHECK_EQ(ChannelOf(dst, x, y, 2), 99);
+                CHECK_EQ(ChannelOf(dst, x, y, 3), 255);
+            }
+        }
+    }
+}
+
+RTSC_TEST(view_letterbox_1to1_is_bit_exact) {
+    // A 1:1 view that is merely offset (letterbox bars) must still be an exact
+    // copy, not a resample: the source is 4x4 and the destination 8x8 places it
+    // at (2,2), so the image area has to be byte-identical to the source.
+    Surface src(4, 4);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            src.SetPixel(x, y, static_cast<uint8_t>(x * 60 + 3),
+                         static_cast<uint8_t>(y * 60 + 7),
+                         static_cast<uint8_t>(x * y + 11), 200);
+        }
+    }
+    Surface dst(8, 8);
+    const auto vt = ComputeViewTransform(4, 4, 8, 8, 1.0, false);
+    CHECK_EQ(vt.width, 4);
+    CHECK_EQ(vt.height, 4);
+    CHECK_EQ(vt.x, 2);
+    CHECK_EQ(vt.y, 2);
+    ScaleSurface(src, dst, vt);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                CHECK_EQ(ChannelOf(dst, vt.x + x, vt.y + y, c), ChannelOf(src, x, y, c));
+            }
+        }
+    }
+}
+
+RTSC_TEST(view_integer_2x_is_exact_block_copy) {
     Surface src(4, 4);
     src.Fill(0, 0, 0, 255);
     src.SetPixel(1, 2, 0xFF, 0, 0, 0xFF);  // one red source pixel
@@ -447,7 +1030,10 @@ RTSC_TEST(view_scale_1to1_is_bit_exact) {
 
 RTSC_TEST(view_scale_integer_2x_is_exact) {
     // A 2x zoom is an exact 2x2 block per source pixel, including a non-uniform
-    // source (the old nearest-neighbour path could not be relied on for this).
+    // source. This is mstsc behaviour, not an implementation detail: GDI
+    // HALFTONE was measured to replicate blocks at every integer factor
+    // (docs/spec/scaling-evidence.md E7), so a change that "smooths" 2x is a
+    // regression against the reference, not an improvement.
     Surface src(2, 2);
     src.SetPixel(0, 0, 0x11, 0x22, 0x33, 0xFF);
     src.SetPixel(1, 0, 0x44, 0x55, 0x66, 0xFF);
@@ -474,9 +1060,15 @@ RTSC_TEST(view_scale_integer_2x_is_exact) {
     }
 }
 
-RTSC_TEST(view_scale_bilinear_interpolates_non_integer) {
-    // A non-integer zoom is bilinear: the corners stay exact (they land on a
-    // source pixel) and the centre is a blend of all four source pixels.
+RTSC_TEST(view_scale_non_integer_upscale_is_nearest) {
+    // A non-integer upscale is nearest-neighbour, not interpolating: mstsc's
+    // StretchBlt runs with GDI HALFTONE, which was measured to replicate source
+    // pixels at 1.37x as well as at 2x/3x (docs/spec/scaling-evidence.md E7).
+    // Source-index map for 2 -> 3 measured and derived as
+    //     C(d) = ((2d + 1) * S - 1) / (2 * D)  =  0 0 1
+    // (E8, independently re-derived here from the formula, not from the
+    // implementation's output). So the centre destination pixel samples source
+    // (0,0), which is the red corner -- the old bilinear value was (142,170,170).
     Surface src(2, 2);
     src.SetPixel(0, 0, 255, 0, 0, 255);
     src.SetPixel(1, 0, 0, 255, 0, 255);
@@ -489,49 +1081,66 @@ RTSC_TEST(view_scale_bilinear_interpolates_non_integer) {
     CHECK_EQ(vt.height, 3);
     ScaleSurface(src, dst, vt);
 
-    uint8_t r = 0, g = 0, b = 0, a = 0;
-    CHECK(dst.GetPixel(0, 0, r, g, b, a) && r == 255 && g == 0 && b == 0);
-    CHECK(dst.GetPixel(2, 0, r, g, b, a) && r == 0 && g == 255 && b == 0);
-    CHECK(dst.GetPixel(0, 2, r, g, b, a) && r == 0 && g == 0 && b == 255);
-    CHECK(dst.GetPixel(2, 2, r, g, b, a) && r == 255 && g == 255 && b == 255);
-
-    CHECK(dst.GetPixel(1, 1, r, g, b, a));
-    CHECK(r > 0 && g > 0 && b > 0);              // a blend of all four
-    CHECK(!(r == 255 && g == 0 && b == 0));      // not a source corner
-    CHECK(!(r == 0 && g == 255 && b == 0));
-    CHECK(!(r == 0 && g == 0 && b == 255));
-    CHECK(!(r == 255 && g == 255 && b == 255));
+    static const uint8_t expect[3][3][3] = {
+        {{255, 0, 0}, {255, 0, 0}, {0, 255, 0}},
+        {{255, 0, 0}, {255, 0, 0}, {0, 255, 0}},
+        {{0, 0, 255}, {0, 0, 255}, {255, 255, 255}},
+    };
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 3; ++x) {
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            CHECK(dst.GetPixel(x, y, r, g, b, a));
+            CHECK_EQ(r, expect[y][x][0]);
+            CHECK_EQ(g, expect[y][x][1]);
+            CHECK_EQ(b, expect[y][x][2]);
+        }
+    }
 }
 
 RTSC_TEST(view_scale_benchmark_1280x1024) {
-    Surface src(1280, 1024);
-    for (int y = 0; y < src.height(); ++y) {
-        for (int x = 0; x < src.width(); ++x) {
-            src.SetPixel(x, y, static_cast<uint8_t>(x), static_cast<uint8_t>(y),
-                         0x80, 0xFF);
-        }
-    }
-    Surface dst(1280, 1024);
-    const auto time_it = [&](const ViewTransform& vt, const char* label) {
-        const auto t0 = std::chrono::steady_clock::now();
-        const int iters = 30;
-        for (int i = 0; i < iters; ++i) ScaleSurface(src, dst, vt);
-        const double ms =
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - t0)
-                .count();
-        std::printf("  [bench] ScaleSurface 1280x1024 %s: %.2f ms/iter (%.0f fps)\n",
-                    label, ms / iters, iters / (ms / 1000.0));
-        return ms / iters;
+    // Timing guard over the six contract shapes. Thresholds are deliberately
+    // loose (a few times the measured value) so they catch an algorithmic
+    // regression -- e.g. a return to per-pixel division or a float resample --
+    // without failing on CI jitter.
+    struct Case {
+        int sw, sh, dw, dh;
+        const char* label;
+        double budget_ms;
     };
-    const double one = time_it(ComputeViewTransform(1280, 1024, 1280, 1024, 1.0, false), "1:1 blit");
-    const double two = time_it(ComputeViewTransform(1280, 1024, 2560, 2048, 2.0, false), "2x block");
-    const double half = time_it(ComputeViewTransform(1280, 1024, 640, 512, 0.5, false), "0.5x bilinear");
-    // Generous floors that still catch a regression to the old per-pixel
-    // division path (which was ~10 ms for a 1:1 1280x1024 frame).
-    CHECK(one < 2.0);
-    CHECK(two < 16.0);
-    CHECK(half < 32.0);
+    static const Case cases[] = {
+        {1280, 1024, 1280, 1024, "1:1", 1.0},
+        {1280, 1024, 1280, 1200, "1:1 letterbox", 0.6},
+        {1920, 1080, 3840, 2160, "2x", 8.0},
+        {1920, 1080, 1536, 864, "0.8x", 22.0},
+        {3840, 2160, 1920, 1080, "0.5x 4K", 25.0},
+        {1920, 1080, 2560, 1440, "1.33x", 10.0},
+    };
+    for (const Case& c : cases) {
+        Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));
+        for (int y = 0; y < src.height(); ++y) {
+            for (int x = 0; x < src.width(); ++x) {
+                src.SetPixel(x, y, static_cast<uint8_t>(x),
+                             static_cast<uint8_t>(y), 0x80, 0xFF);
+            }
+        }
+        Surface dst(static_cast<uint16_t>(c.dw), static_cast<uint16_t>(c.dh));
+        const auto vt = ComputeViewTransform(c.sw, c.sh, c.dw, c.dh,
+                                             static_cast<double>(c.dw) / c.sw,
+                                             false);
+        double best = 1e9;
+        const int iters = 5;
+        for (int rep = 0; rep < 3; ++rep) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < iters; ++i) ScaleSurface(src, dst, vt);
+            const double ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0)
+                    .count() / iters;
+            if (ms < best) best = ms;
+        }
+        std::printf("  [bench] %-16s %4dx%-4d -> %4dx%-4d  %7.2f ms (budget %5.2f)\n",
+                    c.label, c.sw, c.sh, c.dw, c.dh, best, c.budget_ms);
+        CHECK(best < c.budget_ms);
+    }
 }
-
 int main() { return ::rtsc::test::run_all("rtsc_view_tests"); }
