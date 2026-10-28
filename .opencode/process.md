@@ -10593,3 +10593,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 偏差清单 v0.1 入库（005c499）：仓内缺 DATA_CHANNEL/FILECONTENTS 路径、UNKNOWN_PDU 静默差异。
 - **决策点（待用户/W11）**：FILECONTENTS（文件拖放）与目标功能相关，建议优先实现；走 W11 双审定案。
 - **下一步选择**：①A4 FILECONTENTS 实现（需定案+执行子）；②先 A5 rdpsnd 取证；③真机 wire 裁决。
+
+## 第638轮：C0 复验 → view bench 超预算定位为环境争用
+
+- 全量 ctest 51 套件：**view 1 项红**（view_scale_benchmark_1280x1024 0.8x 25.58ms>22.00ms），其余 50/51 绿 + 全量 build 0err/0warn。
+- **根因排查（非代码回归）**：同期 `F:\il2cpp` 项目 4-6 个 cmake 构建进程占满 CPU（LoadPercentage 持续 99-100%），基准计时被争用膨胀。discover.md bf052fc 已记录。
+- **基线**：独占环境 0.8x≈19.54ms（审计乙曾独占复跑绿）；本机 CPU 争用消除后复跑应复绿。
+- **C0 结论**：代码层无回归；基准敏感项已记录处置路径（等独占/其他项目构建结束）。
+- **下一步**：A4 决策（FILECONTENTS 实现 vs A5 rdpsnd 取证）待用户/定案。
