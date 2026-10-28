@@ -10553,3 +10553,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 
 - 甲/乙收到派发通知均确认：终审定案无异议、全部断言有探针实证、执行报告到达后按逐条判定项独立复验（先红/绿再判断）才盖章。
 - 在途：执行 `ses_e7dedad5affeah0vJuuPnNXnxg` TDD 修复中；甲乙待其报告复核。主侧无代码改动，静默待命。
+
+## 第633轮：执行交付 fb20d65 + 旧批次子代理清理
+
+- **执行子提交 `fb20d65`**（20 文件 +1069/-72，工作树干净）：P0-1 SAS/Pause 端到端（main 消费 kUiCommand→SendCtrlAltDel/SendPauseKey，字节断言）、P0-2 X 键改 PTRXFLAGS 0x0001/0x0002 + server kMouseX 同步、P1-1 NumLock/numpad（真实消息只信 bit24、删 VK_NUMLOCK）、P1-2 capture 生命周期（held_buttons_ 位图+WM_CAPTURECHANGED+负坐标 GET_X/Y_LPARAM clamp）、P1-3 HWHEEL 能力门（0x0100 解析+门禁）、P2 六项、MapMonitor clamp。受影响套件全绿（client 14/63、ui 40/226、input 13/43、view 53/6582、server 21/193、capabilities 42/315、session 13/80）。
+- **待复核**：甲乙已从执行子报告收到，进入复核。
+- **旧批次子代理**：`ses_e7eef50d9ffe1V1Z1HPO3jDJB1`（视图坐标层修复）报额度硬阻塞（usage up），其任务范围已被 fb20d65 整批覆盖且无未提交代码 → **abort 清理**；`ses_e7eef6e8dffeuhgN6mLM0qpjLl`（输入窗口层修复）pending，已 relay 核对是否重叠，待回报决定（abort/prompt）。
+- **上报用户**：旧子代理额度 `Your subscription allowance for this period is used up`——免费模型仍可用；现役执行/审计均用 taotoken/deepseek-flash 未受阻塞，仅旧批次冗余子代理受影响。
