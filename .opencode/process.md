@@ -10621,3 +10621,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 甲驳 D1(wire 24/28 parse/encode)/D2(广告不对称)/D4/D5+缺测；乙驳 D1-D5+9 缺测，独立探针 10 checks（A2/A3/B1 白名单/锁门红证；C1/D1/E1 门 PASS）。甲乙一致。
 - 执行子已接返修指令：D1 parse/encode 改 {24,28} 无 presence 字 + 头注修正；D2 OnFormatDataRequest 加 provider FILELIST 应答（方向B Serve 侧完成件）；D3 take 侧 4GiB 上限；D4 pending_format_==0 卫；D5 注释；9+ 项缺测补齐。
 - 在途：执行子返修 → 甲乙复验 → 盖章。
+## 第642轮：FILECONTENTS 双审一致盖章放行 → 提交 d29ec55
+- 甲乙双审一致放行（甲 105/546 + D1 探针绿；乙 19/19 探针 + 本地重建 105/546）。
+- 主侧 C0：全量 build 0err/0warn；ctest 51/51（含 view，il2cpp 争用消除）。
+- 提交 d29ec55（feat: cliprdr CB_FILECONTENTS）+ 证据 f88b3b5。工作树干净。
+- 遗留 ticket（排期）：方向B backend；真机抓包（UNVERIFIED 五项）；D4 可选加固；A5 rdpsnd 深挖。
