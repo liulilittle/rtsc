@@ -282,9 +282,8 @@ RTSC_TEST(server_enhanced_security_loopback_to_active) {
     // connects to the in-tree server over PROTOCOL_HYBRID (TLS + CredSSP) and
     // reaches the active session, receiving a test-pattern frame. This is the
     // same leg mstsc needs before it will send MCS.
-    const uint16_t port = 3396;
     rtsc::server::ServerConfig scfg;
-    scfg.port = port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     scfg.enable_enhanced_security = true;
@@ -296,6 +295,7 @@ RTSC_TEST(server_enhanced_security_loopback_to_active) {
     server.SetDesktopSource(source.get());
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     rtsc::proto::ConnectMachine::Config mcfg;
@@ -361,9 +361,8 @@ RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
     // (0x0B). The server must answer with PROTOCOL_HYBRID_EX (0x8) and send
     // the EUAR; selecting plain HYBRID (0x2) while still sending the EUAR makes
     // mstsc treat those 4 bytes as a protocol error (0x1204) and reset.
-    const uint16_t port = 3397;
     rtsc::server::ServerConfig scfg;
-    scfg.port = port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     scfg.enable_enhanced_security = true;
@@ -375,6 +374,7 @@ RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
     server.SetDesktopSource(source.get());
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     rtsc::proto::ConnectMachine::Config mcfg;

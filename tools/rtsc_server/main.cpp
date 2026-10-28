@@ -314,11 +314,17 @@ int main(int argc, char** argv) {
     }
 
     rtsc::server::RdpServer server(cfg);
-    // Credential policy. Unless --allow-any-credentials was given, the account
-    // carried by the Client Info PDU must match --user/--domain (case
-    // insensitive; "DOMAIN\user" is accepted). The password itself is not
-    // checked on this path: the CredSSP/NTLM path is what validates it,
-    // through credential_lookup above.
+    // Credential policy. The library default is "do not accept everything", and
+    // this host installs an authenticator unless --allow-any-credentials was
+    // given. The account carried by the Client Info PDU must then match
+    // --user/--domain (case insensitive; "DOMAIN\user" is accepted).
+    //
+    // Boundary, stated so it is not mistaken for full authentication: this path
+    // checks the ACCOUNT NAME only. The Client Info password field is not
+    // verified by the server. Password verification happens on the
+    // enhanced-security path, where CredSSP/NTLM validates it against the
+    // password returned by credential_lookup above (--enhanced, the default).
+    // With --no-enhanced there is no password check at all.
     if (!opt.allow_any_credentials) {
         server.SetAuthenticator([accepted_user, accepted_domain, any_user](
                                     const rtsc::server::Credentials& creds) {

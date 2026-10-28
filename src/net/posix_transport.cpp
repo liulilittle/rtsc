@@ -7,7 +7,9 @@
 
 #if !defined(_WIN32)
 
+#include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -69,7 +71,8 @@ class PosixTransport : public Transport {
 
 class PosixListener : public Listener {
  public:
-    explicit PosixListener(int fd) : fd_(fd) {}
+    PosixListener(int fd, uint16_t local_port)
+        : fd_(fd), local_port_(local_port) {}
     ~PosixListener() override { Close(); }
 
     std::unique_ptr<Transport> Accept() override {
@@ -96,8 +99,11 @@ class PosixListener : public Listener {
         }
     }
 
+    uint16_t local_port() const override { return local_port_; }
+
  private:
     int fd_ = -1;
+    uint16_t local_port_ = 0;
     std::atomic<bool> closed_{false};
 };
 
@@ -181,7 +187,28 @@ std::unique_ptr<Listener> ListenTcp(const std::string& host, uint16_t port,
                 port_str + " failed";
         return nullptr;
     }
-    return std::make_unique<PosixListener>(fd);
+
+    // Read back the port the socket was actually bound to. With port 0 the
+    // kernel picks one, and the caller (a test binding an ephemeral port) has
+    // no other way to learn it. Fail closed rather than report a bogus 0.
+    sockaddr_storage local{};
+    socklen_t local_len = sizeof(local);
+    uint16_t bound_port = 0;
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &local_len) == 0) {
+        if (local.ss_family == AF_INET) {
+            bound_port =
+                ::ntohs(reinterpret_cast<const sockaddr_in*>(&local)->sin_port);
+        } else if (local.ss_family == AF_INET6) {
+            bound_port = ::ntohs(
+                reinterpret_cast<const sockaddr_in6*>(&local)->sin6_port);
+        }
+    }
+    if (bound_port == 0) {
+        ::close(fd);
+        error = "getsockname on the listening socket failed";
+        return nullptr;
+    }
+    return std::make_unique<PosixListener>(fd, bound_port);
 }
 
 }  // namespace rtsc::net

@@ -68,6 +68,15 @@ class Listener {
 
     // Closes the listening socket. Idempotent.
     virtual void Close() = 0;
+
+    // The TCP port the socket is actually bound to, as reported by the kernel
+    // (getsockname) at bind time. When ListenTcp() is given port 0 the kernel
+    // picks a free port; this accessor is the only way for a caller to learn
+    // which one, so tests can bind an ephemeral port instead of hardcoding one
+    // and racing every other process on the machine for it.
+    //
+    // The value is captured once, so it stays readable after Close().
+    virtual uint16_t local_port() const = 0;
 };
 
 // Binds and listens on `host:port`. Returns nullptr and fills `error` on failure.

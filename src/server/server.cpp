@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -569,13 +570,27 @@ class RdpSession {
     const Credentials& credentials() const { return credentials_; }
     bool active() const { return active_; }
 
-    // Overwrites the stored credential bytes so a plaintext password does not
-    // survive in the freed heap block when the session object is released.
-    void ScrubCredentials() {
-        if (credentials_.password.empty()) return;
-        std::memset(&credentials_.password[0], 0, credentials_.password.size());
-        credentials_.password.clear();
+    // Overwrites a string's bytes before they are freed. A plain memset can be
+    // dropped as a dead store when the buffer is released right afterwards, so
+    // the store goes through a volatile pointer.
+    static void SecureWipe(std::string& s) noexcept {
+        if (s.empty()) return;
+        volatile char* p = &s[0];
+        for (size_t i = 0; i < s.size(); ++i) p[i] = '\0';
+        s.clear();
     }
+
+    // Overwrites every credential field so no plaintext account material
+    // survives in the freed heap block when the session object is released.
+    void ScrubCredentials() noexcept {
+        SecureWipe(credentials_.domain);
+        SecureWipe(credentials_.user_name);
+        SecureWipe(credentials_.password);
+        SecureWipe(credentials_.alternate_shell);
+        SecureWipe(credentials_.working_dir);
+    }
+
+    ~RdpSession() { ScrubCredentials(); }
 
  private:
     // ---- transport helpers -------------------------------------------------
@@ -1458,19 +1473,42 @@ class RdpSession {
 struct RdpServer::Impl {
     explicit Impl(const ServerConfig& config) : config(config) {}
 
+    // State shared with the detached session threads. It is a shared_ptr so a
+    // thread that is still finishing after Stop() cannot touch a destroyed
+    // Impl: the thread keeps the registry alive until its very last statement.
+    struct Registry {
+        std::mutex mu;
+        std::condition_variable cv;
+        // Live sessions. The owning reference is the session thread's
+        // shared_ptr; this registry only keeps them reachable for Stop(), and
+        // the thread unregisters itself when it finishes.
+        std::vector<std::shared_ptr<RdpSession>> sessions;
+        // Atomic because the decrement must not depend on a mutex lock
+        // succeeding: it is the only thing Stop() waits for, so it has to be
+        // reachable from every path (see the exactly-once handoff below).
+        std::atomic<size_t> live{0};
+    };
+
     ServerConfig config;
     std::unique_ptr<net::Listener> listener;
+    // The port the listening socket is actually bound to; captured at bind time
+    // so it survives the listener's destruction. Non-zero whenever `listener`
+    // was created successfully, including a kernel-assigned ephemeral port
+    // when config.port was 0.
+    uint16_t bound_port = 0;
     std::atomic<bool> running{false};
-    std::mutex sessions_mu;
-    // Live sessions. The owning reference is the session thread's shared_ptr;
-    // this registry only keeps them reachable for Stop(), and the thread
-    // unregisters itself when it finishes. A finished session, including its
-    // transport, TLS/CredSSP state and credentials, is therefore released at
-    // once instead of at Stop().
-    std::vector<std::shared_ptr<RdpSession>> sessions;
-    std::vector<std::thread> threads;
-    std::atomic<size_t> live_session_count{0};
+    std::shared_ptr<Registry> registry = std::make_shared<Registry>();
     std::atomic<size_t> total_session_count{0};
+    bool warned_accept_all = false;
+
+    // Binds the listening socket and records the effective port. Returns false
+    // and fills `why` on failure.
+    bool Listen(std::string& why) {
+        listener = net::ListenTcp("0.0.0.0", config.port, why);
+        if (!listener) return false;
+        bound_port = listener->local_port();
+        return true;
+    }
 };
 
 RdpServer::RdpServer(const ServerConfig& config)
@@ -1494,10 +1532,23 @@ bool RdpServer::Start(std::string& error) {
         last_error_ = error;
         return false;
     }
+    // Say it once, loudly: the default configuration does not check
+    // credentials (the library default keeps the first-milestone behaviour, and
+    // a real deployment is expected to call SetAuthenticator). Silently
+    // accepting every peer is exactly the state an operator must notice.
+    if ((config_.accept_any_credentials || !authenticator_) &&
+        !impl_->warned_accept_all) {
+        impl_->warned_accept_all = true;
+        std::fprintf(stderr,
+                     "[rtsc-server] WARNING: credential validation is not "
+                     "enforced (accept_any_credentials=%s, authenticator=%s); "
+                     "every client is accepted\n",
+                     config_.accept_any_credentials ? "true" : "false",
+                     authenticator_ ? "set" : "unset");
+    }
     if (impl_->listener) return true;
     std::string why;
-    impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
-    if (!impl_->listener) {
+    if (!impl_->Listen(why)) {
         error = why;
         last_error_ = why;
         return false;
@@ -1512,8 +1563,7 @@ void RdpServer::Run() {
     }
     if (!impl_->listener) {
         std::string why;
-        impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
-        if (!impl_->listener) {
+        if (!impl_->Listen(why)) {
             last_error_ = why;
             return;
         }
@@ -1523,24 +1573,72 @@ void RdpServer::Run() {
         auto transport = impl_->listener->Accept();
         if (!transport) break;
 
-        // Spawn under the sessions lock so Stop() either sees the session (and
-        // stops it) or the loop has already exited.
-        std::lock_guard<std::mutex> lock(impl_->sessions_mu);
-        if (!impl_->running.load(std::memory_order_relaxed)) break;
-        auto session = std::make_shared<RdpSession>(
-            std::move(transport), config_, source_, authenticator_,
-            input_callback_, 0);
-        impl_->sessions.push_back(session);
-        impl_->live_session_count.fetch_add(1, std::memory_order_relaxed);
-        impl_->total_session_count.fetch_add(1, std::memory_order_relaxed);
-        Impl* impl = impl_.get();
-        // The thread owns the session. It releases the object (and its
-        // credentials) when it ends instead of leaving it for Stop(). The
-        // try/catch keeps a session failure -- e.g. std::bad_alloc from a
-        // desktop source -- inside this session: without it the exception
-        // escaped the thread function and std::terminate killed the whole
-        // process, every other session included.
-        impl_->threads.emplace_back([impl, session]() {
+        auto registry = impl_->registry;
+        std::shared_ptr<RdpSession> session;
+        {
+            // Register under the lock so Stop() either sees the session (and
+            // stops it) or the loop has already exited. The live count is
+            // raised here, before the thread exists, so the thread's teardown
+            // can never decrement it before it was raised (a size_t underflow
+            // would make Stop() wait forever). A failed launch rolls it back
+            // below.
+            std::lock_guard<std::mutex> lock(registry->mu);
+            if (!impl_->running.load(std::memory_order_relaxed)) break;
+            session = std::make_shared<RdpSession>(
+                std::move(transport), config_, source_, authenticator_,
+                input_callback_, 0);
+            registry->sessions.push_back(session);
+            registry->live.fetch_add(1, std::memory_order_relaxed);
+        }
+        // The thread owns the session and is detached: keeping the std::thread
+        // object in a container until Stop() leaked one kernel thread handle
+        // per connection (measured +1 per connect on a long-running host,
+        // 107 -> 115 over 8 rounds). Stop() waits for the registry's live count
+        // to reach zero instead of joining.
+        // Exactly-once release of the live slot. Ownership of the decrement is
+        // handed off through `counted`, so it does not depend on the launcher
+        // being honest: a launcher may run the body to completion *and then*
+        // report failure, in which case both the body's teardown and the
+        // rollback would otherwise decrement (size_t underflow -> SIZE_MAX ->
+        // Stop() blocks forever). Whichever side exchanges the flag first owns
+        // the decrement; the other becomes a no-op.
+        // The erase is best effort and lives in its own block: a throwable
+        // operation must not be able to skip the count release.
+        auto counted = std::make_shared<std::atomic<bool>>(true);
+        auto release = [registry, session, counted]() noexcept {
+            try {
+                std::lock_guard<std::mutex> guard(registry->mu);
+                auto& live_sessions = registry->sessions;
+                live_sessions.erase(
+                    std::remove(live_sessions.begin(), live_sessions.end(),
+                                session),
+                    live_sessions.end());
+            } catch (...) {
+                // The registry entry is only used to reach the session from
+                // Stop(); leaving it behind is harmless, the count is not.
+            }
+            if (counted->exchange(false, std::memory_order_acq_rel)) {
+                // Only the decrement happens after the lock, so no other
+                // throwable statement can sit between them.
+                try {
+                    std::lock_guard<std::mutex> guard(registry->mu);
+                    registry->live.fetch_sub(1, std::memory_order_relaxed);
+                } catch (...) {
+                    // std::mutex::lock() failed (programmer error); releasing
+                    // the count still matters more than the wake-up protocol.
+                    registry->live.fetch_sub(1, std::memory_order_relaxed);
+                }
+            }
+            try {
+                registry->cv.notify_all();
+            } catch (...) {
+            }
+        };
+        // noexcept: the body runs on a detached thread, so an exception
+        // escaping it would call std::terminate and kill the whole process
+        // (every other session included). The session phase is caught here and
+        // teardown is the single no-throw `release` above.
+        auto body = [registry, session, release]() noexcept {
             try {
                 session->Run();
             } catch (const std::exception& e) {
@@ -1550,20 +1648,44 @@ void RdpServer::Run() {
                 std::fprintf(stderr,
                              "[rtsc-server] session failed: unknown exception\n");
             }
-            session->Stop();
-            session->ScrubCredentials();
-            {
-                std::lock_guard<std::mutex> lock(impl->sessions_mu);
-                for (auto it = impl->sessions.begin();
-                     it != impl->sessions.end(); ++it) {
-                    if (it->get() == session.get()) {
-                        impl->sessions.erase(it);
-                        break;
-                    }
-                }
+            try {
+                session->Stop();
+            } catch (...) {
             }
-            impl->live_session_count.fetch_sub(1, std::memory_order_relaxed);
-        });
+            try {
+                session->ScrubCredentials();
+            } catch (...) {
+            }
+            release();
+        };
+        bool started = false;
+        if (config_.session_thread_launcher) {
+            try {
+                started = config_.session_thread_launcher(body);
+            } catch (...) {
+                started = false;
+            }
+        } else {
+            try {
+                std::thread(body).detach();
+                started = true;
+            } catch (const std::exception& e) {
+                // Thread/handle exhaustion: the connection is dropped, the
+                // session is not counted and the accept loop keeps going.
+                std::fprintf(stderr,
+                             "[rtsc-server] session thread could not be "
+                             "started: %s\n",
+                             e.what());
+                started = false;
+            }
+        }
+        if (!started) {
+            // no-throw, exactly-once: if the launcher already ran the body to
+            // completion this is a no-op for the count.
+            release();
+            continue;  // `session` is released here: the transport is closed.
+        }
+        impl_->total_session_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -1574,8 +1696,7 @@ bool RdpServer::ServeOne() {
     }
     if (!impl_->listener) {
         std::string why;
-        impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
-        if (!impl_->listener) {
+        if (!impl_->Listen(why)) {
             last_error_ = why;
             return false;
         }
@@ -1599,28 +1720,35 @@ bool RdpServer::ServeOne() {
 }
 
 void RdpServer::Stop() {
+    // Idempotent and safe when called twice: the wait predicate is the live
+    // count, so a second call simply observes zero.
     impl_->running.store(false, std::memory_order_relaxed);
     if (impl_->listener) impl_->listener->Close();
 
+    const auto registry = impl_->registry;
+    // Ask every live session to stop, then wait until their detached threads
+    // have actually finished (server.h: Stop() closes the listener and every
+    // live session, then waits for their threads). Detached threads cannot be
+    // joined, so the wait is on the registry's live count -- the same
+    // guarantee the join used to give.
     std::vector<std::shared_ptr<RdpSession>> sessions;
-    std::vector<std::thread> threads;
     {
-        std::lock_guard<std::mutex> lock(impl_->sessions_mu);
-        sessions = impl_->sessions;
-        impl_->sessions.clear();
-        threads = std::move(impl_->threads);
+        std::lock_guard<std::mutex> lock(registry->mu);
+        sessions = registry->sessions;
     }
     for (const auto& s : sessions) s->Stop();
-    for (std::thread& t : threads) {
-        if (t.joinable()) t.join();
-    }
-    // `sessions` is the last owner of any session the thread has not released
-    // yet; dropping it here frees the object and its credentials.
+    std::unique_lock<std::mutex> lock(registry->mu);
+    registry->cv.wait(lock, [&registry]() { return registry->live == 0; });
+    // Dropping `sessions` releases any session the thread had not released yet;
+    // it also frees its credentials with the object.
 }
 
 size_t RdpServer::session_count() const {
-    return impl_->live_session_count.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(impl_->registry->mu);
+    return impl_->registry->live;
 }
+
+uint16_t RdpServer::bound_port() const { return impl_->bound_port; }
 
 size_t RdpServer::total_session_count() const {
     return impl_->total_session_count.load(std::memory_order_relaxed);

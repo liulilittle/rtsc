@@ -5,6 +5,17 @@
 // of [MS-RDPBCGR] using the project's own encoders/decoders. A green run means
 // the server emits the published wire format and reaches the active session.
 
+// The handle-count probe below needs the Win32 thread-handle accounting; the
+// rest of the suite stays platform neutral.
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -35,6 +46,10 @@
 #include "rtsc/server/server.h"
 #include "test_framework.h"
 #include "test_main.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 using namespace rtsc::proto;
 using rtsc::server::RdpServer;
@@ -500,7 +515,7 @@ RTSC_TEST(server_negotiation_failure) {
     // With require_external_security the server must answer a client that asks
     // for TLS/HYBRID with RDP_NEG_FAILURE.
     ServerConfig cfg;
-    cfg.port = 3391;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.require_external_security = true;
     RdpServer server(cfg);
     std::string error;
@@ -508,7 +523,7 @@ RTSC_TEST(server_negotiation_failure) {
     std::thread runner([&server]() { server.Run(); });
 
     std::string cerr;
-    auto transport = rtsc::net::ConnectTcp("127.0.0.1", cfg.port, cerr);
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", server.bound_port(), cerr);
     if (transport == nullptr) {
         server.Stop();
         runner.join();
@@ -537,7 +552,7 @@ RTSC_TEST(server_negotiation_failure) {
 
 RTSC_TEST(server_full_handshake_to_active) {
     ServerConfig cfg;
-    cfg.port = 3390;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -550,7 +565,7 @@ RTSC_TEST(server_full_handshake_to_active) {
 
     std::thread runner([&server]() { server.Run(); });
 
-    const HandshakeResult r = DriveToActive(cfg.port);
+    const HandshakeResult r = DriveToActive(server.bound_port());
     if (!r.error.empty()) {
         std::printf("  handshake error: %s\n", r.error.c_str());
     }
@@ -573,7 +588,7 @@ RTSC_TEST(server_full_handshake_to_active) {
 
 RTSC_TEST(server_input_event_callback) {
     ServerConfig cfg;
-    cfg.port = 3392;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -596,7 +611,7 @@ RTSC_TEST(server_input_event_callback) {
     std::thread runner([&server]() { server.Run(); });
 
     // Drive to active and leave a keyboard + mouse event on the wire.
-    const HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/true);
+    const HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/true);
     CHECK(r.reached_active);
 
     // The callback runs on the session thread; give it a bounded moment.
@@ -616,7 +631,7 @@ RTSC_TEST(server_interop_with_client_machine) {
     // X.224 / MCS / Client Info exchange is checked against the code the real
     // client ships (not a second server-side copy of it).
     ServerConfig cfg;
-    cfg.port = 3393;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -641,7 +656,7 @@ RTSC_TEST(server_interop_with_client_machine) {
 
     ConnectMachine machine(mcfg, creds);
     std::string cerr;
-    auto transport = rtsc::net::ConnectTcp("127.0.0.1", cfg.port, cerr);
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", server.bound_port(), cerr);
     CHECK(transport != nullptr);
     if (transport != nullptr) {
         FrameReader reader(*transport);
@@ -712,9 +727,9 @@ bool SendSlowPathPdu(HandshakeResult& r, ShareDataPduType type,
 
 RTSC_TEST(server_refresh_rect_triggers_immediate_resend) {
     // [MS-RDPBCGR] 2.2.11.2.1: a client Refresh Rect asks the server to resend
-    // the named area at once 鈥?well before the ~1 s periodic refresh would.
+    // the named area at once  -well before the ~1 s periodic refresh would.
     ServerConfig cfg;
-    cfg.port = 3394;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -724,7 +739,7 @@ RTSC_TEST(server_refresh_rect_triggers_immediate_resend) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port);
+    HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
     // numberOfAreas(1) + pad3Octets(3) + one full-desktop rectangle.
@@ -756,7 +771,7 @@ RTSC_TEST(server_suppress_output_gates_refresh) {
     // [MS-RDPBCGR] 2.2.11.3.1: allowDisplayUpdates=0 stops the desktop
     // refresh; allowDisplayUpdates=1 resumes it.
     ServerConfig cfg;
-    cfg.port = 3395;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -766,7 +781,7 @@ RTSC_TEST(server_suppress_output_gates_refresh) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port);
+    HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
     // allow(1) + pad3(3): no desktopRect.
@@ -798,7 +813,7 @@ RTSC_TEST(server_refresh_continues_during_input) {
     // NOT be reset by client input: continuous input previously zeroed the
     // idle counter and froze the desktop while the user was interacting.
     ServerConfig cfg;
-    cfg.port = 3396;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -808,7 +823,7 @@ RTSC_TEST(server_refresh_continues_during_input) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port);
+    HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
     // Send a mouse move every 200 ms and count bitmap frames over ~3 s. The
@@ -836,7 +851,12 @@ RTSC_TEST(server_refresh_continues_during_input) {
         if (poller.Read(frame)) ++frames;
     }
     // Input must really have kept flowing, and frames must still have arrived.
-    CHECK(inputs >= 10);
+    // Margin: the window is 3000 ms, the poller's read timeout is 300 ms and
+    // one input is queued per iteration, so the theoretical maximum is 10
+    // events (~10 iterations). Asserting the maximum (>= 10) left zero margin
+    // and failed ~14% of runs (3 of 22). A bound must stay at or below half the
+    // theoretical maximum, hence >= 5.
+    CHECK(inputs >= 5);
     CHECK(frames >= 2);
 
     server.Stop();
@@ -848,7 +868,7 @@ RTSC_TEST(server_wide_desktop_bands_fit_mcs_limit) {
     // Send Data userData cap and the u16 bitmapLength; the banding must split
     // columns as well as rows and keep every rectangle self-consistent.
     ServerConfig cfg;
-    cfg.port = 3397;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 5000;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -858,7 +878,7 @@ RTSC_TEST(server_wide_desktop_bands_fit_mcs_limit) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
                                       cfg.desktop_width, cfg.desktop_height);
     if (!r.error.empty()) {
         std::printf("  handshake error: %s\n", r.error.c_str());
@@ -910,7 +930,7 @@ RTSC_TEST(server_refresh_send_failure_closes_session) {
     // records the error and exits, which closes the transport (the client sees
     // EOF instead of an endless silent session).
     ServerConfig cfg;
-    cfg.port = 3398;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     FailingAfterSource source(1);  // first capture OK, then fail
@@ -920,7 +940,7 @@ RTSC_TEST(server_refresh_send_failure_closes_session) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port);
+    HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
     // The next periodic refresh (~1 s) fails: the server must end the session.
@@ -951,7 +971,7 @@ RTSC_TEST(server_refuses_zero_desktop_geometry) {
     // refused at the entry point, with a reason.
     {
         ServerConfig cfg;
-        cfg.port = 3480;
+        cfg.port = 0;  // ephemeral: the kernel picks a free port
         cfg.desktop_width = 0;
         cfg.desktop_height = 48;
         RdpServer server(cfg);
@@ -961,7 +981,7 @@ RTSC_TEST(server_refuses_zero_desktop_geometry) {
     }
     {
         ServerConfig cfg;
-        cfg.port = 3481;
+        cfg.port = 0;  // ephemeral: the kernel picks a free port
         cfg.desktop_width = 64;
         cfg.desktop_height = 0;
         RdpServer server(cfg);
@@ -977,7 +997,7 @@ RTSC_TEST(server_zero_client_geometry_serves_the_configured_desktop) {
     // the server into a zero-sized framebuffer: the configured geometry is
     // served instead and the frame path runs normally.
     ServerConfig cfg;
-    cfg.port = 3482;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -987,7 +1007,7 @@ RTSC_TEST(server_zero_client_geometry_serves_the_configured_desktop) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
                                       /*client_width=*/0, /*client_height=*/0);
     if (!r.error.empty()) {
         std::printf("  handshake error: %s\n", r.error.c_str());
@@ -1074,7 +1094,7 @@ RTSC_TEST(server_clamps_oversized_client_geometry) {
     // the request to its own limit (server.h kMaxDesktop*) instead of
     // allocating it, and must announce the clamped size.
     ServerConfig cfg;
-    cfg.port = 3483;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     ScriptedSource source;
@@ -1085,7 +1105,7 @@ RTSC_TEST(server_clamps_oversized_client_geometry) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    const HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+    const HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
                                             /*client_width=*/20000,
                                             /*client_height=*/20000,
                                             /*expect_frame=*/false);
@@ -1116,7 +1136,7 @@ RTSC_TEST(server_tall_client_geometry_frame_stays_bounded) {
     // 1.07 GB in 3 s on a single connection). A 100 px wide desktop makes the
     // band height even (40 rows), which is exactly the wrap-around case.
     ServerConfig cfg;
-    cfg.port = 3484;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -1126,7 +1146,7 @@ RTSC_TEST(server_tall_client_geometry_frame_stays_bounded) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
                                       /*client_width=*/100,
                                       /*client_height=*/65535);
     if (!r.error.empty()) {
@@ -1167,7 +1187,7 @@ RTSC_TEST(server_releases_session_when_the_client_disconnects) {
     // and kept its credentials resident. session_count() reports the live
     // sessions, so it must fall back to zero when the client disconnects.
     ServerConfig cfg;
-    cfg.port = 3485;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -1178,7 +1198,7 @@ RTSC_TEST(server_releases_session_when_the_client_disconnects) {
     std::thread runner([&server]() { server.Run(); });
 
     for (int round = 0; round < 2; ++round) {
-        HandshakeResult r = DriveToActive(cfg.port);
+        HandshakeResult r = DriveToActive(server.bound_port());
         CHECK(r.reached_active);
         CHECK_EQ(server.session_count(), 1);
 
@@ -1204,7 +1224,7 @@ RTSC_TEST(server_session_exception_only_fails_that_session) {
     // std::terminate killed the whole process and every other session with it.
     // The failure must stay inside the session.
     ServerConfig cfg;
-    cfg.port = 3486;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     ScriptedSource source;
@@ -1215,7 +1235,7 @@ RTSC_TEST(server_session_exception_only_fails_that_session) {
     CHECK(server.Start(error));
     std::thread runner([&server]() { server.Run(); });
 
-    HandshakeResult r = DriveToActive(cfg.port);
+    HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
     // The next capture (the ~1 s periodic refresh) throws: this session must
@@ -1235,12 +1255,250 @@ RTSC_TEST(server_session_exception_only_fails_that_session) {
 
     // Another client is still served.
     source.set_mode(ScriptedSource::Mode::kSucceed);
-    const HandshakeResult r2 = DriveToActive(cfg.port);
+    const HandshakeResult r2 = DriveToActive(server.bound_port());
     CHECK(r2.reached_active);
     CHECK(r2.error.empty());
 
     server.Stop();
     runner.join();
+}
+
+// ---- OS handle accounting ---------------------------------------------------
+
+// Number of kernel handles this process holds. A session thread that is never
+// joined keeps one thread handle alive, so a per-connection leak shows up here
+// even after the thread has exited. Returns 0 where the counter is unavailable
+// (the assertion below then passes trivially).
+size_t ProcessHandleCount() {
+#if defined(_WIN32)
+    DWORD count = 0;
+    if (!::GetProcessHandleCount(::GetCurrentProcess(), &count)) return 0;
+    return static_cast<size_t>(count);
+#else
+    return 0;
+#endif
+}
+
+RTSC_TEST(server_does_not_leak_a_handle_per_connection) {
+    // H-4 follow-up (audit finding): every session thread was moved into
+    // Impl::threads and only joined in Stop(), so its std::thread object and
+    // kernel handle stayed alive for the lifetime of the server. Eight
+    // connect/disconnect rounds added eight handles (measured 107 -> 115 on
+    // the standalone host). The thread must be released when the session ends.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const auto round = [&]() {
+        HandshakeResult r = DriveToActive(server.bound_port());
+        CHECK(r.reached_active);
+        CHECK_EQ(server.session_count(), 1);
+        r.transport->Close();
+        bool released = false;
+        for (int i = 0; i < 300 && !released; ++i) {
+            if (server.session_count() == 0) {
+                released = true;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        CHECK(released);
+    };
+
+    // Two warm-up rounds establish a baseline after any one-off allocation.
+    round();
+    round();
+    const size_t baseline = ProcessHandleCount();
+    for (int i = 0; i < 8; ++i) round();
+    const size_t after = ProcessHandleCount();
+    std::printf("  handles: baseline=%zu after8=%zu\n", baseline, after);
+    // Eight finished sessions must not retain eight thread handles.
+    if (baseline != 0) CHECK(after <= baseline + 3);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_thread_launch_failure_drops_the_connection) {
+    // R-A: the live counter used to be incremented before the session thread
+    // was created. When thread creation failed (thread/handle exhaustion is
+    // what a connection flood causes), the count stayed up forever: Stop()
+    // blocked in cv.wait(live==0) and the accept loop was left running for a
+    // session that never existed. The failure must roll back and keep serving.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    std::atomic<int> launches{0};
+    std::atomic<bool> fail_launch{true};
+    cfg.session_thread_launcher = [&launches, &fail_launch](
+                                     std::function<void()> body) {
+        launches.fetch_add(1);
+        if (fail_launch.load()) return false;  // platform refuses the thread
+        std::thread(std::move(body)).detach();
+        return true;
+    };
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    auto server = std::make_unique<RdpServer>(cfg);
+    server->SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server->Start(error));
+    std::thread runner([&server]() { server->Run(); });
+
+    std::string cerr;
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", server->bound_port(), cerr);
+    CHECK(transport != nullptr);
+    for (int i = 0; i < 300 && launches.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(launches.load() >= 1);
+
+    // No session may be counted, and the connection must be dropped instead of
+    // being left in a zombie state.
+    CHECK_EQ(server->session_count(), 0);
+    CHECK_EQ(server->total_session_count(), 0);
+    bool closed = false;
+    if (transport != nullptr) {
+        uint8_t tmp[64];
+        for (int i = 0; i < 100; ++i) {
+            const int n = transport->Read(tmp, sizeof(tmp));
+            if (n == rtsc::net::kReadTimeout) continue;
+            closed = n <= 0;
+            break;
+        }
+    }
+    CHECK(closed);
+
+    const bool clean = server->session_count() == 0 &&
+                       server->total_session_count() == 0;
+    if (!clean) {
+        // Pre-fix the leaked count makes Stop() block forever. Leak the server
+        // and detach the accept loop so the red run still reports instead of
+        // hanging.
+        runner.detach();
+        (void)server.release();
+        return;
+    }
+
+    // The accept loop must have survived the failed launch: a later connection
+    // is served normally.
+    fail_launch.store(false);
+    const HandshakeResult r2 = DriveToActive(server->bound_port());
+    CHECK(r2.reached_active);
+    CHECK(r2.error.empty());
+    CHECK_EQ(server->total_session_count(), 1);
+
+    server->Stop();
+    runner.join();
+    CHECK_EQ(server->session_count(), 0);
+}
+
+RTSC_TEST(server_thread_launcher_running_body_then_failing) {
+    // R-A-1: a launcher may start the body *and then* report failure (a thread
+    // pool that enqueues the work and only afterwards throws, or a launcher
+    // that joins the body and returns false). Both the body's teardown and the
+    // rollback then decrement the live count, which underflows size_t to
+    // SIZE_MAX and makes Stop() block forever. The decrement must be handed off
+    // exactly once, so it cannot depend on the launcher being honest.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    std::atomic<int> launches{0};
+    cfg.session_thread_launcher = [&launches](std::function<void()> body) {
+        launches.fetch_add(1);
+        // The body runs to completion (the peer is gone), and only then does
+        // the launcher report failure.
+        std::thread(std::move(body)).join();
+        return false;
+    };
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    auto server = std::make_unique<RdpServer>(cfg);
+    server->SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server->Start(error));
+    std::thread runner([&server]() { server->Run(); });
+
+    std::string cerr;
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", server->bound_port(), cerr);
+    CHECK(transport != nullptr);
+    for (int i = 0; i < 300 && launches.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(launches.load() >= 1);
+    // End the session so the body finishes and the launcher can return false.
+    if (transport != nullptr) transport->Close();
+
+    // The handoff must leave the live count at zero -- never SIZE_MAX.
+    bool settled = false;
+    for (int i = 0; i < 300 && !settled; ++i) {
+        if (server->session_count() == 0) {
+            settled = true;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    const size_t live = server->session_count();
+    std::printf("  live_after_launcher_failed=%zu\n", live);
+    CHECK_EQ(live, 0);
+    CHECK(settled);
+
+    if (live != 0) {
+        // Pre-fix the count underflows to SIZE_MAX; Stop() would block forever.
+        // Leak the server so the red run reports instead of hanging.
+        runner.detach();
+        (void)server.release();
+        return;
+    }
+
+    // Stop() must return promptly, not wait for a session that no longer
+    // exists.
+    std::atomic<bool> stop_done{false};
+    std::thread stopper([&server, &stop_done]() {
+        server->Stop();
+        stop_done.store(true);
+    });
+    for (int i = 0; i < 100 && !stop_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(stop_done.load());
+    if (stop_done.load()) {
+        stopper.join();
+    } else {
+        stopper.detach();
+    }
+    if (stop_done.load()) {
+        runner.join();
+    } else {
+        runner.detach();
+    }
+
+    // The server still serves a later client after the failed launch.
+    if (stop_done.load()) {
+        ServerConfig cfg2;
+        cfg2.port = 0;  // ephemeral: the kernel picks a free port
+        cfg2.desktop_width = 64;
+        cfg2.desktop_height = 48;
+        auto pattern2 = rtsc::server::MakeTestPatternSource();
+        RdpServer server2(cfg2);
+        server2.SetDesktopSource(pattern2.get());
+        std::string error2;
+        CHECK(server2.Start(error2));
+        std::thread runner2([&server2]() { server2.Run(); });
+        const HandshakeResult r2 = DriveToActive(server2.bound_port());
+        CHECK(r2.reached_active);
+        CHECK(r2.error.empty());
+        server2.Stop();
+        runner2.join();
+        CHECK_EQ(server2.session_count(), 0);
+    }
 }
 
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

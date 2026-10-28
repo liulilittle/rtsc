@@ -87,9 +87,8 @@ class RecordingTransport final : public rtsc::net::Transport {
 
 #if defined(_WIN32)
 RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
-    const uint16_t port = 3396;
     rtsc::server::ServerConfig scfg;
-    scfg.port = port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     auto source = rtsc::server::MakeTestPatternSource();
@@ -105,6 +104,7 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
 
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     auto socket = rtsc::net::ConnectTcp("127.0.0.1", port, error);

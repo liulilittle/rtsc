@@ -201,9 +201,8 @@ void ReportResults(const std::vector<SessionResult>& results,
 }  // namespace
 
 RTSC_TEST(server_multisession_concurrent_clients_are_isolated) {
-    const uint16_t port = 3397;
     ServerConfig cfg;
-    cfg.port = port;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -212,6 +211,7 @@ RTSC_TEST(server_multisession_concurrent_clients_are_isolated) {
     server.SetDesktopSource(pattern.get());
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     // Each client requests a distinct desktop size, so a shared desktop
@@ -225,12 +225,14 @@ RTSC_TEST(server_multisession_concurrent_clients_are_isolated) {
 
     server.Stop();
     runner.join();
+    // R-D: after all clients disconnected and Stop() joined the accept loop,
+    // no session may still be counted as live (join rules out the race).
+    CHECK_EQ(server.session_count(), 0);
 }
 
 RTSC_TEST(server_multisession_framebuffer_capture_is_per_session) {
-    const uint16_t port = 3398;
     ServerConfig cfg;
-    cfg.port = port;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     RecordingSource source;
@@ -239,6 +241,7 @@ RTSC_TEST(server_multisession_framebuffer_capture_is_per_session) {
     server.SetDesktopSource(&source);
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     const std::vector<Spec> specs = {{64, 48}, {80, 60}, {96, 72}};
@@ -261,6 +264,9 @@ RTSC_TEST(server_multisession_framebuffer_capture_is_per_session) {
 
     server.Stop();
     runner.join();
+    // R-D: after all clients disconnected and Stop() joined the accept loop,
+    // no session may still be counted as live (join rules out the race).
+    CHECK_EQ(server.session_count(), 0);
 }
 
 #if defined(_WIN32)
@@ -269,9 +275,8 @@ RTSC_TEST(server_multisession_encrypted_standard_rdp) {
     // keypair and derives per-session RC4 keys. The Windows-only RSA backend is
     // what makes this reachable; on Linux the server fails closed to
     // plaintext, so the encrypted assertions are not portable.
-    const uint16_t port = 3399;
     ServerConfig cfg;
-    cfg.port = port;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
     cfg.desktop_width = 64;
     cfg.desktop_height = 48;
     auto pattern = rtsc::server::MakeTestPatternSource();
@@ -280,6 +285,7 @@ RTSC_TEST(server_multisession_encrypted_standard_rdp) {
     server.SetDesktopSource(pattern.get());
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     const std::vector<Spec> specs = {{64, 48}, {80, 60}};
@@ -290,6 +296,9 @@ RTSC_TEST(server_multisession_encrypted_standard_rdp) {
 
     server.Stop();
     runner.join();
+    // R-D: after all clients disconnected and Stop() joined the accept loop,
+    // no session may still be counted as live (join rules out the race).
+    CHECK_EQ(server.session_count(), 0);
 }
 #endif  // _WIN32
 

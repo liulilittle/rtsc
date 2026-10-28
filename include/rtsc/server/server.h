@@ -60,10 +60,17 @@ struct ServerConfig {
     uint32_t encryption_level = 0x00000002;   // CLIENT_COMPATIBLE
     uint32_t rsa_bits = 1024;
 
-    // When false, Authenticate() is consulted and unknown accounts are
-    // rejected. The default is true so a first connection can be established
-    // before an account database is wired in.
-    bool accept_any_credentials = true;
+    // When false, Authenticator() is consulted and unknown accounts are rejected.
+    // The default is false so an embedder cannot accept every peer silently.
+    // Note the incomplete-authentication boundary: with no authenticator
+    // installed the Client Info PDU is accepted as-is, and on the Standard RDP
+    // Security path an installed authenticator only sees the account name --
+    // the Client Info password field is NOT verified. Password authentication
+    // must go through CredSSP/NTLM (enable_enhanced_security +
+    // credential_lookup); anything else is transport-level identification, not
+    // authentication. Start() emits a WARNING whenever the effective policy is
+    // accept-all (this flag true, or no authenticator installed).
+    bool accept_any_credentials = false;
 
     // When true, a client that requests external security (SSL / HYBRID / ...)
     // is answered with RDP_NEG_FAILURE. When false (the default) the server
@@ -94,6 +101,15 @@ struct ServerConfig {
     std::function<std::optional<std::string>(const std::string& domain,
                                              const std::string& user)>
         credential_lookup;
+
+    // Starts the thread that serves one session. Returns false when the
+    // platform could not create the thread (thread/handle exhaustion is
+    // typically what a connection flood produces), in which case the server
+    // drops that connection instead of counting a session that will never run.
+    // Empty means "use std::thread detached". Tests inject a failing launcher
+    // to cover that path; a deployment may point it at a thread pool.
+    using SessionThreadLauncher = std::function<bool(std::function<void()>)>;
+    SessionThreadLauncher session_thread_launcher;
 
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.
@@ -142,6 +158,11 @@ struct Credentials {
 // accepts everything and records the account; a real deployment would check
 // the local SAM (LogonUser) or an account database. The password is used only
 // for the check and is never persisted.
+//
+// Scope warning: this hook receives the Client Info PDU, whose password field
+// is not verified by the server (it is the account name and domain that are
+// checked). Treat this as authorisation by account name only; password
+// verification belongs to CredSSP/NTLM (`credential_lookup`).
 using Authenticator = std::function<bool(const Credentials&)>;
 
 // One inbound input event decoded from a client Fast-Path input PDU
@@ -207,6 +228,14 @@ class RdpServer {
     // Closes the listener and every live session, then joins their threads.
     // Idempotent.
     void Stop();
+
+    // The TCP port the server is actually listening on, or 0 before the first
+    // successful bind. With ServerConfig::port == 0 the kernel picks a free
+    // port at Start()/Run()/ServeOne() time and this is the only way to learn
+    // it; a test uses that to avoid racing every other process for a fixed
+    // port. The value is captured at bind time, so it stays readable after
+    // Stop().
+    uint16_t bound_port() const;
 
     // Accepts and serves connections until Stop() is called. Blocks.
     void Run();

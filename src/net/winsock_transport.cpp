@@ -72,7 +72,8 @@ class WinsockTransport : public Transport {
 
 class WinsockListener : public Listener {
  public:
-    explicit WinsockListener(SOCKET s) : sock_(s) {}
+    explicit WinsockListener(SOCKET s, uint16_t local_port)
+        : sock_(s), local_port_(local_port) {}
     ~WinsockListener() override { Close(); }
 
     std::unique_ptr<Transport> Accept() override {
@@ -102,8 +103,11 @@ class WinsockListener : public Listener {
         }
     }
 
+    uint16_t local_port() const override { return local_port_; }
+
  private:
     SOCKET sock_ = INVALID_SOCKET;
+    uint16_t local_port_ = 0;
     std::atomic<bool> closed_{false};
 };
 
@@ -208,7 +212,30 @@ std::unique_ptr<Listener> ListenTcp(const std::string& host, uint16_t port,
                 port_str + " failed";
         return nullptr;
     }
-    return std::make_unique<WinsockListener>(s);
+
+    // Read back the port the socket was actually bound to. With port 0 the
+    // kernel picks one, and the caller (a test binding an ephemeral port) has
+    // no other way to learn it. Fail closed rather than report a bogus 0.
+    uint16_t bound_port = 0;
+    sockaddr_storage local{};
+    int local_len = sizeof(local);
+    const int got = ::getsockname(s, reinterpret_cast<sockaddr*>(&local),
+                                  &local_len);
+    if (got == 0) {
+        if (local.ss_family == AF_INET) {
+            bound_port = ::ntohs(
+                reinterpret_cast<const sockaddr_in*>(&local)->sin_port);
+        } else if (local.ss_family == AF_INET6) {
+            bound_port = ::ntohs(
+                reinterpret_cast<const sockaddr_in6*>(&local)->sin6_port);
+        }
+    }
+    if (bound_port == 0) {
+        ::closesocket(s);
+        error = "getsockname on the listening socket failed";
+        return nullptr;
+    }
+    return std::make_unique<WinsockListener>(s, bound_port);
 }
 
 }  // namespace rtsc::net

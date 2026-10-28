@@ -256,9 +256,8 @@ RTSC_TEST(standard_security_rejects_a_bad_mac) {
 
 #if defined(_WIN32)
 RTSC_TEST(standard_security_loopback_reaches_active_and_receives_a_frame) {
-    const uint16_t port = 3394;
     rtsc::server::ServerConfig scfg;
-    scfg.port = port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     auto source = rtsc::server::MakeTestPatternSource();
@@ -267,6 +266,7 @@ RTSC_TEST(standard_security_loopback_reaches_active_and_receives_a_frame) {
 
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     ConnectMachine::Config mcfg;
@@ -323,9 +323,8 @@ RTSC_TEST(standard_security_loopback_plaintext_data_plane) {
     // post-connect PDUs stay plaintext, and the licensing machine uses the
     // no-certificate fallback because the in-tree server omits the key in that
     // mode.
-    const uint16_t port = 3395;
     rtsc::server::ServerConfig scfg;
-    scfg.port = port;
+    scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
     scfg.desktop_height = 48;
     auto source = rtsc::server::MakeTestPatternSource();
@@ -334,6 +333,7 @@ RTSC_TEST(standard_security_loopback_plaintext_data_plane) {
 
     std::string error;
     CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
     std::thread runner([&server]() { server.Run(); });
 
     ConnectMachine::Config mcfg;
