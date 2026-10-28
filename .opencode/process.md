@@ -10516,3 +10516,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[A2-1 已落地部分（父代理亲核）]** 命令 ID 唯一化（SAS=19 / winKey=20 / help=21 / pause=22）、`WM_KILLFOCUS`+`WM_ACTIVATE` 归位、`win_key_mode_` 默认 `kRemote`、SAS chord → `PushCommand(kCmdSendCtrlAltDel)`、`VK_PROCESSKEY(0xE5)` 特判、Pause 特判、合成键固有扩展表。
 - **[验证]** `FULL_BUILD=0`；`ctest -C Release` **51/51 passed**；view **50/6564/0**、ui **27/141/0**、input **12/42/0**。提交 `959aaa7`（10 文件）。工作树干净。
 - **[教训]** 计费组阻塞期间必须先查子代理错误类型再决定"重试 vs 上报"；且**执行代理被中断会留下不可构建的半成品**（本轮 4 处），父代理接手时必须先构建并以测试红清单定位未完之处。
+
+## 第628轮：A3 取证入档 + 实网验证（0.75x 缩放、输入探针）
+
+- **[提交 a7c43ce]** `docs/spec/bitmap-evidence.md`：mstsc 字符串表取证（`NSCODEC (%d)`@0x1806c8bb0、`PLANAR (%d)`@0x1806c8c90、`PROGRESSIVE V1/V2`@0x1806c8bd0/0x1806c8d88、`GfxClearCodec`@0x18078dc80、`CaDecProgressiveRectContext`@0x1806b06f0 等）+ 本仓已实现路径（raw 8/15/16/24/32、RLE、RDP6 planar、NSCodec）+ 差距（ClearCodec/Progressive V1/V2 未实现；RemoteFX 未验证）+ 下一步取证顺序（解码分派表 → Progressive 启用条件 → 真机抓包）。**仅取证、未改实现**。
+- **[实网验证·0.75x 缩放]** `rtsc_gui 192.168.1.7 ... 1280 1024 win32 0.75 0 --seconds 50` → 日志 `view: 1280x1024 -> 960x768 at (160,128), scale 0.750`、`734643 non-black`（源 1299592 × 0.5625 ≈ 731020，与面积平均预期一致）、826 colours、跑满 50s 正常退出。
+- **[实网验证·输入]** `--input-probe`（headless）→ `input probe queued: key 0x1E, mouse (11,13)` + `application sends: input=2`（键与鼠标事件均真实发出）。
+- **[帮助文本修正 30b559c]** `main.cpp:132` 原写"wheel zooms, Ctrl+wheel zooms finely"，与 A2 新路由（普通滚轮转发、Ctrl+滚轮缩放）不符 → 已改。
+- **[A5 取证]** mstsc 字符串：`DisableRDPSNDSVC`@0x1807a4a68 / `TS_PROP_WIN32CORE_DISABLE_RDPSND_SVC`@0x1807a4ae0 / `CRdpSndPlugin`@0x1807e7020 / `rdpsnd static channel connected`@0x1807e6ef0；cliprdr 侧 `CClientClipRdrPduDispatcher`@0x1807f8600 / `RdpClipRdrWindowClass`@0x1807f82d0；RAIL 509 条（`RAIL_WINDOW`@0x1806b1578、`Couldn't determine if connection is RAIL`@0x1806b6270）。
+- **[阻塞未解]** 子代理 API key 计费组仍无 `deepseek-v4.1-flash` provider → 所有后续批次只能由父代理串行推进（无法并行双审）。当前 51/51 全绿、工作树干净。
