@@ -10653,3 +10653,7 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 甲 `ses_e7c538e60ffeowybLvadUBYoH4`（语义对照/测试设计）、乙 `ses_e7c53662effeV20xc90AEk5qbL`（消费方/状态机）已开跑；成员 ID 双向补发。
 - 输入：反汇编证据（FUN_18003444c 门控缩放 vs 1:1）→ 仓内 view 现状（ComputeViewTransform fit/zoom/默认 1.0）。核心判别=窗口 resize 后仓内是否错误自动缩放。
 - 下一步：双审定案（无需改动|需改动）→ 执行/测试 → 双审盖章。
+## 第648轮：A6 双审盖章入库 3414ece
+- 甲/乙复验盖章（默认翻转无消费方回归、菜单接线完整、R3 语义正确、红证真实、bench flake 与本批无关）。
+- 主侧：build 0err/0warn；提交 3414ece（fix: smart-sizing defaults align with mstsc）+ 证据文档；工作树净。
+- 遗留：N1 全屏 no-op、N2 view_transform resize 链、view 独占复跑待争用。
