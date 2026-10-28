@@ -119,3 +119,19 @@ if (-1 < iVar5) {                       // 发送成功后才记录状态
 5. 发送调用的第三参数 `-(*(int*)(param_1+0x424) != 0) & 2`：某字段非零时传 2，否则 0（含义**未验证**，疑为 fastpath/抑制本地标志）。
 
 **仍未验证**：0x424 字段语义；`0x4321DCBA` 的含义；焦点/失焦触发归位的**确切时机**（`FUN_1801185e0` 的 caller 未定位）；三档 Win 策略的默认与归属。
+
+### E6 实测：Win 键 down 到达窗口、up 不到达；IME 会把 VK 换成 VK_PROCESSKEY（父代理自建探针）
+
+探针 `%TEMP%\opencode\winprobe\probe2.exe`（自建窗口 → `SetForegroundWindow`+`SetFocus` → `keybd_event` 注入 → 泵消息记录 WM_KEY*）：
+
+```
+foreground_before=1
+A_key:   2 msgs [KEYDOWN 0xE5] [KEYUP 0x41]
+WIN_key: 1 msgs [KEYDOWN 0x5B]
+```
+
+**结论（观察级）**：
+1. **Win 键的 `WM_KEYDOWN` 会到达普通窗口（vk=0x5B）**，但 **`WM_KEYUP` 不会到达** —— 抬起被 shell（开始菜单）消费。→ 这正好解释 `FUN_1800e8f08` 为什么要记录 `+0x41C/+0x420`（已发给远端的 down 态）并在焦点变化时补发 up（E1/E3）。
+2. **IME 激活时 `WM_KEYDOWN` 的 `wParam` 可能是 `VK_PROCESSKEY(0xE5)` 而非真实 VK**（`A` 的 down 为 0xE5、up 为 0x41）。→ **必须从 lParam bits16..23 取扫描码，不能用 VK**（本仓 A1 的扫描码修复因此是正确且必要的）；但 lParam 扫描码为 0 的合成消息回退 `MapVirtualKeyW(0xE5)` 会得到垃圾，需特判 `0xE5`。
+
+**仍未验证**：该结论基于 `keybd_event` 注入（与物理键同管线但不是物理键）；`WH_KEYBOARD_LL` 是否仍能看到 Win up 未测；三档 Win 策略默认值未知。
