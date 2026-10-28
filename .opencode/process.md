@@ -10451,3 +10451,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[平局回归守卫]** `:433 view_downscale_exact_half_tie_rounds_up` 直接复用审计丙发现的真实路径 `ComputeViewTransform(1440,900,1440,900,0.75)`、`src(0,0)=56`（31.5→32）。
 - **[性能取舍（F1 代价）]** 0.8x 13.06→**16.74ms**、0.5x-4K 9.43→9.90ms（均在预算内），0.4x **30.42ms**（契约 E17 ≤35ms）；换来的是精确 half-up（消除 0.866% 像素偏 –1）。1.33x 1.56ms（原 46.9–66.8ms）、letterbox 1:1 0.20ms（原 1.92ms）。
 - **[执行 AI 的自我纠正]** 主动更正上轮计数口径："12 新 + 2 改 + 1 改名"是错的，实为 **+21/−2**（19 纯新增 + 2 替换旧用例）。
+
+## 第620轮：审计乙盖章 A1（绑 hash）+ 全量 51/51 绿
+
+- **[审计乙·盖章（绑 hash）]** 独立复算五文件 hash 与父代理一致；上轮 3 阻断全部关闭（①`:468` 语法错误已修、view 批次构建 WARN 0/ERR 0；②`resample.{h,cpp}` 已在 `git ls-files`、`git status` 空；③`test_view.cpp:415-431` 2D 快路径 alpha 用例在册，**其自建 mutC 变异实测转红**：`FAIL :430 ChannelOf(dst,x,0,3)==128 (got 0)`）。32/32 独立断言 + 边界 5 类全绿；性能 1:1 0.15 / 0.5x-4K 10.3 / 0.8x 16.2–16.9 / 0.4x 31.4 / 1.33x 1.09 / 2x 3.13 ms 全在 E15/E17 内。
+- **[乙的两次诚实自查]** ①`edge9.exe` 里 2 行 [FAIL] 是其**探针期望错误**（0.8x 非整数比每列权重不同，期望不该是常数），用独立精确 box 参照复验 `bad=0/1658880`，不计缺陷；②性能与甲差异（0.8x 16.2–16.9 vs 14.5–15.3）归为机器负载噪声，同量级且在预算内。
+- **[全量验证（父代理串行）]** 清空 `rtsc*` 后：`cmake --build build --config Release` → **FULL_BUILD=0（零 error 零 warning）**；`ctest -C Release` → **100% tests passed, 51/51**。至此 A1 缩放批次可在干净树上复现全绿。
+- **[本日已入库 4 笔]** `3ec4d66` 服务器+端口、`c08df4f` 网关内存上限（2745MB→9.9MB）、`5b1e00a` 缩放重采样（二进制对齐）、`26bf98c` 协调日志。
+- **[下一步]** 转入 **A2 输入/快捷键对齐**：证据文档 `docs/spec/input-evidence.md` 已含 E1-E4（`FUN_1801185e0` 用 `MapVirtualKeyW(vk,MAPVK_VK_TO_VSC)` + `FUN_1800e8dfc(inst,0x100/0x101,vk,sc)` 合成键消息；右 Win 置 `|0x8100`；焦点变化时重放 Shift/Win 归位并清零 `+0x414/+0x418`；本地 `keybd_event` 恒带 `dwExtraInfo=0x4321DCBA`；`FUN_180118940` 用 `0x414/0x418` 跟踪 LWIN/RWIN）。
