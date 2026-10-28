@@ -1408,3 +1408,8 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] 顺带项 `accept_any_credentials` 默认 true
   [错误] 嵌入方会静默 accept-all；但直接改 false 可能破坏依赖默认的既有测试
   [下一步] 已改 false 并重写注释（口令校验必须走 CredSSP）；实测 server 20 tests / multisession 3 tests 全绿，无测试需改动；Start() 的 accept-all WARNING 保留。
+## [2026-10-28][主代理] 34GB 缺陷不在主树——误判澄清 + 主树仍有内存上限缺口
+[尝试] 看到主树 `src/proto/gateway.cpp` 没有 `offset = line_end + 2`、也没有 `kMaxHttpHeaderBytes`，一度判定"主树仍带 34GB 缺陷"。
+[错误] 误判。主树的 `HttpMessage::parse` 是**更旧的独立实现**，其 header 循环**有** `offset = eol + 2`（正常推进），不存在死循环；34GB 缺陷只存在于 `F:\rtsc-wt\gw` 对该函数的**重写版**（`ParseHttpHead` 漏了推进）。判断缺陷必须读**当前实现的分支**，不能凭"某函数里没看到某行"就下结论。
+[真问题] 主树确实缺**内存上限**：无头长度/条数/实体上限、无会话读取预算。虽无无限循环，但恶意输入仍可放大内存。
+[下一步] ①已派 EXEC-GWLIM **只移植四条内存上限**（头 64KiB / 512 条 / 实体 128KiB / 会话预算+无进展超时），**不带入** RDGSP 功能改动（那属另一代理未提交工作）；②教训：定位缺陷时先确认"当前生效的实现是哪一个"，尤其在多工作树/多代理并行改写同一文件时。
