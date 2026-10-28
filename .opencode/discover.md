@@ -1373,3 +1373,24 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 用「连跑 20 次 rtsc_server_tests」判定稳定性，得到 7 次失败；随后连跑 6 次却 0 失败，结论矛盾。
 [错误] 把并发执行当成稳定性证据。`tests/test_server.cpp` 使用**硬编码端口**（3390–3398、3480–3488），当本机同时有其它代理/探针在跑测试（EXEC-A1、网关代理、审计探针）时，多个进程争抢同一端口 → 客户端连到别人的监听器或连不上 → `reached_active` 失败、`FrameReader::Read` 超时。失败用例集中在 `server_suppress_output_gates_refresh`(:800) 与 `server_refresh_send_failure_closes_session`(:944)，正是**依赖既有连接**的用例，与"线程句柄"改动无关。
 [下一步] ①**同一台机器同一时刻只允许一个测试二进制在跑**（并发跑的结论一律作废，无论红绿）；②判定稳定性时必须先确认无并发（`Get-Process | ? ProcessName -like "rtsc*"` 为空）；③中期改进：测试端口改为**运行时分配空闲端口**（bind :0 后读回），消除并行冲突；④审计/执行代理的探针若也绑固定端口，必须与其错开或改用临时端口。
+
+## [2026-10-28][审计乙] R-A 回滚二次扣减：计数必须先定"唯一owner"再谈回滚
+
+- [尝试] 复核执行 AI 的 R-A 方案（保持"先注册再启动"，启动失败显式回滚 `erase + --live`）
+  [错误] **回滚路径与线程收尾会各扣一次**：`server.cpp:1622-1627` 的 `try { started = launcher(body); } catch(...) { started = false; }` 在 **launcher 已经把 body 跑起来之后抛异常**时也置 `started=false`；而 body 收尾 `:1606-1613` 已经 `--registry->live` → 回滚 `:1642-1652` 再扣一次 → `size_t` 下溢成 SIZE_MAX → `:1709 cv.wait(live==0)` **永久阻塞**
+       我方红证（仓库外 `probe_r5.exe`，launcher 内部 `std::thread(body).join()` 后 `return false`）：`live_after_launcher_returned_false=18446744073709551615`、`Stop_returned=0 HUNG=1`、进程以 exit=9 退出
+       仓库自带用例 `server_thread_launch_failure_drops_the_connection` 只注入"不启动直接 return false"，**覆盖不到该路径**
+  [下一步] 计数必须"唯一 owner + 原子交接"：`auto counted = make_shared<atomic<bool>>(true)`，body 收尾与失败回滚都走 `if (counted->exchange(false)) --live;`，保证任何交错下只扣一次；仅"把 ++live 后移"同样不安全（body 可能先跑完 --live 再被 ++）
+- [尝试] 复核 R-B 的 noexcept 收尾是否保证 `--live` 必达
+  [错误] `:1606-1615` 把 `erase(...)` 与 `--registry->live` 放进**同一个 try**：若 `erase` 抛（`vector<shared_ptr>` 移动/析构理论上不抛，但这是"依赖元素类型不抛"的隐含前提），`--live` 被整段跳过 → live 卡在 1 → Stop 挂起（症状与 R-A 相同，只是不 abort）
+  [下一步] 计数递减要与可能抛的操作解耦（独立 try 或 scope guard），否则"兜底 try/catch"只挡住了 terminate，没挡住挂起
+- [尝试] 用 dumpbin 反汇编验证 R-C 的 volatile 擦除是否被优化掉（Release /O2）
+  [错误] 未被优化：`ScrubCredentials` 反汇编 106 条指令里，**5 个字段各有** ①`mov byte ptr [r8+rax],r11b` 逐字节 0 循环 ②`mov qword ptr [r+x10h],r11` 置长度 0 ③`mov byte ptr [r],r11b` 写 NUL → volatile 写全部存活；析构 `~RdpSession(){ScrubCredentials();}` 幂等（`SecureWipe` 对空串早返回）
+  [下一步] "防优化擦除"这类结论必须给**反汇编证据**（`dumpbin /disasm` 定位到函数体数落点），不能只看源码写了 volatile 就断言有效
+- [尝试] 连跑 `rtsc_server_tests.exe` 12 次判 D-1 稳定性
+  [错误] 首轮 11/12 "失败"，但其中 10 次是**级联假象**：一个残留 `rtsc_server_tests.exe`（PID 34960）仍占着 **3395** 端口 → 后续 run 的 `server_suppress_output_gates_refresh` 起监听失败 → 后面的用例全部错乱甚至 unhandled-seh。杀掉残留后 **12/12、后续 40/40 全绿**
+  [下一步] 跑稳定性前先 `Get-NetTCPConnection -State Listen` 检查测试端口段（3390-3398/3480-3488）与残留进程；测试端口写死是**非密闭**设计，失败率统计会被上一轮残留污染
+## [2026-10-28][审计乙] 环境残留会伪造"大量回归"
+[尝试] 连跑 12 次 rtsc_server_tests 得到 11 次失败（含 unhandled-seh），一度判为代码回归。
+[错误] 真因是上一轮探针留下的僵尸 `rtsc_server_tests.exe`（PID 34960）仍占用 3395 端口，导致 `server_suppress_output_gates_refresh`（`test_server.cpp:774 cfg.port=3395`）监听失败并连锁错乱。杀掉后 12/12、再 40/40 全绿。
+[下一步] ①跑测试前必须检查并清理 `rtsc*` 残留（`Get-Process | ? ProcessName -like "rtsc*"`）；②测试端口写死且非密闭是根因，已派 EXEC-PORT 改运行时分配；③报告"回归"前必须先排除环境污染，否则会误导整条决策链。
