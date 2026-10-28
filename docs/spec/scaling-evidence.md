@@ -119,3 +119,39 @@ undefined4 FUN_180036ba0(longlong param_1, int param_2, int param_3) {
 `ZoomLevel`(0x1806adfe0)、`EnableSmartSizing`(0x1806adff0)、`DesktopScaleFactor`(0x1806b9928)、`DeviceScaleFactor`(0x1806b9978)、`puDesktopScaleFactor`/`puDeviceScaleFactor`(0x1806c4d68/0x1806c4d80)、`"SetZoomLevel failed!"`(0x1807a39c0)。
 
 → `DesktopScaleFactor` / `DeviceScaleFactor` 在 mstsc 中是**独立于 ZoomLevel 的 DPI 缩放维度**；本仓目前只有单一 zoom 标量。**待评估是否需要建模**（先取证其用途，再决定）。
+
+## 5. 修正记录（2026-10-28，实测推翻推断）
+
+**第 2 节结论「scale!=1.0 → HALFTONE 面积平均」是推断，已被实测推翻。**
+
+### E7 GDI HALFTONE 实测（本机 Win32 GDI 探针，`%TEMP%\opencode\viewprobe\probe_gdi12/14`）
+
+```
+[1080p 1px vstripes -> 4K, HALFTONE ok=1] row0 R[0..31] =
+   0   0 255 255   0   0 255 255   0   0 255 255   0   0 255 255  ...
+   distinct R values in the whole frame (block => 2): 2
+
+1080p step edge -> 4K (2x)          distinct=  2   (块复制)
+1080p step edge -> 5760x3240 (3x)   distinct=  2   (块复制)
+1080p step edge -> 2630x1480 (1.37x) distinct=  2   (块复制)
+1080p ramp -> 1536x864 (0.8x)       distinct=256   (平均/平滑)
+```
+
+父代理本地复跑 `probe_gdi12.exe` / `probe_gdi14.exe` 得到同一结果。
+
+### 修正后的契约（观察级，可引用）
+
+| 情形 | GDI HALFTONE 实测行为 | 依据 |
+|---|---|---|
+| scale == 1.0 | 调用方根本不进 StretchBlt（走 `BitBlt` SRCCOPY） | E1 / E5 |
+| scale > 1（含 2x/3x/1.37x） | **最近邻块复制**（非平滑） | E7 |
+| scale < 1（非整数比） | 覆盖加权平均（平滑） | E7 |
+| scale < 1（整数比，如 0.5x/0.25x） | 实测退化为块复制（非平均） | 审计甲 probe_gdi |
+| alpha | GDI **完全不处理**（0.5x 硬边输出全 0） | 审计甲 probe_gdi9 |
+
+### 因此待裁决的两点（记录给决策，不预设结论）
+
+- **P1**：升采样是否对齐 GDI 的最近邻？若改为平滑，属**有意偏离 mstsc**，必须在文档中单列说明，不得声称「与 mstsc 一致」。
+- **P2**：降采样是否无条件面积平均（更正确）？GDI 在整数比降采样会退化为块复制，对齐它意味着保留混叠。
+
+> 教训：`SetStretchBltMode(hdc, 4)` 只证明「用了 HALFTONE 模式」，**不能**推出「HALFTONE 在升采样时做面积平均」。模式名与各方向的实际行为必须分别实测。
