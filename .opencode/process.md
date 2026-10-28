@@ -10431,3 +10431,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计甲的变异反证 5 套]** mutA 相位→floor 1 failing/10；mutB 去 +0.5 3/241；**mutC 存活**；mutC2 generic alpha 1/1；mutD 丢 x 偏移 4/43；mutE 缩小轴走 nearest 8/722。
 - **[审计甲的额外观察]** `3840x2160→1536x864 (0.4x)` 实测 **27.86–28.92ms**（旧 17.6–23.5ms），契约无 0.4x 预算条目 → 待 A1 修复后复测并补档。
 - **[验证]** 全量构建 `FULL_BUILD=0`；排除 A1 套件的 ctest **46/46 passed**。
+
+## 第618轮：F1/mutC 已修；审计乙报交付完整性 3 阻断（2 项已解除、1 项注释待清）
+
+- **[审计乙·驳回本版（功能 pass / 交付 fail）]** 3 个阻断：**A** `tests/test_view.cpp:468` 曾因非法字符 0x2581 编译失败（属执行 AI 编辑中间态，hash 从 `21EC4E14`→`F28966D8`→`14C25E34`）；**B** `resample.{h,cpp}` 未跟踪而 CMake 已引用（干净副本构建必失败）；**C** uniform 2D 快路径 alpha 无覆盖（其变异体 `0 0 255 255` 能存活）。
+- **[父代理亲核·A 与 C 已解除]** `test_view.cpp` UTF-8 合法（仅文件首 BOM）、`:468` 内容正常、`--target rtsc_view_tests` **EXIT=0**；`mutC` 用例已加 `:415 view_downscale_2d_fast_path_averages_alpha`（`Surface src(8,2)`）。全套 **46 tests / 6529 checks / 0 failing**。
+- **[F1 已修]** `resample.cpp` 已无 `inv_total`/`inv_area`，改 `ExactDivider` + `(acc + total/2)/total`；平局专项用例 `:433 view_downscale_exact_half_tie_rounds_up` 用 `ComputeViewTransform(1440,900,1440,900,0.75)` 的 `src(0,0)=56`（31.5 平局）断言 32。
+- **[B 待提交时解决]** `src/client/resample.{h,cpp}` 仍未跟踪 → 提交时必须显式 `git add`（已列入提交清单）。
+- **[待清·陈旧注释]** `resample.cpp:381-384` 仍写"One reciprocal … +0.5 before truncation"，与 `:387-389` 新注释及实际实现矛盾（正是 F1 的错误做法）→ 已要求执行 AI 删除/改写后再给终报与 5 个文件 hash。
+- **[契约新增 E17]** `0.4x (4K→1536x864)` 实测 27.9–30.9ms，原预算缺此档（0.4x 非整数比走 generic tap，是 0.5x uniform 快路径的约 2 倍）→ 补入 **≤35ms**，并禁止后续优化突破。
+- **[审计乙的诚实做法]** 明确指出"ctest 4/4 那次是旧产物"，未用旧二进制冒充绿灯；并撤回自己上一轮绑定的 hash（因文件已变）。
