@@ -342,3 +342,21 @@
 - **D3 扫描码映射可测化**：把 lParam→set-1 扫描码的映射抽为可单测的纯函数，补确定性红绿用例（不依赖交互桌面），并补 MapVirtualKeyW 返回 0 的守卫（关闭 S4-b）。
 - **D4 跳过语义显式化**：tests/test_ui.cpp:212-220 的 early-return 假绿源改为显式可见的跳过/失败判定，不得静默通过（关闭 F3）。
 - 验证方式：全部为**先红后绿**的确定性用例（无需 GUI/真机）；ctest -C Release 全绿 + build 零错误零警告；S5/S4 后续项据此复审盖章。
+
+## N9 阶段：按 mstsc 出厂二进制系统性对齐（用户 2026-10-28 指令）
+
+**原则**：规范（[MS-RDPBCGR] 等）只规定"必须怎样"；**微软实际实现的选择**（滤波器、常量、顺序、默认值、降级路径）只能以出厂二进制为准。凡"我认为 mstsc 是 X"而无二进制/抓包证据的断言，一律视为缺陷（已发生 4 次：planar 行序、cliprdr 方向、drdynvc 裸 DATA、缩放插值）。
+
+**工具链**：REA 6.7 + Ghidra 12.1.4，目标 `C:\Windows\System32\mstscax.dll`（sha256 前缀 d73c76d65721043c，PDB mstscax.pdb）与 `mstsc.exe`（1,114,112 B）。证据以 REA evidence_id + 函数地址 + 伪代码片段留档，可复现。
+
+### 对齐队列（按用户可感知影响排序）
+- [~] **A1 缩放/插值**（进行中）：二进制事实=1:1 用 BitBlt(SRCCOPY)，其余（含整数倍）一律 StretchBlt + `SetStretchBltMode(4)`(HALFTONE) + `SetBrushOrgEx(0,0)`；状态来自属性 `EnableSmartSizing`/`ZoomLevel`(100)。当前代码 1:1 正确，**整数倍最近邻、非整数倍双线性**与二进制不符。取证：FUN_18003444c / FUN_180191d30 / FUN_1804cfb98。
+- [ ] **A2 输入与快捷键**：`keybd_event` 10 个调用点、`SendInput` 4 个、`SetCursorPos` 7 个、`MapVirtualKeyW` 126 个 → 逐个定位 mstsc 的快捷键表（Ctrl+Alt+End / Alt+Tab / Win 键 / 连接栏 / 焦点切换），核对我们的 keymap 与 AltGr 处理。
+- [ ] **A3 位图解码与绘制**：32bpp RDP6 planar 已按 FreeRDP 对齐；仍需核对 8/15/16/24bpp、Bitmap Cache Rev2、order 引擎（ROP3/PatBlt/ScrBlt）与 mstsc 实际路径。
+- [ ] **A4 剪贴板 cliprdr**：已按 [MS-RDPECLIP] 修正方向/时序；需确认 mstsc 在该规范之外的实际偏差（尤其 TempDir、长名协商、文件剪贴板 CF_HDROP）。
+- [ ] **A5 音频 rdpsnd**：格式协商默认值、wave2、训练包、与 mstsc 的差异。
+- [ ] **A6 智能缩放/自适应**：`EnableSmartSizing` 的确切语义（窗口缩放时保持纵横比的方式、何时用 HALFTONE 的快速路径 FUN_180036ba0）。
+- [ ] **A7 连接栏/全屏/多显示器 UI 行为**：mstsc.exe 侧的窗口管理。
+- [ ] **A8 服务器模式**：mstsc 无服务器实现，另以 termsrv.dll/rdpdd.dll 为取证目标（本阶段不做）。
+
+**每项流程（强制）**：①定问题 → ②二进制取证（函数地址 + 伪代码 + 交叉佐证）→ ③写成可复核证据条目 → ④先写失败测试（期望值来自②，禁止用生产输出当期望）→ ⑤最小实现 → ⑥双审独立复验（含变异反证）→ ⑦盖章提交。
