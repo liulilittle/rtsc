@@ -36,3 +36,34 @@ mstscax.dll sha256 `d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0e
 5. 锁定"规范之上偏差"清单，逐条与 `src/channel/cliprdr_client.cpp` 对照。
 - [ ] (§1) 虚表解码
 - [ ] (§2-§5) 偏差项定位与对照
+
+## 取证批次 2（2026-10-28 轮次 99）：虚表解码 + 事件源架构
+
+### vtable（CClientClipRdrPduDispatcher 三表，构造 FUN_180658114 @0x180658114）
+主表 PTR_FUN_1806991a8（8 项首列，RVA+base=VA 已验证）：
+- 0x1800e40b0 FUN_1800e40b0（析构/未知）
+- 0x1800a2ca0 FUN_1800a2ca0（基类）
+- 0x1800a56b0 FUN_1800a56b0（基类）
+- 0x180658670 FUN_180658670（dispatcher 同区）
+- 0x180658430 FUN_180658430（dispatcher 同区）
+- 0x1800f0020 FUN_1800f0020
+- 0x180658eb0 FUN_180658eb0 = **Init：创建 event sources**
+- 0x180659680 FUN_180659680 = **析构：移除 event sources**
+
+### 事件源架构发现（关键：架构差异点）
+`FUN_180658eb0`（9234B）创建并登记事件源（event source），OS event ID：
+- 0x9b → FORMAT_LIST event source
+- 0x9c → FORMAT_LIST_RESPONSE event source
+- …(后续见 0x9d+ FORMAT_DATA_REQUEST / FORMAT_DATA_RESPONSE 等)
+`FUN_180659680`（7981B）析构逐源移除；失败日志 "Failed to remove FORMAT_LIST event source!"
+
+推断（待验证）：mstsc 对每个 cliprdr PDU 类别维护独立"事件源"，发送由事件触发而非同步直发——
+与 `src/channel/cliprdr_client.cpp` 当前的同步 OnPdu 直发架构不同。
+**需对照**：我们的实现是否需引入异步队列以对齐 mstsc 的时序（尤其发送顺序/合并行为）。
+
+### 待办推进
+- [x] (§1) 虚表解码（三表已定位 0x1806991a8/1c8/0x18066f120）
+- [ ] 取证 PDU 类型分派表（FORMAT_DATA_REQUEST/RESPONSE/锁/临时目录）
+- [ ] Capability set 固定值与协商默认
+- [ ] 格式名长短默认、CF_HDROP 路径、TempDir
+- [ ] 与 cliprdr_client.cpp 对照出"规范之上偏差"清单
