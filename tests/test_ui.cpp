@@ -1351,4 +1351,33 @@ RTSC_TEST(gui_dispatch_explicitly_consumes_fullscreen_command) {
     CHECK(src.find("ToggleFullscreen(") != std::string::npos);
 }
 
+RTSC_TEST(gui_dispatch_explicitly_consumes_connection_info_command) {
+    // The rtsc_gui executable cannot be linked into the suite (its main() runs
+    // a full RDP client, network included), so its input dispatch is guarded
+    // structurally: the kUiCommand branch must explicitly own
+    // kCmdConnectionInfo and run the dialog, or the command silently falls
+    // through EncodeInput's {}-returning default and the "连接信息(C)" menu
+    // item becomes the N2 no-op. This is the regression guard for that
+    // dispatch: the command must appear before the dialog call in the branch
+    // body, followed by the continue that keeps it off the send path.
+    std::ifstream in(RTSC_SOURCE_DIR "/tools/rtsc_gui/main.cpp");
+    if (!in) {
+        SkipTest("gui_dispatch_explicitly_consumes_connection_info_command",
+                 "cannot open tools/rtsc_gui/main.cpp");
+        return;
+    }
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    const size_t cmd = src.find("kCmdConnectionInfo");
+    const size_t call = src.find("ShowConnectionInfoDialog(nullptr");
+    const size_t collect = src.find("CollectSessionInfo(");
+    const size_t cont = src.find("continue", call);
+    CHECK(cmd != std::string::npos);
+    CHECK(call != std::string::npos);
+    CHECK(collect != std::string::npos);
+    CHECK(cont != std::string::npos);
+    CHECK(cmd < call);  // the command gates the dialog call in the branch
+    CHECK(call < cont);  // the dialog/send path is skipped with a continue
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }

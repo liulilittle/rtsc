@@ -603,6 +603,37 @@ int main(int argc, char** argv) {
                     windows[0]->SetViewMenuState(menu_state);
                     continue;
                 }
+                // Connection information is a window-owner command the 连接信息(C)
+                // menu raises (kCmdConnectionInfo). Like fullscreen it must never
+                // fall through to the send path: EncodeInput turns kUiCommand into
+                // nothing, so without this branch the menu item was a silent no-op.
+                // The dialog runs modal to Windows and collects the live session
+                // statistics through the client (frame rate from NoteFrame,
+                // inbound traffic for bandwidth). The input round-trip stays
+                // N/A: the front-end's NoteInputSent hook is not wired (a
+                // non-encoding input would start a spurious RTT timer), so no
+                // measurement is fabricated.
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdConnectionInfo) {
+                    const auto collect = [&]() -> rtsc::client::SessionInfo {
+                        rtsc::client::SessionInfoInput input;
+                        input.host = host;
+                        input.frames_per_second = client.frames_per_second();
+                        input.has_rtt = client.has_rtt();
+                        input.rtt_ms = client.rtt_ms();
+                        input.bandwidth_mbps = client.bandwidth_mbps();
+                        return rtsc::client::CollectSessionInfo(
+                            input, std::time(nullptr));
+                    };
+#if defined(_WIN32)
+                    rtsc::gui::ShowConnectionInfoDialog(nullptr, collect);
+#else
+                    (void)collect;
+                    std::printf("connection info: no dialog backend on this "
+                                "platform\n");
+#endif
+                    continue;
+                }
                 bool consumed = false;
                 if (multi_window) {
                     // Each window is 1:1 with its monitor, so the local pointer
@@ -728,6 +759,7 @@ int main(int argc, char** argv) {
                 last_render = now;
                 ++renders;
                 ++fps_renders;
+                client.NoteFrame();
                 if (renders == 3) {
                     // TEMPORARY INSTRUMENTATION (interaction-batch): one-shot
                     // surface dump for offline orientation analysis.
