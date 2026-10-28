@@ -46,3 +46,26 @@
 3. **真机抓包补充**：连 192.168.1.7 的 32bpp 会话当前只出现 planar；如需验证其它 codec 需改变会话配置（带宽/画质档位）。
 
 > 纪律提醒：本文件中的「推断」全部标注；未取证的线格式不得写入实现。
+## 5. A3 取证结论（2026-10-28，父代理）
+
+**已定位**：`mstscax.dll!FUN_1802e513c`（13,057 字节）是 **planar 解压器本体**：
+
+```c
+if (param_5 == 0) {
+    iVar4 = FUN_180025b90(param_1, param_1 + size, 8, L"Decompress reads off end of buffer");
+    if (iVar4 == 0) return -0x60f3bb94;
+    uVar6 = *(ushort *)(param_1 + 2);                       // 头内长度字段
+    iVar4 = FUN_180025b90(param_1, param_1 + size, uVar6 + 8, L"Decompress reads off end of buffer");
+    ...
+    uVar17 = ((param_6 + 3 >> 2) * (uint)param_8 * 4 + 0x1f >> 5) << 2;  // 平面尺寸（按 bpp 与高度）
+    if (uVar10 != uVar17) { /* 尺寸不符 → 记录 0x1c 日志 */ }
+```
+
+7 个调用者：`FUN_18001f464`、`FUN_1800276ac`、`FUN_1800aced0`、`FUN_1800fde50`、`FUN_180151e8c`、`FUN_18058f500`（另 1 处不在函数内）。抽查 `FUN_1800fde50`/`FUN_1800276ac` 的伪代码**未见按小常量（codec id）的 switch/case**。
+
+**推断（标注）**：这些调用者是**按 bpp/flags 而非按 codec GUID** 直接调用对应解压器（`FastBltPlanar` 一类的直接路径），codec 选择可能在更上层（caps 协商/`TS_BITMAPCODEC` 分派），**未验证**。
+
+**A3 决策（父代理，理由充分可改）**：
+- **暂不实现 ClearCodec / Progressive V1/V2**。理由：①当前验收路径（192.168.1.7 局域网、32bpp）实测只出现 planar（真机向量 513B/1320B 均为 planar）；②本仓无任何能产生这些 codec 的服务器/抓包，实现后**无法验证**，违反"禁止无法验证的实现入库"；③它们的启用取决于远端策略（带宽/GPU/EGFX），需先取到实际会话样本。
+- **列为需真机样本的候选**：若将来在真实会话中观察到 ClearCodec/Progressive（通过 `bitmapCodecId`/EGFX 通道判别），再按本文件流程取证实现。
+- **NSCodec 仍需一次真机/回环验证**（本仓仅有自造流测试）——这是当前唯一"已实现但未验证"的解码路径。
