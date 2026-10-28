@@ -10533,3 +10533,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[测试]** 新增 2 条客户端字节级断言：HWHEEL = `0x0401`（`pdu[3]=0x01,pdu[4]=0x04`，且**不得**含 `0x0200`）、X1 = MOUSEX `0x9000`、X2 = MOUSEX `0xA000`。client 套件 **13 tests/52 checks/0**；全量 **51/51**。
 - **[A3 取证进展]** codec 命中串簇 `0x180699cb8..0x180699d40` 经 `inspect_native_instruction` 判定为 **data（统计表）**，非解码分派代码 → 不能用来定位解码器选择；`PLANAR (%d)`@0x1806c8c90 的引用点也在同一数据区。下一步需换路径（按 `bitmapCodecId` 常量或 caps 协商处切入）。
 - **[阻塞未解]** 子代理 API key 仍无 `deepseek-v4.1-flash` provider → 本批为父代理单人执行，未走双审（补审需额度恢复后补）。
+
+## 第630轮：模型恢复 + 甲乙双审重开
+
+- **[模型]** 用户确认 `unorouter-ai/deepseek-v4.1-flash` 恢复可用；minimax 甲（`ses_e7e865b02ffeQWqZICCt6vYVG7`）已 abort，改派 unorouter。
+- **[在途]** 甲 `ses_e7e842838ffeIGRQcbegi1aB5n`（逐条断言 + 变异反证）／乙 `ses_e7e8419cdffeeERUqrk1CUc63H`（需求反推 + 分支完备 + 状态机收敛），审 `959aaa7` + `2368b88`；组内 ID 已双向补发。
+- **[待办]** 磋商定案后：若驳回则回①修复→复验；通过则由甲乙一致盖章，再推进 A4-A7。
