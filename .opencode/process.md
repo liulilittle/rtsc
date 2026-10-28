@@ -10473,3 +10473,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[当前树]** `git status` 空、无 `rtsc*` 残留进程、Free 27.8GB。全量构建零 error 零 warning、ctest **51/51**。
 - **[A2 在途]** 甲 `ses_e7f015642ffegVUtm2xZmQuwTE` / 乙 `ses_e7f00d819ffe7Zcg98uyLMsmuE`（均 busy），已双向通告知会话 ID；审计重点为 `TranslateWin32KeyMessage` 全分支、FastPath 编码与 [MS-RDPBCGR] 2.2.8.1.2.2 一致性、Win 键转发、修饰键归位、坐标逆映射、Ctrl+Alt+End/Alt+Tab。
 - **[待确认事实]** 全仓 `VK_LWIN|VK_RWIN|0x5B|0x5C|resync|release.*modifier` 零命中（父代理亲检）→ 疑似完全没有 Win 键转发与修饰键归位；`input.cpp:78-85` 已有 Ctrl+Alt+Del 合成序列可参照。
+
+## 第623轮：A2 乙审报告（父代理亲核 2 条为真）
+
+- **[P0-3 命令 ID 冲突·已亲核为真]** `include/rtsc/ui/window.h:83 kCmdSendCtrlAltDel = 19` 与 `:96 kCmdHelp = 19` **重复** → 点「帮助」会发出 Ctrl+Alt+Del（SAS）。同时 `window_win32.cpp` 无 Ctrl+Alt+End 映射、菜单只有「查看」、tools 从不调 `Client::SendCtrlAltDel`、`EncodeCtrlAltDel` 无测试 → **SAS 完全不可达**。
+- **[P1-4 点击映射相位不一致·已亲核为真]** `MapViewportPoint` 用 `sx=(vx-vt.x)*src_w/vt.width`（左边缘/floor），而 A1 渲染用中心相位 `((2d+1)S-1)/(2D)`。审计实测 `S=100,D=4,d=1`：映射 25、渲染 37 → **偏差 12 像素**；`5→8,d=3` 映射 1、渲染 2。修法：映射改用同一 E8 相位（`NearestIndex` 的逆），或按渲染表反查。
+- **[其余待甲复核]** P0-1 无修饰键归位（无 `WM_KILLFOCUS/WM_ACTIVATE/WM_SETFOCUS`，`WM_CLOSE(:260-263)` 与 Alt+F4 不释放 Alt）；P0-2 Win 键无策略（`window.h:84-95/212-217` 声明 `WinKeyMode` 三档但 `src`/`tools` 零实现，`SetWinKeyMode` 是 no-op；通用路径 `window_win32.cpp:641-654` 无条件透传 LWIN/RWIN）；P1-5 多屏负 origin 直接 `m.left/m.top` 相加（`main.cpp:533-537`）而 span 用 union 相对 → 负值转 uint16 回绕、同一点两模式 wire 值不同；P1-6 无 `SetCapture`（拖出窗丢 button-up）、span 模式滚轮恒被本地缩放消费；P1-7 `Pause`/`EXTENDED1` 不能编码（`input.h:22` 死常量）、lParam scancode=0 的合成扩展键丢 bit24、`EncodeUnicodeEvent`/`EncodeSyncEvent` 死代码；P1-8 Alt+Tab 转发能否阻止 shell 全局热键 **未验证**。
+- **[Q2 结论（正面）]** FastPath 键盘编码与 dump/规范一致：`eventHeader=(code<<5)|flags`（`input.cpp:15-17`）、`RELEASE=1/EXTENDED=2/EXTENDED1=4`（`input.h:19-23`）、`docs/spec/share-data.md:691-702`；SAS 六事件序列正确（`input.cpp:76-87`，字节 `180e001d0038025303530138011d`）。**缺口只在 EXTENDED1**。
+- **[方案建议（乙）]** Win 键：W1 透传（驳回）/ W2 `WH_KEYBOARD_LL` + 本地重注入（最保真、风险最高）/ **W3 无钩子按 WinKeyMode 门控（推荐先落，W2 作可选后端）**；归位：R1 仅失焦释放（最小）/ **R2 mstsc 式 Shift 重放 + Win up（推荐默认）** / R3 `GetKeyboardState`（不推荐）。12 条先红后绿测试已列（含 T6 SAS 字节、T7/T8 中心映射、T9 负 origin 不回绕）。
