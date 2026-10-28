@@ -1294,3 +1294,17 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] `cmake --build ... --target rtsc_server_host` 连续两次 LNK1104 无法打开 rtsc_server_host.exe
   [错误] 不是 MSB3021/构建配置问题：另一个代理的探针进程 PID 56844（`--width 1 --height 48 --port 51667 --seconds 0`，非我的参数、非我的端口）正在运行该 exe，Windows 锁定映像；期间该 exe 仍是**旧版本**，反而可用来取 ④ 的红证（旧二进制默认接受 otheruser@WRONGDOM → ACTIVE，日志无凭据策略行）
   [下一步] 禁止强杀他人进程；隔 25s 重试（第 2 次成功）。同时利用锁定窗口先跑红探针，再重试构建，避免空等。
+## [2026-10-28][审计乙] 复验 H-3/H-1/H-2/H-4：先查产物新鲜度，再谈测试结论
+
+- [尝试] 直接按父代理给的复验步骤跑 `ctest -R server` 期望看到执行 AI 报的 17 tests/134 checks
+  [错误] 首次构建产物 `build\Release\rtsc_server_tests.exe` 时间 8:24:47 **早于** `tests/test_server.cpp` 的 8:47:44 → 跑的是**旧测试二进制**，新增 4 例根本不在里面；若不先 `cmake --build`，会把"只有 13 例"误判成"新增用例没生效/被跳过"
+  [下一步] 复验他人"未提交"改动时，**先比 src/exe mtime**（或直接 `--build` 强制重建）再跑测试；测试计数（17 tests/134 checks）要与报告一致才可作为绿证
+- [尝试] 用 `--seconds 0` 跑 rtsc_server_host 做 CLI 反例
+  [错误] main.cpp:81 注释 `0 = run until stopped` → 进程**不退出**，留下游离 rtsc_server_host（父代理已手工清掉 PID 56844）；PowerShell 侧只看到 exit=-1 容易误判为"已结束"
+  [下一步] 任何宿主进程验证一律 `--seconds N`（N≥1）；跑完用 `Get-CimInstance Win32_Process -Filter "Name='rtsc_server_host.exe'"` 复核残留
+- [尝试] 用仓库外探针独立复验 H-1（客户端宣告 65535x65535）
+  [错误] 修复前峰值工作集 16391.7 MB（+16 GB）；修复后同一探针 **39.9 MB**，Demand Active 通告 **2896x2896**（8,386,816 px = 31 MiB），与 ClampDesktopSize 的等比缩放解析值完全吻合
+  [下一步] 上限类修复的验收必须同时断言**通告值**（客户端看到的是钳制后的尺寸）与**进程峰值内存**，只看"没崩"不足以证明钳制生效
+- [尝试] 复验 H-4 会话回收
+  [错误] 断连后 `session_count()` 归 0、`total_session_count()` 保留 1 ✓；但实测**句柄数 +8 / 6 个会话**（117→125），`Stop()` 后才回落到 115 → 已结束的 `std::thread` 仍留在 `impl_->threads` 直到 Stop，长跑服务器按会话线性增长
+  [下一步] "会话对象已回收"与"线程句柄已回收"是两件事，分别用 `session_count()` 与 `GetProcessHandleCount` 两条独立证据；线程应在退出路径 join/detach 并 erase
