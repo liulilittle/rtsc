@@ -85,12 +85,13 @@ std::vector<uint8_t> IoRequestBody(uint32_t device_id, uint32_t file_id,
 }
 
 std::vector<uint8_t> CreateBody(uint32_t device_id, uint32_t completion_id,
-                                uint32_t disposition, const std::string& path) {
+                                uint32_t disposition, const std::string& path,
+                                uint32_t desired_access = 0xC0000000u) {
     proto::ByteWriter w;
     const std::vector<uint8_t> req =
         IoRequestBody(device_id, 0, completion_id, proto::kIrpMjCreate, 0);
     w.bytes(req.data(), req.size());
-    w.u32le(0x00100000);      // DesiredAccess
+    w.u32le(desired_access);  // GENERIC_READ | GENERIC_WRITE by default
     w.u32le(0); w.u32le(0);   // AllocationSize (u64)
     w.u32le(0x80);            // FileAttributes
     w.u32le(0);               // SharedAccess
@@ -167,11 +168,12 @@ std::vector<uint8_t> ControlBody(uint32_t device_id, uint32_t file_id,
 class MockFs final : public IFileSystem {
  public:
     bool Open(const std::string& local_path, bool for_write, bool create,
-              uint32_t& file_id) override {
+              bool truncate, uint32_t& file_id) override {
         ++open_calls;
         last_open_path = local_path;
         last_for_write = for_write;
         last_create = create;
+        last_truncate = truncate;
         if (fail_open_once) {
             fail_open_once = false;
             return false;
@@ -240,6 +242,7 @@ class MockFs final : public IFileSystem {
     std::string last_stat_path;
     bool last_for_write = false;
     bool last_create = false;
+    bool last_truncate = false;
     uint32_t last_read_id = 0;
     uint64_t last_read_offset = 0;
     uint32_t last_read_length = 0;
@@ -491,9 +494,11 @@ RTSC_TEST(rdpdr_client_create_maps_remote_path_and_opens) {
                         "\\tsclient\\C\\dir\\file.txt"));
 
     CHECK_EQ(fs.open_calls, static_cast<unsigned>(1));
-    // kFileOpenIf needs write access (the client may create the file).
+    // kFileOpenIf needs write access and creates the file when it is missing
+    // ([MS-SMB2] 2.2.13), but must not truncate an existing one.
     CHECK_EQ(fs.last_for_write, true);
-    CHECK_EQ(fs.last_create, false);
+    CHECK_EQ(fs.last_create, true);
+    CHECK_EQ(fs.last_truncate, false);
     CHECK(fs.last_open_path == "C:\\dir\\file.txt");
     CHECK(client.last_remote_path() == "\\tsclient\\C\\dir\\file.txt");
     CHECK(client.last_local_path() == "C:\\dir\\file.txt");
@@ -587,9 +592,20 @@ RTSC_TEST(rdpdr_client_read_write_close_round_trip) {
     FeedMessage(client, confirm.encode());
 
     FeedBody(client, proto::kPakidCoreDeviceIorequest,
-             ReadBody(kDeviceId, 0x100, 11, 4, 64));
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, file_id, 11, 4, 64));
     CHECK_EQ(fs.read_calls, static_cast<unsigned>(1));
-    CHECK_EQ(fs.last_read_id, static_cast<uint32_t>(0x100));
+    CHECK_EQ(fs.last_read_id, file_id);
     CHECK_EQ(fs.last_read_offset, static_cast<uint64_t>(64));
     CHECK_EQ(fs.last_read_length, static_cast<uint32_t>(4));
     CHECK_EQ(client.read_count(), static_cast<unsigned>(1));
@@ -608,17 +624,17 @@ RTSC_TEST(rdpdr_client_read_write_close_round_trip) {
 
     const std::vector<uint8_t> payload = {1, 2, 3};
     FeedBody(client, proto::kPakidCoreDeviceIorequest,
-             WriteBody(kDeviceId, 0x100, 12, 8, payload));
+             WriteBody(kDeviceId, file_id, 12, 8, payload));
     CHECK_EQ(fs.write_calls, static_cast<unsigned>(1));
-    CHECK_EQ(fs.last_write_id, static_cast<uint32_t>(0x100));
+    CHECK_EQ(fs.last_write_id, file_id);
     CHECK_EQ(fs.last_write_offset, static_cast<uint64_t>(8));
     CHECK(fs.last_write_data == payload);
     CHECK_EQ(client.write_count(), static_cast<unsigned>(1));
 
     FeedBody(client, proto::kPakidCoreDeviceIorequest,
-             IoRequestBody(kDeviceId, 0x100, 13, proto::kIrpMjClose, 0));
+             IoRequestBody(kDeviceId, file_id, 13, proto::kIrpMjClose, 0));
     CHECK_EQ(fs.close_calls, static_cast<unsigned>(1));
-    CHECK_EQ(fs.last_close_id, static_cast<uint32_t>(0x100));
+    CHECK_EQ(fs.last_close_id, file_id);
     CHECK_EQ(client.close_count(), static_cast<unsigned>(1));
 }
 
@@ -686,6 +702,903 @@ RTSC_TEST(rdpdr_client_control_is_unsuccessful) {
     }
 }
 
+// ---- path containment (S3-7) ----------------------------------------------
+
+void MakeReady(RdpdrClient& client) {
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+}
+
+RTSC_TEST(rdpdr_path_rejects_parent_traversal_forms) {
+    const std::string root = "C:\\share";
+    const char* forms[] = {
+        "..\\..\\Windows\\evil.dll",
+        "..\\evil.dll",
+        "sub\\..\\..\\evil.dll",
+        "../x",
+        "/../../x",
+        "sub/../../x",
+        "....\\evil.dll",
+        "...\\evil.dll",
+        ".. \\evil.dll",
+        "..\\..\\windows\\EVIL.DLL",
+        "sub\\..\\CON",
+    };
+    for (const char* form : forms) {
+        std::string out;
+        const bool ok = rtsc::channel::ResolvePathUnderRoot(root, form, out);
+        if (ok) {
+            std::printf("  accepted traversal form: %s -> %s\n", form,
+                        out.c_str());
+        }
+        CHECK(!ok);
+    }
+}
+
+RTSC_TEST(rdpdr_path_rejects_absolute_drive_unc_and_device_forms) {
+    const std::string root = "C:\\share";
+    const char* forms[] = {
+        "C:\\Windows\\evil.dll",
+        "c:/windows/evil.dll",
+        "D:evil.dll",
+        "\\\\server\\share\\evil.dll",
+        "\\\\.\\PhysicalDrive0",
+        "\\\\?\\C:\\Windows\\evil.dll",
+        "CON",
+        "con.txt",
+        "NUL",
+        "aux.log",
+        "COM1",
+        "lpt9",
+        "CONIN$",
+        "evil.dll:stream",
+        "evil.txt ",
+        "evil.txt.",
+        "a<b",
+        "a|b",
+        "a*b",
+        "a?b",
+    };
+    for (const char* form : forms) {
+        std::string out;
+        const bool ok = rtsc::channel::ResolvePathUnderRoot(root, form, out);
+        if (ok) {
+            std::printf("  accepted absolute/device form: %s -> %s\n", form,
+                        out.c_str());
+        }
+        CHECK(!ok);
+    }
+}
+
+RTSC_TEST(rdpdr_path_accepts_legal_paths_under_root) {
+    const std::string root = "C:\\share";
+    std::string out;
+
+    CHECK(rtsc::channel::ResolvePathUnderRoot(root, "\\dir\\file.txt", out));
+    CHECK(out == "C:\\share\\dir\\file.txt");
+
+    CHECK(rtsc::channel::ResolvePathUnderRoot(root, "/dir/sub/file.txt", out));
+    CHECK(out == "C:\\share\\dir\\sub\\file.txt");
+
+    CHECK(rtsc::channel::ResolvePathUnderRoot(root, "PROGRA~1\\app.dll", out));
+    CHECK(out == "C:\\share\\PROGRA~1\\app.dll");
+
+    CHECK(rtsc::channel::ResolvePathUnderRoot(root, "Dir\\.\\File.TXT", out));
+    CHECK(out == "C:\\share\\Dir\\File.TXT");
+
+    CHECK(rtsc::channel::ResolvePathUnderRoot("C:\\", "Windows\\x.dll", out));
+    CHECK(out == "C:\\Windows\\x.dll");
+}
+
+RTSC_TEST(rdpdr_client_create_rejects_traversal_path) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\share"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000002,
+                        "\\tsclient\\C\\..\\..\\Windows\\evil.dll"));
+
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(0));
+    CHECK(client.last_local_path().empty());
+    CHECK(client.last_remote_path() ==
+          "\\tsclient\\C\\..\\..\\Windows\\evil.dll");
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+}
+
+RTSC_TEST(rdpdr_client_traversal_create_does_not_escape_root) {
+    const std::filesystem::path dir = MakeTempDir("s3_7");
+    const std::string escape_name = "rtsc_s3_7_escape.txt";
+    const std::filesystem::path outside = dir.parent_path() / escape_name;
+    std::error_code ec;
+    std::filesystem::remove(outside, ec);
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000005,
+                        "\\tsclient\\C\\..\\" + escape_name));
+
+    CHECK(!std::filesystem::exists(outside));
+    CHECK(client.last_local_path().empty());
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+
+    std::filesystem::remove(outside, ec);
+    std::filesystem::remove_all(dir, ec);
+}
+
+// ---- read size limiting (S3-8) --------------------------------------------
+
+RTSC_TEST(rdpdr_client_read_rejects_oversized_length) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, 0x100, 11, 0xFFFFFFFFu, 0));
+
+    CHECK_EQ(fs.read_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.read_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusInvalidParameter));
+    }
+}
+
+RTSC_TEST(rdpdr_filesystem_read_rejects_oversized_length) {
+    const std::filesystem::path dir = MakeTempDir("readcap");
+    const std::filesystem::path file = dir / "big.txt";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("hello", 5);
+    }
+
+    HostFileSystem fs;
+    uint32_t id = 0;
+    CHECK(fs.Open(file.string(), false, false, false, id));
+
+    const uint32_t probes[] = {64u * 1024u * 1024u, 0xFFFFFFFFu};
+    for (const uint32_t length : probes) {
+        std::vector<uint8_t> data(1, 0xAA);
+        bool threw = false;
+        bool ok = false;
+        try {
+            ok = fs.Read(id, 0, length, data);
+        } catch (...) {
+            threw = true;
+        }
+        if (ok) std::printf("  accepted read length %u\n", length);
+        CHECK(!threw);
+        CHECK(!ok);
+        CHECK(data.empty());
+    }
+
+    std::vector<uint8_t> data;
+    CHECK(fs.Read(id, 0, 5, data));
+    CHECK(data == std::vector<uint8_t>({'h', 'e', 'l', 'l', 'o'}));
+
+    fs.Close(id);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// ---- overwrite truncation (S3-9) ------------------------------------------
+
+RTSC_TEST(rdpdr_filesystem_overwrite_truncates_existing) {
+    const std::filesystem::path dir = MakeTempDir("s3_9fs");
+    const std::filesystem::path file = dir / "old.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    uint32_t id = 0;
+    CHECK(fs.Open(file.string(), true, false, true, id));
+    const std::vector<uint8_t> fresh = {'N', 'E', 'W'};
+    uint32_t written = 0;
+    CHECK(fs.Write(id, 0, fresh, written));
+    CHECK_EQ(written, static_cast<uint32_t>(3));
+    CHECK(fs.Close(id));
+
+    const std::vector<uint8_t> got = ReadWholeFile(file);
+    if (got != fresh) {
+        std::printf("  overwrite left %zu bytes: %.*s\n", got.size(),
+                    static_cast<int>(got.size()),
+                    reinterpret_cast<const char*>(got.data()));
+    }
+    CHECK(got == fresh);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_overwrite_dispositions_truncate_existing_file) {
+    const uint32_t dispositions[] = {0x00000000u, 0x00000004u, 0x00000005u};
+    for (const uint32_t disposition : dispositions) {
+        const std::filesystem::path dir = MakeTempDir("s3_9");
+        const std::filesystem::path file = dir / "data.bin";
+        {
+            std::ofstream out(file, std::ios::binary);
+            out.write("OLDDATA", 7);
+        }
+
+        HostFileSystem fs;
+        std::vector<std::vector<uint8_t>> sent;
+        RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                          [&](const std::vector<uint8_t>& m) {
+                              sent.push_back(m);
+                          });
+        MakeReady(client);
+
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 CreateBody(kDeviceId, 21, disposition,
+                            "\\tsclient\\C\\data.bin"));
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        uint32_t file_id = 0;
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK_EQ(U32At(*rsp, 20),
+                     static_cast<uint32_t>(proto::kStatusSuccess));
+            file_id = U32At(*rsp, 24);
+        }
+        CHECK(file_id != 0);
+
+        if (file_id != 0) {
+            const std::vector<uint8_t> fresh = {'N', 'E', 'W'};
+            FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                     WriteBody(kDeviceId, file_id, 22, 0, fresh));
+            FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                     IoRequestBody(kDeviceId, file_id, 23, proto::kIrpMjClose,
+                                   0));
+            const std::vector<uint8_t> got = ReadWholeFile(file);
+            if (got != fresh) {
+                std::printf("  disposition 0x%02X left %zu bytes: %.*s\n",
+                            disposition, got.size(),
+                            static_cast<int>(got.size()),
+                            reinterpret_cast<const char*>(got.data()));
+            }
+            CHECK(got == fresh);
+        }
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+}
+
+RTSC_TEST(rdpdr_client_openif_does_not_truncate_existing_file) {
+    const std::filesystem::path dir = MakeTempDir("s3_9open");
+    const std::filesystem::path file = dir / "data.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000003, "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+        file_id = U32At(*rsp, 24);
+    }
+    CHECK(file_id != 0);
+    if (file_id != 0) {
+        const std::vector<uint8_t> tail = {'N', 'E', 'W'};
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 WriteBody(kDeviceId, file_id, 22, 7, tail));
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 IoRequestBody(kDeviceId, file_id, 23, proto::kIrpMjClose, 0));
+    }
+    CHECK(ReadWholeFile(file) ==
+          std::vector<uint8_t>({'O', 'L', 'D', 'D', 'A', 'T', 'A', 'N', 'E',
+                                'W'}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// ---- DesiredAccess semantics (S3-7') --------------------------------------
+
+RTSC_TEST(rdpdr_client_create_read_access_opens_read_only) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000001, "\\tsclient\\C\\ro.txt",
+                        0x80000000u /* GENERIC_READ */));
+
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_for_write, false);
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(1));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+}
+
+RTSC_TEST(rdpdr_client_create_write_access_opens_for_write) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000001, "\\tsclient\\C\\rw.txt",
+                        0x40000000u /* GENERIC_WRITE */));
+
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_for_write, true);
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_create_openif_read_access_is_not_over_authorised) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000003, "\\tsclient\\C\\ro2.txt",
+                        0x00120089u /* FILE_READ_DATA|READ_ATTRIBUTES */));
+
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_for_write, false);
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_write_to_read_only_handle_is_denied) {
+    const std::filesystem::path dir = MakeTempDir("s3_7p_ro");
+    const std::filesystem::path file = dir / "data.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000001, "\\tsclient\\C\\data.bin",
+                        0x80000000u /* GENERIC_READ */));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+        file_id = U32At(*rsp, 24);
+    }
+    CHECK(file_id != 0);
+    if (file_id != 0) {
+        sent.clear();
+        const std::vector<uint8_t> fresh = {'N', 'E', 'W'};
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 WriteBody(kDeviceId, file_id, 22, 0, fresh));
+        const std::vector<uint8_t>* wrsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(wrsp != nullptr);
+        if (wrsp != nullptr) {
+            if (U32At(*wrsp, 20) ==
+                static_cast<uint32_t>(proto::kStatusSuccess)) {
+                std::printf("  read-only handle accepted a write\n");
+            }
+            CHECK(U32At(*wrsp, 20) !=
+                  static_cast<uint32_t>(proto::kStatusSuccess));
+        }
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 IoRequestBody(kDeviceId, file_id, 23, proto::kIrpMjClose, 0));
+    }
+    CHECK(ReadWholeFile(file) ==
+          std::vector<uint8_t>({'O', 'L', 'D', 'D', 'A', 'T', 'A'}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_create_write_on_read_only_file_fails) {
+    const std::filesystem::path dir = MakeTempDir("s3_7p_attr");
+    const std::filesystem::path file = dir / "locked.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+    std::error_code ec;
+    std::filesystem::permissions(file, std::filesystem::perms::owner_read,
+                                 std::filesystem::perm_options::replace, ec);
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000001, "\\tsclient\\C\\locked.bin",
+                        0x40000000u /* GENERIC_WRITE */));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        if (U32At(*rsp, 20) == static_cast<uint32_t>(proto::kStatusSuccess)) {
+            std::printf("  write open of a read-only file succeeded\n");
+        }
+        CHECK(U32At(*rsp, 20) != static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+
+    std::filesystem::permissions(file, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, ec);
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_create_existing_file_fails_without_truncating) {
+    const std::filesystem::path dir = MakeTempDir("s3_create_exists");
+    const std::filesystem::path file = dir / "exists.txt";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000002 /* FILE_CREATE */,
+                        "\\tsclient\\C\\exists.txt"));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        if (U32At(*rsp, 20) == static_cast<uint32_t>(proto::kStatusSuccess)) {
+            std::printf("  FILE_CREATE on an existing file succeeded\n");
+        }
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000035));
+    }
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    CHECK(ReadWholeFile(file) ==
+          std::vector<uint8_t>({'O', 'L', 'D', 'D', 'A', 'T', 'A'}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_path_accepts_drive_root) {
+    std::string out;
+    CHECK(rtsc::channel::ResolvePathUnderRoot("C:\\share", "", out));
+    CHECK(out == "C:\\share");
+    CHECK(rtsc::channel::ResolvePathUnderRoot("C:\\share", "\\", out));
+    CHECK(out == "C:\\share");
+    CHECK(rtsc::channel::ResolvePathUnderRoot("C:\\share\\", "", out));
+    CHECK(out == "C:\\share");
+}
+
+RTSC_TEST(rdpdr_client_create_maximum_allowed_is_write) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000003, "\\tsclient\\C\\max.txt",
+                        0x02000000u /* MAXIMUM_ALLOWED */));
+    CHECK_EQ(fs.last_for_write, true);
+
+    const std::filesystem::path dir = MakeTempDir("s3_7p_max");
+    const std::filesystem::path file = dir / "m.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem hfs;
+    std::vector<std::vector<uint8_t>> hsent;
+    RdpdrClient hclient(&hfs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           hsent.push_back(m);
+                       });
+    MakeReady(hclient);
+    FeedBody(hclient, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000003, "\\tsclient\\C\\m.bin",
+                        0x02000000u));
+    const std::vector<uint8_t>* rsp =
+        FindSent(hsent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+        file_id = U32At(*rsp, 24);
+    }
+    CHECK(file_id != 0);
+    if (file_id != 0) {
+        const std::vector<uint8_t> fresh = {'N', 'E', 'W'};
+        FeedBody(hclient, proto::kPakidCoreDeviceIorequest,
+                 WriteBody(kDeviceId, file_id, 22, 0, fresh));
+        FeedBody(hclient, proto::kPakidCoreDeviceIorequest,
+                 IoRequestBody(kDeviceId, file_id, 23, proto::kIrpMjClose, 0));
+    }
+    CHECK(ReadWholeFile(file) ==
+          std::vector<uint8_t>({'N', 'E', 'W', 'D', 'A', 'T', 'A'}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_create_delete_only_is_not_data_write) {
+    const std::filesystem::path dir = MakeTempDir("s3_7p_del");
+    const std::filesystem::path file = dir / "d.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+    std::error_code ec;
+    std::filesystem::permissions(file, std::filesystem::perms::owner_read,
+                                 std::filesystem::perm_options::replace, ec);
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 21, 0x00000001, "\\tsclient\\C\\d.bin",
+                        0x00010000u /* DELETE */));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        if (U32At(*rsp, 20) != static_cast<uint32_t>(proto::kStatusSuccess)) {
+            std::printf("  DELETE-only open of a read-only file was denied\n");
+        }
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+        file_id = U32At(*rsp, 24);
+    }
+    CHECK(file_id != 0);
+    if (file_id != 0) {
+        sent.clear();
+        const std::vector<uint8_t> fresh = {'N', 'E', 'W'};
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 WriteBody(kDeviceId, file_id, 22, 0, fresh));
+        const std::vector<uint8_t>* wrsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(wrsp != nullptr);
+        if (wrsp != nullptr) {
+            CHECK(U32At(*wrsp, 20) !=
+                  static_cast<uint32_t>(proto::kStatusSuccess));
+        }
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 IoRequestBody(kDeviceId, file_id, 23, proto::kIrpMjClose, 0));
+    }
+    CHECK(ReadWholeFile(file) ==
+          std::vector<uint8_t>({'O', 'L', 'D', 'D', 'A', 'T', 'A'}));
+
+    std::filesystem::permissions(file, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, ec);
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_open_and_overwrite_missing_file_fail) {
+    const std::filesystem::path dir = MakeTempDir("s3_missing");
+    const uint32_t dispositions[] = {0x00000001u /* FILE_OPEN */,
+                                    0x00000004u /* FILE_OVERWRITE */};
+    for (const uint32_t disposition : dispositions) {
+        HostFileSystem fs;
+        std::vector<std::vector<uint8_t>> sent;
+        RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                          [&](const std::vector<uint8_t>& m) {
+                              sent.push_back(m);
+                          });
+        MakeReady(client);
+
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 CreateBody(kDeviceId, 21, disposition,
+                            "\\tsclient\\C\\missing.txt"));
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            if (U32At(*rsp, 20) ==
+                static_cast<uint32_t>(proto::kStatusSuccess)) {
+                std::printf("  disposition 0x%02X created a missing file\n",
+                            disposition);
+            }
+            CHECK(U32At(*rsp, 20) !=
+                  static_cast<uint32_t>(proto::kStatusSuccess));
+        }
+        CHECK(!std::filesystem::exists(dir / "missing.txt"));
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// ---- truncate independent of access mode (R2) -----------------------------
+
+RTSC_TEST(rdpdr_filesystem_truncate_applies_without_write_access) {
+    const std::filesystem::path dir = MakeTempDir("r2_fs");
+    const std::filesystem::path file = dir / "keep.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    uint32_t id = 0;
+    CHECK(fs.Open(file.string(), false, true, true, id));
+    std::vector<uint8_t> data;
+    CHECK(fs.Read(id, 0, 64, data));
+    if (!data.empty()) {
+        std::printf("  read-only overwrite left %zu bytes\n", data.size());
+    }
+    CHECK(data.empty());
+
+    uint32_t written = 0;
+    CHECK(!fs.Write(id, 0, {'X'}, written));
+    fs.Close(id);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_read_only_overwrite_truncates_file) {
+    const std::filesystem::path dir = MakeTempDir("r2_ch");
+    const std::filesystem::path file = dir / "data.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 31, 0x00000004 /* FILE_OVERWRITE */,
+                        "\\tsclient\\C\\data.bin", 0x80000000u /* READ */));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+    CHECK(ReadWholeFile(file).empty());
+
+    const std::filesystem::path kept = dir / "kept.bin";
+    {
+        std::ofstream out(kept, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 32, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\kept.bin", 0x80000000u /* READ */));
+    CHECK(ReadWholeFile(kept).size() == static_cast<size_t>(7));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+// ---- status codes for missing paths / unknown handles (R1, R4) ------------
+
+RTSC_TEST(rdpdr_client_open_missing_file_reports_name_not_found) {
+    const std::filesystem::path dir = MakeTempDir("r1_missing");
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 41, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\nope.txt"));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        if (U32At(*rsp, 20) != 0xC0000034u) {
+            std::printf("  OPEN missing file returned 0x%08X\n",
+                        U32At(*rsp, 20));
+        }
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000034));
+    }
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_write_open_denied_stays_access_denied) {
+    const std::filesystem::path dir = MakeTempDir("r1_denied");
+    const std::filesystem::path file = dir / "locked.bin";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write("OLDDATA", 7);
+    }
+    std::error_code ec;
+    std::filesystem::permissions(file, std::filesystem::perms::owner_read,
+                                 std::filesystem::perm_options::replace, ec);
+
+    HostFileSystem fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 42, 0x00000001, "\\tsclient\\C\\locked.bin",
+                        0x40000000u /* GENERIC_WRITE */));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000022));
+    }
+
+    std::filesystem::permissions(file, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, ec);
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_client_unknown_handle_is_invalid_handle) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, 9999, 51, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+        CHECK_EQ(U32At(*rsp, 16), static_cast<uint32_t>(51));
+    }
+
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(kDeviceId, 8888, 52, 0, {1, 2, 3}));
+    CHECK_EQ(fs.write_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* wrsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(wrsp != nullptr);
+    if (wrsp != nullptr) {
+        CHECK_EQ(U32At(*wrsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+// ---- reparse point escape (R3) --------------------------------------------
+
+RTSC_TEST(rdpdr_path_rejects_symlink_escape) {
+    const std::filesystem::path dir = MakeTempDir("r3_root");
+    const std::filesystem::path outside = MakeTempDir("r3_outside");
+    {
+        std::ofstream out(outside / "secret.txt", std::ios::binary);
+        out.write("SECRET", 6);
+    }
+
+    std::error_code ec;
+    const std::filesystem::path link = dir / "link";
+    std::filesystem::create_directory_symlink(outside, link, ec);
+    if (ec) {
+        std::printf("  SKIP: cannot create symlink (%d: %s)\n", ec.value(),
+                    ec.message().c_str());
+        CHECK(true);
+    } else {
+        std::string out;
+        const bool ok = rtsc::channel::ResolvePathUnderRoot(
+            dir.string(), "link\\secret.txt", out);
+        if (ok) std::printf("  symlink escape accepted -> %s\n", out.c_str());
+        CHECK(!ok);
+    }
+
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::remove_all(outside, ec);
+}
+
+RTSC_TEST(rdpdr_client_symlink_escape_create_is_denied) {
+    const std::filesystem::path dir = MakeTempDir("r3_ch");
+    const std::filesystem::path outside = MakeTempDir("r3_ch_out");
+    std::error_code ec;
+    const std::filesystem::path link = dir / "link";
+    std::filesystem::create_directory_symlink(outside, link, ec);
+    if (ec) {
+        std::printf("  SKIP: cannot create symlink (%d: %s)\n", ec.value(),
+                    ec.message().c_str());
+        CHECK(true);
+    } else {
+        HostFileSystem fs;
+        std::vector<std::vector<uint8_t>> sent;
+        RdpdrClient client(&fs, {{kDeviceId, "C:", dir.string()}}, "HOST",
+                          [&](const std::vector<uint8_t>& m) {
+                              sent.push_back(m);
+                          });
+        MakeReady(client);
+
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 CreateBody(kDeviceId, 61, 0x00000005,
+                            "\\tsclient\\C\\link\\escaped.txt"));
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK(U32At(*rsp, 20) !=
+                  static_cast<uint32_t>(proto::kStatusSuccess));
+        }
+        if (std::filesystem::exists(outside / "escaped.txt")) {
+            std::printf("  file was created outside the shared root\n");
+        }
+        CHECK(!std::filesystem::exists(outside / "escaped.txt"));
+        CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    }
+
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::remove_all(outside, ec);
+}
+
 // ---- HostFileSystem bridge -------------------------------------------------
 
 RTSC_TEST(rdpdr_filesystem_open_read_write_close) {
@@ -698,7 +1611,7 @@ RTSC_TEST(rdpdr_filesystem_open_read_write_close) {
 
     HostFileSystem fs;
     uint32_t id = 0;
-    CHECK(fs.Open(file.string(), false, false, id));
+    CHECK(fs.Open(file.string(), false, false, false, id));
     CHECK(id != 0);
 
     std::vector<uint8_t> data;
@@ -720,7 +1633,7 @@ RTSC_TEST(rdpdr_filesystem_write_and_append) {
 
     HostFileSystem fs;
     uint32_t id = 0;
-    CHECK(fs.Open(file.string(), true, true, id));
+    CHECK(fs.Open(file.string(), true, true, true, id));
 
     const std::vector<uint8_t> a = {1, 2, 3, 4};
     uint32_t written = 0;
@@ -752,7 +1665,7 @@ RTSC_TEST(rdpdr_filesystem_query_directory_names) {
 
     HostFileSystem fs;
     uint32_t id = 0;
-    CHECK(fs.Open(dir.string(), false, false, id));
+    CHECK(fs.Open(dir.string(), false, false, false, id));
 
     std::vector<uint8_t> out;
     CHECK(fs.QueryDirectory(id, true, 0x0C, out));
@@ -774,7 +1687,7 @@ RTSC_TEST(rdpdr_filesystem_query_directory_full_info) {
 
     HostFileSystem fs;
     uint32_t id = 0;
-    CHECK(fs.Open(dir.string(), false, false, id));
+    CHECK(fs.Open(dir.string(), false, false, false, id));
 
     std::vector<uint8_t> out;
     CHECK(fs.QueryDirectory(id, true, 0x01, out));

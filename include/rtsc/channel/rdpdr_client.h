@@ -24,6 +24,16 @@
 
 namespace rtsc::channel {
 
+// Resolves the part of a server-supplied path that follows the redirected
+// drive root (`remote_relative`) into a local path that stays inside `root`.
+// Leading separators are ignored; '.' components are dropped. Rejects parent
+// traversal (".."), absolute paths, drive letters, UNC/device prefixes,
+// reserved device names (CON, NUL, ...) and components Windows would rewrite
+// (trailing dot or space). Returns false when the path is rejected.
+bool ResolvePathUnderRoot(const std::string& root,
+                          const std::string& remote_relative,
+                          std::string& out);
+
 class RdpdrClient {
  public:
     // Receives a complete channel message (CHANNEL_PDU_HEADER + rdpdr PDU).
@@ -124,6 +134,8 @@ class RdpdrClient {
     bool user_logged_on_ = false;
     std::map<uint32_t, uint32_t> device_replies_;
     std::map<uint32_t, uint32_t> open_files_;
+    // Per-handle write permission derived from DR_CREATE_REQ.DesiredAccess.
+    std::map<uint32_t, bool> file_writable_;
 
     std::string last_remote_path_;
     std::string last_local_path_;

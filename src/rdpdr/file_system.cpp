@@ -132,7 +132,7 @@ HostFileSystem::File* HostFileSystem::Find(uint32_t file_id) {
 }
 
 bool HostFileSystem::Open(const std::string& local_path, bool for_write,
-                          bool create, uint32_t& file_id) {
+                          bool create, bool truncate, uint32_t& file_id) {
     std::error_code ec;
     const fs::path path(local_path);
     const bool is_directory = fs::is_directory(path, ec);
@@ -145,11 +145,28 @@ bool HostFileSystem::Open(const std::string& local_path, bool for_write,
         return true;
     }
 
+    const bool exists = fs::exists(path, ec);
+    if (!exists) {
+        if (!create) return false;
+        // A stream opened for reading cannot create the file, so create it
+        // first and then open the handle with the requested access mode.
+        std::ofstream creator(path, std::ios::binary);
+        if (!creator.is_open()) return false;
+        creator.close();
+    } else if (truncate && !for_write) {
+        // Truncation is decided by the create disposition ([MS-SMB2] 2.2.13),
+        // not by the access mask, so a read-only handle still sees the file
+        // emptied after FILE_SUPERSEDE / FILE_OVERWRITE(_IF).
+        std::ofstream truncater(path, std::ios::binary | std::ios::trunc);
+        if (!truncater.is_open()) return false;
+        truncater.close();
+    }
+
     auto file = std::make_unique<File>();
     std::ios::openmode mode = std::ios::binary;
     if (for_write) {
         mode |= std::ios::in | std::ios::out;
-        if (create) mode |= std::ios::trunc;
+        if (truncate) mode |= std::ios::trunc;
     } else {
         mode |= std::ios::in;
     }
@@ -166,9 +183,21 @@ bool HostFileSystem::Read(uint32_t file_id, uint64_t offset, uint32_t length,
     if (file == nullptr || file->is_directory || !file->stream.is_open()) {
         return false;
     }
+    if (length > kMaxReadLength) {
+        out.clear();
+        return false;
+    }
     file->stream.clear();
     file->stream.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    out.resize(length);
+    try {
+        out.resize(length);
+    } catch (const std::bad_alloc&) {
+        out.clear();
+        return false;
+    } catch (const std::length_error&) {
+        out.clear();
+        return false;
+    }
     file->stream.read(reinterpret_cast<char*>(out.data()),
                       static_cast<std::streamsize>(length));
     const std::streamsize got = file->stream.gcount();

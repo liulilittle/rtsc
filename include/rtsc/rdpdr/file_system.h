@@ -18,14 +18,25 @@
 
 namespace rtsc::rdpdr {
 
+// Upper bound for one DR_READ_REQ ([MS-RDPEFS] 2.2.1.4.3). The length field
+// is 32 bit and fully server controlled, so it must be bounded before it is
+// turned into a buffer. The Windows redirector serves reads through the cache
+// manager, which issues 4 KiB..64 KiB reads (64 KiB is also the SMB2 read
+// granularity); 1 MiB keeps a 16x margin over that while capping the
+// per-request allocation instead of trusting a possible 4 GiB.
+inline constexpr uint32_t kMaxReadLength = 1u << 20;
+
 class IFileSystem {
  public:
   virtual ~IFileSystem() = default;
 
-  // Opens (or creates) the file at `local_path`. Returns a non-zero file id on
+  // Opens (or creates) the file at `local_path`. `for_write` selects the
+  // access mode, `create` creates the file when it does not exist and
+  // `truncate` discards any existing content ([MS-SMB2] FILE_SUPERSEDE /
+  // FILE_OVERWRITE / FILE_OVERWRITE_IF). Returns a non-zero file id on
   // success, or false when the path cannot be opened.
   virtual bool Open(const std::string& local_path, bool for_write, bool create,
-                    uint32_t& file_id) = 0;
+                    bool truncate, uint32_t& file_id) = 0;
 
   // Reads at most `length` bytes at `offset`. Returns false on failure.
   virtual bool Read(uint32_t file_id, uint64_t offset, uint32_t length,
@@ -61,7 +72,7 @@ class HostFileSystem final : public IFileSystem {
   HostFileSystem& operator=(const HostFileSystem&) = delete;
 
   bool Open(const std::string& local_path, bool for_write, bool create,
-            uint32_t& file_id) override;
+            bool truncate, uint32_t& file_id) override;
   bool Read(uint32_t file_id, uint64_t offset, uint32_t length,
             std::vector<uint8_t>& out) override;
   bool Write(uint32_t file_id, uint64_t offset,
