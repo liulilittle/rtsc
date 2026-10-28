@@ -33,6 +33,7 @@
 #include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/channel/rdpsnd_client.h"
 #include "rtsc/clipboard/clipboard.h"
+#include "rtsc/clipboard/drop_files.h"
 #include "rtsc/client/client.h"
 #include "rtsc/client/session_info.h"
 #include "rtsc/client/version.h"
@@ -475,8 +476,29 @@ int main(int argc, char** argv) {
     // window and creates one per monitor, so binding earlier (to windows[0])
     // would leave the live windows without a callback. One call covers both the
     // single-window and the multi-window layout.
-    rtsc::ui::BindClipboardToWindows(
-        windows, [&] { cliprdr.OnLocalClipboardChanged(); });
+    // Direction B: serve a local file selection to the peer. When the local
+    // clipboard carries CF_HDROP, parse the selection into a DropFileList and
+    // install it as the file-clip provider; when CF_HDROP leaves the clipboard
+    // (or cannot be read) drop the provider so the serve path fails closed
+    // again. The provider outlives the binding: it is captured by reference
+    // and lives until the session ends, while the channel only borrows the raw
+    // pointer (no ownership).
+    std::vector<uint8_t> hdrop_bytes;
+    std::unique_ptr<rtsc::clipboard::DropFileList> hdrop_provider;
+    rtsc::ui::BindClipboardToWindows(windows, [&] {
+        if (local_clipboard->read(rtsc::clipboard::kCfHdrop, hdrop_bytes)) {
+            hdrop_provider =
+                rtsc::clipboard::CreateDropFileListFromBytes(hdrop_bytes);
+            cliprdr.SetFileListProvider(hdrop_provider.get());
+        } else {
+            // Single-threaded UI callback invariant: clear the channel's
+            // borrowed pointer before dropping the owned provider, so no other
+            // thread can touch the provider after it is released.
+            cliprdr.SetFileListProvider(nullptr);
+            hdrop_provider.reset();
+        }
+        cliprdr.OnLocalClipboardChanged();
+    });
     if (input_probe) {
         rtsc::ui::InputEvent probe_key;
         probe_key.kind = rtsc::ui::InputEvent::Kind::kKey;

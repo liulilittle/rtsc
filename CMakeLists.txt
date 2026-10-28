@@ -66,7 +66,8 @@ target_link_libraries(rtsc_rdpsnd PUBLIC rtsc_proto)
 # the Win32 backend is the platform implementation (user32).
 add_library(rtsc_cliprdr STATIC
     src/channel/cliprdr_client.cpp
-    src/clipboard/clipboard.cpp)
+    src/clipboard/clipboard.cpp
+    src/clipboard/drop_files.cpp)
 target_include_directories(rtsc_cliprdr PUBLIC include)
 target_link_libraries(rtsc_cliprdr PUBLIC rtsc_proto)
 if(WIN32)
@@ -206,6 +207,11 @@ target_include_directories(rtsc_surface_tests PRIVATE tests)
 add_executable(rtsc_cliprdr_tests tests/test_cliprdr.cpp)
 target_link_libraries(rtsc_cliprdr_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_cliprdr_tests PRIVATE tests)
+
+# Direction-B file-list provider (DropFileList / CreateDropFileListFromBytes).
+add_executable(rtsc_clipboard_tests tests/test_drop_files.cpp)
+target_link_libraries(rtsc_clipboard_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_clipboard_tests PRIVATE tests)
 
 add_executable(rtsc_drdynvc_tests tests/test_drdynvc.cpp)
 target_link_libraries(rtsc_drdynvc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -601,6 +607,7 @@ add_test(NAME bitmap COMMAND rtsc_bitmap_tests)
 add_test(NAME channel COMMAND rtsc_channel_tests)
 add_test(NAME surface COMMAND rtsc_surface_tests)
 add_test(NAME cliprdr COMMAND rtsc_cliprdr_tests)
+add_test(NAME clipboard COMMAND rtsc_clipboard_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
@@ -657,6 +664,7 @@ if(MSVC)
     target_compile_options(rtsc_channel_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_surface_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_cliprdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_clipboard_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drdynvc_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpusb_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_urbrdc PRIVATE /W4 /WX)

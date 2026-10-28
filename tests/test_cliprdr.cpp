@@ -2,6 +2,7 @@
 
 #include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/clipboard/clipboard.h"
+#include "rtsc/clipboard/drop_files.h"
 #include "rtsc/clipboard/file_list.h"
 #include "rtsc/proto/cliprdr.h"
 
@@ -1273,6 +1274,31 @@ RTSC_TEST(cliprdr_serve_size_empty_file_is_valid) {
     CHECK_EQ(resp.header.msg_flags, static_cast<uint16_t>(kClipResponseOk));
     const std::vector<uint8_t> size_bytes(resp.data.begin() + 4, resp.data.end());
     CHECK_EQ(ReadU64Le(size_bytes), static_cast<uint64_t>(0));
+}
+
+// D-B1 (channel end-to-end): a drop-file selection whose file no longer exists
+// makes the provider's file_info fail, so SIZE must answer FAIL — never OK
+// with a forged 8-byte zero size ([MS-RDPECLIP] 3.1.5.4.6 MUST FAIL).
+RTSC_TEST(cliprdr_serve_size_missing_drop_file_responds_fail) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    auto client = MakeClient(&clip, sent);
+    client->EnableFileClip();
+    rtsc::clipboard::DropFileList provider(
+        {u"C:\\rtsc_definitely_missing_9f31\\gone.bin"});
+    client->SetFileListProvider(&provider);
+    FeedServerCaps(*client, rtsc::channel::kClipCapsUseLongFormatNames |
+                               rtsc::channel::kClipCapsStreamFileClip);
+
+    FeedPdu(*client, CliprdrMsgType::kFileContentsRequest, 0,
+            FcrBody(61, 0, kFileContentsSize, 0, 8));
+
+    CHECK_EQ(client->file_contents_response_sent(), static_cast<unsigned>(1));
+    CHECK_EQ(client->file_contents_request_rejected(), static_cast<unsigned>(1));
+    const CliprdrPdu resp = DecodeChunk(sent.back());
+    CHECK(resp.header.msg_type == CliprdrMsgType::kFileContentsResponse);
+    CHECK_EQ(resp.header.msg_flags, static_cast<uint16_t>(kClipResponseFail));
+    CHECK_EQ(resp.data.size(), static_cast<size_t>(4));  // stream id only.
 }
 
 // S2: a RANGE probe answers OK with the requested bytes.
