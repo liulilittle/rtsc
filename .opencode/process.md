@@ -10128,3 +10128,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[组B 甲补 P 探针红证]** ①uint16 回绕：1400x65535 单连接 3 秒吐 1,074,819,496 B 且 SendFrame 永不返回（生产同证 1,070,182,436 B）；②零宽：SERVER_EXIT=-1073741676(0xC0000094 整数除零)，/O2+NDEBUG 下仍触发（除数来自运行时成员不可常量折叠）；③无上限分配：20000x20000 峰值 3061MB，job object 限 512MB 后 abort（frames=CxxThrowException→terminate→abort），**整进程死、所有会话陪葬**。甲同时自我修正 3 处（致命使用在凭据校验之后，但 accept_any_credentials 默认 true 且 main.cpp 从不 SetAuthenticator → 默认等价任意凭据）。
 - **[定案]** plan.md 新增 N8-EXEC-1 分组：EXEC-A 剪贴板 S6、EXEC-B rdpdr 安全三项、EXEC-C 服务器 H 类崩溃/DoS、EXEC-D drdynvc 串包+AltGr+planar 向量测试。
 - **[主代理]** 熔断验证会话 ses_e8196e3e7ffeQ6oFMqr0FGItFM（连续 5 次零输出），P2 扫描码实网改主代理直做；组B 甲续做 S3 路线/S4 资产盘点（要求先取证再报缺陷）。
+
+## 第585轮：子代理模型统一切换 unorouter-ai/deepseek-v4.1-flash（用户指令，未改配置）
+
+- **[model-id 核实]** [BASH:python 读 C:\Users\liulilte\.config\opencode\opencode.json] provider unorouter-ai（baseURL https://api.unorouter.com/v1）下存在两个可用 key：unorouter-ai/deepseek-v4.1-flash（name "DeepSeek V4.1 Flash"，ctx 1,000,000）与 unorouter-ai/deepseek-v4.1-flash-1017（name "DeepSeek V4.1 Flash 1017"）。用户指定 "deepseek-v4.1-flash" → 采用 **unorouter-ai/deepseek-v4.1-flash**。配置文件**未改动**。
+- **[切换方式]** model 仅在 prompt/task 生效 → 对在跑会话逐个随下一次派发切换：①EXEC-C（H-3 零宽除零）已切；②EXEC-A（cliprdr RED）已切；③EXEC-B（S3-7 路径穿越）已切；④4 个审计会话（组A甲/乙、组B甲/乙）idle，将在其下一次派发（复验/收尾）时同步切换。
+- **[并发纪律]** 同 provider 并发 ≤3：当前仅 EXEC-A/B/C 三个在跑，审计组暂不唤醒。
+- **[上一轮教训已入档]** 测试纪律违规（1e36719 先改实现后重钉期望）与整夜停滞根因（provider 连续故障 + 5 并发超配额 + 反复唤醒死会话）见 discover.md 同日两条。
