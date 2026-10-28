@@ -10247,3 +10247,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[处置]** kill 进程 + abort GW 子代理（ses_e8012743affetItV2lbELqTjXP）+ 冻结网关测试直至上限落地；已派修复（GW 重启版，见下）。
 - **[纪律]** 所有后续执行代理：跑任何网络/解析测试前必须用 job object 或自检把内存上限定在 512MB；测试跑动期间父代理用 Get-Process 采样，WS>2GB 立即 kill。
 - **[并行]** 组B甲 仍在做服务器四项复验（F1 已核对 diff、F2-F7 待跑）；DVC 修复中；PLANAR D1-D4 完成待 C0。
+
+## 第599轮：两批修复亲核通过 + 网关内存加固启动 + 规范原文裁决双审冲突
+
+- **[亲核 rdpdr 当前码]** rdpdr_client.cpp:172 parts.empty() 分支在（盘根接受，注释含 \\tsclient\C IRP 场景）；RequestsWrite = (desired_access & kDataWriteMask) != 0，掩码 kGenericWrite|kGenericAll|kMaximumAllowed|kFileWriteData|kFileAppendData（含 MAXIMUM_ALLOWED、剔除 DELETE/EA/WRITE_ATTRIBUTES）；用例 :1210 盘根 / :1220 MAXIMUM_ALLOWED(:1229 用 0x02000000) / :1273 纯 DELETE。
+- **[亲核 drdynvc v2]** DynvcReassembler::Feed 的 kData 未命中 state → 直投整条（注释引 [MS-RDPEDYC] 2.2.3.2 / 3.1.5.2.2）；kDataFirst 有 kMaxMessageLength / kMaxPendingChannels / kMaxBufferedBytes 三重上限；发送侧 drdynvc_client.cpp:147 改用 BuildDynvcDataPdus（:144 注释 ≤1590 单 DATA）。
+- **[规范裁决（父代理取原文）]** [MS-RDPEDYC] 3.1.5.2.2：「If a DYNVC_DATA PDU is **not preceded by a DYNVC_DATA_FIRST** PDU, the receiver **passes the message in the Data field directly to the receiver without further processing**」；2.2.3.2：「A **single** DYNVC_DATA PDU is used to send a message when the total length is **less than or equal to 1,590 bytes**」；3.1.5.2 发送侧同义。→ 审计乙 B1/B2/B3 驳回成立；审计甲「无 DATA_FIRST 丢弃 ✓」判据错误，其 drdynvc 盖章结论作废（已 relay 要求其勘误并复验当前码）。
+- **[裁决 BuildDynvcPdu(kDataFirst)]** 保留其自动 Length（语义=「单帧完整消息」），头文件注释必须写明仅适用完整消息、分片必须用 BuildDynvcDataFirstPdu 显式 total；生产路径已走 BuildDynvcDataPdus，故 B2 在生产路径闭合。
+- **[网关内存事故后续]** 已派 GW-MEM（ses_e7fd2c9ebffedlmvx6O0uZHZLM）：第 0 步强制安全跑测试（单用例 + 并行内存采样 + >2GB 即 kill），红证用有限恶意输入（Content-Length 0xFFFFFFFF / 头 >64KiB / 256 片后停供），绿证加头 64KiB + CL 64KiB + 单会话 8MiB + 循环次数 + 30s 总时长上限，要求峰值 <100MB。
+- **[复验派发]** 组A乙 复验 rdpdr 当前码 + drdynvc v2 两段（要求重链当前库、禁碰 gateway 套件）。
