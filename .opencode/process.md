@@ -10179,3 +10179,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[EXEC-C 计划（已报）]** ①H-1 红证（20000x20000 → 钳制 ≤8192/≤32MiB、进程存活、bad_alloc 自定义 DesktopSource 下会话失败但进程存活且第二客户端可服务）→ ClampDesktopSize + 64 位溢出检查 + 线程 try/catch；②H-2 红证（1400x65535 有界）→ y 改 uint32 + 上限联动；③H-4 红证（断开后 session_count 回 0、total 累计）→ shared_ptr 会话自注销 + 凭据擦除 + 同步更新 multisession 3 处断言；④凭据策略（main.cpp 默认 accept_any_credentials=false + SetAuthenticator，新增 --allow-any-credentials 并明示）。
 - **[EXEC-A 收口]** S6 修复已交付且会话闲置 → abort 清理（task_id 保留，必要时可恢复）。
 - **[在跑]** EXEC-B（S3-9/DesiredAccess）、EXEC-C（H-1/H-2/H-4）、GW、DVC、PLANAR、组A甲、组A乙、组B乙（复验 H-3）。
+
+## 第591轮：EXEC-B S3-9 完成（亲核）+ EXEC-C H-1/H-2/H-4 红证完成（亲核工件）
+
+- **[EXEC-B · S3-9 覆盖截断·已亲核]** rdpdr_client.cpp:320-325 新增 truncate 映射（SUPERSEDE 0x00 / OVERWRITE 0x04 / OVERWRITE_IF 0x05 / CREATE 0x02 → truncate=true；create 覆盖 SUPERSEDE/OPEN_IF/OVERWRITE_IF/CREATE）；file_system.h:38-39 Open 增 truncate 参数；file_system.h:27 kMaxReadLength=1MiB。红证："overwrite left 7 bytes: NEWDATA"（与审计探针逐字一致）+ 三种处置 0x00/0x04/0x05 各留 7 字节；绿证 33 tests/235 checks 0 fail，且 OPEN_IF 追加写得 "OLDDATANEW" 证明未过度截断（正向反证）。
+- **[父代理提醒·S3-5 族]** CREATE(0x02) 设 truncate=true → 文件已存在时截断，违反 [MS-SMB2]（应 OBJECT_NAME_COLLISION 0xC0000035）；缺文件应 OBJECT_NAME_NOT_FOUND(0xC0000034) 而非 ACCESS_DENIED。已 relay 要求：顺手改或明确列为遗留项，禁止默默保留。
+- **[EXEC-C · H-1/H-2/H-4 红证·已亲核工件]** tests/test_server.cpp:1070 server_clamps_oversized_client_geometry（FAIL :1095/:1096/:1098/:1104/:1105/:1107 六条）、:1113 server_tall_client_geometry_frame_stays_bounded（FAIL :1136/:1156/:1157，2 秒窗口读取超 64MiB 上限）、:1164 server_releases_session_when_the_client_disconnects（FAIL :1194 released / :1183 session_count got 2 want 1）、:1201 server_session_exception_only_fails_that_session（[crash] abort：bad_alloc 逃出线程 → terminate，与审计 job-object 复现一致）；其余 13 个既有用例 [OK]。
+- **[EXEC-C 常量·已亲核]** include/rtsc/server/server.h:118-120 kMaxDesktopWidth=8192 / kMaxDesktopHeight=8192 / kMaxFramebufferBytes=32MiB（注释含依据：TS_CLIENT_CORE_DATA uint16 上限 65535、65535²×4=17,179,344,900B；8192 覆盖 8K UHD；32MiB 覆盖 4K UHD 31.6MiB）；:222 session_count=活跃、:226 total_session_count=累计。
+- **[状态]** EXEC-C 进入实现（ClampDesktopSize + 溢出检查 + 线程 try/catch + y uint32 + shared_ptr 会话自注销 + 凭据擦除 + main.cpp 凭据策略）；EXEC-B 进入 S3-7' DesiredAccess；GW/DVC/PLANAR 与三个复验会话在跑。
