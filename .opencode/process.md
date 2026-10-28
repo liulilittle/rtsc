@@ -10285,3 +10285,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[推定契约（待双审确认）]** scale==1.0 → 精确逐像素；scale!=1.0（含整数倍）→ 面积平均/HALFTONE 式平滑重采样。当前实现（1:1 精确 + 整数倍最近邻块扩展 + 非整数倍双线性）与 mstsc **三处不一致**。
 - **[已入库]** 三个双审盖章批次：`5e7c76b`（服务器 H-1/H-2/H-3/H-4 + 凭据）、`5abfbb8`（rdpdr 路径包含/读上限/截断/句柄 + reparse）、`6c7362f`（drdynvc 重组/1590 分界/三重上限）、`8d2b946`（planar 真机向量方向 + 键盘映射可测化 + 假绿跳过显式化）。
 - **[在途]** 缩放对齐双审（甲 ses_e7fb2490effeJgCGsavfDsvKQW / 乙 ses_e7fb24879ffetg6Blk7N5nlBc2），任务为「现状 vs 二进制契约」差距清单 + 最小修正 + 先红后绿验收（**尚未实现**，父代理已更正先前笔误）。
+
+## 第603轮：服务器四项复验（甲）—— H-1/H-2/H-3/凭据可盖章，H-4 驳回（线程句柄泄漏）
+
+- **[F1 重建]** 17 tests/134 checks/0 fail；multisession 3/49/0；新增 7 用例全 OK。
+- **[H-1 可盖章·独立实测]** 客户端声明 → 通告值 / host 峰值：65535x65535 → 2896x2896 / 40.0MB；20000x20000 → 2896x2896 / 40.0MB；8193x1024 → 8192x1024 / 40.1MB；**8192x1024（恰 33,554,432B=32MiB）→ 接受**；8192x8193 → 2896x2896；800x600 → 800x600 / 9.8MB。配置侧超限 Start() 拒绝并给明确文案；`--width 0` → "must be at least 1"。F2b 取整无二次越界（4097x4096→2896x2895、65535x1→8192x1、1x65535→1x8192）。
+- **[H-2 可盖章·附建议]** 1400x65535 → 通告 1197x7006，connect 1ms，2s 读 101,020,330B（≈48MiB/s）；对照 1400x1000 → 16,883,206B/2s。旧行为（3s 1.07GB 且不返回）已消除。**建议**：无帧率上限、无按需刷新（1197x7006 每帧≈780 PDU，1Hz 全量重传；3 个 4K 客户端可打满千兆）→ 需补最大帧率 / 尊重 Suppress-Output / Refresh-Rect 驱动。
+- **[H-3 可盖章·红→绿]** job object 限 16MB 后拉生产二进制：`[rtsc-server] session failed: bad allocation`，host 存活，第二客户端 800x600 → active。旧行为 abort 整进程死。
+- **[H-4 驳回·新发现]** 会话对象已即时释放（3 轮 `session_count()==0`、`total`=1,2,3 单调、ScrubCredentials :1554、erase :1560），但**每连接净泄漏 1 个线程句柄**：8 轮 HandleCount 107→111,113,114,115..119（第 3 轮起严格 +1），Threads 恒 5，Stop 后不回落。根因 `server.cpp:1543` `threads.emplace_back` 永不清理（仅 `:1611-1616` Stop 时 join）→ `threads` 向量无界增长。已派修（线程自摘除或 jthread+live 计数，Stop 仍须等待退出）。
+- **[凭据可盖章·附嵌入方风险]** 默认 enforced（日志 `credentials: enforced (account rtsc@NTDEV ...)`）；不匹配 → `handshake failed ... peer closed`，live 1→0；`--allow-any-credentials` → 显式 WARNING 且任意账号可连。**库默认 `server.h:66 accept_any_credentials = true` 仍不安全**（嵌入方静默 accept-all）→ 建议改 false 或加显式策略开关。
+- **[F7 红证归属确认]** dump `...082223-42316.txt`：`exception_code=0xC0000005`、`param[0]=0x1`（写违例）→ **H-1a TestPattern 空 vector 越界写**（width==0 且 height>0）；`0xC0000094` 是 **H-1b**（width==0 且 height==0 走到 `65535/chunk_row` 除零）。二者根因/位置不同，禁止合并叙述；现均已封堵（:1214 守卫、:1640 TestPattern 守卫、:1226 y 改 uint32）。
