@@ -129,8 +129,9 @@ void usage() {
         "  multi-monitor layout; 0 (default) = one span window for the union.\n"
         "  --frames N / --seconds N: bound the run (automation only). The default\n"
         "  is unlimited, so a real session renders until the window is closed.\n"
-        "  In-session: wheel zooms, Ctrl+wheel zooms finely, Ctrl+1..4 select\n"
-        "  100/125/150/200%%, Ctrl+0 fits; the View menu offers the same.\n",
+        "  In-session: a plain wheel scrolls the remote desktop; Ctrl+wheel\n"
+        "  zooms (fine steps), Ctrl+1..4 select 100/125/150/200%%, Ctrl+0 fits;\n"
+        "  the View menu offers the same.\n",
         kVersion);
 }
 
