@@ -10525,3 +10525,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[帮助文本修正 30b559c]** `main.cpp:132` 原写"wheel zooms, Ctrl+wheel zooms finely"，与 A2 新路由（普通滚轮转发、Ctrl+滚轮缩放）不符 → 已改。
 - **[A5 取证]** mstsc 字符串：`DisableRDPSNDSVC`@0x1807a4a68 / `TS_PROP_WIN32CORE_DISABLE_RDPSND_SVC`@0x1807a4ae0 / `CRdpSndPlugin`@0x1807e7020 / `rdpsnd static channel connected`@0x1807e6ef0；cliprdr 侧 `CClientClipRdrPduDispatcher`@0x1807f8600 / `RdpClipRdrWindowClass`@0x1807f82d0；RAIL 509 条（`RAIL_WINDOW`@0x1806b1578、`Couldn't determine if connection is RAIL`@0x1806b6270）。
 - **[阻塞未解]** 子代理 API key 计费组仍无 `deepseek-v4.1-flash` provider → 所有后续批次只能由父代理串行推进（无法并行双审）。当前 51/51 全绿、工作树干净。
+
+## 第629轮：横向滚轮 / X 键 / 拖拽捕获（审计 P1-8 闭环），提交 2368b88
+
+- **[缺口]** `window_win32.cpp` 完全丢弃 `WM_MOUSEHWHEEL`/`WM_XBUTTON*`，且无 `SetCapture` → 横向滚动与侧键无效、拖出窗口丢 button-up（远端卡拖拽）；`WM_MOUSEWHEEL` 也不填坐标（审计实测 `x=0 y=0`）。
+- **[实现]** ①`InputEvent` 增 `horizontal`（复用 `kMouseWheel`）；②`WM_MOUSEHWHEEL` → `horizontal=true`，编码走 `kPtrHwheel(0x0400)` 而非 `kPtrWheel`（否则远端滚错轴）；③`WM_XBUTTON*` → button 4/5，编码为 `MOUSEX`（eventCode 2）+ `BUTTON1/BUTTON2`；④首个按下的按钮 `SetCapture`、最后一个释放时 `ReleaseCapture`；⑤滚轮事件补 `ScreenToClient` 得到的客户区坐标。
+- **[测试]** 新增 2 条客户端字节级断言：HWHEEL = `0x0401`（`pdu[3]=0x01,pdu[4]=0x04`，且**不得**含 `0x0200`）、X1 = MOUSEX `0x9000`、X2 = MOUSEX `0xA000`。client 套件 **13 tests/52 checks/0**；全量 **51/51**。
+- **[A3 取证进展]** codec 命中串簇 `0x180699cb8..0x180699d40` 经 `inspect_native_instruction` 判定为 **data（统计表）**，非解码分派代码 → 不能用来定位解码器选择；`PLANAR (%d)`@0x1806c8c90 的引用点也在同一数据区。下一步需换路径（按 `bitmapCodecId` 常量或 caps 协商处切入）。
+- **[阻塞未解]** 子代理 API key 仍无 `deepseek-v4.1-flash` provider → 本批为父代理单人执行，未走双审（补审需额度恢复后补）。
