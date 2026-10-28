@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -153,6 +154,7 @@ GccUserData ClientBlocks(uint16_t w, uint16_t h, uint32_t methods) {
 
 struct HandshakeResult {
     bool reached_active = false;
+    bool got_demand_active = false;
     uint16_t io_channel = 0;
     uint16_t user_channel = 0;
     uint32_t share_id = 0;
@@ -176,7 +178,8 @@ struct HandshakeResult {
 
 HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
                               uint16_t client_width = 64,
-                              uint16_t client_height = 48) {
+                              uint16_t client_height = 48,
+                              bool expect_frame = true) {
     HandshakeResult r;
     std::string error;
     auto transport = rtsc::net::ConnectTcp("127.0.0.1", port, error);
@@ -342,6 +345,7 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
             r.desktop_height = b.desktop_height;
         }
     }
+    r.got_demand_active = true;
     if (da.capabilities.sets.empty()) {
         r.error = "demand active carried no capabilities";
         return r;
@@ -421,6 +425,12 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
     }
 
     // 10. The server pushes one test-pattern bitmap frame.
+    if (!expect_frame) {
+        r.reached_active = true;
+        r.transport = std::move(transport);
+        r.reader = std::move(reader);
+        return r;
+    }
     if (!reader->Read(frame)) {
         r.error = "bitmap frame read";
         return r;
@@ -928,6 +938,306 @@ RTSC_TEST(server_refresh_send_failure_closes_session) {
         }
     }
     CHECK(saw_eof);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_refuses_zero_desktop_geometry) {
+    // H-3: a zero width or height used to reach the frame path, where the
+    // band computation divides by the row stride (65535 / chunk_row). The
+    // integer division by zero killed the whole process with 0xC0000094, so
+    // one client took every other session with it. A zero geometry must be
+    // refused at the entry point, with a reason.
+    {
+        ServerConfig cfg;
+        cfg.port = 3480;
+        cfg.desktop_width = 0;
+        cfg.desktop_height = 48;
+        RdpServer server(cfg);
+        std::string error;
+        CHECK(!server.Start(error));
+        CHECK(!error.empty());
+    }
+    {
+        ServerConfig cfg;
+        cfg.port = 3481;
+        cfg.desktop_width = 64;
+        cfg.desktop_height = 0;
+        RdpServer server(cfg);
+        std::string error;
+        CHECK(!server.Start(error));
+        CHECK(!error.empty());
+    }
+}
+
+RTSC_TEST(server_zero_client_geometry_serves_the_configured_desktop) {
+    // A client that announces a zero width/height in TS_CLIENT_CORE_DATA
+    // ([MS-RDPBCGR] 2.2.1.3.2: desktopWidth / desktopHeight) must not drive
+    // the server into a zero-sized framebuffer: the configured geometry is
+    // served instead and the frame path runs normally.
+    ServerConfig cfg;
+    cfg.port = 3482;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+                                      /*client_width=*/0, /*client_height=*/0);
+    if (!r.error.empty()) {
+        std::printf("  handshake error: %s\n", r.error.c_str());
+    }
+    CHECK(r.reached_active);
+    CHECK(r.error.empty());
+    CHECK_EQ(r.desktop_width, 64);
+    CHECK_EQ(r.desktop_height, 48);
+    CHECK(r.got_bitmap);
+    CHECK_EQ(r.bitmap_width, 64);
+    CHECK_EQ(r.bitmap_height, 48);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(test_pattern_source_refuses_zero_dimensions) {
+    // The synthetic desktop source used to allocate an empty framebuffer for
+    // a zero width and then write the border into it (a heap overflow that
+    // killed the process). A zero dimension is refused explicitly.
+    auto source = rtsc::server::MakeTestPatternSource();
+    std::vector<uint8_t> rgba;
+    CHECK(!source->Capture(0, 48, rgba));
+    CHECK(!source->Capture(48, 0, rgba));
+    CHECK(!source->Capture(0, 0, rgba));
+}
+
+namespace {
+
+// A desktop source whose behaviour the test controls. It records the geometry
+// it is asked for and can fail, throw, or throw after the first capture. The
+// recording happens before any allocation, so a test can observe the geometry
+// the server is willing to build without actually building a huge framebuffer.
+class ScriptedSource : public rtsc::server::DesktopSource {
+  public:
+    enum class Mode { kSucceed, kFail, kThrowAfterFirst };
+
+    void set_mode(Mode mode) { mode_.store(mode, std::memory_order_relaxed); }
+
+    bool Capture(uint16_t width, uint16_t height,
+                 std::vector<uint8_t>& rgba) override {
+        int call = 0;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            call = ++calls_;
+            last_width_ = width;
+            last_height_ = height;
+        }
+        const Mode mode = mode_.load(std::memory_order_relaxed);
+        if (mode == Mode::kFail) return false;
+        if (mode == Mode::kThrowAfterFirst && call > 1) throw std::bad_alloc();
+        return pattern_->Capture(width, height, rgba);
+    }
+
+    int calls() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return calls_;
+    }
+    uint16_t last_width() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return last_width_;
+    }
+    uint16_t last_height() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return last_height_;
+    }
+
+  private:
+    std::atomic<Mode> mode_{Mode::kSucceed};
+    mutable std::mutex mu_;
+    int calls_ = 0;
+    uint16_t last_width_ = 0;
+    uint16_t last_height_ = 0;
+    std::unique_ptr<rtsc::server::DesktopSource> pattern_ =
+        rtsc::server::MakeTestPatternSource();
+};
+
+}  // namespace
+
+RTSC_TEST(server_clamps_oversized_client_geometry) {
+    // H-1: the client announces its desktop size in TS_CLIENT_CORE_DATA
+    // ([MS-RDPBCGR] 2.2.1.3.2, two uint16 fields), so it may ask for up to
+    // 65535 x 65535 -- a 17,179,344,900 byte framebuffer. The server must clamp
+    // the request to its own limit (server.h kMaxDesktop*) instead of
+    // allocating it, and must announce the clamped size.
+    ServerConfig cfg;
+    cfg.port = 3483;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    ScriptedSource source;
+    source.set_mode(ScriptedSource::Mode::kFail);  // record, do not allocate
+    RdpServer server(cfg);
+    server.SetDesktopSource(&source);
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+                                            /*client_width=*/20000,
+                                            /*client_height=*/20000,
+                                            /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    CHECK(r.got_demand_active);
+    // What Demand Active announces must already be inside the limit.
+    CHECK(r.desktop_width <= rtsc::server::kMaxDesktopWidth);
+    CHECK(r.desktop_height <= rtsc::server::kMaxDesktopHeight);
+    CHECK(static_cast<size_t>(r.desktop_width) * r.desktop_height * 4 <=
+          rtsc::server::kMaxFramebufferBytes);
+    // The frame path must never be asked for the oversized geometry.
+    for (int i = 0; i < 200 && source.calls() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(source.calls() >= 1);
+    CHECK(source.last_width() <= rtsc::server::kMaxDesktopWidth);
+    CHECK(source.last_height() <= rtsc::server::kMaxDesktopHeight);
+    CHECK(static_cast<size_t>(source.last_width()) * source.last_height() * 4 <=
+          rtsc::server::kMaxFramebufferBytes);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_tall_client_geometry_frame_stays_bounded) {
+    // H-2: the band loop counted rows in a uint16_t, so a height near 65535
+    // wrapped the counter back to zero and the frame never ended (measured:
+    // 1.07 GB in 3 s on a single connection). A 100 px wide desktop makes the
+    // band height even (40 rows), which is exactly the wrap-around case.
+    ServerConfig cfg;
+    cfg.port = 3484;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port, /*send_input=*/false,
+                                      /*client_width=*/100,
+                                      /*client_height=*/65535);
+    if (!r.error.empty()) {
+        std::printf("  handshake error: %s\n", r.error.c_str());
+    }
+    CHECK(r.reached_active);
+    CHECK(r.desktop_height <= rtsc::server::kMaxDesktopHeight);
+
+    // Whatever the server pushes for the clamped desktop must stay bounded: a
+    // wrapped row counter never finishes the frame, so the bytes explode.
+    constexpr size_t kByteCap = 64u * 1024u * 1024u;
+    size_t bytes = 0;
+    bool exceeded = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    uint8_t buf[16384];
+    while (std::chrono::steady_clock::now() < deadline) {
+        const int n = r.transport->Read(buf, sizeof(buf));
+        if (n == rtsc::net::kReadTimeout) continue;
+        if (n <= 0) break;
+        bytes += static_cast<size_t>(n);
+        if (bytes > kByteCap) {
+            exceeded = true;
+            break;
+        }
+    }
+    CHECK(!exceeded);
+    CHECK(bytes < kByteCap);
+    CHECK(bytes > 0);  // the frame really was sent
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_releases_session_when_the_client_disconnects) {
+    // H-4: the session object (transport, TLS/CredSSP state and the plaintext
+    // password) used to live until Stop(): every connection leaked one session
+    // and kept its credentials resident. session_count() reports the live
+    // sessions, so it must fall back to zero when the client disconnects.
+    ServerConfig cfg;
+    cfg.port = 3485;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    for (int round = 0; round < 2; ++round) {
+        HandshakeResult r = DriveToActive(cfg.port);
+        CHECK(r.reached_active);
+        CHECK_EQ(server.session_count(), 1);
+
+        r.transport->Close();
+        bool released = false;
+        for (int i = 0; i < 300 && !released; ++i) {
+            if (server.session_count() == 0) {
+                released = true;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        CHECK(released);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_session_exception_only_fails_that_session) {
+    // H-1: an exception escaping the session thread (a desktop source that
+    // runs out of memory) used to escape the thread function, so
+    // std::terminate killed the whole process and every other session with it.
+    // The failure must stay inside the session.
+    ServerConfig cfg;
+    cfg.port = 3486;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    ScriptedSource source;
+    source.set_mode(ScriptedSource::Mode::kThrowAfterFirst);
+    RdpServer server(cfg);
+    server.SetDesktopSource(&source);
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(cfg.port);
+    CHECK(r.reached_active);
+
+    // The next capture (the ~1 s periodic refresh) throws: this session must
+    // die, the process must not.
+    bool saw_eof = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        uint8_t tmp[4096];
+        const int n = r.transport->Read(tmp, sizeof(tmp));
+        if (n != rtsc::net::kReadTimeout) {
+            saw_eof = n <= 0;
+            break;
+        }
+    }
+    CHECK(saw_eof);
+
+    // Another client is still served.
+    source.set_mode(ScriptedSource::Mode::kSucceed);
+    const HandshakeResult r2 = DriveToActive(cfg.port);
+    CHECK(r2.reached_active);
+    CHECK(r2.error.empty());
 
     server.Stop();
     runner.join();

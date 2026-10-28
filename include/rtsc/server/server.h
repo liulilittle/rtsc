@@ -100,6 +100,25 @@ struct ServerConfig {
     uint32_t session_id = 0;
 };
 
+// Server-side limits on the negotiated desktop geometry.
+//
+// [MS-RDPBCGR] 2.2.1.3.2 (TS_CLIENT_CORE_DATA) carries desktopWidth and
+// desktopHeight as two uint16 fields, so a client may legally ask for
+// 65535 x 65535. The server cannot honour that: the RGBA framebuffer alone
+// would be 65535 * 65535 * 4 = 17,179,344,900 bytes (~16 GiB) and the GDI
+// source allocates a second buffer of the same size. These limits bound what
+// one session may allocate:
+//   * 8192 x 8192 px: above every current display (8K UHD is 7680 x 4320) and
+//     far below the 65535 the wire format permits.
+//   * 32 MiB framebuffer: covers 4K UHD (3840 * 2160 * 4 = 31.6 MiB) and caps
+//     a session's framebuffer at 8,388,608 pixels.
+// A client-declared geometry is clamped into these limits (the clamped size is
+// what Demand Active announces); a configured default outside them is refused
+// by Start()/Run()/ServeOne().
+constexpr uint16_t kMaxDesktopWidth = 8192;
+constexpr uint16_t kMaxDesktopHeight = 8192;
+constexpr size_t kMaxFramebufferBytes = 32u * 1024u * 1024u;
+
 // Produces the desktop image for a session. `rgba` receives
 // width * height * 4 bytes, top-down, 8 bits per channel, R at the lowest
 // address. Implementations must be usable from one thread per session.
@@ -196,8 +215,15 @@ class RdpServer {
     // a connection was handled. Intended for tests and single-shot runs.
     bool ServeOne();
 
-    // Number of sessions accepted so far.
+    // Number of sessions that are alive right now: accepted and not yet
+    // finished. It falls back to zero when the client disconnects, because the
+    // session object (transport, TLS/CredSSP state and the credential strings)
+    // is released when its thread ends.
     size_t session_count() const;
+    // Number of sessions accepted since Start(). Monotonic; never reset. Use
+    // this for "how many clients has this server seen" and session_count() for
+    // "how many are connected now".
+    size_t total_session_count() const;
     const std::string& last_error() const { return last_error_; }
 
  private:

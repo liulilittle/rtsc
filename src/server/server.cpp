@@ -19,8 +19,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -102,6 +105,82 @@ void WriteBerLength(ByteWriter& w, size_t len) {
         w.u8(0x82);
         w.u16be(static_cast<uint16_t>(len));
     }
+}
+
+// ---- Desktop geometry validation -------------------------------------------
+
+// The session builds a framebuffer of width * height * 4 bytes and tiles it
+// into bands whose row stride is width * 4. A zero width therefore divides by
+// zero in SendFrame (65535 / chunk_row) and a zero height cannot be tiled, so
+// a zero geometry is refused at the server entry points instead of being
+// served. The entry points cover both sources of the geometry: the configured
+// default (ServerConfig) and the client-declared TS_CLIENT_CORE_DATA size
+// ([MS-RDPBCGR] 2.2.1.3.2), which falls back to the configured default when
+// the client sends zero.
+// Computes width * height * 4 without overflowing size_t. The product is only
+// formed after a division-based check, so no geometry can wrap it into a small
+// allocation. Callers use this before allocating a framebuffer.
+bool FrameBufferBytes(uint16_t width, uint16_t height, size_t* out) {
+    if (width == 0 || height == 0) return false;
+    const size_t w = width;
+    const size_t h = height;
+    if (w > (SIZE_MAX / 4) / h) return false;
+    *out = w * h * 4;
+    return true;
+}
+
+// Clamps a requested geometry into the server limits (server.h kMaxDesktop*):
+// each axis first, then both axes proportionally so the framebuffer fits
+// kMaxFramebufferBytes. The aspect ratio survives the scale, and the clamped
+// size is what Demand Active announces, so the client adapts to it.
+void ClampDesktopSize(uint16_t width, uint16_t height, uint16_t* out_width,
+                      uint16_t* out_height) {
+    uint32_t w = std::min<uint32_t>(width, kMaxDesktopWidth);
+    uint32_t h = std::min<uint32_t>(height, kMaxDesktopHeight);
+    const uint64_t max_pixels = kMaxFramebufferBytes / 4;
+    if (static_cast<uint64_t>(w) * h > max_pixels) {
+        const double factor = std::sqrt(static_cast<double>(max_pixels) /
+                                        (static_cast<double>(w) * h));
+        w = std::max<uint32_t>(1, static_cast<uint32_t>(w * factor));
+        h = std::max<uint32_t>(1, static_cast<uint32_t>(h * factor));
+        // Rounding may still leave the product a pixel over the budget.
+        while (static_cast<uint64_t>(w) * h > max_pixels) {
+            if (w >= h && w > 1) {
+                --w;
+            } else if (h > 1) {
+                --h;
+            } else {
+                break;
+            }
+        }
+    }
+    *out_width = static_cast<uint16_t>(w);
+    *out_height = static_cast<uint16_t>(h);
+}
+
+bool ValidateDesktopSize(uint16_t width, uint16_t height, std::string* error) {
+    if (width == 0 || height == 0) {
+        if (error != nullptr) {
+            *error = "the desktop geometry must be non-zero (got " +
+                     std::to_string(width) + "x" + std::to_string(height) + ")";
+        }
+        return false;
+    }
+    size_t bytes = 0;
+    if (!FrameBufferBytes(width, height, &bytes) ||
+        width > kMaxDesktopWidth || height > kMaxDesktopHeight ||
+        bytes > kMaxFramebufferBytes) {
+        if (error != nullptr) {
+            *error = "the configured desktop geometry " + std::to_string(width) +
+                     "x" + std::to_string(height) + " exceeds the server limit (" +
+                     std::to_string(kMaxDesktopWidth) + "x" +
+                     std::to_string(kMaxDesktopHeight) + ", " +
+                     std::to_string(kMaxFramebufferBytes) +
+                     "-byte framebuffer)";
+        }
+        return false;
+    }
+    return true;
 }
 
 // ---- Server GCC user data blocks -------------------------------------------
@@ -490,6 +569,14 @@ class RdpSession {
     const Credentials& credentials() const { return credentials_; }
     bool active() const { return active_; }
 
+    // Overwrites the stored credential bytes so a plaintext password does not
+    // survive in the freed heap block when the session object is released.
+    void ScrubCredentials() {
+        if (credentials_.password.empty()) return;
+        std::memset(&credentials_.password[0], 0, credentials_.password.size());
+        credentials_.password.clear();
+    }
+
  private:
     // ---- transport helpers -------------------------------------------------
     bool Send(const std::vector<uint8_t>& frame) {
@@ -854,10 +941,16 @@ class RdpSession {
             encryption_level_ = 0;
         }
 
-        desktop_width_ = client_desktop_width_ != 0 ? client_desktop_width_
-                                                    : config_.desktop_width;
-        desktop_height_ = client_desktop_height_ != 0 ? client_desktop_height_
-                                                      : config_.desktop_height;
+        // The client-declared geometry is untrusted: [MS-RDPBCGR] 2.2.1.3.2
+        // carries it as two uint16 fields, so a peer may ask for
+        // 65535 x 65535 (a 17,179,344,900-byte framebuffer). Clamp it into the
+        // server limits; the clamped size is what Demand Active announces
+        // below, so the client adapts instead of the server allocating it.
+        ClampDesktopSize(client_desktop_width_ != 0 ? client_desktop_width_
+                                                    : config_.desktop_width,
+                         client_desktop_height_ != 0 ? client_desktop_height_
+                                                     : config_.desktop_height,
+                         &desktop_width_, &desktop_height_);
 
         std::vector<proto::GccUserData::Block> blocks;
         blocks.push_back({kScCore, BuildServerCoreBody(requested_protocols_)});
@@ -1087,9 +1180,15 @@ class RdpSession {
 
     bool SendFrame() {
         if (!source_) return false;
+        // The framebuffer size is computed (and checked for overflow) before
+        // the source allocates anything. desktop_width_/desktop_height_ are
+        // already clamped to the server limit; this keeps the path safe on its
+        // own as well.
+        if (desktop_width_ == 0 || desktop_height_ == 0) return false;
+        size_t need = 0;
+        if (!FrameBufferBytes(desktop_width_, desktop_height_, &need)) return false;
         std::vector<uint8_t> rgba;
         if (!source_->Capture(desktop_width_, desktop_height_, rgba)) return false;
-        const size_t need = static_cast<size_t>(desktop_width_) * desktop_height_ * 4;
         if (rgba.size() < need) return false;
 
         // An MCS Send Data userData is capped at 16383 bytes; reserve the share
@@ -1108,20 +1207,31 @@ class RdpSession {
         const uint16_t chunk_w = static_cast<uint16_t>(
             std::min<size_t>(desktop_width_, budget / kBytesPerPixel));
         const size_t chunk_row = static_cast<size_t>(chunk_w) * kBytesPerPixel;
-        size_t max_rows = chunk_row != 0 ? budget / chunk_row : 0;
+        // Both divisions below need a non-zero row stride. A zero width used
+        // to reach them and the integer division by zero (0xC0000094) killed
+        // the whole process; the entry points now refuse a zero geometry, and
+        // this guard keeps the frame path safe on its own.
+        if (chunk_w == 0 || chunk_row == 0) return false;
+        size_t max_rows = budget / chunk_row;
         max_rows = std::min<size_t>(max_rows, 65535 / chunk_row);
         if (max_rows == 0) max_rows = 1;  // unreachable for u16 widths; defensive
         const uint16_t band = static_cast<uint16_t>(
             std::min<size_t>(max_rows, desktop_height_));
 
-        for (uint16_t y = 0; y < desktop_height_; y += band) {
+        // uint32_t, not uint16_t: a uint16_t row counter wrapped back to zero
+        // when desktop_height_ was close to 65535 and `band` was even, which
+        // made the loop infinite (SendFrame never returned and the session
+        // flooded the wire). desktop_height_ is bounded by kMaxDesktopHeight,
+        // so this counter can no longer wrap.
+        for (uint32_t y = 0; y < desktop_height_; y += band) {
             const uint32_t remaining_h = static_cast<uint32_t>(desktop_height_) - y;
             const uint16_t h = static_cast<uint16_t>(std::min<uint32_t>(band, remaining_h));
             for (uint32_t x = 0; x < desktop_width_; x += chunk_w) {
                 const uint32_t remaining_w = static_cast<uint32_t>(desktop_width_) - x;
                 const uint16_t w = static_cast<uint16_t>(std::min<uint32_t>(chunk_w, remaining_w));
                 const auto pixels = EncodeBitmapBand(desktop_width_, x, w, y, h, rgba);
-                const auto bitmap = BuildBitmapBand(w, static_cast<uint16_t>(x), y, h, pixels);
+                const auto bitmap = BuildBitmapBand(w, static_cast<uint16_t>(x),
+                                                    static_cast<uint16_t>(y), h, pixels);
                 // TS_GRAPHICS_UPDATE = updateType + TS_UPDATE_BITMAP_DATA, where
                 // TS_UPDATE_BITMAP_DATA = numberRectangles + rectangles
                 // ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.1; the updateType appears once).
@@ -1352,9 +1462,15 @@ struct RdpServer::Impl {
     std::unique_ptr<net::Listener> listener;
     std::atomic<bool> running{false};
     std::mutex sessions_mu;
-    std::vector<RdpSession*> sessions;
+    // Live sessions. The owning reference is the session thread's shared_ptr;
+    // this registry only keeps them reachable for Stop(), and the thread
+    // unregisters itself when it finishes. A finished session, including its
+    // transport, TLS/CredSSP state and credentials, is therefore released at
+    // once instead of at Stop().
+    std::vector<std::shared_ptr<RdpSession>> sessions;
     std::vector<std::thread> threads;
-    std::atomic<size_t> session_count{0};
+    std::atomic<size_t> live_session_count{0};
+    std::atomic<size_t> total_session_count{0};
 };
 
 RdpServer::RdpServer(const ServerConfig& config)
@@ -1373,6 +1489,11 @@ void RdpServer::SetInputCallback(InputCallback cb) {
 }
 
 bool RdpServer::Start(std::string& error) {
+    if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
+                             &error)) {
+        last_error_ = error;
+        return false;
+    }
     if (impl_->listener) return true;
     std::string why;
     impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
@@ -1385,6 +1506,10 @@ bool RdpServer::Start(std::string& error) {
 }
 
 void RdpServer::Run() {
+    if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
+                             &last_error_)) {
+        return;
+    }
     if (!impl_->listener) {
         std::string why;
         impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
@@ -1402,19 +1527,51 @@ void RdpServer::Run() {
         // stops it) or the loop has already exited.
         std::lock_guard<std::mutex> lock(impl_->sessions_mu);
         if (!impl_->running.load(std::memory_order_relaxed)) break;
-        auto* session = new RdpSession(std::move(transport), config_, source_,
-                                       authenticator_, input_callback_, 0);
-        std::thread t([session]() {
-            session->Run();
-            session->Stop();
-        });
+        auto session = std::make_shared<RdpSession>(
+            std::move(transport), config_, source_, authenticator_,
+            input_callback_, 0);
         impl_->sessions.push_back(session);
-        impl_->threads.push_back(std::move(t));
-        impl_->session_count.fetch_add(1, std::memory_order_relaxed);
+        impl_->live_session_count.fetch_add(1, std::memory_order_relaxed);
+        impl_->total_session_count.fetch_add(1, std::memory_order_relaxed);
+        Impl* impl = impl_.get();
+        // The thread owns the session. It releases the object (and its
+        // credentials) when it ends instead of leaving it for Stop(). The
+        // try/catch keeps a session failure -- e.g. std::bad_alloc from a
+        // desktop source -- inside this session: without it the exception
+        // escaped the thread function and std::terminate killed the whole
+        // process, every other session included.
+        impl_->threads.emplace_back([impl, session]() {
+            try {
+                session->Run();
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[rtsc-server] session failed: %s\n",
+                             e.what());
+            } catch (...) {
+                std::fprintf(stderr,
+                             "[rtsc-server] session failed: unknown exception\n");
+            }
+            session->Stop();
+            session->ScrubCredentials();
+            {
+                std::lock_guard<std::mutex> lock(impl->sessions_mu);
+                for (auto it = impl->sessions.begin();
+                     it != impl->sessions.end(); ++it) {
+                    if (it->get() == session.get()) {
+                        impl->sessions.erase(it);
+                        break;
+                    }
+                }
+            }
+            impl->live_session_count.fetch_sub(1, std::memory_order_relaxed);
+        });
     }
 }
 
 bool RdpServer::ServeOne() {
+    if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
+                             &last_error_)) {
+        return false;
+    }
     if (!impl_->listener) {
         std::string why;
         impl_->listener = net::ListenTcp("0.0.0.0", config_.port, why);
@@ -1427,7 +1584,17 @@ bool RdpServer::ServeOne() {
     if (!transport) return false;
     RdpSession session(std::move(transport), config_, source_, authenticator_,
                        input_callback_, 0);
-    session.Run();
+    // Same containment as the threaded path: a failing session (e.g.
+    // std::bad_alloc) must not take the caller down with it.
+    try {
+        session.Run();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[rtsc-server] session failed: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[rtsc-server] session failed: unknown exception\n");
+    }
+    session.Stop();
+    session.ScrubCredentials();
     return true;
 }
 
@@ -1435,23 +1602,28 @@ void RdpServer::Stop() {
     impl_->running.store(false, std::memory_order_relaxed);
     if (impl_->listener) impl_->listener->Close();
 
-    std::vector<RdpSession*> sessions;
+    std::vector<std::shared_ptr<RdpSession>> sessions;
     std::vector<std::thread> threads;
     {
         std::lock_guard<std::mutex> lock(impl_->sessions_mu);
         sessions = impl_->sessions;
-        threads = std::move(impl_->threads);
         impl_->sessions.clear();
+        threads = std::move(impl_->threads);
     }
-    for (RdpSession* s : sessions) s->Stop();
+    for (const auto& s : sessions) s->Stop();
     for (std::thread& t : threads) {
         if (t.joinable()) t.join();
     }
-    for (RdpSession* s : sessions) delete s;
+    // `sessions` is the last owner of any session the thread has not released
+    // yet; dropping it here frees the object and its credentials.
 }
 
 size_t RdpServer::session_count() const {
-    return impl_->session_count.load(std::memory_order_relaxed);
+    return impl_->live_session_count.load(std::memory_order_relaxed);
+}
+
+size_t RdpServer::total_session_count() const {
+    return impl_->total_session_count.load(std::memory_order_relaxed);
 }
 
 // ---- Test pattern ----------------------------------------------------------
@@ -1462,6 +1634,10 @@ class TestPatternSource : public DesktopSource {
  public:
     bool Capture(uint16_t width, uint16_t height,
                  std::vector<uint8_t>& rgba) override {
+        // A zero dimension would allocate an empty framebuffer and the border
+        // loop below would then write past its end (a heap overflow). Refuse
+        // it explicitly instead.
+        if (width == 0 || height == 0) return false;
         rgba.assign(static_cast<size_t>(width) * height * 4, 0);
         for (uint32_t y = 0; y < height; ++y) {
             for (uint32_t x = 0; x < width; ++x) {

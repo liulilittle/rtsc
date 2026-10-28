@@ -221,7 +221,7 @@ RTSC_TEST(server_multisession_concurrent_clients_are_isolated) {
         RunConcurrent(port, specs, /*encryption_methods=*/0);
 
     ReportResults(results, specs);
-    CHECK_EQ(server.session_count(), specs.size());
+    CHECK_EQ(server.total_session_count(), specs.size());
 
     server.Stop();
     runner.join();
@@ -257,7 +257,7 @@ RTSC_TEST(server_multisession_framebuffer_capture_is_per_session) {
         }
         CHECK(found);
     }
-    CHECK_EQ(server.session_count(), specs.size());
+    CHECK_EQ(server.total_session_count(), specs.size());
 
     server.Stop();
     runner.join();
@@ -286,7 +286,7 @@ RTSC_TEST(server_multisession_encrypted_standard_rdp) {
     std::vector<SessionResult> results =
         RunConcurrent(port, specs, /*encryption_methods=*/0x0000001B);
     ReportResults(results, specs);
-    CHECK_EQ(server.session_count(), specs.size());
+    CHECK_EQ(server.total_session_count(), specs.size());
 
     server.Stop();
     runner.join();

@@ -23,8 +23,17 @@
 //   --test-pattern    serve the synthetic test pattern instead of the GDI
 //                     desktop capture (Windows-only source)
 //   --monitor N       monitor index for the GDI capture (-1 = virtual screen)
-//   --width W         default desktop width (default 1280)
-//   --height H        default desktop height (default 1024)
+//   --allow-any-credentials
+//                     accept every client without checking the account name.
+//                     DANGEROUS: credential validation is disabled, the
+//                     startup log says so in a warning line, and the server
+//                     should never be exposed to an untrusted network in this
+//                     mode. By default the account carried by the Client Info
+//                     PDU must match --user/--domain.
+//   --width W         default desktop width (default 1280; valid range
+//                     1..65535: zero, negative and non-numeric values are
+//                     refused)
+//   --height H        default desktop height (default 1024; same range)
 //   --once            serve a single accepted connection, then exit
 //   --log FILE        append human-readable session lines to FILE
 //
@@ -63,6 +72,7 @@ struct Options {
     std::string domain = "NTDEV";
     std::string password = "password";
     bool any_user = false;
+    bool allow_any_credentials = false;
     bool test_pattern = false;
     int monitor = -1;
     uint16_t width = 1280;
@@ -77,9 +87,55 @@ void usage() {
         "%s\n"
         "usage: rtsc_server_host [--port N] [--enhanced|--no-enhanced] [--user U]\n"
         "                       [--domain D] [--password P] [--any-user]\n"
-        "                       [--test-pattern] [--monitor N] [--width W]\n"
-        "                       [--height H] [--once] [--seconds N] [--log FILE]\n",
+        "                       [--allow-any-credentials] [--test-pattern]\n"
+        "                       [--monitor N] [--width W] [--height H]\n"
+        "                       [--once] [--seconds N] [--log FILE]\n",
         kVersion);
+}
+
+// Case-insensitive ASCII comparison, used for account and domain names.
+bool EqualsIgnoreCase(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+// Parses a desktop dimension. Only a decimal number in [1, 65535] is accepted:
+// a zero value drives the server's frame path into an integer division by zero
+// (0xC0000094) and a negative value would wrap around to a huge unsigned
+// dimension when stored in the uint16_t field. Both are refused here, before
+// the server is built.
+bool ParseDimension(const std::string& text, const char* name, uint16_t* out) {
+    if (text.empty()) {
+        std::printf("invalid %s: empty value (expected 1..65535)\n", name);
+        return false;
+    }
+    long value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            std::printf("invalid %s: '%s' is not a decimal number in 1..65535\n",
+                        name, text.c_str());
+            return false;
+        }
+        value = value * 10 + (c - '0');
+        if (value > 65535) {
+            std::printf("invalid %s: '%s' is outside 1..65535\n", name,
+                        text.c_str());
+            return false;
+        }
+    }
+    if (value == 0) {
+        std::printf("invalid %s: '%s' must be at least 1\n", name, text.c_str());
+        return false;
+    }
+    *out = static_cast<uint16_t>(value);
+    return true;
 }
 
 // Parses `--key value` / `--flag` pairs. Returns false on a malformed command
@@ -111,6 +167,8 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
             if (!need(opt.password)) return false;
         } else if (arg == "--any-user") {
             opt.any_user = true;
+        } else if (arg == "--allow-any-credentials") {
+            opt.allow_any_credentials = true;
         } else if (arg == "--test-pattern") {
             opt.test_pattern = true;
         } else if (arg == "--monitor") {
@@ -120,11 +178,11 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
         } else if (arg == "--width") {
             std::string v;
             if (!need(v)) return false;
-            opt.width = static_cast<uint16_t>(std::atoi(v.c_str()));
+            if (!ParseDimension(v, "--width", &opt.width)) return false;
         } else if (arg == "--height") {
             std::string v;
             if (!need(v)) return false;
-            opt.height = static_cast<uint16_t>(std::atoi(v.c_str()));
+            if (!ParseDimension(v, "--height", &opt.height)) return false;
         } else if (arg == "--once") {
             opt.once = true;
         } else if (arg == "--seconds") {
@@ -181,6 +239,10 @@ int main(int argc, char** argv) {
     cfg.port = opt.port;
     cfg.desktop_width = opt.width;
     cfg.desktop_height = opt.height;
+    // Credential policy, set explicitly: the library default is accept-any,
+    // and this host only uses it when --allow-any-credentials is passed (which
+    // is announced below and in the help).
+    cfg.accept_any_credentials = opt.allow_any_credentials;
     cfg.enable_enhanced_security = opt.enhanced;
     cfg.tls_config.role = rtsc::tls::Role::kServer;
     cfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
@@ -213,6 +275,15 @@ int main(int argc, char** argv) {
              " desktop=" + std::to_string(cfg.desktop_width) + "x" +
              std::to_string(cfg.desktop_height) +
              " source=" + (opt.test_pattern ? "test-pattern" : "gdi-desktop"));
+    if (opt.allow_any_credentials) {
+        log.line(
+            "WARNING: credential validation is DISABLED "
+            "(--allow-any-credentials): every client that reaches the server "
+            "is accepted. Do not expose this server to an untrusted network.");
+    } else {
+        log.line("credentials: enforced (account " + accepted_user + "@" +
+                 accepted_domain + " from the Client Info PDU)");
+    }
 
     // The server serves the same source to every session; it must outlive the
     // server object.
@@ -243,6 +314,26 @@ int main(int argc, char** argv) {
     }
 
     rtsc::server::RdpServer server(cfg);
+    // Credential policy. Unless --allow-any-credentials was given, the account
+    // carried by the Client Info PDU must match --user/--domain (case
+    // insensitive; "DOMAIN\user" is accepted). The password itself is not
+    // checked on this path: the CredSSP/NTLM path is what validates it,
+    // through credential_lookup above.
+    if (!opt.allow_any_credentials) {
+        server.SetAuthenticator([accepted_user, accepted_domain, any_user](
+                                    const rtsc::server::Credentials& creds) {
+            if (any_user) return true;
+            std::string user = creds.user_name;
+            const size_t sep = user.find_last_of("\\/");
+            if (sep != std::string::npos) user = user.substr(sep + 1);
+            if (!EqualsIgnoreCase(user, accepted_user)) return false;
+            if (!creds.domain.empty() &&
+                !EqualsIgnoreCase(creds.domain, accepted_domain)) {
+                return false;
+            }
+            return true;
+        });
+    }
     server.SetDesktopSource(source);
     // Input events are only forwarded by the session's active loop, so a key or
     // pointer callback is a server-side proof that a session reached the active
@@ -278,15 +369,22 @@ int main(int argc, char** argv) {
     // session counter while the server runs. With --seconds the loop is bounded
     // and the process exits on its own; otherwise it runs until stopped.
     std::thread runner([&server]() { server.Run(); });
-    size_t seen = 0;
+    size_t seen_live = 0;
+    size_t seen_total = 0;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(opt.seconds);
     const bool bounded = opt.seconds > 0;
     for (;;) {
-        const size_t count = server.session_count();
-        if (count != seen) {
-            seen = count;
-            log.line("session accepted (count=" + std::to_string(seen) + ")");
+        // session_count() is the number of sessions alive right now;
+        // total_session_count() is the monotonic accepted count. Log both so a
+        // disconnect is visibly a live-count drop, not a lost session.
+        const size_t live = server.session_count();
+        const size_t total = server.total_session_count();
+        if (live != seen_live || total != seen_total) {
+            seen_live = live;
+            seen_total = total;
+            log.line("sessions: live=" + std::to_string(live) +
+                     " total=" + std::to_string(total));
         }
         if (bounded && std::chrono::steady_clock::now() >= deadline) {
             log.line("run window elapsed; stopping");
