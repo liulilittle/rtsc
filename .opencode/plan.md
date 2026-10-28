@@ -334,3 +334,11 @@
 - **EXEC-B（S3 rdpdr 安全三项+DesiredAccess）**：src/channel/rdpdr_client.cpp + src/rdpdr/file_system.cpp + 对应测试。**待 EXEC-A 或 C 释放配额后派发**。
 - **EXEC-C（服务器 H 类崩溃/DoS）**：src/server/server.cpp + include/rtsc/server/server.h + tools/rtsc_server/main.cpp + 服务器测试。H-1 无上限 CS_CORE 宽高(16GB 分配)+线程无 try/catch(bad_alloc→TerminateProcess 杀全进程)；H-2 SendFrame y uint16 回绕(server.cpp:1117，实测 1400x65535 吐 1.07GB 且死循环)；H-3 零宽→chunk_row=0→server.cpp:1111/:1112 除零(0xC0000094)；H-4 会话对象永不回收+明文凭据驻留(:1411/:1450)。
 - **EXEC-D（S2-11 drdynvc 串包 + S4-AltGr + S5 向量测试）**：后续批。
+
+### N8-EXEC-2 定案：测试纪律欠账闭合（EXEC-D）
+针对「先改实现、后重钉期望」纪律违规（见 .opencode/discover.md 同日条目）与组A乙的 S5-a/S5-b 要求：
+- **D1 真机向量方向断言**：以仓库已入库的**真机捕获**字节（rdp6 513B / 1320B tile）构造方向断言——先有捕获向量，再写期望；禁止用与实现同源的假设造流。
+- **D2 奇高 + 2x2 色度子采样向量**：钉死亮度/色度两平面行序一致性与 AYCoCg 采样坐标（审计要求，不改实现）。
+- **D3 扫描码映射可测化**：把 lParam→set-1 扫描码的映射抽为可单测的纯函数，补确定性红绿用例（不依赖交互桌面），并补 MapVirtualKeyW 返回 0 的守卫（关闭 S4-b）。
+- **D4 跳过语义显式化**：tests/test_ui.cpp:212-220 的 early-return 假绿源改为显式可见的跳过/失败判定，不得静默通过（关闭 F3）。
+- 验证方式：全部为**先红后绿**的确定性用例（无需 GUI/真机）；ctest -C Release 全绿 + build 零错误零警告；S5/S4 后续项据此复审盖章。
