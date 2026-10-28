@@ -10194,3 +10194,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[残留（下批，非阻塞）]** R1 SendClipCaps 未按服务器能力收敛广告位（3.2.5.1.3 SHOULD，应与 server_flags_ AND）；R2 「无临时目录」分支无仓库测试（探针已验行为正确）；R3 TempDirectory 未校验绝对路径、超长静默省略；R4 cliprdr 三文件末尾换行被删（风格回归，提交前应恢复）；R5 既有缺口（GUI 无 RequestRemoteFormat 调用点 / Clipboard::write 单格式 / pending_format_ 单值 / FAIL 无后续动作）。
 - **[唯一偏离判定]** V1 中 CB_USE_LONG_FORMAT_NAMES 无条件广告属 SHOULD 级偏离，不构成驳回。
 - **[下一步]** 等组A甲独立复验一致 → 双章 → 提交 S6（提交前修 R4 尾换行）。
+
+## 第593轮：S6 双审盖章 → 提交 88c2734；EXEC-DVC RED 完成
+
+- **[S6 双章]** 组A 甲（A1-A6）与 乙（V1-V6）**各自独立**复验一致通过：规范逐条（1.3.2.1 六步 / 2.2.2.2 方向 / 2.2.2.3 520B / 2.2.2.1.1.1 长名 AND / 2.2.3.x 类型与 OK/FAIL）、测试台账无弱化（23→31 = 删1+增9；被删用例的 16B CAPS 精确字节与 2*6 长名断言原样迁入）、红→绿真实（红证早于修复；绿证双方独立重跑 31 tests/155 checks 0 fail；甲方另写 s6_recheck.cpp 7/7 PASS）、异常路径、GUI 契约（只增不改，rtsc_gui 零改动编译通过）。
+- **[提交]** 88c2734 "fix: cliprdr initialization direction and order (S6, dual-audit stamped)"（3 文件 +459/-22）；提交前修 R6 三文件尾换行。
+- **[S6 残留（下批）]** R1 SendClipCaps 未与 server_flags_ AND 收敛广告位（3.2.5.1.3 SHOULD）；R2 缺「无 TEMP → 省略 TempDirectory 仍发 FormatList」用例（代码正确，探针已验）；R3 TempDirectory 未校验绝对路径；R4（甲）RunInitializationSequence 不等服务器 CAPS：若服务器先 MR 后 CAPS，首个 FormatList 按短名编码而后续协商长名 → 对端可能按长名解析**（潜在真缺陷，下批优先）**；R5 EncodeUtf16Le >518B 静默省略无用例；R6 GUI 日志行未打印接收侧计数（真机判据读不出）→ 下批同改。
+- **[EXEC-DVC · RED 完成]** worktree F:\rtsc-wt\drdynvc：因 rtsc_drdynvc_tests 不链接 rtsc_urbrdc（CMakeLists:210-212）且禁改 CMakeLists，采取「重组状态机下沉 proto 层」方案：新增 rtsc::proto::DynvcReassembler（include/rtsc/proto/drdynvc.h + src/proto/drdynvc.cpp，均在授权范围），先做**行为等价抽取**（rdpusb 45/45 + drdynvc 7/7 保持全绿，证明抽取中性）再写 RED。
+  红证 11 tests / 75 checks / **4 failing / 19 failed checks**：①串包 messages[1] got 02 00 00 00 AA AA BB BB（纯 DATA 拼上一条残留，与审计 S2-P10 同型）②跨通道不隔离（A1B1A2B2 → 4 条且内容错）③未按总长判定（截断/超长均被投递）④投递后不复位。
+  **根因两条（实证）**：(a) 每个分片都回调、投递后不清缓冲；(b) 完全未解析 DYNVC_DATA_FIRST 的 4B Length（[MS-RDPEDYC] 2.2.2.1）→ 无法判定整条完成。GREEN 方案：DynvcPdu 增 total_length（kDataFirst 剥离 4B）；重组器按 ChannelId 独立状态、累计==Length 才投递并清空、>Length 丢弃整条、无 DATA_FIRST 的纯 DATA 丢弃；BuildDynvcPdu 自动写 Length + 新增 BuildDynvcDataFirstPdu 供分片，保持 test_rdpusb 现有 DataFirst 用例绿。
