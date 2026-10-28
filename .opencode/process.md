@@ -10626,3 +10626,7 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 主侧 C0：全量 build 0err/0warn；ctest 51/51（含 view，il2cpp 争用消除）。
 - 提交 d29ec55（feat: cliprdr CB_FILECONTENTS）+ 证据 f88b3b5。工作树干净。
 - 遗留 ticket（排期）：方向B backend；真机抓包（UNVERIFIED 五项）；D4 可选加固；A5 rdpsnd 深挖。
+## 第643轮：方向B 执行子开跑 + A5 取证结论
+- **方向B backend**（DropFileList：Win32 CF_HDROP→FileListProvider）：执行子 `ses_e7c8294a5ffeToJLdRon4Agorb` TDD 在途（接口契约已核 d29ec55 的 file_list.h；DROPFILES 布局/pFiles 偏移/双 null 表/fWide 防御/read_range 磁盘读）。
+- **A5 rdpsnd**：CRdpSndPlugin 工厂/主 vtable 定位；TSSNDCAPS 格式数组 search_bytes 无静态匹配 → **运行时构造，转为真机抓包裁决项**（77e0514）。仓内 rdpsnd 实现已有套件 Test #31/#32。
+- 下一步：等方向B 执行子报告→双审→盖章→C0+提交；真机抓包（cliprdr capset/A5 TSSNDCAPS 同为 wire 裁决项）。
