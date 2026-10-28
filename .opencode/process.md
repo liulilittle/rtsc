@@ -10615,3 +10615,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **执行子登记 2 处需审计裁决**：①FCR parse 白名单扩到 {24,32}（删 28-32 判定取舍）；②§6 测试清单未逐条对表（缺失测试风险）。
 - 甲乙复核已派发（prompt 续既有会话）：甲对 §6 逐条对表+FCR 白名单 wire 裁决；乙独立探针抽查 F 路径+状态机收敛。
 - **下一步**：复核结果→若驳回转执行子修→盖章后我做 C0 全量+提交。
+
+## 第641轮：FILECONTENTS 复核驳回 → 返修派发
+
+- 甲驳 D1(wire 24/28 parse/encode)/D2(广告不对称)/D4/D5+缺测；乙驳 D1-D5+9 缺测，独立探针 10 checks（A2/A3/B1 白名单/锁门红证；C1/D1/E1 门 PASS）。甲乙一致。
+- 执行子已接返修指令：D1 parse/encode 改 {24,28} 无 presence 字 + 头注修正；D2 OnFormatDataRequest 加 provider FILELIST 应答（方向B Serve 侧完成件）；D3 take 侧 4GiB 上限；D4 pending_format_==0 卫；D5 注释；9+ 项缺测补齐。
+- 在途：执行子返修 → 甲乙复验 → 盖章。
