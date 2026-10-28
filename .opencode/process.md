@@ -10145,3 +10145,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   - 其余 12 个既有用例仍 [OK]；BUILD_EXIT=0
 - **[环境事实]** cmake 不在 PATH：C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe（后续各代理统一用此绝对路径）
 - **[待办]** GREEN：server.cpp 入口拒绝零尺寸 + chunk_row>0 守卫 + TestPatternSource 零尺寸守卫 + tools/rtsc_server/main.cpp --width/--height 严格解析；随后绿证 + ctest 51/51。
+
+## 第587轮：EXEC-A RED 三重红证达成（父代理已核枚举）
+
+- **[红证1·编译期契约缺失]** test_cliprdr.cpp:509 error C2039: "SetTemporaryDirectory": 不是 CliprdrClient 的成员（另有 server_caps_received / monitor_ready_received_count / format_list_response_received_count / last_format_list_response_ok / local_temp_directory / temp_directory_sent_count 同类缺失）→ 契约先行、行为未改。
+- **[红证2·断言级]** 31 tests / 157 checks / **8 failing tests / 23 failed checks**，关键原文：cliprdr_client_start_does_not_send_monitor_ready FAIL:214 (got 1 want 0 MonitorReady)、FAIL:218 (sent.size got 3 want 0)；monitor_ready_triggers_initialization_sequence FAIL:242 旧序列 [MonitorReady,ClipCaps,FormatList] ≠ 期望 [ClipCaps,TempDirectory,FormatList]、FAIL:255 temp.data_len got 16 want 520（客户端从不发 TempDirectory）；ormat_list_response_is_observable FAIL:339/340/347（OnPdu 无 kFormatListResponse 分支）。
+- **[红证3·长名默认]** 恢复旧乐观默认后 long_format_names_defaults_to_short FAIL:362 (got 1 want 0)；9 failing tests。
+- **[父代理亲核]** include/rtsc/proto/cliprdr.h:22-28 枚举与 [MS-RDPECLIP] 2.2.1 完全一致（kMonitorReady 0x0001 … kTempDirectory 0x0006、kClipCaps 0x0007）→ 测试线值正确，不存在「用错枚举把正确实现判红」。
+- **[纪律要求已下发]** 测试改动台账（6 条改 + 1 条删，逐条 旧断言→新断言→规范理由）；禁止以改期望迁就实现；GREEN 后跑全量 ctest 并贴总结果行。
