@@ -10239,3 +10239,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[审计乙 · 驳回 EXEC-DVC（3 阻断）]** **B1 最重**：裸 DYNVC_DATA（无 DATA_FIRST）被当"无开序"丢弃，而 [MS-RDPEDYC] 2.2.3.2/3.1.5.2/Reassembly 明确 ≤1590 字节用单个 DATA PDU 且"starts with DYNVC_DATA → 可立即处理" → 真实服务器绝大多数 DVC 消息走此路径 → **修好串包却打断正常路径，比修复前更坏**（探针：裸 DATA 2B/1500B 均 delivered=0）。B2 发送侧对 ≤1590 也用 DATA_FIRST（并批评 BuildDynvcPdu(kDataFirst) 自动补 Length 的隐式行为掩盖了该问题，建议删除）。B3 pending 无上限 + 未知 channel 建状态（Length=0xFFFFFFFF 被接受并缓存 1MiB）→ 内存 DoS。测试判据 T1 把「无开序 DATA 丢弃」写成期望，锁死 B1。通过项：Length 线格式 4B LE 紧跟 ChannelId、逐通道状态分离、==Length 投递、超长丢弃、OnClose Reset。
   已派 EXEC-DVC 按最小集修（kData 无开序直投 / ≤1590 用 kData / Length 16MiB + pending 64 + 未知通道不建状态 / 改写 T1 + 补 2 用例）。
 - **[父代理亲核]** 在 F:\rtsc-wt\drdynvc 用 python 检索 case kData/SendChannelData 未命中（该 worktree 的 drdynvc.cpp 为重构版），故驳回依据采信乙的 [READ] 行号 + 探针实证，待修复后由双审复跑确认。
+
+## 第598轮：网关内存爆炸事故（34GB）+ 止血
+
+- **[事故]** rtsc_gateway_tests PID 62700 WS=33973MB / Priv=70289MB；系统总 63.69GB，Free 一度告急（用户报"几十个G""差点干蹦操作系统"）。已 Kill，Free 恢复 41.6GB。GW 子代理同时报 UnknownError（certificate verification）被中止。
+- **[定位]** 网关 HTTP 读取无硬上限：src/proto/gateway.cpp:93/111-129（Content-Length 实体追加）、src/net/gateway_transport.cpp:23/74/278/391/423/466（多处 for(;;)）。
+- **[处置]** kill 进程 + abort GW 子代理（ses_e8012743affetItV2lbELqTjXP）+ 冻结网关测试直至上限落地；已派修复（GW 重启版，见下）。
+- **[纪律]** 所有后续执行代理：跑任何网络/解析测试前必须用 job object 或自检把内存上限定在 512MB；测试跑动期间父代理用 Get-Process 采样，WS>2GB 立即 kill。
+- **[并行]** 组B甲 仍在做服务器四项复验（F1 已核对 diff、F2-F7 待跑）；DVC 修复中；PLANAR D1-D4 完成待 C0。

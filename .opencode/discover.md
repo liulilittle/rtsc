@@ -1308,3 +1308,8 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] 复验 H-4 会话回收
   [错误] 断连后 `session_count()` 归 0、`total_session_count()` 保留 1 ✓；但实测**句柄数 +8 / 6 个会话**（117→125），`Stop()` 后才回落到 115 → 已结束的 `std::thread` 仍留在 `impl_->threads` 直到 Stop，长跑服务器按会话线性增长
   [下一步] "会话对象已回收"与"线程句柄已回收"是两件事，分别用 `session_count()` 与 `GetProcessHandleCount` 两条独立证据；线程应在退出路径 join/detach 并 erase
+## [2026-10-28][主代理] 严重：网关测试进程吃 34GB 内存，差点拖垮系统
+[尝试] 让 EXEC-GW 在 F:\rtsc-wt\gw 实现 [MS-TSGU] RDGSP（401 挑战/重发/隧道封装），并自行跑 ctest -R gateway 反复迭代。
+[错误] 实测 Get-Process 发现 tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"几十个 G"），系统 Free 仅剩约 21GB（总 63.69GB）。已 Kill 该进程，Free 回到 41.6GB。该子代理随后报 UnknownError: unknown certificate verification error 被中断。
+[根因（待修复批次实证）] 网关链路的 HTTP 读取缺少硬上限：gateway.cpp:93/111-129（按 Content-Length 追加实体）、gateway_transport.cpp:23/74/278/391/423/466 多处 or(;;) 读循环无「单次/累计字节上限 + 次数上限 + 超时」；测试侧 MockGateway 也会无限产出/回放。此前审计 F1 已指出 test_gateway 是假绿（MockGateway 只回 CONNECT 200），本次改造后暴露该无界路径。
+[下一步] ①**任何网关相关测试/探针在加上限前禁止再跑**；②修复必须包含：HTTP 头总长上限、Content-Length 上限（如 64 KiB，超出即失败）、单次 read 上限、循环次数上限、读取总时长上限，并有"恶意 Content-Length=0xFFFFFFFF"与"无限 200 实体"的红→绿用例；③进程管理纪律：所有测试二进制运行时必须能用 Get-Process 快照监控峰值内存，发现 WS>2GB 立即 kill 并记录；④给所有子代理补充"禁止跑无上限读取的循环、跑测试前先设 job object 内存上限（512MB）"的硬约束。
