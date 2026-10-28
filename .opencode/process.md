@@ -10441,3 +10441,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[待清·陈旧注释]** `resample.cpp:381-384` 仍写"One reciprocal … +0.5 before truncation"，与 `:387-389` 新注释及实际实现矛盾（正是 F1 的错误做法）→ 已要求执行 AI 删除/改写后再给终报与 5 个文件 hash。
 - **[契约新增 E17]** `0.4x (4K→1536x864)` 实测 27.9–30.9ms，原预算缺此档（0.4x 非整数比走 generic tap，是 0.5x uniform 快路径的约 2 倍）→ 补入 **≤35ms**，并禁止后续优化突破。
 - **[审计乙的诚实做法]** 明确指出"ctest 4/4 那次是旧产物"，未用旧二进制冒充绿灯；并撤回自己上一轮绑定的 hash（因文件已变）。
+
+## 第619轮：A1 缩放提交 `5b1e00a`（含 F1/mutC/注释清理）；三方终验已派
+
+- **[提交 5b1e00a]** 新增 `src/client/resample.{h,cpp}`（**显式 git add，解除审计乙的阻断 B**）、`view.cpp` 三态分派 + 双偏移、`view.h` Resample 枚举、`tests/test_view.cpp` +21/−2（46 tests/6529 checks）、`CMakeLists.txt` 注册。工作树干净。
+- **[F1 修复已验证]** `ExactDivider`：`ceil(2^44/den)` 倒数 + `q*den>num` 修正 + 2 的幂移位快路径。父代理**穷举 7600 组 (num,den)**（含真实分母 3/7/1296000/8294400）floor 与 half-up **零失配**；`num*recip ≈ 255×2⁴⁴ ≈ 4.5e15` 与 den 无关、不溢出 uint64。
+- **[陈旧注释已删]** `resample.cpp` 中"One reciprocal … +0.5 before truncation"已移除（残留扫描 clean），保留说明 F1 事故的正确注释（`:21-24`）。
+- **[mutC 缺口已补]** `tests/test_view.cpp:415 view_downscale_2d_fast_path_averages_alpha`（`Surface src(8,2)` → 4x1，期望 `0 128 255 255`）；把 2D 快路径 alpha 改成取块角该用例转红（执行 AI 实测 1 failing/1 failed check，恢复后 46/6529/0）。
+- **[平局回归守卫]** `:433 view_downscale_exact_half_tie_rounds_up` 直接复用审计丙发现的真实路径 `ComputeViewTransform(1440,900,1440,900,0.75)`、`src(0,0)=56`（31.5→32）。
+- **[性能取舍（F1 代价）]** 0.8x 13.06→**16.74ms**、0.5x-4K 9.43→9.90ms（均在预算内），0.4x **30.42ms**（契约 E17 ≤35ms）；换来的是精确 half-up（消除 0.866% 像素偏 –1）。1.33x 1.56ms（原 46.9–66.8ms）、letterbox 1:1 0.20ms（原 1.92ms）。
+- **[执行 AI 的自我纠正]** 主动更正上轮计数口径："12 新 + 2 改 + 1 改名"是错的，实为 **+21/−2**（19 纯新增 + 2 替换旧用例）。
