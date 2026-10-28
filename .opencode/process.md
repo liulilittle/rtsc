@@ -10306,3 +10306,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[绿证]** 单用例 watchdog 200MB：peakWS 1.9~7.0MB、peakPriv 0.4~1.4MB，全 [OK]。4 条安全用例已就位（`:1316/1330/1348/1373`），待补第 3 条（4KiB×256 片停供）与分批全套绿证。
 - **[测试基建]** 新增 `tests/test_main.h` 的 `RTSC_TEST_FILTER`（默认行为不变）→ 单用例隔离跑，避免整套触发事故。
 - **[基线红项·不属本任务]** `http_message_parse_does_not_keep_stale_headers`（`test_gateway.cpp:605` 期望 1 条，实际 2 条；与 `:581` 自相矛盾）属 RDGSP 功能任务未完成期望，本任务不改。
+
+## 第605轮：H-4 双审盖章 + 新发现死锁路径（R-A）与测试零余量（D-1）
+
+- **[H-4 盖章·乙章]** 独立双指标实测：进程内探针 8 轮 `handles=119 threads=5` 全程持平（修复前 117→125）；生产二进制 8 轮 `handles=107 threads=5` 持平；`AFTER_STOP handles=115 threads=4 live=0`；`Stop()` ×3 均 0ms 且幂等；活跃客户端下调 Stop 0ms 返回、threads 6→4。
+- **[R-A 真死锁路径（审计乙发现，父代理已亲核）]** `server.cpp` 中 `++registry->live` 在 `std::thread(...)` **之前**；若线程构造抛 `std::system_error`（句柄/线程耗尽，正是本批修的故障面），`live` 永久为 1 → `Stop()` 的 `cv.wait(live==0)` 永久阻塞；且该异常逃出 `Run()` 的 accept while 循环（该段无 try/catch）→ accept 停摆。已派修（先红后绿 + 失败注入）。
+- **[R-B]** detached 线程的收尾段（`Stop`/`ScrubCredentials`/`erase`/`--live`）在 try 之外；当前元素类型下实际不抛，但缺 noexcept 兜底 → 一旦抛即 `std::terminate` 杀全进程。要求封装为 noexcept 并保证 `--live`+`notify_all()` 必达。
+- **[R-C]** `ScrubCredentials()` 用 `std::memset` 擦随后 `clear()` 的缓冲（可被优化掉的死存储），且只擦 password；应改 `SecureZeroMemory` + 擦 user/domain/alternate_shell + 析构兜底。
+- **[R-D]** multisession 三处改 `total_session_count` 后，「断连后 live 归零」无断言；要求各 join 后补 `CHECK_EQ(server.session_count(), 0)`。
+- **[D-1 驳回·测试零余量]** `tests/test_server.cpp:854` `CHECK(inputs >= 10)` 恰等于理论上限（窗口 3000ms / poller 超时 300ms → 最多 10 轮，每轮最多 +1）；实测 22 次跑挂 3 次（≈14%）。要求留 ≥2× 余量并注释「期望不得超过理论最大值的 1/2」。**此后禁止把「ctest 3/3」当作稳定性证据**。
+- **[R-E 契约缺口]** `Stop()` 只等 `live==0`，不等 `Run()` 返回；调用方不 join 就析构 `RdpServer` 时 accept 循环仍可能访问 `impl_->running`/`impl_->listener` → UAF。`server.h` 契约未写明"必须 join Run()"。待补文档或让 `Run()` 持 `shared_ptr<Impl>`。
+- **[凭据风险确认]** `include/rtsc/server/server.h:69` `accept_any_credentials = true` 仍未改（行号由 :66 移到 :69）；宿主 CLI 已安全默认，但嵌入方静默 accept-all；且 Standard RDP 路径只校验用户名/域不校验口令。

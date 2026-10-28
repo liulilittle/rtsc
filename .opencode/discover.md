@@ -1328,3 +1328,20 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 [尝试] 按「Content-Length 无上限」方向修网关内存问题（先加实体大小上限）。
 [错误] 真正的无界点在 `ParseHttpHead` 的 header 循环：`offset` 从未推进，带任何一个 header 的响应都会把同一行无限 append（CDB 栈 `ParseHttpHead+0x153 [gateway.cpp @100]` → `BytesToString` 每轮 RtlAllocateHeap）。因此 40 字节的最小响应即可活锁；只加 CL 上限不能阻止该路径。
 [下一步] ①任何「解析循环」必须先审查迭代变量是否推进（本轮同类：drdynvc 重组、rdpdr 目录枚举）；②上限要覆盖三处：解析块长度、元素个数（防 1 字节 header 洪泛）、实体长度；③传输层必须有单会话总字节/次数/时长预算，禁止只依赖对端关闭；④跑网关类测试必须用 `RTSC_TEST_FILTER` 单用例 + watchdog，禁止整套一次性跑。
+
+## [2026-10-28][审计乙] H-4 句柄泄漏复验：曲线要连续测，阈值要留余量
+
+- [尝试] 按父代理给的单次跑法（`ctest -R server` 一次 3/3 + 直跑一次 18/166/0）判定"H-4 已修"
+  [错误] **单次通过不足以判定**：同一二进制 `ctest -R server` 三轮里失败过 1 次；`rtsc_server_tests` 连跑 22 次，**3 次失败**（3/22 ≈ 14%），失败点全部是 `tests/test_server.cpp:854 CHECK(inputs >= 10)`（用例 `server_refresh_continues_during_input`）。
+       零余量成因（可由代码算出，不需要复现）：窗口 3000 ms，循环体内 `poller.Read` 的超时是 **300 ms**（:831），即每轮迭代 ≥300 ms → 3000/300 = **最多 10 次迭代**，而 `inputs` 每轮最多 +1（:848）→ 阈值 `inputs >= 10` **没有任何余量**，机器稍忙就是 9 → 必挂。该用例主体不在本批 diff 内（hunk 只在 :8/:50/:1261），属**既有脆弱测试**，不是本次功能回归。
+  [下一步] 判定"修好了"必须给**连续 N 次**结果（N≥10）与**失败率**，不能给单次绿；时间敏感断言必须写"余量"（阈值 ≤ 预期下界 × 0.5 之类），禁止让期望值刚好等于理论最大值——这也是"测试期望禁止由生产实现反推"的一种：期望值若由"我这台机器刚好跑出 10"反推，就必然抖动
+- [尝试] 用 8 轮 connect/disconnect 复测句柄（沿用上一轮 117→125 的判据）
+  [错误] 修复后曲线**完全持平**：`BASELINE handles=119 threads=5` → 每轮 `live=0 handles=119 threads=5` → `AFTER8 delta=0/0`，`AFTER_STOP handles=115 threads=4`；另测得 `Stop()` 在**仍有活跃客户端**时 0 ms 返回、`live` 归 0、threads 6→4；连续 `Stop()` ×3 均 0 ms。→ 说明 detach 后线程结束即释放内核句柄，不再累积
+  [下一步] 句柄类修复的验收曲线要**同时**给 handles 与 threads，且必须包含"仍有活跃会话时 Stop"这一支（否则只验证了空闲路径）
+- [尝试] 复核 `Stop()` 的 `cv.wait(live==0)` 是否可能永久等待
+  [错误] 找到一条**真实但未红证**的路径：`server.cpp:1557 ++registry->live` 发生在 `:1568 std::thread(...)` **之前**；若线程创建抛 `std::system_error`（句柄/线程耗尽的典型表现，而本批修的正是句柄），`live` 永久停在 1 → `Stop()` 永久阻塞，且该异常还会逃出 `Run()` 的 accept 循环（循环体无 try/catch）
+       另：`session->Stop()`、`ScrubCredentials()`、`erase(--live)` 都在 try 之外（try 只包 `session->Run()`，:1569-1578）→ 若它们抛异常则逃出 detached 线程 → `std::terminate`（是"整进程死"，不是"静默挂起"）
+  [下一步] 计数必须在"资源确实拿到之后"才 +1（先建线程/后 ++live，或失败即回滚并 erase）；detach 线程的**收尾**（Stop/Scrub/erase/--live）必须放进不抛异常区（noexcept 收尾函数 + 外层 catch 兜底），否则首尾两段各有一类故障面
+- [尝试] 核对 detach 后是否仍有 `Impl` 裸引用
+  [错误] 无：lambda 捕获 `[registry, session]`（:1568），体内只用这两个 + `registry->mu/cv/sessions/live`；`RdpSession` 的 `config_` 是**值拷贝**（:542 `config_(config)`）、`source_` 是调用方指针。因此 `Stop()` 返回后线程继续跑剩余几条语句也不会碰已析构的 `Impl`
+  [下一步] 但"`Stop()` 只等 live==0、不等 `Run()` 的调用方线程"仍是既有契约缺口：不 join 就析构 `RdpServer` 时，accept 循环若正好在 `impl_->running`/`impl_->listener` 上 → UAF。文档应写明"用完必须 join Run()"或让 Run 也持 `shared_ptr<Impl>`
