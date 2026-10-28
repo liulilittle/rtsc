@@ -104,3 +104,26 @@ mstscax.dll sha256 `d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0e
 - [ ] 发送方向：FORMAT_LIST 发送时 msgType 字段写入值（裁决 A）
 - [ ] Capability set 固定值（版本/长度）
 - [ ] 与 cliprdr_client.cpp 对照出偏差清单
+
+## 取证批次 4（2026-10-28 轮次 100）：与仓内实现对照 → 偏差清单
+
+### 仓内实现现状（src/channel/cliprdr_client.cpp OnPdu）
+处理：kMonitorReady、kClipCaps、kFormatList、kFormatListResponse、kFormatDataRequest、kFormatDataResponse、kTempDirectory、kLockClipData、kUnlockClipData。
+proto enum（include/rtsc/proto/cliprdr.h）含 kFileContentsRequest=0x0008 / kFileContentsResponse=0x0009 定义但 **OnPdu 未处理**。
+
+### 偏差清单（mstsc vs 仓内，对照图）
+| 项 | mstsc（反汇编） | 仓内 | 判定 |
+|---|---|---|---|
+| DATA_CHANNEL_REQUEST/RESPONSE (0xC/0xD) | 有独立 handler + event source | **无** | **缺口**：大剪贴板分片通道扩展 |
+| FILECONTENTS_REQUEST/RESPONSE (0x8/0x9) | 有独立 handler + event source（含 %I64u 计时串） | enum 有、OnPdu 无处理 | **缺口**：文件目录/内容传输 |
+| TEMP_DIRECTORY (0x6) | 无独立分派 case | 有 kTempDirectory 处理 | **待验证**：mstsc 的 TempDir 处理位置（或并入 FileContents） |
+| msgType 编号 | dispatch 用 1..5,7,8,10,11,12,13 | 规范值 1..11 + 无 12/13 | **疑点（wire 待裁决）**：mstsc dispatch 序号跳过 6/9，若即 wire 值则与规范不同；否则 Ghidra 内部 enum |
+| UNKNOWN_PDU | 有独立 handler（记录未知类型） | default: break 静默 | **差异**：mstsc 显式上报未知 PDU |
+| event-source 发送架构 | 每 PDU 类独立事件源，异步 | 同步 OnPdu 直发 | **架构差异**（影响发送顺序/合并；功能等价性待判） |
+
+### 待办
+- [x] 分派表解码（含 DATA_CHANNEL 扩展、UNKNOWN_PDU handler）
+- [x] 与仓内实现对照 → 偏差清单 v0.1
+- [ ] **wire 裁决**：真机抓包 FORMAT_LIST/CLIP_CAPS 的 msgType 字节，确认 mstsc 编号系
+- [ ] 决定：DATA_CHANNEL / FILECONTENTS 是否落入本期实现范围（涉及文件拖放=目标功能之一，倾向纳入 FILECONTENTS）
+- [ ] Capability set 固定值（版本/长度）取证
