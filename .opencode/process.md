@@ -10601,3 +10601,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **基线**：独占环境 0.8x≈19.54ms（审计乙曾独占复跑绿）；本机 CPU 争用消除后复跑应复绿。
 - **C0 结论**：代码层无回归；基准敏感项已记录处置路径（等独占/其他项目构建结束）。
 - **下一步**：A4 决策（FILECONTENTS 实现 vs A5 rdpsnd 取证）待用户/定案。
+
+## 第639轮：FILECONTENTS 双审开跑 + A5 rdpsnd 锚点
+
+- **FILECONTENTS 定案双审在途**：甲 `ses_e7ceadf43ffe9TqwJeeOyFu6Xl`（wire 结构/集成点）、乙 `ses_e7ceaa238ffejunTsXnTTyMGhq`（状态机/失败路径）；均已 relay 互告成员 ID。任务：CB_FILECONTENTS_REQUEST/RESPONSE（0x0008/0x0009）客户端实现定案。
+- **A5 rdpsnd**：`docs/spec/rdpsnd-evidence.md`（0e96110）锚点：rdpsnd 通道串 @0x1807e6xxx、"CRdpSndPlugin"@0x1807e7020、插件工厂 FUN_1804f5274、通道初始化 FUN_1804f3d18（本批发现其仅生命周期日志，非格式协商→需更深层定位 TSSNDCAPS 构造）。
+- **C0**：去重 view bench 已确认非代码（il2cpp 争用）；50/51 绿基线。
+- **下一步**：等 FILECONTENTS 双审定案 → 报主定案 → 执行 TDD → 双审复核 → 盖章；A5 TSSNDCAPS 深挖。
