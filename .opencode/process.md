@@ -10661,3 +10661,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - N1：执行子 `ses_e7c293be1ffedqG5mqX44lcMy0`（修复全屏菜单 no-op：main.cpp kUiCommand 分支加 kCmdToggleFullscreen→SetFullscreen；Window 接口加 fullscreen() 查询；unit+命令级测试+变异反证）。根因由 A6 审计乙定位。
 - A7：目标 mstsc.exe（C:\Windows\System32, 1,114,112B）确认存在；A7 为窗口管理行为取证，产出=理解文档（仓内 rtsc_gui 自绘不直接复用），拟作独立批次。
 - 在途：N1 执行子。
+## 第650轮：N1+N2-① 菜单 no-op 修复双审双章入库
+- N1 全屏（296fcfd）、N2-① 连接信息（4942812）双审盖章，工作树净。
+- N1：ToggleFullscreen 接线+菜单同步+4 测+守卫（ui 44/243）。
+- N2-①：kCmdConnectionInfo→ShowConnectionInfoDialog（真实 getter 不伪造；rtt 诚实 N/A）；NoteFrame 接线 fps；CMake 补对话框源（死代码根因）；守卫含 continue 断言（补 N1-D1）。ui 45/249、session_info 14/53。
+- 遗留跟进：N-csi-1 RTT 接线（需真实写 PDU 输入点）；N-csi-2 守卫换绑变异盲区；N2-②③ SmartCard/Help no-op；A7 多屏 UI 取证。
