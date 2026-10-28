@@ -229,6 +229,33 @@ uint32_t VkToScancodeFake(uint32_t vk) {
 
 uint32_t VkToScancodeNone(uint32_t) { return 0u; }
 
+// The wire byte pair a translated key becomes in a Fast-Path keyboard event:
+// eventHeader = eventFlags (eventCode 0, low 5 bits) then keyCode. test_ui
+// links only rtsc_ui, so it cannot call rtsc::proto::EncodeKeyboardEvent; this
+// mirrors that encoder's header layout ([MS-RDPBCGR] 2.2.8.1.2.2.1) for the
+// input events the window backend emits.
+std::string InputKeyBytes(const InputEvent& e) {
+    const unsigned flags = (e.key_release ? 0x01u : 0u) |
+                           (e.key_extended ? 0x02u : 0u);
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%02x%02x", flags, e.scancode);
+    return buf;
+}
+
+// A real WM_KEY* message for set-1 scancode `sc`. Win keys are extended, so
+// bit24 is set; key-up also carries the previous-state/transition bits.
+LPARAM KeyLParam(uint8_t sc, bool extended, bool up) {
+    uint32_t lp = (up ? 0xC0000001u : 1u) | (static_cast<uint32_t>(sc) << 16);
+    if (extended) lp |= (1u << 24);
+    return static_cast<LPARAM>(lp);
+}
+
+// Alt is a WM_SYSKEY* message with the context bit (bit 29) set.
+LPARAM AltKeyLParam(bool up) {
+    uint32_t lp = (up ? 0xC0000001u : 1u) | (0x38u << 16) | (1u << 29);
+    return static_cast<LPARAM>(lp);
+}
+
 }  // namespace
 
 RTSC_TEST(win32_key_translation_uses_the_lparam_scancode) {
@@ -453,6 +480,217 @@ RTSC_TEST(window_win32_key_input_reports_set1_scancodes) {
     CHECK(saw_b_down);
     w->Close();
     CHECK(w->closed());
+}
+
+RTSC_TEST(win32_ui_command_ids_are_distinct) {
+    // The clash that shipped: "帮助" (kCmdHelp) and Ctrl+Alt+End
+    // (kCmdSendCtrlAltDel) were both 19, so the Help item raised a SAS.
+    // volatile keeps these out of constant-expression context so /W4 /WX does
+    // not flag the checked condition as C4127.
+    const volatile uint8_t help = kCmdHelp;
+    const volatile uint8_t sas = kCmdSendCtrlAltDel;
+    const volatile uint8_t win_mode = kCmdToggleWinKeyRemote;
+    CHECK(help != sas);
+    CHECK(help != win_mode);
+    CHECK(sas != win_mode);
+}
+
+RTSC_TEST(win32_win_key_mode_gates_forwarding) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_win_key_mode_gates_forwarding", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    // kLocal: the Windows key belongs to the local shell; nothing is sent.
+    w->SetWinKeyMode(WinKeyMode::kLocal);
+    CHECK(w->win_key_mode() == WinKeyMode::kLocal);
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LWIN, KeyLParam(0x5B, true, false));
+    PostMessageW(hwnd, WM_KEYUP, VK_LWIN, KeyLParam(0x5B, true, true));
+    InputEvent ev;
+    bool saw_win = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x5B) {
+            saw_win = true;
+        }
+    }
+    CHECK(!saw_win);
+
+    // kRemote: forward the key. The translated events must encode as the
+    // set-1 extended scancode: 02 5B (down) / 03 5B (up).
+    w->SetWinKeyMode(WinKeyMode::kRemote);
+    CHECK(w->win_key_mode() == WinKeyMode::kRemote);
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LWIN, KeyLParam(0x5B, true, false));
+    PostMessageW(hwnd, WM_KEYUP, VK_LWIN, KeyLParam(0x5B, true, true));
+    std::string down_bytes;
+    std::string up_bytes;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kKey || ev.scancode != 0x5B) continue;
+        (ev.key_release ? up_bytes : down_bytes) = InputKeyBytes(ev);
+    }
+    CHECK(down_bytes == "025b");
+    CHECK(up_bytes == "035b");
+    w->Close();
+}
+
+RTSC_TEST(win32_focus_loss_releases_held_modifiers) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_focus_loss_releases_held_modifiers", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    w->SetWinKeyMode(WinKeyMode::kRemote);
+
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LCONTROL, KeyLParam(0x1D, false, false));
+    PostMessageW(hwnd, WM_KEYDOWN, VK_SHIFT, KeyLParam(0x2A, false, false));
+    InputEvent ev;
+    while (w->PollEvent(ev)) {
+    }
+    PostMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+
+    bool ctrl_up = false;
+    bool shift_up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind != InputEvent::Kind::kKey || !ev.key_release) continue;
+        if (ev.scancode == 0x1D) ctrl_up = true;
+        if (ev.scancode == 0x2A) shift_up = true;
+    }
+    CHECK(ctrl_up);
+    CHECK(shift_up);
+    w->Close();
+}
+
+RTSC_TEST(win32_win_down_without_up_is_released_on_focus_loss) {
+    // The shell consumes WM_KEYUP for the Windows key (probe: only the down
+    // reaches the window), so a remote session would latch Win forever unless
+    // the backend releases every forwarded-down key on focus loss.
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_win_down_without_up_is_released_on_focus_loss", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    w->SetWinKeyMode(WinKeyMode::kRemote);
+
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LWIN, KeyLParam(0x5B, true, false));
+    InputEvent ev;
+    while (w->PollEvent(ev)) {
+    }
+    PostMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+
+    std::string up_bytes;
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x5B &&
+            ev.key_release) {
+            up_bytes = InputKeyBytes(ev);
+        }
+    }
+    CHECK(up_bytes == "035b");
+    w->Close();
+}
+
+RTSC_TEST(win32_close_releases_held_alt) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_close_releases_held_alt", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    PostMessageW(hwnd, WM_SYSKEYDOWN, VK_MENU, AltKeyLParam(false));
+    InputEvent ev;
+    while (w->PollEvent(ev)) {
+    }
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+
+    bool alt_up = false;
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x38 &&
+            ev.key_release) {
+            alt_up = true;
+        }
+    }
+    CHECK(alt_up);
+}
+
+RTSC_TEST(win32_ctrl_alt_end_raises_sas_and_swallows_end) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_ctrl_alt_end_raises_sas_and_swallows_end", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    w->SetWinKeyMode(WinKeyMode::kRemote);
+
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LCONTROL, KeyLParam(0x1D, false, false));
+    PostMessageW(hwnd, WM_SYSKEYDOWN, VK_MENU, AltKeyLParam(false));
+    PostMessageW(hwnd, WM_KEYDOWN, VK_END, KeyLParam(0x4F, true, false));
+    PostMessageW(hwnd, WM_KEYUP, VK_END, KeyLParam(0x4F, true, true));
+    PostMessageW(hwnd, WM_SYSKEYUP, VK_MENU, AltKeyLParam(true));
+    PostMessageW(hwnd, WM_KEYUP, VK_LCONTROL, KeyLParam(0x1D, false, true));
+
+    int sas_commands = 0;
+    bool saw_end = false;
+    InputEvent ev;
+    while (w->PollEvent(ev)) {
+        if (ev.kind == InputEvent::Kind::kUiCommand &&
+            ev.command == kCmdSendCtrlAltDel) {
+            ++sas_commands;
+        }
+        if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x4F) {
+            saw_end = true;
+        }
+    }
+    CHECK_EQ(sas_commands, 1);
+    CHECK(!saw_end);
+    w->Close();
+}
+
+RTSC_TEST(win32_synthetic_win_key_is_extended) {
+    // A synthetic VK-only WM_KEYDOWN (lParam scancode field 0) must still mark
+    // the Windows key extended: its 0xE0 prefix is inherent to the key, not
+    // carried in bit24 of a message Windows synthesised.
+    const KeyTranslation win = TranslateWin32KeyMessage(kWin32WmKeyDown, VK_LWIN, 0);
+    CHECK(win.forward);
+    CHECK_EQ(win.scancode, static_cast<uint8_t>(0x5B));
+    CHECK(win.extended);
+}
+
+RTSC_TEST(win32_non_keyboard_messages_are_ignored) {
+    // WM_CHAR / WM_MOUSEMOVE are not keyboard transitions and must never be
+    // forwarded as key-downs (they would type or latch keys on the remote).
+    const KeyTranslation chr = TranslateWin32KeyMessage(
+        0x0102u, 'A', static_cast<uint32_t>(0x1Eu << 16));
+    CHECK(!chr.forward);
+    const KeyTranslation mouse = TranslateWin32KeyMessage(0x0200u, 0, 0);
+    CHECK(!mouse.forward);
+}
+
+RTSC_TEST(win32_ime_processkey_uses_the_lparam_scancode) {
+    // With an IME active Windows may report VK_PROCESSKEY (0xE5) as wParam;
+    // the real key is still in lParam bits 16..23.
+    const KeyTranslation ime = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, 0xE5u, static_cast<uint32_t>(0x1Eu << 16));
+    CHECK(ime.forward);
+    CHECK_EQ(ime.scancode, static_cast<uint8_t>(0x1E));
+
+    // With no scancode in lParam there is nothing real to send: never map
+    // VK_PROCESSKEY through the layout mapper (it yields garbage).
+    const KeyTranslation none =
+        TranslateWin32KeyMessage(kWin32WmKeyDown, 0xE5u, 0);
+    CHECK(!none.forward);
 }
 #endif  // defined(_WIN32)
 

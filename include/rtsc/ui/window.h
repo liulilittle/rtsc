@@ -9,10 +9,12 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rtsc/ui/surface.h"
 
@@ -78,22 +80,57 @@ constexpr uint8_t kCmdToggleFullscreen = 16;
 constexpr uint8_t kCmdConnectionInfo = 17;
 constexpr uint8_t kCmdToggleSmartCard = 18;
 // Send the Secure Attention Sequence (Ctrl+Alt+Del) to the remote session.
-// mstsc maps this to Ctrl+Alt+End; the window backend raises it from that chord
-// (and from the Input menu) so the protocol layer can send the SAS.
+// PRODUCT REQUIREMENT, NOT mstsc EVIDENCE: the window backend raises this from
+// Ctrl+Alt+End so the protocol layer can send EncodeCtrlAltDel(). There is no
+// binary evidence for mstsc's Ctrl+Alt+End mapping (docs/spec/input-evidence.md
+// lists it as still unverified).
 constexpr uint8_t kCmdSendCtrlAltDel = 19;
 // Toggle where the Windows key is applied (see WinKeyMode). The window backend
 // only forwards the Windows key while the mode asks for it.
 constexpr uint8_t kCmdToggleWinKeyRemote = 20;
+constexpr uint8_t kCmdHelp = 21;
+// Pause/Break. A bare 0x45 is NumLock's scancode, not Pause: the protocol layer
+// must send EncodePauseKey()'s CTRL(EXTENDED1) + NUMLOCK sequence instead.
+constexpr uint8_t kCmdSendPause = 22;
+
+namespace detail {
+// Compile-time guard: every client-side command id must be distinct. A
+// duplicated id silently maps one menu item onto another (the 19/19 clash
+// between kCmdHelp and kCmdSendCtrlAltDel made "帮助" raise a SAS).
+constexpr bool UiCommandIdsAreUnique() {
+    constexpr uint8_t kSingles[] = {
+        kCmdFit,          kCmdToggleSmartSizing, kCmdToggleFullscreen,
+        kCmdConnectionInfo, kCmdToggleSmartCard, kCmdSendCtrlAltDel,
+        kCmdToggleWinKeyRemote, kCmdHelp, kCmdSendPause,
+    };
+    for (uint8_t id = kCmdZoomPresetFirst; id <= kCmdZoomPresetLast; ++id) {
+        for (uint8_t single : kSingles) {
+            if (id == single) return false;
+        }
+    }
+    for (size_t i = 0; i < sizeof(kSingles); ++i) {
+        for (size_t j = i + 1; j < sizeof(kSingles); ++j) {
+            if (kSingles[i] == kSingles[j]) return false;
+        }
+    }
+    return true;
+}
+}  // namespace detail
+
+static_assert(kCmdZoomPresetFirst <= kCmdZoomPresetLast,
+              "zoom preset command range is inverted");
+static_assert(detail::UiCommandIdsAreUnique(),
+              "kCmd* UI command ids must be pairwise distinct");
 
 // Where the Windows key is applied. mstsc's "Apply Windows key combinations"
-// setting has the same three choices. The default is kLocal: the Windows key
-// opens the local Start menu, exactly as it does outside the session.
+// setting has the same three choices. The default is kRemote: mstsc sends Win
+// keys to the remote session (docs/spec/input-evidence.md E5 shows no
+// exclusion at the dispatch site), so forwarding is the compatible default.
 enum class WinKeyMode : uint8_t {
     kLocal = 0,
     kRemote = 1,
     kFullscreenOnly = 2,
 };
-constexpr uint8_t kCmdHelp = 19;
 
 // The state the window needs in order to label and tick its view menu items.
 // Kept platform neutral so rtsc::ui does not depend on rtsc::client.
@@ -172,9 +209,57 @@ inline constexpr uint32_t kWin32WmSysKeyUp = 0x0105;
 // bit, delivered as WM_SYSKEYDOWN). The pseudo Ctrl is dropped so the remote
 // does not see Ctrl+AltGr chords; the right Alt is forwarded as set-1 scancode
 // 0x38 with the extended flag. A real right Ctrl (VK_RCONTROL) is unaffected.
+//
+// Only the four WM_KEYDOWN/UP and WM_SYSKEYDOWN/UP ids are keyboard transitions;
+// anything else is dropped. `win_key_mode` gates the Windows keys (LWIN/RWIN):
+// kRemote forwards them, kLocal and (for now) kFullscreenOnly keep them local.
+// The default is kRemote to match mstsc (docs/spec/input-evidence.md E5).
 KeyTranslation TranslateWin32KeyMessage(
     uint32_t msg, uint32_t vk, uint32_t lparam,
-    uint32_t (*vk_to_scancode)(uint32_t vk) = nullptr);
+    uint32_t (*vk_to_scancode)(uint32_t vk) = nullptr,
+    WinKeyMode win_key_mode = WinKeyMode::kRemote);
+
+// Set-1 scancodes the backend reasons about. They mirror rtsc::proto's named
+// scancodes; window.h stays free of the protocol header.
+inline constexpr uint8_t kWin32ScancodeCtrl = 0x1D;
+inline constexpr uint8_t kWin32ScancodeAlt = 0x38;
+inline constexpr uint8_t kWin32ScancodeEnd = 0x4F;
+
+// What the backend does with one translated key message.
+enum class Win32KeyAction : uint8_t {
+    kIgnore = 0,      // drop (AltGr pseudo Ctrl, unmappable, IME marker)
+    kForward,         // emit `key` as a Fast-Path key event
+    kSendCtrlAltDel,  // raise kCmdSendCtrlAltDel instead of forwarding
+};
+
+// Tracks every key the backend has forwarded as down, so focus loss / close can
+// release them (R1 reconciliation). This is an engineering implementation keyed
+// off observable focus messages (WM_KILLFOCUS / WM_ACTIVATE(WA_INACTIVE) /
+// WM_CLOSE); it does NOT claim to match mstsc's unverified trigger timing.
+class Win32KeyState {
+ public:
+    // Consumes one translated message. A forwarded key is tracked; the
+    // Ctrl+Alt+End chord yields kSendCtrlAltDel and the End key is swallowed
+    // for the whole chord so no bare End scancode reaches the remote.
+    Win32KeyAction Process(const KeyTranslation& key);
+
+    // True when scancode+extended is currently forwarded-down.
+    bool IsDown(uint8_t scancode, bool extended) const;
+
+    // Key-up events for every still-down key, newest first (LIFO), then clears
+    // the set. The backend appends these to its event queue on focus loss.
+    std::vector<InputEvent> ReleaseAll();
+
+    size_t down_count() const { return down_.size(); }
+
+ private:
+    struct DownKey {
+        uint8_t scancode;
+        bool extended;
+    };
+    std::vector<DownKey> down_;
+    bool sas_end_held_ = false;
+};
 #endif  // defined(_WIN32)
 
 class Window {
@@ -210,11 +295,12 @@ class Window {
     virtual bool fullscreen() const { return false; }
 
     // Selects where the Windows key is applied (see WinKeyMode). The default is
-    // a no-op so backends without a keyboard hook (headless, X11, Wayland) keep
-    // working; the Win32 backend installs a low-level hook when the mode asks it
-    // to forward the Windows key.
+    // a no-op so backends without Win-key handling (headless, X11, Wayland)
+    // keep working; Win32 gates its forwarding with this mode. The default mode
+    // is kRemote: mstsc sends Win keys to the remote session (input-evidence.md
+    // E5), so forwarding is the compatible baseline.
     virtual void SetWinKeyMode(WinKeyMode mode) { (void)mode; }
-    virtual WinKeyMode win_key_mode() const { return WinKeyMode::kLocal; }
+    virtual WinKeyMode win_key_mode() const { return WinKeyMode::kRemote; }
 
     // Publishes the view state the window uses to label and tick its menu
     // items (zoom percent, smart sizing, fullscreen, smart card).

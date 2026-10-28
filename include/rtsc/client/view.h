@@ -92,8 +92,26 @@ void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
 // ScaleSurface sampled there. Points in a letterbox bar (outside the image) are
 // clamped to the image bounds. This is the inverse of the scale transform and
 // keeps the remote pointer aligned with the local pointer while zoomed/fitted.
+// The mapping uses the sampling phase of the renderer: a destination pixel d
+// covers the centre of its source footprint,
+//     sx = ((2 * (vx - vt.x) + 1) * src_w - 1) / (2 * vt.width)
+// (resample.cpp NearestIndex), not the left-edge floor(d * src_w / width).
 void MapViewportPoint(const ViewTransform& vt, int src_w, int src_h, int vx,
                       int vy, int& rx, int& ry);
+
+// Translates a pointer position inside one monitor window (local client-area
+// pixels) into the server desktop coordinate space. `monitor_left`/`top` are
+// the signed primary-relative TS_MONITOR_DEF coordinates; `origin_x`/`origin_y`
+// are the top-left corner of the monitors' union (GraphicsPipeline::origin_x/y)
+// and `union_w`/`union_h` its size. The server desktop is that union and the
+// pointer fields are 16-bit unsigned offsets from its top-left corner
+// ([MS-RDPBCGR] 2.2.8.1.2.4), so primary-relative coordinates must never be
+// sent: a monitor left of the primary would wrap around. The result is clamped
+// to the union bounds.
+void MapMonitorPointToDesktop(int monitor_left, int monitor_top, int origin_x,
+                              int origin_y, int union_w, int union_h,
+                              int local_x, int local_y, int& desktop_x,
+                              int& desktop_y);
 
 // The zoom/fit state shared by the render loop and the input handler.
 struct ZoomState {

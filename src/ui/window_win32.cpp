@@ -85,6 +85,36 @@ bool HasSystemItems(HMENU menu) {
     return mii.wID == kMenuConnInfo;
 }
 
+// Keys whose set-1 scancode is inherently an 0xE0-prefixed (extended) one.
+// A real WM_KEY* carries that in lParam bit24, but synthetic / automation
+// messages (lParam scancode field 0) do not, and the virtual key still tells us
+// the key is extended. VK_LCONTROL/VK_CONTROL are deliberately absent: 0x1D is
+// shared with VK_RCONTROL, which is listed.
+bool IsInherentExtendedVirtualKey(uint32_t vk) {
+    switch (vk) {
+        case VK_RCONTROL:
+        case VK_RMENU:
+        case VK_LWIN:
+        case VK_RWIN:
+        case VK_INSERT:
+        case VK_DELETE:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_LEFT:
+        case VK_UP:
+        case VK_RIGHT:
+        case VK_DOWN:
+        case VK_NUMLOCK:
+        case VK_SNAPSHOT:
+        case VK_DIVIDE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 class Win32Window final : public Window {
  public:
     Win32Window(uint16_t width, uint16_t height) : surface_(width, height) {}
@@ -204,6 +234,9 @@ class Win32Window final : public Window {
 
     bool fullscreen() const override { return fullscreen_; }
 
+    void SetWinKeyMode(WinKeyMode mode) override { win_key_mode_ = mode; }
+    WinKeyMode win_key_mode() const override { return win_key_mode_; }
+
     void* native_handle() const override {
         return reinterpret_cast<void*>(hwnd_);
     }
@@ -241,6 +274,7 @@ class Win32Window final : public Window {
     }
 
     void Close() override {
+        ReleaseHeldKeys();
         if (hwnd_ != nullptr) {
             DestroyWindow(hwnd_);
             hwnd_ = nullptr;
@@ -258,9 +292,18 @@ class Win32Window final : public Window {
     bool OnNativeMessage(UINT msg, WPARAM wp, LPARAM lp) {
         switch (msg) {
             case WM_CLOSE:
+                ReleaseHeldKeys();
                 closed_ = true;
                 PostQuitMessage(0);
                 return false;  // DefWindowProc destroys the window
+            case WM_KILLFOCUS:
+                ReleaseHeldKeys();
+                return false;
+            case WM_ACTIVATE:
+                // WA_INACTIVE is the observable focus-loss path for backends
+                // that get WM_ACTIVATE without a WM_KILLFOCUS.
+                if (LOWORD(wp) == WA_INACTIVE) ReleaseHeldKeys();
+                return false;
             case WM_SIZE: {
                 const int w = LOWORD(lp);
                 const int h = HIWORD(lp);
@@ -315,16 +358,46 @@ class Win32Window final : public Window {
                 // ([MS-RDPBCGR] 2.2.8.1.2.2), never the virtual-key code; see
                 // TranslateWin32KeyMessage for the AltGr handling.
                 const uint32_t vk = static_cast<uint32_t>(wp);
+                // Pause/Break is the CTRL(EXTENDED1)+NUMLOCK sequence, never a
+                // bare 0x45 (that is NumLock's scancode). Raise the UI command
+                // once per press; the front-end sends EncodePauseKey().
+                if (vk == VK_PAUSE) {
+                    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+                        if (!pause_down_) {
+                            pause_down_ = true;
+                            PushCommand(kCmdSendPause);
+                        }
+                    } else {
+                        pause_down_ = false;
+                    }
+                    return true;
+                }
+                // kLocal keeps the Windows key for the local shell. Return
+                // false so DefWindowProc still sees the message; it is never
+                // forwarded to the remote. kFullscreenOnly is the same for now
+                // (TODO: gate on fullscreen_ once that policy is decided).
+                const bool win_key = vk == VK_LWIN || vk == VK_RWIN;
+                if (win_key && win_key_mode_ != WinKeyMode::kRemote) {
+                    return false;
+                }
                 const KeyTranslation key = TranslateWin32KeyMessage(
                     static_cast<uint32_t>(msg), vk,
-                    static_cast<uint32_t>(lp));
-                if (key.forward) {
-                    InputEvent e;
-                    e.kind = InputEvent::Kind::kKey;
-                    e.scancode = key.scancode;
-                    e.key_release = key.release;
-                    e.key_extended = key.extended;
-                    events_.push_back(e);
+                    static_cast<uint32_t>(lp), nullptr, win_key_mode_);
+                switch (key_state_.Process(key)) {
+                    case Win32KeyAction::kForward: {
+                        InputEvent e;
+                        e.kind = InputEvent::Kind::kKey;
+                        e.scancode = key.scancode;
+                        e.key_release = key.release;
+                        e.key_extended = key.extended;
+                        events_.push_back(e);
+                        break;
+                    }
+                    case Win32KeyAction::kSendCtrlAltDel:
+                        PushCommand(kCmdSendCtrlAltDel);
+                        break;
+                    case Win32KeyAction::kIgnore:
+                        break;
                 }
                 // Alt+F4 stays local: TranslateWin32KeyMessage never forwards
                 // it, and returning false lets DefWindowProc turn the message
@@ -540,6 +613,17 @@ class Win32Window final : public Window {
         events_.push_back(e);
     }
 
+    // Releases every key still forwarded-down. Called on the observable focus
+    // loss / close paths so the remote does not keep Ctrl/Alt/Shift/Win latched
+    // (the shell eats WM_KEYUP for the Windows key, so its up may never
+    // arrive). Engineering implementation keyed off focus messages; the mstsc
+    // trigger timing is not claimed to be identical.
+    void ReleaseHeldKeys() {
+        for (const InputEvent& e : key_state_.ReleaseAll()) {
+            events_.push_back(e);
+        }
+    }
+
     void Destroy() {
         if (bitmap_ != nullptr) {
             DeleteObject(bitmap_);
@@ -600,6 +684,9 @@ class Win32Window final : public Window {
     HMENU sys_menu_ = nullptr;     // the real system menu, extended
     ViewMenuState view_state_;
     std::function<void()> clipboard_callback_;
+    WinKeyMode win_key_mode_ = WinKeyMode::kRemote;
+    Win32KeyState key_state_;
+    bool pause_down_ = false;
     bool fullscreen_ = false;
     RECT saved_rect_{};
     LONG_PTR saved_style_ = 0;
@@ -607,12 +694,80 @@ class Win32Window final : public Window {
 
 }  // namespace
 
+bool Win32KeyState::IsDown(uint8_t scancode, bool extended) const {
+    for (const DownKey& key : down_) {
+        if (key.scancode == scancode && key.extended == extended) return true;
+    }
+    return false;
+}
+
+Win32KeyAction Win32KeyState::Process(const KeyTranslation& key) {
+    if (!key.forward) return Win32KeyAction::kIgnore;
+
+    // Ctrl+Alt+End -> SAS is a PRODUCT REQUIREMENT, not mstsc evidence (there
+    // is no binary proof of mstsc's Ctrl+Alt+End mapping). Swallow the End key
+    // for the whole chord (auto-repeat downs included) so the remote never sees
+    // a bare End scancode; raise the command only once per press.
+    const bool ctrl_down = IsDown(kWin32ScancodeCtrl, false) ||
+                           IsDown(kWin32ScancodeCtrl, true);
+    const bool alt_down = IsDown(kWin32ScancodeAlt, false) ||
+                          IsDown(kWin32ScancodeAlt, true);
+    if (key.scancode == kWin32ScancodeEnd && key.extended) {
+        if (sas_end_held_) {
+            if (key.release) sas_end_held_ = false;
+            return Win32KeyAction::kIgnore;
+        }
+        if (!key.release && ctrl_down && alt_down) {
+            sas_end_held_ = true;
+            return Win32KeyAction::kSendCtrlAltDel;
+        }
+    }
+
+    if (key.release) {
+        for (auto it = down_.begin(); it != down_.end(); ++it) {
+            if (it->scancode == key.scancode && it->extended == key.extended) {
+                down_.erase(it);
+                break;
+            }
+        }
+    } else if (!IsDown(key.scancode, key.extended)) {
+        down_.push_back({key.scancode, key.extended});
+    }
+    return Win32KeyAction::kForward;
+}
+
+std::vector<InputEvent> Win32KeyState::ReleaseAll() {
+    // Newest first (LIFO): the key pressed last is released first, which keeps
+    // modifier combinations consistent while unwinding.
+    std::vector<InputEvent> out;
+    out.reserve(down_.size());
+    for (auto it = down_.rbegin(); it != down_.rend(); ++it) {
+        InputEvent e;
+        e.kind = InputEvent::Kind::kKey;
+        e.scancode = it->scancode;
+        e.key_release = true;
+        e.key_extended = it->extended;
+        out.push_back(e);
+    }
+    down_.clear();
+    sas_end_held_ = false;
+    return out;
+}
+
 KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
                                         uint32_t lparam,
-                                        uint32_t (*vk_to_scancode)(uint32_t)) {
+                                        uint32_t (*vk_to_scancode)(uint32_t),
+                                        WinKeyMode win_key_mode) {
     KeyTranslation out;
+
+    // Only the four keyboard transitions are keys. Anything else (WM_CHAR,
+    // WM_MOUSEMOVE, ...) must never be treated as a key-down.
+    if (msg != kWin32WmKeyDown && msg != kWin32WmKeyUp &&
+        msg != kWin32WmSysKeyDown && msg != kWin32WmSysKeyUp) {
+        return out;
+    }
     out.release = (msg == kWin32WmKeyUp || msg == kWin32WmSysKeyUp);
-    const bool extended = (lparam & (1u << 24)) != 0;
+    bool extended = (lparam & (1u << 24)) != 0;
 
     // AltGr: Windows injects a pseudo Ctrl for AltGr (VK_CONTROL/VK_LCONTROL
     // with the extended bit). Drop it, otherwise every AltGr chord arrives as
@@ -640,6 +795,11 @@ KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
     // 0 there and fall back to the layout mapping.
     uint32_t scancode = (lparam >> 16) & 0xFF;
     if (scancode == 0) {
+        // VK_PROCESSKEY (0xE5) is an IME marker with no key of its own. With no
+        // scancode in lParam there is nothing real to send; mapping 0xE5 would
+        // produce garbage. (When lParam does carry a scancode, that is used as
+        // usual: an IME still reports the physical key there.)
+        if (vk == VK_PROCESSKEY) return out;
         scancode = (vk_to_scancode != nullptr)
                        ? vk_to_scancode(vk)
                        : static_cast<uint32_t>(
@@ -649,6 +809,22 @@ KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
     // No mapping: drop the event rather than forward scancode 0, which is not a
     // key and would type garbage on the remote.
     if (scancode == 0) return out;
+
+    // Synthetic / automation messages can omit lParam bit24; the virtual key
+    // still identifies keys whose scancode is inherently 0xE0-prefixed.
+    if (IsInherentExtendedVirtualKey(vk) || scancode == 0x5B ||
+        scancode == 0x5C) {
+        extended = true;
+    }
+
+    // Windows key policy. kRemote (the mstsc-compatible default) forwards;
+    // kLocal keeps LWIN/RWIN for the local shell; kFullscreenOnly is treated as
+    // kLocal for now (TODO: decide the fullscreen policy).
+    if ((scancode == 0x5B || scancode == 0x5C) &&
+        win_key_mode != WinKeyMode::kRemote) {
+        return out;
+    }
+
     out.forward = true;
     out.scancode = static_cast<uint8_t>(scancode);
     out.extended = extended;

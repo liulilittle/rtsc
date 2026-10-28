@@ -19,10 +19,11 @@ uint8_t EventHeader(FastPathInputEventCode code, uint8_t flags) {
 }  // namespace
 
 std::vector<uint8_t> EncodeKeyboardEvent(uint8_t key_code, bool release,
-                                         bool extended) {
+                                         bool extended, bool extended1) {
     uint8_t flags = 0;
     if (release) flags |= kKbdRelease;
     if (extended) flags |= kKbdExtended;
+    if (extended1) flags |= kKbdExtended1;
     ByteWriter w;
     w.u8(EventHeader(FastPathInputEventCode::kScancode, flags));
     w.u8(key_code);
@@ -83,6 +84,20 @@ std::vector<std::vector<uint8_t>> EncodeCtrlAltDel() {
         EncodeKeyboardEvent(kScancodeDelete, true, true),
         EncodeKeyboardEvent(kScancodeLAlt, true, false),
         EncodeKeyboardEvent(kScancodeLControl, true, false),
+    };
+}
+
+std::vector<std::vector<uint8_t>> EncodePauseKey() {
+    // [MS-RDPBCGR] 2.2.8.1.2.2.1 (and docs/spec/share-data.md:700-705): Pause is
+    // not a scancode of its own. It is the CTRL(0x1D) scan code with
+    // FASTPATH_INPUT_KBDFLAGS_EXTENDED1 (the "E1" prefix), held while
+    // NUMLOCK(0x45) goes down and up, then CTRL is released. The wire bytes are
+    // 04 1D / 00 45 / 05 1D / 01 45.
+    return {
+        EncodeKeyboardEvent(kScancodeLControl, false, false, true),
+        EncodeKeyboardEvent(kScancodePause, false, false, false),
+        EncodeKeyboardEvent(kScancodeLControl, true, false, true),
+        EncodeKeyboardEvent(kScancodePause, true, false, false),
     };
 }
 

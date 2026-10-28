@@ -526,21 +526,47 @@ int main(int argc, char** argv) {
                 if (multi_window) {
                     // Each window is 1:1 with its monitor, so the local pointer
                     // is offset into the virtual desktop coordinate space. There
-                    // is no zoom in this mode.
+                    // is no zoom in this mode. Pointer events carry an unsigned
+                    // position relative to the union of every monitor, so the
+                    // union origin has to be subtracted: a monitor left of or
+                    // above the primary has a negative left/top and adding it
+                    // directly wrapped the coordinate (a -1920 edge became
+                    // 63616).
                     if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
                         ev.kind == rtsc::ui::InputEvent::Kind::kMouseButton ||
                         ev.kind == rtsc::ui::InputEvent::Kind::kMouseWheel) {
                         const auto& m = client.monitors()[wi];
-                        ev.x = static_cast<uint16_t>(static_cast<int>(ev.x) +
-                                                     m.left);
-                        ev.y = static_cast<uint16_t>(static_cast<int>(ev.y) +
-                                                     m.top);
+                        int origin_x = 0;
+                        int origin_y = 0;
+                        int union_w = 0;
+                        int union_h = 0;
+                        for (const auto& other : client.monitors()) {
+                            origin_x = std::min(origin_x, other.left);
+                            origin_y = std::min(origin_y, other.top);
+                        }
+                        for (const auto& other : client.monitors()) {
+                            union_w = std::max(union_w, other.right - origin_x + 1);
+                            union_h = std::max(union_h, other.bottom - origin_y + 1);
+                        }
+                        int dx = 0;
+                        int dy = 0;
+                        rtsc::client::MapMonitorPointToDesktop(
+                            m.left, m.top, origin_x, origin_y, union_w, union_h,
+                            static_cast<int>(ev.x), static_cast<int>(ev.y), dx, dy);
+                        ev.x = static_cast<uint16_t>(dx);
+                        ev.y = static_cast<uint16_t>(dy);
                     }
                 } else {
-                    // Client-side view controls first: a consumed event (wheel
-                    // zoom, Ctrl+digit / menu preset) is never forwarded to the
-                    // server.
-                    consumed = rtsc::client::ApplyZoomInput(ev, zs);
+                    // Client-side view controls: Ctrl+wheel and the menu presets
+                    // are ours; a plain wheel belongs to the remote desktop (it
+                    // used to be swallowed by the zoom handler, so the remote
+                    // never scrolled). Menu commands are never forwarded.
+                    if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseWheel &&
+                        zs.ctrl) {
+                        consumed = rtsc::client::ApplyZoomInput(ev, zs);
+                    } else if (ev.kind != rtsc::ui::InputEvent::Kind::kMouseWheel) {
+                        consumed = rtsc::client::ApplyZoomInput(ev, zs);
+                    }
                     if (consumed) {
                         client.graphics().set_zoom(zs.zoom);
                         client.graphics().set_fit(zs.fit);

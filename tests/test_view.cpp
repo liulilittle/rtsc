@@ -764,6 +764,82 @@ RTSC_TEST(view_map_viewport_point_clamps_letterbox) {
     CHECK_EQ(ry, 3);  // clamped to the bottom row
 }
 
+RTSC_TEST(view_map_viewport_point_uses_render_phase_3_to_5) {
+    // T7: 3 -> 5 upscale. The renderer samples the centre of each destination
+    // pixel's footprint (resample.cpp NearestIndex), so viewport column 3 was
+    // painted from source column 2. The left-edge mapping returned 1, which is
+    // a whole pixel off from what the user sees under the cursor.
+    const auto vt = ComputeViewTransform(3, 3, 5, 5, 5.0 / 3.0, false);
+    CHECK_EQ(vt.width, 5);
+    CHECK_EQ(vt.height, 5);
+    int rx = -1, ry = -1;
+    MapViewportPoint(vt, 3, 3, 3, 3, rx, ry);
+    CHECK_EQ(rx, 2);
+    CHECK_EQ(ry, 2);
+    // Every viewport column/row must map to the source pixel ScaleSurface
+    // sampled there.
+    for (int d = 0; d < vt.width; ++d) {
+        MapViewportPoint(vt, 3, 3, d, d, rx, ry);
+        CHECK_EQ(rx, E8Index(d, 3, 5));
+        CHECK_EQ(ry, E8Index(d, 3, 5));
+    }
+}
+
+RTSC_TEST(view_map_viewport_point_uses_render_phase_100_to_4) {
+    // T8: 100 -> 4 reduction. The centre phase puts viewport column 1 on source
+    // column 37; the left-edge mapping produced 25 (12 pixels off).
+    const auto vt = ComputeViewTransform(100, 100, 4, 4, 0.04, false);
+    CHECK_EQ(vt.width, 4);
+    CHECK_EQ(vt.height, 4);
+    int rx = -1, ry = -1;
+    MapViewportPoint(vt, 100, 100, 1, 1, rx, ry);
+    CHECK_EQ(rx, 37);
+    CHECK_EQ(ry, 37);
+    for (int d = 0; d < vt.width; ++d) {
+        MapViewportPoint(vt, 100, 100, d, d, rx, ry);
+        CHECK_EQ(rx, E8Index(d, 100, 4));
+        CHECK_EQ(ry, E8Index(d, 100, 4));
+    }
+}
+
+RTSC_TEST(view_map_viewport_point_uses_render_phase_y_axis) {
+    // 7x5 -> 3x2 (fit). x and y are both non-integer ratios; the y axis is the
+    // one the parent's T7/T8 cases did not cover. Viewport (2,1) is source
+    // (5,3): left-edge would give (4,2).
+    const auto vt = ComputeViewTransform(7, 5, 3, 2, 1.0, true);
+    CHECK_EQ(vt.width, 3);
+    CHECK_EQ(vt.height, 2);
+    int rx = -1, ry = -1;
+    MapViewportPoint(vt, 7, 5, 2, 1, rx, ry);
+    CHECK_EQ(rx, 5);
+    CHECK_EQ(ry, 3);
+    CHECK_EQ(ry, E8Index(1, 5, 2));
+}
+
+RTSC_TEST(view_wheel_event_coordinates_map_through_viewport) {
+    // T10 (input contract level): a wheel event carries the client-area
+    // pointer position (the Win32 backend fills it from ScreenToClient on
+    // WM_MOUSEWHEEL -- the window backend lives in the UI batch and is not
+    // linked into this suite). The render loop maps ev.x/ev.y exactly like a
+    // pointer move, so a wheel on viewport (1,3) of a 100 -> 4 view must
+    // resolve to source (37,87), not the left-edge (25,75).
+    const auto vt = ComputeViewTransform(100, 100, 4, 4, 0.04, false);
+    ui::InputEvent wheel;
+    wheel.kind = ui::InputEvent::Kind::kMouseWheel;
+    wheel.wheel_delta = 120;
+    wheel.x = 1;
+    wheel.y = 3;
+    int rx = -1, ry = -1;
+    MapViewportPoint(vt, 100, 100, wheel.x, wheel.y, rx, ry);
+    CHECK_EQ(rx, 37);
+    CHECK_EQ(ry, 87);
+    // A zero x/y (what the backend used to report for every wheel) lands on
+    // the top-left source pixel; that is why the backend must fill them.
+    MapViewportPoint(vt, 100, 100, 0, 0, rx, ry);
+    CHECK_EQ(rx, 12);
+    CHECK_EQ(ry, 12);
+}
+
 RTSC_TEST(view_fit_rounds_size_and_centres_within_bounds) {
     // 8x4 source in a 9x8 viewport: scale 1.125 -> 9x5, centred at x=0, y=1.
     // The odd leftover row lands below the image (floor((8-5)/2) == 1).

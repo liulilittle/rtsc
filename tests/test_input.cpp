@@ -87,6 +87,28 @@ RTSC_TEST(qoe_timestamp_event_is_five_bytes) {
     CHECK_EQ(e[4], static_cast<uint8_t>(0x11));
 }
 
+RTSC_TEST(ctrl_alt_del_pdu_matches_the_expected_sequence) {
+    // The six scancode events, framed as one Fast-Path input PDU:
+    // header 18 (6 events), length 0e, then Ctrl/Alt/Del down, Del/Alt/Ctrl up.
+    const auto events = EncodeCtrlAltDel();
+    CHECK_EQ(events.size(), static_cast<size_t>(6));
+    const auto pdu = EncodeFastPathInputPdu(events);
+    CHECK(Hex(pdu) == "180e001d0038025303530138011d");
+}
+
+RTSC_TEST(pause_key_uses_the_extended1_ctrl_numlock_sequence) {
+    // Pause = CTRL(EXTENDED1) down, NUMLOCK down, CTRL(EXTENDED1) up,
+    // NUMLOCK up. A single 00 45 / 01 45 pair is the defect this locks out.
+    const auto events = EncodePauseKey();
+    CHECK_EQ(events.size(), static_cast<size_t>(4));
+    if (events.size() == 4) {
+        CHECK(Hex(events[0]) == "041d");
+        CHECK(Hex(events[1]) == "0045");
+        CHECK(Hex(events[2]) == "051d");
+        CHECK(Hex(events[3]) == "0145");
+    }
+}
+
 RTSC_TEST(fastpath_input_pdu_frames_one_event) {
     const auto pdu = EncodeFastPathInputPdu({EncodeMouseEvent(kPtrMove, 683, 367)});
     // header(1) + length(1) + event(7) = 9.

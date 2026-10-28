@@ -151,14 +151,39 @@ void MapViewportPoint(const ViewTransform& vt, int src_w, int src_h, int vx,
         ry = 0;
         return;
     }
-    int sx = (vx - vt.x) * src_w / vt.width;
-    int sy = (vy - vt.y) * src_h / vt.height;
+    // The cursor must resolve to the source pixel the renderer actually painted
+    // under it, so this is the inverse of the same centre-phase rule the
+    // nearest-neighbour path uses (src/client/resample.cpp NearestIndex,
+    // docs/spec/scaling-evidence.md E8):
+    //   src = ((2*d + 1) * S - 1) / (2 * D)
+    // Using the left edge here put a 100 -> 4 reduction 12 pixels away from what
+    // the user sees (viewport 1 painted source 37, but mapped to 25).
+    const long long dx = static_cast<long long>(vx) - vt.x;
+    const long long dy = static_cast<long long>(vy) - vt.y;
+    int sx = static_cast<int>(((2 * dx + 1) * src_w - 1) / (2LL * vt.width));
+    int sy = static_cast<int>(((2 * dy + 1) * src_h - 1) / (2LL * vt.height));
     if (sx < 0) sx = 0;
     if (sy < 0) sy = 0;
     if (sx > src_w - 1) sx = src_w - 1;
     if (sy > src_h - 1) sy = src_h - 1;
     rx = sx;
     ry = sy;
+}
+
+void MapMonitorPointToDesktop(int monitor_left, int monitor_top, int origin_x,
+                              int origin_y, int union_w, int union_h,
+                              int local_x, int local_y, int& desktop_x,
+                              int& desktop_y) {
+    (void)union_w;
+    (void)union_h;
+    // Pointer events carry a 16-bit unsigned position relative to the top-left
+    // corner of the *union* of all monitors ([MS-RDPBCGR]: TS_FP_POINTER_EVENT
+    // xPos/yPos, and the desktop is the union), while a monitor's left/top is a
+    // signed offset from the primary. Subtracting the union origin is what keeps
+    // a monitor placed left of or above the primary from wrapping (a -1920 left
+    // edge used to become 63616).
+    desktop_x = monitor_left - origin_x + local_x;
+    desktop_y = monitor_top - origin_y + local_y;
 }
 
 bool ApplyZoomInput(const ui::InputEvent& ev, ZoomState& state) {

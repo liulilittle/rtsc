@@ -47,9 +47,11 @@ enum PointerFlag : uint16_t {
 // ---- individual event encoders --------------------------------------------
 // Each returns the complete event bytes (eventHeader included).
 
-// TS_FP_KEYBOARD_EVENT: eventHeader(1) + keyCode(1) = 2 bytes.
+// TS_FP_KEYBOARD_EVENT: eventHeader(1) + keyCode(1) = 2 bytes. `extended1`
+// sets FASTPATH_INPUT_KBDFLAGS_EXTENDED1 (0x04), which the PAUSE key sequence
+// carries on its CTRL events ([MS-RDPBCGR] 2.2.8.1.2.2.1).
 std::vector<uint8_t> EncodeKeyboardEvent(uint8_t key_code, bool release,
-                                         bool extended);
+                                         bool extended, bool extended1 = false);
 
 // TS_FP_UNICODE_KEYBOARD_EVENT: eventHeader(1) + unicodeCode(2) = 3 bytes.
 std::vector<uint8_t> EncodeUnicodeEvent(uint16_t unicode_code, bool release);
@@ -76,7 +78,10 @@ std::vector<uint8_t> EncodeQoeTimestampEvent(uint32_t timestamp);
 // ([MS-RDPBCGR] 2.2.8.1.2.2.1). So the left/right Windows keys are 0x5B / 0x5C
 // with kKbdExtended set, matching the 0xE0 0x5B / 0xE0 0x5C hardware scancodes.
 constexpr uint8_t kScancodeLControl = 0x1D;
+constexpr uint8_t kScancodeLShift = 0x2A;
 constexpr uint8_t kScancodeLAlt = 0x38;
+constexpr uint8_t kScancodePause = 0x45;   // shares the NumLock scancode
+constexpr uint8_t kScancodeEnd = 0x4F;     // extended (0xE0 0x4F)
 constexpr uint8_t kScancodeDelete = 0x53;  // extended (0xE0 0x53)
 constexpr uint8_t kScancodeLWin = 0x5B;    // extended (0xE0 0x5B)
 constexpr uint8_t kScancodeRWin = 0x5C;    // extended (0xE0 0x5C)
@@ -85,8 +90,16 @@ constexpr uint8_t kScancodeRWin = 0x5C;    // extended (0xE0 0x5C)
 // sequence. [MS-RDPBCGR] defines no dedicated SAS input event: the client sends
 // the same six scancode events a real keyboard would (Ctrl down, Alt down,
 // Delete down, Delete up, Alt up, Ctrl up) and the server injects them into the
-// session, where winlogon raises the SAS. mstsc triggers this from Ctrl+Alt+End.
+// session, where winlogon raises the SAS. Raising this from Ctrl+Alt+End is a
+// product requirement, NOT mstsc binary evidence (input-evidence.md leaves that
+// mapping unverified).
 std::vector<std::vector<uint8_t>> EncodeCtrlAltDel();
+
+// Pause/Break as the CTRL(EXTENDED1) + NUMLOCK two-key sequence
+// ([MS-RDPBCGR] 2.2.8.1.2.2.1; docs/spec/share-data.md 3.6.1): CTRL down,
+// NUMLOCK down, CTRL up, NUMLOCK up. Pause shares NumLock's set-1 scancode
+// 0x45, so a bare 0x45 event is NOT a Pause press.
+std::vector<std::vector<uint8_t>> EncodePauseKey();
 
 // ---- PDU framing -----------------------------------------------------------
 
