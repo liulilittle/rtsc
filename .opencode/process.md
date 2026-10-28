@@ -10639,3 +10639,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 主侧 C0：build 0err/0warn；ctest 52 套件中 51 绿，view bench 因外部 il2cpp 构建 CPU 争用红（已知非代码，discover.md）。
 - 提交 b09c4cf（direction-B backend）+ 证据文档。
 - 剩余：①view 独占复跑待争用窗口；②真机 wire 裁决（cliprdr capset/rdpsnd TSSNDCAPS）；③GUI 真拖放端到端；④A5-A7 富余项（EnableSmartSizing/多屏 UI）。
+## 第646轮：A6 EnableSmartSizing 语义裁定（逆向取证里程碑）
+- 诉求：取证 mstsc 的 EnableSmartSizing 精确语义（plan.md:358）。
+- 结果（58989b1 证据文档）：mstscax!FUN_18003444c@0x18003444c 读取 "EnableSmartSizing"（@79/81）与 "ZoomLevel"（@88）：
+   * EnableSmartSizing=0 → 恒 1:1 BitBlt 直拷（即使窗口≠桌面）；
+   * EnableSmartSizing=1 → 窗口≠桌面时 StretchBlt+HALFTONE(SetStretchBltMode(4)+SetBrushOrgEx(0,0))；
+   * FUN_180036ba0 = 尺寸相等检测（相等跳过缩放）。
+- 仓内现状：view.h 头注自称"smart sizing"且 fit 无条件缩放——与 mstsc 门控语义存在偏差待对齐（scale 默认 1.0 已隐含 1:1）。
+- 下一步：A6 对齐实现（先红测试：未启用 smart sizing + resize → 期望 1:1）需 W11 定案（涉 UI 行为），下轮开。
+- 环境：il2cpp 仍占 CPU（5 进程 97+%），view 独占复跑待争用消退。
+- 在途：无子代理（全部 idle）。已归档 4 证据文档（scaling/input/bitmap/cliprdr/rdpsnd/smart-sizing）。
