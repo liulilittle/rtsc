@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -108,7 +109,8 @@ class DrdynvcClient {
     uint16_t version_ = 0;
     uint32_t next_channel_id_ = 1;
     std::map<uint32_t, std::string> pending_;
-    std::map<uint32_t, std::vector<uint8_t>> buffers_;
+    std::set<uint32_t> open_channels_;
+    rtsc::proto::DynvcReassembler dvc_reassembler_;
 
     unsigned caps_request_count_ = 0;
     unsigned create_request_count_ = 0;

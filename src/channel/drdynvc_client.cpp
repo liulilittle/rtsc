@@ -107,22 +107,29 @@ void DrdynvcClient::OnCreateResponse(const rtsc::proto::DynvcPdu& pdu) {
     if (status != 0) return;
     const uint32_t id = pdu.channel_id;
     pending_.erase(id);
+    open_channels_.insert(id);
     if (listener_ != nullptr) listener_->OnChannelCreated(id);
 }
 
 void DrdynvcClient::OnData(const rtsc::proto::DynvcPdu& pdu) {
     if (listener_ == nullptr) return;
-    std::vector<uint8_t>& buf = buffers_[pdu.channel_id];
-    if (pdu.header.cmd == rtsc::proto::DynvcCmd::kDataFirst) buf.clear();
-    buf.insert(buf.end(), pdu.data.begin(), pdu.data.end());
-    listener_->OnChannelData(pdu.channel_id, buf);
+    // Data for a channel that was never requested is dropped before it can
+    // allocate reassembly state (unknown-channel guard).
+    if (open_channels_.count(pdu.channel_id) == 0 &&
+        pending_.count(pdu.channel_id) == 0) {
+        return;
+    }
+    std::vector<uint8_t> message;
+    if (!dvc_reassembler_.Feed(pdu, message)) return;
+    listener_->OnChannelData(pdu.channel_id, message);
 }
 
 void DrdynvcClient::OnClose(const rtsc::proto::DynvcPdu& pdu) {
     ++close_count_;
     const uint32_t id = pdu.channel_id;
     pending_.erase(id);
-    buffers_.erase(id);
+    open_channels_.erase(id);
+    dvc_reassembler_.Reset(id);
     if (listener_ != nullptr) listener_->OnChannelClosed(id);
 }
 
@@ -142,23 +149,11 @@ uint32_t DrdynvcClient::CreateChannel(const ChannelDef& def) {
 
 void DrdynvcClient::SendChannelData(uint32_t channel_id,
                                     const std::vector<uint8_t>& data) {
-    constexpr size_t kMaxFragment = 1500;
-    size_t offset = 0;
-    bool first = true;
-    while (offset < data.size()) {
-        const size_t n = std::min(kMaxFragment, data.size() - offset);
-        const std::vector<uint8_t> chunk(data.begin() + offset,
-                                         data.begin() + offset + n);
-        const rtsc::proto::DynvcCmd cmd = first
-            ? rtsc::proto::DynvcCmd::kDataFirst
-            : rtsc::proto::DynvcCmd::kData;
-        SendPdu(rtsc::proto::BuildDynvcPdu(cmd, 0, channel_id, chunk));
-        offset += n;
-        first = false;
-    }
-    if (data.empty()) {
-        SendPdu(rtsc::proto::BuildDynvcPdu(
-            rtsc::proto::DynvcCmd::kDataFirst, 0, channel_id, {}));
+    // <= 1590 bytes travels as one DYNVC_DATA PDU; a larger message is
+    // fragmented into DYNVC_DATA_FIRST (Length = whole message) + DYNVC_DATA
+    // ([MS-RDPEDYC] 3.1.5.2).
+    for (const auto& pdu : rtsc::proto::BuildDynvcDataPdus(channel_id, data)) {
+        SendPdu(pdu);
     }
 }
 
