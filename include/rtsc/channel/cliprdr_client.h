@@ -11,13 +11,16 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "rtsc/clipboard/clipboard.h"
+#include "rtsc/clipboard/file_list.h"
 #include "rtsc/proto/channel.h"
 #include "rtsc/proto/cliprdr.h"
 
@@ -30,13 +33,22 @@ constexpr uint32_t kClipCapsFileClipNoPaths = 0x00000008;
 constexpr uint32_t kClipCapsCanLockClipData = 0x00000010;
 constexpr uint32_t kClipCapsHugeFileSupport = 0x00000020;
 
-// The flags this client sets in its CB_CLIP_CAPS. Long format names are used;
-// stream file clip is not implemented, so its flags are not advertised.
-constexpr uint32_t kClientGeneralFlags = kClipCapsUseLongFormatNames;
+// The general flags this client advertises by default: long format names.
+// Stream file clip (0x04) is added by EnableFileClip() and huge-file support
+// (0x20) by EnableHugeFileSupport().
+constexpr uint32_t kClientGeneralFlagsBase = kClipCapsUseLongFormatNames;
 
 // The fixed size of the Temporary Directory PDU's wszTempDir field
 // ([MS-RDPECLIP] 2.2.2.3): a 520-byte block holding a null-terminated path.
 constexpr size_t kTempDirectoryFieldSize = 520;
+
+// A single file range this client is willing to serve ([MS-RDPECLIP] treats
+// oversized requests as an error). 1 MiB keeps a large copy move bounded while
+// still streaming.
+constexpr uint64_t kMaxServeRange = 1u << 20;
+
+// The default window size used by the download range loop.
+constexpr uint32_t kDefaultFileTransferWindow = 64 * 1024;
 
 class CliprdrClient {
  public:
@@ -75,12 +87,58 @@ class CliprdrClient {
     // Requests the data for one of the remote formats ([MS-RDPECLIP] 3.1.5.4.1).
     void RequestRemoteFormat(uint32_t format);
 
+    // ---- stream file clip (CB_FILECONTENTS) --------------------------------
+    //
+    // Direction A: this client serves a local file list through an injected
+    // FileListProvider and downloads remote files through CB_FILECONTENTS.
+    // Direction B (a cached file store) is not implemented; the interface and
+    // the "no provider => FAIL" gate above are all that exists.
+
+    // Advertises CB_STREAM_FILECLIP_ENABLED in the next Clipboard Capabilities
+    // PDU. Off by default.
+    void EnableFileClip();
+    // Advertises CB_HUGE_FILE_SUPPORT_ENABLED (0x20) independently. Off by
+    // default; the GUI never turns it on.
+    void EnableHugeFileSupport();
+    // Installs the local file-list server. nullptr leaves the serve path
+    // failing every request (the direction-B store gate).
+    void SetFileListProvider(rtsc::clipboard::FileListProvider* provider);
+
+    // Requests the remote FILELIST (a Format Data Request for the format the
+    // peer advertised as FileGroupDescriptorW). No-op until the server
+    // negotiated CB_STREAM_FILECLIP_ENABLED and announced the file format, and
+    // while a format-data request is already in flight.
+    void RequestRemoteFileList();
+
+    // Callback for a finished download:
+    // (lindex, file name, size, bytes, ok).
+    using FileContentsDone =
+        std::function<void(uint32_t, std::u16string, uint64_t,
+                           const std::vector<uint8_t>&, bool)>;
+
+    // Starts downloading remote file `lindex`. Returns false when the peer did
+    // not negotiate stream file clip, when a transfer is already in flight, or
+    // when the descriptor is a directory / out of range.
+    bool RequestRemoteFile(uint32_t lindex, FileContentsDone done);
+
+    // Per-transfer timeout in milliseconds. 0 disables timeouts. Default 30 s.
+    void SetTransferTimeoutMs(uint32_t ms);
+    // Bytes requested per RANGE chunk of a download. 0 restores the default.
+    void SetFileTransferWindow(uint32_t bytes);
+
+    // Ends every in-flight transfer as failed. Must be called periodically with
+    // a recent timestamp so transfer timeouts fire.
+    void Poll(std::chrono::steady_clock::time_point now);
+    void CancelRemoteFileContents();
+
     // ---- diagnostics -------------------------------------------------------
     bool started() const { return started_; }
     bool long_format_names() const { return long_format_names_; }
     bool server_caps_received() const { return server_caps_received_; }
-    uint32_t client_flags() const { return kClientGeneralFlags; }
+    uint32_t client_flags() const { return client_general_flags_; }
     uint32_t server_flags() const { return server_flags_; }
+    bool file_clip_enabled() const { return file_clip_enabled_; }
+    bool huge_file_support() const { return huge_enabled_; }
     const std::vector<uint32_t>& remote_formats() const {
         return remote_formats_;
     }
@@ -136,6 +194,39 @@ class CliprdrClient {
     unsigned lock_clipdata_count() const { return lock_clipdata_count_; }
     unsigned unlock_clipdata_count() const { return unlock_clipdata_count_; }
 
+    // The file-clip diagnostics.
+    unsigned file_contents_request_sent() const {
+        return file_contents_request_sent_;
+    }
+    unsigned file_contents_request_received() const {
+        return file_contents_request_received_;
+    }
+    unsigned file_contents_request_rejected() const {
+        return file_contents_request_rejected_;
+    }
+    unsigned file_contents_response_sent() const {
+        return file_contents_response_sent_;
+    }
+    unsigned file_contents_response_received() const {
+        return file_contents_response_received_;
+    }
+    unsigned remote_file_list_received() const {
+        return remote_file_list_received_;
+    }
+    unsigned transfer_timeout_count() const { return transfer_timeout_count_; }
+    const std::vector<rtsc::proto::CliprdrFileDescriptor>& remote_file_list()
+        const {
+        return remote_file_list_;
+    }
+    uint32_t remote_file_list_format_id() const {
+        return remote_file_list_format_id_;
+    }
+    bool have_remote_file_list() const { return have_remote_file_list_; }
+    size_t in_flight_file_ops() const { return pending_.size(); }
+    // The format id of the outstanding Format Data Request (0 = none). A
+    // test/diagnostic hook for the D4 stale-response guard.
+    uint32_t pending_format_for_test() const { return pending_format_; }
+
  private:
     void OnMessage(const std::vector<uint8_t>& message);
     void OnPdu(const rtsc::proto::CliprdrPdu& pdu);
@@ -147,6 +238,11 @@ class CliprdrClient {
     void OnFormatDataResponse(const rtsc::proto::CliprdrPdu& pdu);
     void OnTempDirectory(const std::vector<uint8_t>& body);
     void OnLockClipData(const std::vector<uint8_t>& body, bool lock);
+    void OnFileContentsRequest(const rtsc::proto::CliprdrPdu& pdu);
+    void OnFileContentsResponse(const rtsc::proto::CliprdrPdu& pdu);
+    // Serves a validated SIZE / RANGE request from the installed provider.
+    void ServeFileSizeRequest(const rtsc::proto::CliprdrFileContentsRequest& req);
+    void ServeFileRangeRequest(const rtsc::proto::CliprdrFileContentsRequest& req);
 
     void SendPdu(rtsc::proto::CliprdrMsgType type, uint16_t flags,
                  const std::vector<uint8_t>& body);
@@ -159,6 +255,22 @@ class CliprdrClient {
     // The initialization sequence triggered by the server Monitor Ready PDU.
     void RunInitializationSequence();
     uint32_t PickPreferredFormat() const;
+
+    // Sends one CB_FILECONTENTS_REQUEST. The position is a 64-bit offset split
+    // into the low/high halves.
+    void SendFileContentsRequest(uint32_t stream_id, uint32_t lindex,
+                                 uint32_t dw_flags, uint64_t position,
+                                 uint32_t cb_requested, bool has_clip_data_id,
+                                 uint32_t clip_data_id);
+    // Sends a CB_FILECONTENTS_RESPONSE with the given verdict and payload.
+    void SendFileContentsResponse(uint32_t stream_id, bool ok,
+                                  const std::vector<uint8_t>& data);
+    // Start (or continue) the RANGE loop of the transfer `stream_id`; finishes
+    // the transfer when the requested window size drops to zero.
+    void SendFileRangeRequest(uint32_t stream_id);
+    // Allocates a stream id that is neither 0 nor currently in flight.
+    uint32_t AllocateStreamId();
+    std::u16string FilenameFor(uint32_t lindex) const;
 
     clipboard::Clipboard* clipboard_;
     SendFn send_;
@@ -178,6 +290,9 @@ class CliprdrClient {
     bool long_format_names_ = false;
     bool server_caps_received_ = false;
     uint32_t server_flags_ = 0;
+    // The general flags this client advertises. Long format names are always
+    // set; EnableFileClip()/EnableHugeFileSupport() add their bits.
+    uint32_t client_general_flags_ = kClientGeneralFlagsBase;
     bool remote_sync_pending_ = false;
     uint32_t pending_format_ = 0;
     // The local clipboard fingerprint after the last remote write: the data
@@ -197,6 +312,35 @@ class CliprdrClient {
     std::string local_temp_directory_;
     uint32_t locked_clipdata_id_ = 0;
 
+    // ---- stream file clip state ----
+    bool file_clip_enabled_ = false;
+    bool huge_enabled_ = false;
+    rtsc::clipboard::FileListProvider* provider_ = nullptr;
+    // The format id the peer announced as FileGroupDescriptorW; 0 when the
+    // current remote format list carries no file format.
+    uint32_t remote_file_list_format_id_ = 0;
+    bool have_remote_file_list_ = false;
+    // The remote FILELIST last received as format data. Never written to the
+    // local clipboard.
+    std::vector<rtsc::proto::CliprdrFileDescriptor> remote_file_list_;
+    // One in-flight download. kMaxInflightFileOps bounds it; on a successful
+    // slot reuse next_stream_id_ walks over 0 and any occupied id.
+    struct PendingFileContents {
+        uint32_t lindex = 0;
+        uint64_t offset = 0;
+        uint64_t file_size = 0;
+        bool size_pending = true;
+        uint32_t cb_requested = 0;
+        std::vector<uint8_t> data;
+        FileContentsDone done;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    static constexpr size_t kMaxInflightFileOps = 1;
+    std::map<uint32_t, PendingFileContents> pending_;
+    uint32_t next_stream_id_ = 0;
+    uint32_t transfer_timeout_ms_ = 30000;
+    uint32_t transfer_window_ = kDefaultFileTransferWindow;
+
     unsigned monitor_ready_count_ = 0;
     unsigned monitor_ready_received_count_ = 0;
     unsigned clip_caps_count_ = 0;
@@ -213,6 +357,13 @@ class CliprdrClient {
     unsigned temp_directory_sent_count_ = 0;
     unsigned lock_clipdata_count_ = 0;
     unsigned unlock_clipdata_count_ = 0;
+    unsigned file_contents_request_sent_ = 0;
+    unsigned file_contents_request_received_ = 0;
+    unsigned file_contents_request_rejected_ = 0;
+    unsigned file_contents_response_sent_ = 0;
+    unsigned file_contents_response_received_ = 0;
+    unsigned remote_file_list_received_ = 0;
+    unsigned transfer_timeout_count_ = 0;
 };
 
 }  // namespace rtsc::channel

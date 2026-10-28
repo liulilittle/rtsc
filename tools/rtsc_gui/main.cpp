@@ -373,6 +373,9 @@ int main(int argc, char** argv) {
     };
 
     rtsc::channel::CliprdrClient cliprdr(local_clipboard.get(), send_cliprdr);
+    // Stream file clip (CB_FILECONTENTS) is off by default; direction A turns
+    // it on here. Huge-file support stays off (v1 default).
+    cliprdr.EnableFileClip();
 
     rtsc::channel::RdpsndClient rdpsnd(audio_sink.get(), send_rdpsnd);
     client.RegisterChannel(kChannelRdpdr,
@@ -391,6 +394,12 @@ int main(int argc, char** argv) {
         return 1;
     }
     cliprdr.Start();
+
+    // Minimal direction-A GUI hook: as soon as the server advertises the
+    // file-clip format (FileGroupDescriptorW), ask once for the remote file
+    // list. RequestRemoteFileList no-ops when stream file clip was not
+    // negotiated or the format is unknown.
+    bool file_list_requested = false;
 
     // RAIL: register the handler on the server-assigned "rail" static virtual
     // channel and start the RAIL session. The server sends its Handshake first
@@ -514,6 +523,11 @@ int main(int argc, char** argv) {
         if (!client.Pump(*transport, error)) {
             std::printf("session ended: %s\n", error.c_str());
             break;
+        }
+        cliprdr.Poll(std::chrono::steady_clock::now());
+        if (!file_list_requested && cliprdr.remote_file_list_format_id() != 0) {
+            cliprdr.RequestRemoteFileList();
+            file_list_requested = true;
         }
 
         for (size_t wi = 0; wi < windows.size(); ++wi) {

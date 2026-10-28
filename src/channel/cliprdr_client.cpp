@@ -3,6 +3,7 @@
 #include "rtsc/channel/cliprdr_client.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <utility>
 
@@ -197,6 +198,12 @@ void CliprdrClient::OnPdu(const rtsc::proto::CliprdrPdu& pdu) {
         case rtsc::proto::CliprdrMsgType::kUnlockClipData:
             OnLockClipData(pdu.data, false);
             break;
+        case rtsc::proto::CliprdrMsgType::kFileContentsRequest:
+            OnFileContentsRequest(pdu);
+            break;
+        case rtsc::proto::CliprdrMsgType::kFileContentsResponse:
+            OnFileContentsResponse(pdu);
+            break;
         default:
             break;
     }
@@ -227,7 +234,7 @@ void CliprdrClient::OnServerClipCaps(const std::vector<uint8_t>& body) {
     // both endpoints advertise CB_USE_LONG_FORMAT_NAMES. This client always
     // advertises it, so the server flag decides the negotiated variant.
     long_format_names_ =
-        (kClientGeneralFlags & kClipCapsUseLongFormatNames) != 0 &&
+        (client_general_flags_ & kClipCapsUseLongFormatNames) != 0 &&
         (server_flags_ & kClipCapsUseLongFormatNames) != 0;
     server_caps_received_ = true;
     ++server_caps_count_;
@@ -254,12 +261,18 @@ void CliprdrClient::RunInitializationSequence() {
 
 void CliprdrClient::OnFormatList(const rtsc::proto::CliprdrPdu& pdu) {
     remote_formats_.clear();
+    // The previous format list may not carry the file format any more; the
+    // descriptors held from a stale list are dropped with it (fix ② records
+    // the long name and leaves no dangling format id).
+    const uint32_t previous_format_id = remote_file_list_format_id_;
+    remote_file_list_format_id_ = 0;
     const std::vector<uint8_t>& data = pdu.data;
     if (long_format_names_) {
         size_t offset = 0;
         while (offset + 4 <= data.size()) {
             const uint32_t format = ReadU32Le(data.data() + offset);
             offset += 4;
+            std::u16string name;
             bool terminated = false;
             while (offset + 2 <= data.size()) {
                 const uint16_t ch = ReadU16Le(data.data() + offset);
@@ -268,21 +281,45 @@ void CliprdrClient::OnFormatList(const rtsc::proto::CliprdrPdu& pdu) {
                     terminated = true;
                     break;
                 }
+                name.push_back(static_cast<char16_t>(ch));
             }
             if (!terminated) break;  // malformed: no null terminator
             remote_formats_.push_back(format);
+            // [MS-RDPECLIP] 1.3.2.1: the file list is exchanged through a
+            // registered format whose name identifies it.
+            if (name == rtsc::proto::kFileGroupDescriptorName) {
+                remote_file_list_format_id_ = format;
+            } else if (remote_file_list_format_id_ == 0 &&
+                       format == rtsc::proto::kDeFactoFileListFormatId) {
+                remote_file_list_format_id_ = format;
+            }
         }
     } else {
         size_t offset = 0;
         while (offset + kShortFormatNameSize <= data.size()) {
-            remote_formats_.push_back(ReadU32Le(data.data() + offset));
+            const uint32_t format = ReadU32Le(data.data() + offset);
+            // Short format names carry no names; the de facto fallback id is
+            // the only recognisable marker.
+            if (format == rtsc::proto::kDeFactoFileListFormatId) {
+                remote_file_list_format_id_ = format;
+            }
+            remote_formats_.push_back(format);
             offset += kShortFormatNameSize;
         }
+    }
+    if (remote_file_list_format_id_ == 0) {
+        // D4: the in-flight file-list request is now moot -- its reply must
+        // not be written to the clipboard when it finally arrives.
+        if (pending_format_ != 0 && pending_format_ == previous_format_id) {
+            pending_format_ = 0;
+        }
+        remote_file_list_.clear();
+        have_remote_file_list_ = false;
     }
     ++remote_format_list_count_;
     SendFormatListResponse(true);
     // Eager sync: request the data for the preferred format so a local paste
-    // sees the remote clipboard immediately.
+    // sees the remote clipboard immediately. File formats are skipped.
     const uint32_t preferred = PickPreferredFormat();
     if (preferred != 0) RequestRemoteFormat(preferred);
 }
@@ -302,6 +339,43 @@ void CliprdrClient::OnFormatDataRequest(const std::vector<uint8_t>& body) {
         return;
     }
     ++format_data_request_count_;
+    // Direction-B serve: when the peer asks for the file-list format we
+    // advertise, answer with a CLIPRDR_FILELIST built from the provider
+    // instead of the (failing) local clipboard read. A build failure answers
+    // FAIL -- an empty file list is still a valid 4-byte cItems=0 payload,
+    // so the two cases stay distinct.
+    if (request.format_id == rtsc::proto::kDeFactoFileListFormatId &&
+        provider_ != nullptr) {
+        rtsc::proto::CliprdrFileList list;
+        const uint32_t count = provider_->file_count();
+        list.files.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            rtsc::clipboard::FileInfo info;
+            if (!provider_->file_info(i, info)) {
+                SendFormatDataResponse({}, false);
+                return;
+            }
+            rtsc::proto::CliprdrFileDescriptor descriptor;
+            descriptor.dw_flags = rtsc::proto::kFileDescriptorSize |
+                                  rtsc::proto::kFileDescriptorAttributes;
+            descriptor.file_attributes = info.attributes;
+            if (info.is_directory) {
+                descriptor.file_attributes |= rtsc::proto::kFileAttributeDirectory;
+            }
+            descriptor.file_size = info.size;
+            descriptor.file_name = std::move(info.name);
+            list.files.push_back(std::move(descriptor));
+        }
+        // A failed encode (e.g. an over-long file name) is distinct from a
+        // legal empty list (4-byte cItems=0) and must answer FAIL.
+        const std::vector<uint8_t> payload = list.encode();
+        if (payload.empty()) {
+            SendFormatDataResponse({}, false);
+            return;
+        }
+        SendFormatDataResponse(payload, true);
+        return;
+    }
     std::vector<uint8_t> data;
     const bool ok =
         clipboard_ != nullptr && clipboard_->read(request.format_id, data);
@@ -313,7 +387,28 @@ void CliprdrClient::OnFormatDataResponse(
     ++format_data_response_count_;
     const bool ok =
         (pdu.header.msg_flags & rtsc::proto::kClipResponseOk) != 0;
-    if (!ok || clipboard_ == nullptr) return;
+    if (!ok || clipboard_ == nullptr) {
+        pending_format_ = 0;
+        return;
+    }
+    // D4: a response with no outstanding request must not be written to the
+    // clipboard (it is either a stray duplicate or a stale file-list reply
+    // whose format id was invalidated by a newer format list).
+    if (pending_format_ == 0) return;
+    // Fix ①: a response for the file-list format is a FILELIST, never a
+    // clipboard write. It is parsed and buffered; RequestRemoteFile() then
+    // serves it through the file-contents path.
+    if (pending_format_ == remote_file_list_format_id_) {
+        rtsc::proto::CliprdrFileList list;
+        if (rtsc::proto::CliprdrFileList::parse(pdu.data, list) ==
+            rtsc::proto::Status::Ok) {
+            remote_file_list_ = std::move(list.files);
+            have_remote_file_list_ = true;
+            ++remote_file_list_received_;
+        }
+        pending_format_ = 0;
+        return;
+    }
     // The response carries the data for the format that was requested. Applying
     // it fires WM_CLIPBOARDUPDATE, which OnLocalClipboardChanged swallows.
     remote_sync_pending_ = true;
@@ -324,6 +419,7 @@ void CliprdrClient::OnFormatDataResponse(
         clipboard_ != nullptr ? clipboard_->formats()
                               : std::vector<uint32_t>{};
     has_last_applied_ = true;
+    pending_format_ = 0;
 }
 
 void CliprdrClient::OnTempDirectory(const std::vector<uint8_t>& body) {
@@ -367,7 +463,7 @@ void CliprdrClient::SendClipCaps() {
     w.u16le(kCbCapstypeGeneral);
     w.u16le(kGeneralCapsLength);
     w.u32le(kCbCapsVersion2);
-    w.u32le(kClientGeneralFlags);
+    w.u32le(client_general_flags_);
     SendPdu(rtsc::proto::CliprdrMsgType::kClipCaps, 0, w.take());
     caps_sent_ = true;
     ++clip_caps_count_;
@@ -411,10 +507,25 @@ void CliprdrClient::SendFormatList() {
         clipboard_ != nullptr ? clipboard_->formats()
                               : std::vector<uint32_t>{};
     rtsc::proto::ByteWriter w;
+    // Fix ④: without a provider the file-list format must not be advertised;
+    // the provider itself is the only source the peer can read from, and the
+    // format id is never emitted when it merely sits in the local clipboard.
     for (const uint32_t format : formats) {
+        if (format == rtsc::proto::kDeFactoFileListFormatId) continue;
         w.u32le(format);
         if (long_format_names_) {
             // A nameless format is a single null UTF-16 code unit.
+            w.u16le(0);
+        } else {
+            for (size_t i = 0; i < kShortFormatNameField; ++i) w.u8(0);
+        }
+    }
+    if (provider_ != nullptr) {
+        w.u32le(rtsc::proto::kDeFactoFileListFormatId);
+        if (long_format_names_) {
+            for (const char16_t c : rtsc::proto::kFileGroupDescriptorName) {
+                w.u16le(static_cast<uint16_t>(c));
+            }
             w.u16le(0);
         } else {
             for (size_t i = 0; i < kShortFormatNameField; ++i) w.u8(0);
@@ -440,19 +551,27 @@ void CliprdrClient::SendFormatDataResponse(const std::vector<uint8_t>& data,
 }
 
 uint32_t CliprdrClient::PickPreferredFormat() const {
+    // Fix ③: the file-list format is never eager-synced as text data; a
+    // clipboard holding only files triggers no automatic format request.
+    const auto is_file_format = [&](uint32_t f) {
+        return f == remote_file_list_format_id_ ||
+               f == rtsc::proto::kDeFactoFileListFormatId;
+    };
     for (const uint32_t f : remote_formats_) {
-        if (f == rtsc::clipboard::kCfUnicodetext) return f;
+        if (f == rtsc::clipboard::kCfUnicodetext && !is_file_format(f)) return f;
     }
     for (const uint32_t f : remote_formats_) {
-        if (f == rtsc::clipboard::kCfDib) return f;
+        if (f == rtsc::clipboard::kCfDib && !is_file_format(f)) return f;
     }
     for (const uint32_t f : remote_formats_) {
-        if (f == rtsc::clipboard::kCfDibV5) return f;
+        if (f == rtsc::clipboard::kCfDibV5 && !is_file_format(f)) return f;
     }
     for (const uint32_t f : remote_formats_) {
-        if (f == rtsc::clipboard::kCfText) return f;
+        if (f == rtsc::clipboard::kCfText && !is_file_format(f)) return f;
     }
-    if (!remote_formats_.empty()) return remote_formats_.front();
+    for (const uint32_t f : remote_formats_) {
+        if (!is_file_format(f)) return f;
+    }
     return 0;
 }
 
@@ -499,6 +618,405 @@ void CliprdrClient::RequestRemoteFormat(uint32_t format) {
     rtsc::proto::ByteWriter w;
     w.u32le(format);
     SendPdu(rtsc::proto::CliprdrMsgType::kFormatDataRequest, 0, w.take());
+}
+
+void CliprdrClient::EnableFileClip() {
+    file_clip_enabled_ = true;
+    client_general_flags_ |= kClipCapsStreamFileClip;
+}
+
+void CliprdrClient::EnableHugeFileSupport() {
+    huge_enabled_ = true;
+    client_general_flags_ |= kClipCapsHugeFileSupport;
+}
+
+void CliprdrClient::SetFileListProvider(
+    rtsc::clipboard::FileListProvider* provider) {
+    provider_ = provider;
+}
+
+void CliprdrClient::SetTransferTimeoutMs(uint32_t ms) {
+    transfer_timeout_ms_ = ms;
+}
+
+void CliprdrClient::SetFileTransferWindow(uint32_t bytes) {
+    transfer_window_ = bytes != 0 ? bytes : kDefaultFileTransferWindow;
+}
+
+void CliprdrClient::RequestRemoteFileList() {
+    // [MS-RDPECLIP] 1.3.2.1 / 3.1.5.4.1: the FILELIST rides a Format Data
+    // Request for the peer's file-list format. Only send it when the peer
+    // negotiated stream file clip, the format is known and the single
+    // format-data slot is free (serialisation).
+    if ((server_flags_ & kClipCapsStreamFileClip) == 0) return;
+    if (remote_file_list_format_id_ == 0) return;
+    if (pending_format_ != 0) return;
+    pending_format_ = remote_file_list_format_id_;
+    rtsc::proto::ByteWriter w;
+    w.u32le(remote_file_list_format_id_);
+    SendPdu(rtsc::proto::CliprdrMsgType::kFormatDataRequest, 0, w.take());
+}
+
+bool CliprdrClient::RequestRemoteFile(uint32_t lindex,
+                                      FileContentsDone done) {
+    if ((server_flags_ & kClipCapsStreamFileClip) == 0) return false;
+    if (pending_.size() >= kMaxInflightFileOps) return false;
+    if (lindex >= remote_file_list_.size()) return false;
+    if (remote_file_list_[lindex].is_directory()) return false;
+    const uint32_t stream_id = AllocateStreamId();
+    PendingFileContents entry;
+    entry.lindex = lindex;
+    entry.done = std::move(done);
+    if (transfer_timeout_ms_ != 0) {
+        entry.deadline = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(transfer_timeout_ms_);
+    }
+    pending_[stream_id] = std::move(entry);
+    // Start with a SIZE probe ([MS-RDPECLIP] 3.1.5.4.2).
+    SendFileContentsRequest(stream_id, lindex, rtsc::proto::kFileContentsSize, 0,
+                            8, false, 0);
+    return true;
+}
+
+void CliprdrClient::Poll(std::chrono::steady_clock::time_point now) {
+    if (transfer_timeout_ms_ == 0 || pending_.empty()) return;
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        if (now < it->second.deadline) {
+            ++it;
+            continue;
+        }
+        ++transfer_timeout_count_;
+        FileContentsDone done = std::move(it->second.done);
+        const uint32_t lindex = it->second.lindex;
+        const std::u16string name = FilenameFor(lindex);
+        const uint64_t file_size = it->second.file_size;
+        pending_.erase(it++);
+        if (done) done(lindex, name, file_size, {}, false);
+    }
+}
+
+void CliprdrClient::CancelRemoteFileContents() {
+    for (auto& kv : pending_) {
+        if (kv.second.done) {
+            kv.second.done(kv.second.lindex, FilenameFor(kv.second.lindex),
+                           kv.second.file_size, std::vector<uint8_t>{}, false);
+        }
+    }
+    pending_.clear();
+}
+
+void CliprdrClient::OnFileContentsRequest(const rtsc::proto::CliprdrPdu& pdu) {
+    ++file_contents_request_received_;
+    // F2: an incoming request carries no msgFlags; one that does is ignored
+    // (loose handling, never served).
+    if (pdu.header.msg_flags != 0) {
+        ++file_contents_request_rejected_;
+        return;
+    }
+    rtsc::proto::CliprdrFileContentsRequest req;
+    // F1: a malformed body is dropped and counted.
+    if (rtsc::proto::CliprdrFileContentsRequest::parse(pdu.data, req) !=
+        rtsc::proto::Status::Ok) {
+        ++file_contents_request_rejected_;
+        return;
+    }
+    const auto respond_fail = [&]() {
+        ++file_contents_request_rejected_;
+        SendFileContentsResponse(req.stream_id, false, {});
+    };
+    // G1: our Format List was rejected by the peer, so nothing can be served
+    // with it ([MS-RDPECLIP] 3.1.5.2.4 / 3.1.5.4.7).
+    if (format_list_response_received_count_ > 0 &&
+        !last_format_list_response_ok_) {
+        respond_fail();
+        return;
+    }
+    // F5: dwFlags must contain exactly one of SIZE / RANGE.
+    const uint32_t valid =
+        rtsc::proto::kFileContentsSize | rtsc::proto::kFileContentsRange;
+    if ((req.dw_flags & ~valid) != 0 || (req.dw_flags & valid) == 0 ||
+        (req.dw_flags & valid) == valid) {
+        respond_fail();
+        return;
+    }
+    const uint64_t position =
+        (static_cast<uint64_t>(req.n_position_high)) << 32 | req.n_position_low;
+    // F12: a zero-length request is never meaningful.
+    if (req.cb_requested == 0) {
+        respond_fail();
+        return;
+    }
+    const bool is_size =
+        (req.dw_flags & rtsc::proto::kFileContentsSize) != 0;
+    if (is_size) {
+        // F6: a SIZE probe asks for exactly 8 bytes at position 0.
+        if (req.cb_requested != 8 || position != 0) {
+            respond_fail();
+            return;
+        }
+        // G2 / F8: locked clip data needs CB_CAN_LOCK_CLIPDATA negotiated and
+        // the current lock id. This client never advertises the capability.
+        if (req.has_clip_data_id &&
+            ((client_general_flags_ & kClipCapsCanLockClipData) == 0 ||
+             req.clip_data_id != locked_clipdata_id_)) {
+            respond_fail();
+            return;
+        }
+        ServeFileSizeRequest(req);
+        return;
+    }
+    // RANGE.
+    // F13: without huge-file support the peer cannot address beyond 2^32 via a
+    // range position.
+    if (!huge_enabled_ && position >= (1ULL << 32)) {
+        respond_fail();
+        return;
+    }
+    // G2 / F8: same lock gate as SIZE.
+    if (req.has_clip_data_id &&
+        ((client_general_flags_ & kClipCapsCanLockClipData) == 0 ||
+         req.clip_data_id != locked_clipdata_id_)) {
+        respond_fail();
+        return;
+    }
+    // F14: a single range is capped.
+    if (req.cb_requested > kMaxServeRange) {
+        respond_fail();
+        return;
+    }
+    ServeFileRangeRequest(req);
+}
+
+void CliprdrClient::ServeFileSizeRequest(
+    const rtsc::proto::CliprdrFileContentsRequest& req) {
+    const auto respond_fail = [&]() {
+        ++file_contents_request_rejected_;
+        SendFileContentsResponse(req.stream_id, false, {});
+    };
+    // G3 / direction-B store gate.
+    if (provider_ == nullptr) {
+        respond_fail();
+        return;
+    }
+    // F7: lindex bounds.
+    if (req.lindex < 0 ||
+        static_cast<uint32_t>(req.lindex) >= provider_->file_count()) {
+        respond_fail();
+        return;
+    }
+    rtsc::clipboard::FileInfo info;
+    if (!provider_->file_info(static_cast<uint32_t>(req.lindex), info)) {
+        respond_fail();
+        return;
+    }
+    // F13: the size answer is always the full 64-bit size (F15: 0 is legal
+    // for an empty file).
+    std::vector<uint8_t> size_bytes(8, 0);
+    const uint64_t size = info.size;
+    for (size_t i = 0; i < 8; ++i) {
+        size_bytes[i] = static_cast<uint8_t>((size >> (8 * i)) & 0xFF);
+    }
+    SendFileContentsResponse(req.stream_id, true, size_bytes);
+}
+
+void CliprdrClient::ServeFileRangeRequest(
+    const rtsc::proto::CliprdrFileContentsRequest& req) {
+    const auto respond_fail = [&]() {
+        ++file_contents_request_rejected_;
+        SendFileContentsResponse(req.stream_id, false, {});
+    };
+    if (provider_ == nullptr) {
+        respond_fail();
+        return;
+    }
+    if (req.lindex < 0 ||
+        static_cast<uint32_t>(req.lindex) >= provider_->file_count()) {
+        respond_fail();
+        return;
+    }
+    rtsc::clipboard::FileInfo info;
+    if (!provider_->file_info(static_cast<uint32_t>(req.lindex), info)) {
+        respond_fail();
+        return;
+    }
+    const uint64_t position =
+        (static_cast<uint64_t>(req.n_position_high)) << 32 | req.n_position_low;
+    // F11: EOF semantics.
+    if (position > info.size) {
+        respond_fail();
+        return;
+    }
+    const uint64_t count = std::min<uint64_t>(
+        req.cb_requested, info.size - position);
+    if (count == 0) {
+        // offset == size: OK with an empty range ([MS-RDPECLIP] 3.1.5.4.2).
+        SendFileContentsResponse(req.stream_id, true, {});
+        return;
+    }
+    std::vector<uint8_t> ranged;
+    if (!provider_->read_range(static_cast<uint32_t>(req.lindex), position,
+                               static_cast<uint32_t>(count), ranged)) {
+        respond_fail();
+        return;
+    }
+    if (ranged.size() > count) ranged.resize(static_cast<size_t>(count));
+    SendFileContentsResponse(req.stream_id, true, ranged);
+}
+
+void CliprdrClient::OnFileContentsResponse(const rtsc::proto::CliprdrPdu& pdu) {
+    ++file_contents_response_received_;
+    // F4: both OK and FAIL is ambiguous -> failure. F3: neither flag is treated
+    // as a failure too (fail-close).
+    const bool ok_flag =
+        (pdu.header.msg_flags & rtsc::proto::kClipResponseOk) != 0;
+    const bool fail_flag =
+        (pdu.header.msg_flags & rtsc::proto::kClipResponseFail) != 0;
+    const bool ok = ok_flag && !fail_flag;
+
+    rtsc::proto::CliprdrFileContentsResponse resp;
+    if (rtsc::proto::CliprdrFileContentsResponse::parse(pdu.data, ok, resp) !=
+        rtsc::proto::Status::Ok) {
+        return;
+    }
+    auto it = pending_.find(resp.stream_id);
+    if (it == pending_.end()) return;  // late / unmatched response: ignore.
+    const auto finish = [&](std::map<uint32_t, PendingFileContents>::iterator e,
+                            bool transfer_ok, std::vector<uint8_t> data) {
+        FileContentsDone done = std::move(e->second.done);
+        const uint32_t lindex = e->second.lindex;
+        const std::u16string name = FilenameFor(lindex);
+        const uint64_t file_size = e->second.file_size;
+        pending_.erase(e);
+        if (done) done(lindex, name, file_size, data, transfer_ok);
+    };
+    if (!ok) {
+        finish(it, false, {});
+        return;
+    }
+    if (it->second.size_pending) {
+        // The SIZE answer is exactly the 8 bytes we asked for (F6/Take: a
+        // response larger than cbRequested is an error).
+        if (resp.data.size() != 8) {
+            finish(it, false, {});
+            return;
+        }
+        it->second.file_size =
+            ReadU32Le(resp.data.data()) |
+            (static_cast<uint64_t>(ReadU32Le(resp.data.data() + 4)) << 32);
+        // D3: without huge-file support (0x20) a file whose size we cannot
+        // address is failed now, before any RANGE request reaches >= 2^32.
+        if (!huge_enabled_ && it->second.file_size >= (1ULL << 32)) {
+            finish(it, false, {});
+            return;
+        }
+        it->second.size_pending = false;
+        it->second.offset = 0;
+        it->second.data.clear();
+        SendFileRangeRequest(resp.stream_id);
+        return;
+    }
+    // RANGE answer.
+    if (resp.data.size() > it->second.cb_requested) {
+        finish(it, false, {});
+        return;
+    }
+    it->second.offset += resp.data.size();
+    it->second.data.insert(it->second.data.end(), resp.data.begin(),
+                           resp.data.end());
+    if (it->second.offset == it->second.file_size) {
+        finish(it, true, std::move(it->second.data));
+        return;
+    }
+    if (resp.data.empty()) {
+        // 0 bytes before EOF: the peer stalled the stream.
+        finish(it, false, {});
+        return;
+    }
+    SendFileRangeRequest(resp.stream_id);
+}
+
+void CliprdrClient::SendFileContentsRequest(uint32_t stream_id,
+                                            uint32_t lindex,
+                                            uint32_t dw_flags,
+                                            uint64_t position,
+                                            uint32_t cb_requested,
+                                            bool has_clip_data_id,
+                                            uint32_t clip_data_id) {
+    rtsc::proto::CliprdrFileContentsRequest req;
+    req.stream_id = stream_id;
+    req.lindex = static_cast<int32_t>(lindex);
+    req.dw_flags = dw_flags;
+    req.n_position_low = static_cast<uint32_t>(position & 0xFFFFFFFFu);
+    req.n_position_high = static_cast<uint32_t>(position >> 32);
+    req.cb_requested = cb_requested;
+    req.has_clip_data_id = has_clip_data_id;
+    req.clip_data_id = clip_data_id;
+    SendPdu(rtsc::proto::CliprdrMsgType::kFileContentsRequest, 0, req.encode());
+    ++file_contents_request_sent_;
+}
+
+void CliprdrClient::SendFileContentsResponse(uint32_t stream_id, bool ok,
+                                             const std::vector<uint8_t>& data) {
+    rtsc::proto::CliprdrFileContentsResponse resp;
+    resp.stream_id = stream_id;
+    resp.data = data;
+    SendPdu(rtsc::proto::CliprdrMsgType::kFileContentsResponse,
+            ok ? rtsc::proto::kClipResponseOk : rtsc::proto::kClipResponseFail,
+            resp.encode(ok));
+    ++file_contents_response_sent_;
+}
+
+void CliprdrClient::SendFileRangeRequest(uint32_t stream_id) {
+    auto it = pending_.find(stream_id);
+    if (it == pending_.end()) return;
+    PendingFileContents& entry = it->second;
+    // D3 defensive: without huge support never issue a RANGE at/above 2^32.
+    if (!huge_enabled_ && entry.offset >= (1ULL << 32)) {
+        FileContentsDone done = std::move(entry.done);
+        const uint32_t lindex = entry.lindex;
+        const std::u16string name = FilenameFor(lindex);
+        const uint64_t file_size = entry.file_size;
+        pending_.erase(it);
+        if (done) done(lindex, name, file_size, {}, false);
+        return;
+    }
+    const uint64_t remaining = entry.file_size - entry.offset;
+    const uint64_t count = std::min<uint64_t>(remaining, transfer_window_);
+    if (count == 0) {
+        // offset == size: the tail of the transfer (also the empty-file case).
+        const auto finish_tail = [&]() {
+            FileContentsDone done = std::move(entry.done);
+            const uint32_t lindex = entry.lindex;
+            const std::u16string name = FilenameFor(lindex);
+            const uint64_t file_size = entry.file_size;
+            const std::vector<uint8_t> data = std::move(entry.data);
+            pending_.erase(it);
+            if (done) done(lindex, name, file_size, data, true);
+        };
+        finish_tail();
+        return;
+    }
+    entry.cb_requested = static_cast<uint32_t>(count);
+    SendFileContentsRequest(stream_id, entry.lindex,
+                            rtsc::proto::kFileContentsRange, entry.offset,
+                            entry.cb_requested, false, 0);
+}
+
+uint32_t CliprdrClient::AllocateStreamId() {
+    for (;;) {
+        ++next_stream_id_;
+        if (next_stream_id_ == 0) continue;  // 0 is reserved
+        if (pending_.find(next_stream_id_) == pending_.end()) {
+            return next_stream_id_;
+        }
+    }
+}
+
+std::u16string CliprdrClient::FilenameFor(uint32_t lindex) const {
+    if (lindex < remote_file_list_.size()) {
+        return remote_file_list_[lindex].file_name;
+    }
+    return std::u16string();
 }
 
 }  // namespace rtsc::channel
