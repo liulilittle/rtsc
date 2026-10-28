@@ -116,7 +116,9 @@ void MapMonitorPointToDesktop(int monitor_left, int monitor_top, int origin_x,
 // The zoom/fit state shared by the render loop and the input handler.
 struct ZoomState {
     double zoom = 1.0;
-    bool fit = true;
+    // Smart sizing (fit to window) is off by default: the default view is 1:1
+    // (contract view.h:86-87 / tools/rtsc_gui/main.cpp:304-306).
+    bool fit = false;
     bool ctrl = false;  // Ctrl is held (VK_CONTROL); enables fine wheel zoom.
 };
 

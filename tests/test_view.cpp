@@ -887,7 +887,7 @@ RTSC_TEST(view_empty_viewport_is_safe) {
 RTSC_TEST(zoom_wheel_in_and_out) {
     ZoomState zs;
     CHECK_EQ(zs.zoom, 1.0);
-    CHECK(zs.fit);
+    CHECK(!zs.fit);  // the default view is 1:1, smart sizing off
 
     ui::InputEvent wheel;
     wheel.kind = ui::InputEvent::Kind::kMouseWheel;
@@ -1115,13 +1115,13 @@ RTSC_TEST(zoom_ignores_non_view_events) {
     move.y = 4;
     CHECK(!ApplyZoomInput(move, zs));
     CHECK_EQ(zs.zoom, 1.0);
-    CHECK(zs.fit);
+    CHECK(!zs.fit);
 }
 
-RTSC_TEST(graphics_defaults_to_fit) {
+RTSC_TEST(graphics_defaults_to_1to1) {
     GraphicsPipeline g(8, 8);
     CHECK_EQ(g.zoom(), 1.0);
-    CHECK(g.fit());
+    CHECK(!g.fit());  // the default pipeline view is 1:1, smart sizing off
 }
 
 RTSC_TEST(graphics_render_to_scales_2x) {
@@ -1150,6 +1150,96 @@ RTSC_TEST(graphics_render_to_fit_clears_letterbox) {
     CHECK(IsBlack(dst, 1, 0));
     CHECK(IsBlack(dst, 6, 0));
     CHECK(IsBlack(dst, 7, 0));
+}
+
+RTSC_TEST(smartsizing_off_1to1_scale_contract) {
+    // A6 gate: EnableSmartSizing=0 must render the desktop 1:1 and clip it to a
+    // smaller viewport (no fit, no scaling). This locks the decided semantics:
+    // fit=false + zoom=1.0 -> scale 1.0, natural size, origin at (0,0).
+    Surface src(1920, 1080);
+    for (int y = 0; y < src.height(); ++y) {
+        for (int x = 0; x < src.width(); ++x) {
+            src.SetPixel(x, y, static_cast<uint8_t>(x), static_cast<uint8_t>(y),
+                         0x80, 0xFF);
+        }
+    }
+    const auto vt = ComputeViewTransform(1920, 1080, 800, 600, 1.0, false);
+    CHECK_EQ(vt.scale, 1.0);
+    CHECK_EQ(vt.width, 1920);
+    CHECK_EQ(vt.height, 1080);
+    CHECK_EQ(vt.x, 0);
+    CHECK_EQ(vt.y, 0);
+
+    Surface dst(800, 600);
+    ScaleSurface(src, dst, vt);
+    // The whole 800x600 viewport is the source's top-left 800x600 region, byte
+    // for byte (1:1 clip: no scaling, no fit).
+    for (int y = 0; y < dst.height(); ++y) {
+        const size_t src_off = static_cast<size_t>(y) * src.width() * 4;
+        const size_t dst_off = static_cast<size_t>(y) * dst.width() * 4;
+        CHECK(std::memcmp(src.data() + src_off, dst.data() + dst_off,
+                          static_cast<size_t>(dst.width()) * 4) == 0);
+    }
+}
+
+RTSC_TEST(smartsizing_off_1to1_pipeline_clips) {
+    // The same gate through GraphicsPipeline::RenderTo: a 2x2 viewport shows
+    // the source's top-left 2x2, unchanged (1:1 clip, no scaling).
+    GraphicsPipeline g(4, 4);
+    g.set_fit(false);
+    g.set_zoom(1.0);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            g.surface().SetPixel(x, y, static_cast<uint8_t>(x * 40),
+                                 static_cast<uint8_t>(y * 40), 0x80, 0xFF);
+        }
+    }
+    Surface dst(2, 2);
+    const auto vt = g.view_transform(dst.width(), dst.height());
+    CHECK_EQ(vt.scale, 1.0);
+    CHECK_EQ(vt.width, 4);
+    CHECK_EQ(vt.height, 4);
+    g.RenderTo(dst);
+    // The 2x2 viewport is the source's top-left 2x2 region, byte for byte.
+    for (int y = 0; y < dst.height(); ++y) {
+        const size_t src_off = static_cast<size_t>(y) * g.surface().width() * 4;
+        const size_t dst_off = static_cast<size_t>(y) * dst.width() * 4;
+        CHECK(std::memcmp(g.surface().data() + src_off, dst.data() + dst_off,
+                          static_cast<size_t>(dst.width()) * 4) == 0);
+    }
+}
+
+RTSC_TEST(smartsizing_off_resize_keeps_semantics) {
+    // A6 gate: resizing the viewport does not change the view model. The same
+    // pipeline, unchanged, rendered into different viewports keeps scale 1.0;
+    // only the destination rectangle is recomputed (a 1:1 image sits at (0,0)
+    // in a source-sized viewport and is centred in a larger one).
+    GraphicsPipeline g(4, 4);
+    g.set_fit(false);
+    g.set_zoom(1.0);
+    g.surface().Fill(0xFF, 0, 0, 0xFF);
+
+    {
+        const auto vt = g.view_transform(4, 4);
+        CHECK_EQ(vt.scale, 1.0);
+        CHECK_EQ(vt.x, 0);
+        CHECK_EQ(vt.y, 0);
+    }
+    Surface a(800, 600);
+    const auto vta = g.view_transform(a.width(), a.height());
+    CHECK_EQ(vta.scale, 1.0);
+    CHECK_EQ(vta.x, (800 - 4) / 2);
+    CHECK_EQ(vta.y, (600 - 4) / 2);
+    g.RenderTo(a);
+    CHECK_EQ(CountRed(a), 16);
+
+    Surface b(2560, 1440);
+    const auto vtb = g.view_transform(b.width(), b.height());
+    CHECK_EQ(vtb.scale, 1.0);
+    CHECK_EQ(vtb.x, (2560 - 4) / 2);
+    CHECK_EQ(vtb.y, (1440 - 4) / 2);
+    g.RenderTo(b);
+    CHECK_EQ(CountRed(b), 16);
 }
 
 RTSC_TEST(view_scale_1to1_is_bit_exact) {

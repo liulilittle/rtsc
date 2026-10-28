@@ -136,7 +136,9 @@ enum class WinKeyMode : uint8_t {
 // Kept platform neutral so rtsc::ui does not depend on rtsc::client.
 struct ViewMenuState {
     double zoom = 1.0;        // 1.0 == 1:1
-    bool fit = true;          // smart sizing (fit to window)
+    // Smart sizing (fit to window) is off by default: the default view is 1:1
+    // (contract view.h:86-87 / tools/rtsc_gui/main.cpp:304-306).
+    bool fit = false;         // smart sizing (fit to window)
     bool fullscreen = false;
     bool smart_card = true;   // smart card redirection requested
 };

@@ -138,7 +138,9 @@ class GraphicsPipeline {
     enum PointerStyle { kNone, kHidden, kArrow };
     PointerStyle cursor_style_ = kNone;
     double zoom_ = 1.0;
-    bool fit_ = true;
+    // Smart sizing (fit to window) is off by default: the default view is 1:1
+    // (contract view.h:86-87 / tools/rtsc_gui/main.cpp:304-306).
+    bool fit_ = false;
 };
 
 }  // namespace rtsc::client

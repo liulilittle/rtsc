@@ -310,6 +310,14 @@ int main(int argc, char** argv) {
     client.graphics().set_zoom(zs.zoom);
     client.graphics().set_fit(zs.fit);
 
+    // Publish the view state to the window backend so the View menu ticks and
+    // labels match (zoom percent, "智能调整大小" checked/unchecked). It is
+    // refreshed below whenever a view command changes the state.
+    rtsc::ui::ViewMenuState menu_state;
+    menu_state.zoom = zs.zoom;
+    menu_state.fit = zs.fit;
+    windows[0]->SetViewMenuState(menu_state);
+
     // Record the static virtual channel chunks the server sends; rdpdr is not
     // decoded, cliprdr runs the clipboard protocol, and rdpsnd runs the audio
     // protocol.
@@ -633,6 +641,11 @@ int main(int argc, char** argv) {
                         view_dirty = true;
                         const std::string status = rtsc::client::ZoomStatusText(zs);
                         windows[0]->SetTitle(status);
+                        // Keep the View menu ticked in sync with the zoom/fit
+                        // state (matches the title-bar status line).
+                        menu_state.zoom = zs.zoom;
+                        menu_state.fit = zs.fit;
+                        windows[0]->SetViewMenuState(menu_state);
                         std::printf("view: %s\n", status.c_str());
                     } else if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
                                ev.kind ==
