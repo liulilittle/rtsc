@@ -10584,3 +10584,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 证据已入 `docs/spec/cliprdr-evidence.md`（commit 4c49c41）。
 - **下一步**：分派表取证（FORMAT_DATA_REQUEST/RESPONSE/锁/TempDir）→ Capability set 固定值 → 与 cliprdr_client.cpp 对照出偏差清单。
 - 本互审计流程：A4 为主代理取证（REA 仅主侧）；取证书面后如需改代码再走 W11（审计成对）。
+
+## 第637轮：A4 cliprdr 取证三阶段完成（4 提交）
+
+- 分派表完整解码 `FUN_180658670`：msgType→handler（1 FORMAT_LIST、2 RESP、3 DATA_REQ、4 DATA_RESP、5 CLIP_CAPS、7 FC_REQ、8 FC_RESP、10 LOCK、11 UNLOCK、12/13 DATA_CHANNEL_REQ/RESP、else UNKNOWN）。
+- **新发现**：mstsc 有 DATA_CHANNEL 扩展（0xC/0xD）+ UNKNOWN_PDU 独立 handler；TEMP_DIRECTORY(6) 无独立分派。
+- capset payload 全为运行时构造（search_bytes 全段无命中）→ msgType 编号与 CAPS 数值归入真机抓包裁决。
+- 偏差清单 v0.1 入库（005c499）：仓内缺 DATA_CHANNEL/FILECONTENTS 路径、UNKNOWN_PDU 静默差异。
+- **决策点（待用户/W11）**：FILECONTENTS（文件拖放）与目标功能相关，建议优先实现；走 W11 双审定案。
+- **下一步选择**：①A4 FILECONTENTS 实现（需定案+执行子）；②先 A5 rdpsnd 取证；③真机 wire 裁决。
