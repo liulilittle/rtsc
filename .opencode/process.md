@@ -10413,3 +10413,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[变异反证 5/5 全红]** A 相位(→floor) 1 failing/10 checks；B 截断舍入 3 failing/241；C alpha 左上角 1 failing；D 抽点 8 failing/722；E 只放宽不改偏移 4 failing/389。恢复后 43 tests/6502 checks/0 failing。
 - **[待裁决 2 点]** ①`scale_x/scale_y` 仅赋值未被 `ChooseResample` 读取（执行 AI 按 E5 用尺寸相等判定，理由：浮点 1.0 会漏掉 lround 后的差异）——父代理认同；②0.8x 13.06ms 未达早期 <12ms 但达最终工单 ≤22ms——父代理接受，不再追 SIMD。
 - **[派第三方审计丙]** `ses_e88...`（新建，与甲/乙无接触），八项 V1-V8 独立复验（相位落地/1:1 不越界/降采样手算/alpha/变异守卫/性能/测试质量/回归），要求"契约也可被推翻，但必须有数据"。
+
+## 第616轮：A1 缩放获审计乙盖章（hash 绑定）；工作树因 EXEC-GWLIM 中间态暂不可全量构建
+
+- **[审计乙·盖章（PR-capable，绑 hash）]** 独立参考实现（不调生产码）复验 **32/32 PASS**：①降采样 == 精确 box（RGB+alpha，14/14 组 `max|dst-box|=0`）；②0.5x 1px 线（奇列/奇行）`min=128`（旧实现 255=线消失）；③alpha 同权；④升采样 == E8 相位（8→13 / 1920→2640 / 2400x1350 / 3840x2160，mismatch 0）；⑤不发明颜色（invented=0）；⑥fit 468 组合无"单轴缩+另一轴放"。边界 5 类全绿（偏移裁剪含负偏移/极端缩小/奇数质数尺寸/混合轴/单轴缩小）。性能：1:1 0.14ms、0.5x 2.30ms、2x 2.94ms、1.125x 0.71ms、0.8x 13.65ms 全达标。**pin hash**：resample.cpp `03C9EE2A…`、resample.h `B868D414…`、view.cpp `DBD7481D…`、view.h `9206F984…`、test_view.cpp `21EC4E14…`。
+- **[乙的诚实自查]** 其最初两条 [FAIL] 均为**探针设计错误**（竖向缩小配竖向条纹→天然 0/255；0.8x 非整数比期望常数），已撤回未计入缺陷。另观察到执行 AI 10 分钟内 7 个 resample.cpp 版本，其中 2 版编译失败（C2065/C1075），属编辑中间态，最终 pin 全绿。
+- **[当前树状态·不可全量构建（EXEC-GWLIM 中间态）]** `rtc_gateway_tests` 链接失败：`LNK2019 无法解析 HttpMessage::parse(..., const HttpLimits&)` —— 5 参重载**已在头文件声明、.cpp 尚未定义**。这是 EXEC-GWLIM 搬运内存上限的正常中间态；**父代理不跨代理修改**，等待其收口。核心库（`rtsc_proto`/`rtsc_client`/`rtsc_ui`/`rtsc_server`）构建 **CORE_BUILD=0**。
+- **[结论]** A1 批次可提交（乙已盖章），但**必须与 EXEC-GWLIM 收口一起提交**，避免中间态入库。待 GW 收口后：串行跑全量 ctest（先清 `rtsc*` 残留）→ 分批提交（A1 / 服务器 / 端口 / GW 上限）。
+- **[第三方审计丙在途]** `ses_e7f3c64e8ffeJQEbY4719JMAej`，八项独立复验中（不参考甲乙结论）。
