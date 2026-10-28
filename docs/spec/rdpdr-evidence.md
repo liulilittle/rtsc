@@ -1,0 +1,33 @@
+﻿# RDPDR 对齐证据（rdpdr-evidence.md）
+
+状态：锚点定位。目标=取证 mstsc 的 rdpdr（驱动器重定向）实现偏差，与 cliprdr-evidence.md 同级。
+
+## 目标二进制
+mstscax.dll sha256 d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0eda05
+
+## 已定位锚点（REA/Ghidra 12.1.4, 2026-10-28 轮次 105）
+- 0x1806ad7f0 "Software\Microsoft\Terminal Server Client\Default\AddIns\RDPDR"（注册表插件路径）
+- 0x1806c71e0 "m_spRdpDrConfig"（配置对象成员）
+- 0x1807aa580 "DisableRDPDR"（TS_PROP 禁用开关）
+- 0x1807abf18 "CreateInstance of CMsRdpDrive failed"
+- 0x1807abfa0 "CMsRdpDrive::Initialize failed"
+- 0x1807ec357 "iCRdpDrPlugin"（插件接口）
+- 0x1807ecaa0 "rdpdr static channel connected. Connection time = %I64u ms"
+- 0x1807ecb18 "ChannelOnConnected for [rdpdr]"
+- 0x1807ecb60 "rdpdr static channel connecting..."
+- 0x1807eccd0 "rdpdr.dll"（rdpdr 由外部 rdpdr.dll 载体，mstscax 加载）
+- 0x1807ede28 "RdpDr"
+- 0x18081c300 "Failed to load RDPDR plugin"（插件工厂失败）
+
+## 仓内现状（对照）
+- src/channel/rdpdr_client.cpp：DR_OPEN_FILE 等（S3 批已审计，见 plan.md:324-334；rdpdr_client.cpp:44-50 Information 映射已取证）。
+- src/rdpdr/file_system.cpp：文件系统后端。
+- tests Test #30 rdpdr。
+- 已有 S3 完整审计（DesiredAccess/S3-7 越界/S3-8 等）——非如 cliprdr 的"空白区"。
+
+## 待取证（如排期）
+1. CMsRdpDrive / iCRdpDrPlugin 的 mstsc 驱动器映射语义（盘符/相对路径）。
+2. mstsc rdpdr 默认允许哪些重定向（盘符/剪贴板/串口/打印机）与 TS_PROP/注册表联动。
+3. 与仓内 rdpdr_client.cpp 的偏差清单。
+- [ ] 驱动器映射语义取证
+- [ ] 默认重定向清单 + 注册表联动
