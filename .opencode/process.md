@@ -10489,3 +10489,12 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[A2 缺陷清单（乙版，父代理已亲核 2 条）]** 必修：**P0-3** 命令 ID 冲突（`window.h:83 kCmdSendCtrlAltDel=19` 与 `:96 kCmdHelp=19`，点帮助会发 SAS）+ Ctrl+Alt+End 无映射 + `SendCtrlAltDel` 无调用；**P1-4** 点击相位（`view.cpp:154-155` 左边缘 vs `resample.cpp:62-67` 中心相位，S=100/D=4/d=1 得 25 vs 37）；**P1-5** 跨屏 union origin（`main.cpp:533-537` 直接加 `m.left/m.top`，负值转 uint16 回绕；spec: pointer 坐标是无符号、相对 union 桌面左上，monitor 的 left/top 为 signed 相对 primary）。高危：**P0-1** 无修饰键归位（无 `WM_KILLFOCUS/WM_ACTIVATE`）；**P0-2** Win 策略门未实现（`SetWinKeyMode` 空实现）。中：P1-6 滚轮坐标未填/span 恒被本地缩放消费、P1-7 全屏/连接栏死路、P1-8 无 SetCapture。低：P2-9 EXTENDED1 不可表达、P2-10 Ctrl+数字吞键、P2-12 消息白名单。
 - **[正面结论]** FastPath 键盘编码本身正确：`eventHeader=(code<<5)|flags`（`input.cpp:15-17`）、`RELEASE=1/EXTENDED=2/EXTENDED1=4`（`input.h:19-23`）、SAS 六事件字节 `180e001d0038025303530138011d`（`input.cpp:76-87`）。缺口只在 EXTENDED1。
 - **[仍未验证]** `param_1+0x424` 字段语义；`0x4321DCBA` 含义；归位**触发时机**（`FUN_1801185e0` caller 未定位）；三档 Win 策略默认归属；mstsc 负 origin 实际 wire 值；Ctrl+Alt+End→SAS；吞 `WM_SYSKEYDOWN` 能否阻止 shell 热键。
+
+## 第625轮：A2 双审收敛 → 定案并派两个执行 AI（文件域互斥）
+
+- **[双审一致]** 甲/乙各自独立得出同表（甲侧 S1-1..S3-12，乙侧 P0-1..P2-12），并互相盖章；差异仅方案取舍。
+- **[必修 6 项（已派 A2-1 输入/窗口层）]** ①**命令 ID 冲突**（`window.h:83/96` 皆 19 → 点帮助发 SAS）+ 编译期唯一性断言；②**Ctrl+Alt+End→SAS**（现状只发 6 个裸 scancode；`Client::SendCtrlAltDel` 无调用；SAS 字节 `180e001d0038025303530138011d`，`EncodeCtrlAltDel` 无测试）；③**修饰键归位 R1**（无 `WM_KILLFOCUS/WM_ACTIVATE/WM_CLOSE` 释放 → Ctrl 粘滞；甲实测 `events emitted on WM_KILLFOCUS: 0`）；④**Win 策略门真实现**（`SetWinKeyMode` 是 no-op；默认 kRemote 有 E5 证据）；⑤**Pause/Break 编码**（实测 `wire=0045`，规范要求 `04 1D`/`00 45`/`05 1D`/`01 45`）；⑥**合成消息丢扩展位 + msg 白名单**。
+- **[必修 4 项（已派 A2-2 视图/坐标层）]** ⑦**点击相位统一为 E8 中心式**（`100→4,x=1` 现 25、应 37）；⑧**多屏 union origin**（spec：pointer 为 u16 相对 union 桌面、monitor left/top 为 signed 相对 primary → `main.cpp:533-537` 负值回绕 `(uint16)(0-1920)=63616` 且与 span 不一致）；⑧**滚轮路由（产品决策：普通滚轮转发、Ctrl+滚轮缩放、边界必须 consume、`WM_MOUSEWHEEL` 填 x/y）**；⑨**Ctrl+数字改 opt-in**（默认不吞，修文案 1..4 vs 1..7）。
+- **[甲的重要勘误]** 其先前"滚轮指针跳 (0,0)"结论撤回：`[MS-RDPBCGR]` 明写 WHEEL 时 xPos/yPos **SHOULD be ignored**。
+- **[未验证保留]** `param_1+0x424` 语义、`0x4321DCBA` 含义、归位触发时机、三档 Win 默认归属、mstsc 负 origin 实际 wire、Ctrl+Alt+End→SAS、吞 `WM_SYSKEYDOWN` 能否拦 shell 热键、`INFO_DISABLECTRLALTDEL` 语义。
+- **[产品决策（本次定了，后续可改）]** 滚轮默认转发、缩放改 Ctrl+滚轮；Ctrl+数字默认不吞；Win 默认 kRemote、kLocal 可选；R1 归位而非 R2（R2 需 REA 回证 caller）。
