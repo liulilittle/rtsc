@@ -10567,3 +10567,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **甲乙复核已派发**（prompt 续既有会话，taotoken/deepseek-flash）：要求逐条亲证（红绿/探针），重点含执行子自述的 5 处偏离（server up 缺 button、滚轮量化、delta0 语义、SAS End 防御分支、HWHEEL 门禁连接期默认、desktop 尺寸协商）。
 - **上报用户**（额度阻塞）：旧批次冗余子代理受影响已清理；现役审计/执行均为 taotoken/deepseek-flash（free）无阻塞。若后续需非免费模型并行扩能，需用户处理额度。
 - 在途：甲乙复核中。
+
+## 第635轮：输入批次 fb20d65 双审盖章完成
+
+- **C0 独立验收**：全量 build 0 err/0 warn；ctest Release **51/51** [BASH]。
+- **双审盖章**：甲（`ses_e7e842838ffeIGRQcbegi1aB5n`）乙（`ses_e7e8419cdffeeERUqrk1CUc63H`）各自独立探针/变异/套件后一致「可盖章」；主代理已记录 `docs/spec/input-evidence.md` §6 的 7 条 P3 观察项（排期后续）。
+- **批次状态**：A2 输入（SAS/Pause/X键/HWHEEL/capture/NumLock/坐标/clamp）**闭环完成**。
+- **历史实现批次待审**：`5b1e00a` 缩放、`c08df4f` 网关内存、`3ec4d66` 服务器生命周期此前为父代理单人（模型阻塞期），未走双审——与 FB 一致的补审另行排期。
+- **下一步**：排期项（P3 观察 1-7）或 A4-A7 新功能；真机验证 A2 输入批次。
