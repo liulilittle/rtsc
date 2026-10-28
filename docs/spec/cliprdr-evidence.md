@@ -127,3 +127,20 @@ proto enum（include/rtsc/proto/cliprdr.h）含 kFileContentsRequest=0x0008 / kF
 - [ ] **wire 裁决**：真机抓包 FORMAT_LIST/CLIP_CAPS 的 msgType 字节，确认 mstsc 编号系
 - [ ] 决定：DATA_CHANNEL / FILECONTENTS 是否落入本期实现范围（涉及文件拖放=目标功能之一，倾向纳入 FILECONTENTS）
 - [ ] Capability set 固定值（版本/长度）取证
+
+## 取证批次 5（2026-10-28 轮次 100）：capset 静态搜索无果 → wire 裁决清单
+
+- `search_bytes "01 00 01 00 02 00 00 00 01 00 00 00"`（GENERAL capset 特征）在全部段（.text/.rdata/.data）无命中 → **CLIP_CAPS payload 运行时构造**，无线下常量可锚。
+- 同理 `"0x01 0x00 0x02 0x00"` 等均不可能离线锚定。
+
+### 结论：A4 二进制静态取证部分完成；capset 数值与 msgType 编号系归入「真机抓包清单」
+| 待 wire 裁决 | 方法 |
+|---|---|
+| CLIP_CAPS wire payload（numCaps/type/len/version/flags） | 真机会话抓 cliprdr 通道；或读 mstsc 客户端日志（开启 cliprdr 跟踪） |
+| FORMAT_LIST/CAPS msgType 编号是否规范值 1/5 | 同上抓包比对 |
+| DATA_CHANNEL(0xC/0xD) 发送条件（大剪贴板阈值） | 抓包剪贴板>阈值场景 |
+
+### A4 产出
+1. `docs/spec/cliprdr-evidence.md` 已有 dispatch 表、event-source 架构、偏差清单 v0.1、wire 裁决清单。
+2. **偏差结论（代码层）**：仓内缺 DATA_CHANNEL（0xC/0xD，大剪贴板分片）与 FILECONTENTS（0x8/0x9，文件拖放/目录枚举）两条线协议路径；UNKNOWN_PDU 静默 vs mstsc 显式上报。
+3. **决策建议（下一阶段）**：FILECONTENTS 与目标「剪贴板=文件重定向」直接挂钩，建议优先；DATA_CHANNEL 次之。两者均需在 client 增加 OnPdu 分支 + 发送支持（复用事件源架构可选）。
