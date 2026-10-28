@@ -155,3 +155,13 @@ wire：CB_FILECONTENTS_REQUEST=0x0008（24B，可选尾部 4B clipDataId=28B，�
 C++ 接口：proto 层 CliprdrFileContentsRequest/Response + CliprdrFileDescriptor(592B 固定布局) + CliprdrFileList；channel 层 EnableFileClip(0x04)/EnableHugeFileSupport(0x20)/RequestRemoteFileList/RequestRemoteFile/SetTransferTimeoutMs(30s)/Poll/Cancel/诊断计数；clipboard 层 FileListProvider(file_count/file_info/read_range)。
 测试：31/155 → 105/546（rtsc_cliprdr_tests）；全量 ctest 51/51；build 0err/0warn。
 审计遗留 ticket：方向B backend；真机抓包（UNVERIFIED：RANGE 分块/0x046C0000 实际值/CACHED 语义/目录枚举 0x4/mstsc capset 固定值）；D4 可选加固（单槽抢占）。
+## 7. 方向 B backend 定案与盖章（2026-10-28，提交 b09c4cf）
+- DropFileList（include/rtsc/clipboard/drop_files.h + src/clipboard/drop_files.cpp）：CF_HDROP→FileListProvider。
+  - DROPFILES 头 20B（pFiles@0/fNC@12/fWide@16）；fWide==1 才支持（v1 仅 UTF-16）；全部下标守卫（短头/pFiles 越界/截断名）；单/双 null 收尾；缺失名停止保前名。
+  - file_info：basename（去尾分隔符）、is_directory、惰性 size；非目录 stat 失败→false（禁伪造 0B）→ SIZE 请求 MUST FAIL（[MS-RDPECLIP] 3.1.5.4.6）。
+  - read_range：offset>size false、offset==size 空 true、超售截断、append 语义、目录/缺失 false。
+  - 副效应：FILELIST 构建遇任一缺失条目→整表 FAIL（fail-closed，compact-skip 留后续）。
+- rtsc_gui 接线：WM_CLIPBOARDUPDATE→CreateDropFileListFromBytes→SetFileListProvider；离开 CF_HDROP→先 SetFileListProvider(nullptr) 再 reset()。
+- 测试：rtsc_clipboard_tests 30/93（新套件）；rtsc_cliprdr 106/553（+端到端缺失文件 SIZE→FAIL）。
+- C0：全量 build 0err/0warn；ctest 51/52 绿（view 0.8x bench 因外部 il2cpp 构建 CPU 争用红，非代码，discover.md 已记录，独占复跑仍需在无争用窗口）。
+- 审计遗留：GUI 真拖放端到端；真机互通；ANSI(fWide==0) 可选；方向B 变异脚本 UNVERIFIED。
