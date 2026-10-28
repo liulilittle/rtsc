@@ -4,8 +4,10 @@
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/proto/cliprdr.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "test_framework.h"
@@ -160,6 +162,32 @@ void FeedServerCaps(rtsc::channel::CliprdrClient& client, uint32_t flags) {
     FeedPdu(client, CliprdrMsgType::kClipCaps, 0, ServerCapsBody(flags));
 }
 
+// Feeds the server Monitor Ready PDU ([MS-RDPECLIP] 2.2.2.2): it is sent by
+// the server, and receiving it is what drives the client's initialization
+// sequence ([MS-RDPECLIP] 1.3.2.1 step 3).
+void FeedMonitorReady(rtsc::channel::CliprdrClient& client) {
+    FeedPdu(client, CliprdrMsgType::kMonitorReady, 0, {});
+}
+
+// The message types of the PDUs the client sent, in order.
+std::vector<CliprdrMsgType> SentTypes(
+    const std::vector<std::vector<uint8_t>>& sent) {
+    std::vector<CliprdrMsgType> types;
+    types.reserve(sent.size());
+    for (const auto& chunk : sent) {
+        types.push_back(DecodeChunk(chunk).header.msg_type);
+    }
+    return types;
+}
+
+bool HasSentType(const std::vector<std::vector<uint8_t>>& sent,
+                 CliprdrMsgType type) {
+    for (const auto& chunk : sent) {
+        if (DecodeChunk(chunk).header.msg_type == type) return true;
+    }
+    return false;
+}
+
 uint32_t ReadU32Le(const std::vector<uint8_t>& d) {
     return static_cast<uint32_t>(d[0]) | (static_cast<uint32_t>(d[1]) << 8) |
            (static_cast<uint32_t>(d[2]) << 16) |
@@ -168,7 +196,10 @@ uint32_t ReadU32Le(const std::vector<uint8_t>& d) {
 
 }  // namespace
 
-RTSC_TEST(cliprdr_client_start_sends_ready_caps_and_format_list) {
+// Regression for S6: the old code made Start() send a CB_MONITOR_READY PDU
+// first. That violates [MS-RDPECLIP] 1.3.2.1 step 2 and 2.2.2.2, which define
+// the Monitor Ready PDU as a server-to-client PDU.
+RTSC_TEST(cliprdr_client_start_does_not_send_monitor_ready) {
     FakeClipboard clip;
     clip.formats_ = {kCfUnicodeText, kCfDib};
     std::vector<std::vector<uint8_t>> sent;
@@ -178,24 +209,189 @@ RTSC_TEST(cliprdr_client_start_sends_ready_caps_and_format_list) {
     FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
     client.Start();
 
-    CHECK_EQ(sent.size(), static_cast<size_t>(3));
-    const CliprdrPdu ready = DecodeChunk(sent[0]);
-    CHECK(ready.header.msg_type == CliprdrMsgType::kMonitorReady);
-    CHECK_EQ(ready.header.data_len, static_cast<uint32_t>(0));
+    // [MS-RDPECLIP] 2.2.2.2: "The Monitor Ready PDU is sent from the server to
+    // the client". The client must never send one.
+    CHECK_EQ(HasSentType(sent, CliprdrMsgType::kMonitorReady), false);
+    CHECK_EQ(client.monitor_ready_count(), static_cast<unsigned>(0));
+    // Nothing is sent before the server Monitor Ready PDU arrives: capabilities
+    // and the format list answer it ([MS-RDPECLIP] 1.3.2.1 step 3).
+    CHECK_EQ(sent.size(), static_cast<size_t>(0));
+}
 
-    const CliprdrPdu caps = DecodeChunk(sent[1]);
-    CHECK(caps.header.msg_type == CliprdrMsgType::kClipCaps);
+// [MS-RDPECLIP] 1.3.2.1 steps 3-5: on the server Monitor Ready PDU the client
+// sends Clipboard Capabilities, then the Temporary Directory, then a Format
+// List.
+RTSC_TEST(cliprdr_client_monitor_ready_triggers_initialization_sequence) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfUnicodeText, kCfDib};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
+
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
+    client.Start();
+    CHECK_EQ(sent.size(), static_cast<size_t>(0));
+    FeedMonitorReady(client);
+
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(1));
+    // The exact message-type sequence, independent of the payloads.
+    const std::vector<CliprdrMsgType> want = {CliprdrMsgType::kClipCaps,
+                                              CliprdrMsgType::kTempDirectory,
+                                              CliprdrMsgType::kFormatList};
+    CHECK(SentTypes(sent) == want);
+    CHECK_EQ(sent.size(), static_cast<size_t>(3));
+
+    const CliprdrPdu caps = DecodeChunk(sent[0]);
     CHECK_EQ(caps.header.data_len, static_cast<uint32_t>(16));
     // cCapabilitiesSets=1, pad1=0, type=1, length=12, version=2, flags=LONG.
     CHECK_BYTES(caps.data, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0C, 0x00, 0x02,
                 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00);
+    CHECK_EQ(client.clip_caps_count(), static_cast<unsigned>(1));
+
+    // [MS-RDPECLIP] 2.2.2.3: wszTempDir is a fixed 520-byte block holding a
+    // null-terminated path; the unused space is filled with null characters.
+    const CliprdrPdu temp = DecodeChunk(sent[1]);
+    CHECK_EQ(temp.header.data_len, static_cast<uint32_t>(520));
+    CHECK_EQ(temp.data.size(), static_cast<size_t>(520));
+    const std::string path = "C:\\temp\\clipdata";
+    const auto want_path = std::vector<uint8_t>([&] {
+        std::vector<uint8_t> v;
+        for (const char c : path) {
+            v.push_back(static_cast<uint8_t>(c));
+            v.push_back(0x00);
+        }
+        return v;
+    }());
+    CHECK(temp.data.size() >= want_path.size());
+    CHECK(std::equal(want_path.begin(), want_path.end(), temp.data.begin()));
+    CHECK_EQ(temp.data[want_path.size()], static_cast<uint8_t>(0));
+    bool padding_is_null = true;
+    for (size_t i = want_path.size() + 2; i < temp.data.size(); ++i) {
+        if (temp.data[i] != 0) padding_is_null = false;
+    }
+    CHECK(padding_is_null);
+    CHECK(client.local_temp_directory() == path);
+    CHECK_EQ(client.temp_directory_sent_count(), static_cast<unsigned>(1));
 
     const CliprdrPdu list = DecodeChunk(sent[2]);
-    CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
-    // Two long format names: formatId(4) + a single null wchar(2) each.
+    // Two long format names (the server advertised CB_USE_LONG_FORMAT_NAMES):
+    // formatId(4) + a single null wchar(2) each.
     CHECK_EQ(list.data.size(), static_cast<size_t>(2 * 6));
     CHECK_EQ(ReadU32Le(list.data), static_cast<uint32_t>(kCfUnicodeText));
+}
+
+// The initialization sequence runs once even if the server repeats the Monitor
+// Ready PDU.
+RTSC_TEST(cliprdr_client_initialization_sequence_runs_once) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
+
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
+    client.Start();
+    FeedMonitorReady(client);
+    const size_t after_first = sent.size();
+    FeedMonitorReady(client);
+    CHECK_EQ(sent.size(), after_first);
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(2));
+    CHECK_EQ(client.clip_caps_count(), static_cast<unsigned>(1));
+}
+
+// A Monitor Ready PDU that arrives before Start() (the channel is joined) is
+// still answered, but only once Start() arms the client.
+RTSC_TEST(cliprdr_client_monitor_ready_before_start_is_answered_on_start) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
+
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
+    FeedMonitorReady(client);
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(1));
+
+    client.Start();
+    const std::vector<CliprdrMsgType> want = {CliprdrMsgType::kClipCaps,
+                                              CliprdrMsgType::kTempDirectory,
+                                              CliprdrMsgType::kFormatList};
+    CHECK(SentTypes(sent) == want);
+}
+
+// [MS-RDPECLIP] 2.2.3.2: the Format List Response carries the server's verdict
+// in msgFlags (CB_RESPONSE_OK 0x0001 / CB_RESPONSE_FAIL 0x0002). It must be
+// observable and must not be confused with the response this client sends.
+RTSC_TEST(cliprdr_client_format_list_response_is_observable) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    CHECK_EQ(client.format_list_response_received_count(),
+             static_cast<unsigned>(0));
+
+    FeedPdu(client, CliprdrMsgType::kFormatListResponse, kClipResponseOk, {});
+    CHECK_EQ(client.format_list_response_received_count(),
+             static_cast<unsigned>(1));
+    CHECK_EQ(client.last_format_list_response_ok(), true);
+    // The send-side counter (the responses this client sends to the server)
+    // must not move because of an inbound response.
+    CHECK_EQ(client.format_list_response_count(), static_cast<unsigned>(0));
+
+    FeedPdu(client, CliprdrMsgType::kFormatListResponse, kClipResponseFail, {});
+    CHECK_EQ(client.format_list_response_received_count(),
+             static_cast<unsigned>(2));
+    CHECK_EQ(client.last_format_list_response_ok(), false);
+    CHECK_EQ(client.format_list_response_count(), static_cast<unsigned>(0));
+}
+
+// [MS-RDPECLIP] 2.2.2.1.1.1: CB_USE_LONG_FORMAT_NAMES must be set by both
+// endpoints for the long format name variant to be used. Until the server
+// capabilities arrive the client must not assume long names.
+RTSC_TEST(cliprdr_client_long_format_names_defaults_to_short) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    CHECK_EQ(client.server_caps_received(), false);
+    CHECK_EQ(client.long_format_names(), false);
+}
+
+RTSC_TEST(cliprdr_client_long_format_names_follow_server_capabilities) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    // The server does not advertise long format names: the negotiated variant
+    // is the short one even though this client advertises the capability.
+    FeedServerCaps(client, 0);
+    CHECK_EQ(client.server_caps_received(), true);
+    CHECK_EQ(client.long_format_names(), false);
+
+    // A General Capability Set without the flag keeps it off.
+    FeedServerCaps(client, rtsc::channel::kClipCapsCanLockClipData);
+    CHECK_EQ(client.long_format_names(), false);
+}
+
+RTSC_TEST(cliprdr_client_long_format_names_negotiated_when_both_agree) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames |
+                               rtsc::channel::kClipCapsStreamFileClip);
+    CHECK_EQ(client.server_caps_received(), true);
     CHECK_EQ(client.long_format_names(), true);
+    CHECK_EQ(client.server_flags(),
+             static_cast<uint32_t>(rtsc::channel::kClipCapsUseLongFormatNames |
+                                   rtsc::channel::kClipCapsStreamFileClip));
 }
 
 RTSC_TEST(cliprdr_client_short_format_list_responds_ok) {
@@ -310,13 +506,30 @@ RTSC_TEST(cliprdr_client_local_change_sends_format_list) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
     client.Start();
+    // The initialization sequence must complete before a local change is
+    // reported ([MS-RDPECLIP] 1.3.2.1: the capability exchange comes first).
+    FeedMonitorReady(client);
     const size_t after_start = sent.size();
     client.OnLocalClipboardChanged();
     CHECK_EQ(sent.size(), after_start + 1);
     const CliprdrPdu list = DecodeChunk(sent.back());
     CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
+}
+
+RTSC_TEST(cliprdr_client_local_change_before_init_is_not_sent) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.Start();
+    // No server Monitor Ready yet: a Format List may not be sent before the
+    // capability exchange completes ([MS-RDPECLIP] 1.3.2.1).
+    client.OnLocalClipboardChanged();
+    CHECK_EQ(sent.size(), static_cast<size_t>(0));
 }
 
 RTSC_TEST(cliprdr_client_remote_write_swallows_local_change) {
@@ -340,8 +553,10 @@ RTSC_TEST(cliprdr_client_remote_write_swallows_repeated_local_change) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, 0);
     client.Start();
+    FeedMonitorReady(client);
     const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
     client.RequestRemoteFormat(kCfUnicodeText);
     FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
@@ -365,8 +580,10 @@ RTSC_TEST(cliprdr_client_remote_write_reports_when_format_set_changes) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, 0);
     client.Start();
+    FeedMonitorReady(client);
     const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
     client.RequestRemoteFormat(kCfUnicodeText);
     FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
@@ -387,8 +604,10 @@ RTSC_TEST(cliprdr_client_remote_write_keeps_guard_on_read_failure) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, 0);
     client.Start();
+    FeedMonitorReady(client);
     const std::vector<uint8_t> text = {0x41, 0x00, 0x00, 0x00};
     client.RequestRemoteFormat(kCfUnicodeText);
     FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, text);
@@ -404,8 +623,10 @@ RTSC_TEST(cliprdr_client_zero_length_write_does_not_loop) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, 0);
     client.Start();
+    FeedMonitorReady(client);
     // A remote zero-length write must still arm the guard.
     client.RequestRemoteFormat(kCfUnicodeText);
     FeedPdu(client, CliprdrMsgType::kFormatDataResponse, kClipResponseOk, {});
@@ -496,8 +717,10 @@ RTSC_TEST(cliprdr_client_short_format_list_sent_when_not_negotiated) {
     std::vector<std::vector<uint8_t>> sent;
     rtsc::channel::CliprdrClient client(
         &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
     FeedServerCaps(client, 0);
     client.Start();
+    FeedMonitorReady(client);
     const CliprdrPdu list = DecodeChunk(sent.back());
     CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
     // Short format name: formatId(4) + formatName(32).

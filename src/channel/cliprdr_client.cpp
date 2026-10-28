@@ -2,6 +2,8 @@
 
 #include "rtsc/channel/cliprdr_client.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <utility>
 
 namespace rtsc::channel {
@@ -34,6 +36,80 @@ std::string Utf16ToUtf8(const std::u16string& in) {
     return out;
 }
 
+// Writes `in` (UTF-8) as a null-terminated UTF-16LE string into `out`, which
+// must already be zero-filled. The encoding plus its terminator must fit the
+// whole buffer, since the field has a fixed size ([MS-RDPECLIP] 2.2.2.3).
+// Returns false, leaving `out` untouched, when the string does not fit.
+bool EncodeUtf16Le(const std::string& in, std::vector<uint8_t>& out) {
+    std::vector<uint8_t> encoded;
+    encoded.reserve(in.size() * 2);
+    size_t i = 0;
+    while (i < in.size()) {
+        const unsigned char lead = static_cast<unsigned char>(in[i]);
+        uint32_t cp = 0;
+        size_t length = 0;
+        if (lead < 0x80) {
+            cp = lead;
+            length = 1;
+        } else if ((lead & 0xE0) == 0xC0) {
+            cp = lead & 0x1F;
+            length = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            cp = lead & 0x0F;
+            length = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            cp = lead & 0x07;
+            length = 4;
+        } else {
+            return false;  // malformed lead byte
+        }
+        if (i + length > in.size()) return false;
+        for (size_t k = 1; k < length; ++k) {
+            const unsigned char cont = static_cast<unsigned char>(in[i + k]);
+            if ((cont & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (cont & 0x3F);
+        }
+        i += length;
+        if (cp <= 0xFFFF) {
+            if (cp >= 0xD800 && cp <= 0xDFFF) return false;  // lone surrogate
+            encoded.push_back(static_cast<uint8_t>(cp & 0xFF));
+            encoded.push_back(static_cast<uint8_t>((cp >> 8) & 0xFF));
+        } else if (cp <= 0x10FFFF) {
+            const uint32_t v = cp - 0x10000;
+            const uint16_t high = static_cast<uint16_t>(0xD800 + (v >> 10));
+            const uint16_t low = static_cast<uint16_t>(0xDC00 + (v & 0x3FF));
+            encoded.push_back(static_cast<uint8_t>(high & 0xFF));
+            encoded.push_back(static_cast<uint8_t>((high >> 8) & 0xFF));
+            encoded.push_back(static_cast<uint8_t>(low & 0xFF));
+            encoded.push_back(static_cast<uint8_t>((low >> 8) & 0xFF));
+        } else {
+            return false;
+        }
+    }
+    if (encoded.size() + 2 > out.size()) return false;
+    std::copy(encoded.begin(), encoded.end(), out.begin());
+    return true;
+}
+
+// Reads an environment variable. The MSVC CRT marks getenv as unsafe and the
+// project builds with /WX, so the duplicate-and-free helper is used there;
+// everywhere else std::getenv is the portable form.
+std::string ReadEnvironment(const char* name) {
+#if defined(_MSC_VER)
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+        return std::string();
+    }
+    std::string out(value);
+    std::free(value);
+    return out;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
 uint16_t ReadU16Le(const uint8_t* p) {
     return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) |
                                  (static_cast<uint16_t>(p[1]) << 8));
@@ -51,6 +127,10 @@ CliprdrClient::CliprdrClient(clipboard::Clipboard* clipboard, SendFn send)
     : clipboard_(clipboard), send_(std::move(send)) {}
 
 CliprdrClient::~CliprdrClient() = default;
+
+void CliprdrClient::SetTemporaryDirectory(std::string path) {
+    local_temp_directory_ = std::move(path);
+}
 
 void CliprdrClient::OnChannelData(const uint8_t* data, size_t size) {
     if (data == nullptr || size < rtsc::proto::ChannelPduHeader::kSize) return;
@@ -90,11 +170,17 @@ void CliprdrClient::OnMessage(const std::vector<uint8_t>& message) {
 
 void CliprdrClient::OnPdu(const rtsc::proto::CliprdrPdu& pdu) {
     switch (pdu.header.msg_type) {
+        case rtsc::proto::CliprdrMsgType::kMonitorReady:
+            OnMonitorReady();
+            break;
         case rtsc::proto::CliprdrMsgType::kClipCaps:
             OnServerClipCaps(pdu.data);
             break;
         case rtsc::proto::CliprdrMsgType::kFormatList:
             OnFormatList(pdu);
+            break;
+        case rtsc::proto::CliprdrMsgType::kFormatListResponse:
+            OnFormatListResponse(pdu);
             break;
         case rtsc::proto::CliprdrMsgType::kFormatDataRequest:
             OnFormatDataRequest(pdu.data);
@@ -137,10 +223,33 @@ void CliprdrClient::OnServerClipCaps(const std::vector<uint8_t>& body) {
             r.skip(static_cast<size_t>(length) - 4);
         }
     }
+    // [MS-RDPECLIP] 2.2.2.1.1.1: the long format name variant is used only when
+    // both endpoints advertise CB_USE_LONG_FORMAT_NAMES. This client always
+    // advertises it, so the server flag decides the negotiated variant.
     long_format_names_ =
         (kClientGeneralFlags & kClipCapsUseLongFormatNames) != 0 &&
         (server_flags_ & kClipCapsUseLongFormatNames) != 0;
+    server_caps_received_ = true;
     ++server_caps_count_;
+}
+
+void CliprdrClient::OnMonitorReady() {
+    ++monitor_ready_received_count_;
+    monitor_ready_received_ = true;
+    // Without Start() the channel has not been joined yet; the sequence is then
+    // sent when Start() runs.
+    if (!started_) return;
+    RunInitializationSequence();
+}
+
+void CliprdrClient::RunInitializationSequence() {
+    if (init_sequence_done_) return;
+    init_sequence_done_ = true;
+    // [MS-RDPECLIP] 1.3.2.1 steps 3-5, in this order: Clipboard Capabilities,
+    // Temporary Directory, Format List.
+    SendClipCaps();
+    SendTemporaryDirectory();
+    SendFormatList();
 }
 
 void CliprdrClient::OnFormatList(const rtsc::proto::CliprdrPdu& pdu) {
@@ -176,6 +285,14 @@ void CliprdrClient::OnFormatList(const rtsc::proto::CliprdrPdu& pdu) {
     // sees the remote clipboard immediately.
     const uint32_t preferred = PickPreferredFormat();
     if (preferred != 0) RequestRemoteFormat(preferred);
+}
+
+void CliprdrClient::OnFormatListResponse(const rtsc::proto::CliprdrPdu& pdu) {
+    // [MS-RDPECLIP] 2.2.3.2: the response carries the peer's verdict in
+    // msgFlags as CB_RESPONSE_OK (0x0001) or CB_RESPONSE_FAIL (0x0002).
+    ++format_list_response_received_count_;
+    last_format_list_response_ok_ =
+        (pdu.header.msg_flags & rtsc::proto::kClipResponseOk) != 0;
 }
 
 void CliprdrClient::OnFormatDataRequest(const std::vector<uint8_t>& body) {
@@ -256,6 +373,39 @@ void CliprdrClient::SendClipCaps() {
     ++clip_caps_count_;
 }
 
+std::string CliprdrClient::ResolveLocalTempDirectory() const {
+    if (!local_temp_directory_.empty()) return local_temp_directory_;
+    // The application injects the platform directory with
+    // SetTemporaryDirectory(); the fallback reads the environment, which is
+    // where every supported platform publishes its temp directory. The handler
+    // stays platform neutral, so no <windows.h> is pulled into this file.
+    for (const char* name : {"TEMP", "TMP", "TMPDIR"}) {
+        std::string value = ReadEnvironment(name);
+        if (!value.empty()) return value;
+    }
+#if !defined(_WIN32)
+    return std::string("/tmp");  // always present and absolute on POSIX
+#else
+    // Nothing absolute to advertise: the PDU is optional ([MS-RDPECLIP]
+    // 2.2.2.3) and only useful when the server can reach the directory.
+    return std::string();
+#endif
+}
+
+void CliprdrClient::SendTemporaryDirectory() {
+    // [MS-RDPECLIP] 2.2.2.3: a client-to-server PDU announcing where the server
+    // may deposit files copied to the client. It is sent after the Monitor
+    // Ready PDU, and its wszTempDir field is a fixed 520-byte block holding a
+    // null-terminated absolute path padded with null characters.
+    const std::string dir = ResolveLocalTempDirectory();
+    if (dir.empty()) return;  // optional PDU: nothing useful to announce
+    std::vector<uint8_t> body(kTempDirectoryFieldSize, 0);
+    if (!EncodeUtf16Le(dir, body)) return;  // does not fit the fixed field
+    local_temp_directory_ = dir;
+    SendPdu(rtsc::proto::CliprdrMsgType::kTempDirectory, 0, body);
+    ++temp_directory_sent_count_;
+}
+
 void CliprdrClient::SendFormatList() {
     const std::vector<uint32_t> formats =
         clipboard_ != nullptr ? clipboard_->formats()
@@ -309,10 +459,10 @@ uint32_t CliprdrClient::PickPreferredFormat() const {
 void CliprdrClient::Start() {
     if (started_) return;
     started_ = true;
-    SendPdu(rtsc::proto::CliprdrMsgType::kMonitorReady, 0, {});
-    ++monitor_ready_count_;
-    SendClipCaps();
-    SendFormatList();
+    // [MS-RDPECLIP] 2.2.2.2: the Monitor Ready PDU is a server-to-client PDU,
+    // so the client never sends one. The client's own PDUs are the answer to
+    // the server's Monitor Ready PDU ([MS-RDPECLIP] 1.3.2.1 steps 3-5).
+    if (monitor_ready_received_) RunInitializationSequence();
 }
 
 void CliprdrClient::OnLocalClipboardChanged() {
@@ -338,7 +488,9 @@ void CliprdrClient::OnLocalClipboardChanged() {
         }
         has_last_applied_ = false;
     }
-    if (!started_) return;
+    // A Format List may only be sent once the capability exchange completed
+    // ([MS-RDPECLIP] 1.3.2.1: the server's Monitor Ready PDU starts it).
+    if (!init_sequence_done_) return;
     SendFormatList();
 }
 
