@@ -135,3 +135,16 @@ WIN_key: 1 msgs [KEYDOWN 0x5B]
 2. **IME 激活时 `WM_KEYDOWN` 的 `wParam` 可能是 `VK_PROCESSKEY(0xE5)` 而非真实 VK**（`A` 的 down 为 0xE5、up 为 0x41）。→ **必须从 lParam bits16..23 取扫描码，不能用 VK**（本仓 A1 的扫描码修复因此是正确且必要的）；但 lParam 扫描码为 0 的合成消息回退 `MapVirtualKeyW(0xE5)` 会得到垃圾，需特判 `0xE5`。
 
 **仍未验证**：该结论基于 `keybd_event` 注入（与物理键同管线但不是物理键）；`WH_KEYBOARD_LL` 是否仍能看到 Win up 未测；三档 Win 策略默认值未知。
+
+## 6. 输入批次 fb20d65 双审盖章（2026-10-28）
+
+复验范围：`959aaa7`+`2368b88` 被甲乙双重驳回后，执行子按定案修复并交 `fb20d65`（20 文件 +1069/-72）；甲乙各自独立探针/变异后**一致盖章通过**。主代理独立 C0：全量 build 0 err/0 warn，ctest Release 51/51。
+
+**遗留 P3 观察项（非阻断，排期入后续批次）**：
+1. server 端按钮 up 事件 button==0（pre-existing；建议 up 也解析按钮位）。
+2. 滚轮累积方向反转余数不清零（+80 / -120 → 首档迟滞 ≤1 档；可选优化）。
+3. 带 scancode 但缺 bit24 的合成消息不再补 extended（自动化边角；真实键盘恒置 bit24，符合 mstsc E5，需文档化）。
+4. server 广告 0x0100(HWHEEL) 但不解码 HWHEEL（loopback 横滚不可测；补 kPtrHwheel 解码+用例）。
+5. SAS 任意按键顺序（End 先按再补 Ctrl+Alt）不触发（当前仅"End 新鲜按下"触发，确定性设计；需产品定夺）。
+6. Win 策略入口（kCmdToggleWinKeyRemote 无菜单/前端）；SAS 内部 Ctrl/Alt up；kInputFlagMouse=0x0002；本地 IME/Unicode 路径（EncodeUnicodeEvent 仅测试使用）。
+7. 测试固话建议：滚轮方向反转单测；gui_send 级 kUiCommand(SAS/Pause)→wire 集成（当前复用 dispatch lambda）。
