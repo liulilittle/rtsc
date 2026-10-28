@@ -10382,3 +10382,14 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[E15 非整数相位容差]** `1.375x`(8→11) GDI `0 36 36 72 108 108 144 180 216 216 252` ≠ 端点锚定式（差 1 格）→ 非整数升采样按 E8 实现、验收允许 **≤1 源像素差**；整数倍与 1.5x/2x/3x 仍精确断言。
 - **[乙的关键洞察·写入 E13-B]** GDI 在二维高频内容上注入 1.71% 源外新值（P-H，`natural 1920x240→3840x480` GDI-vs-C `maxdiff=36`）→ **GDI 不能作唯一黄金标准**，必须配"不依赖 GDI 的变异守卫"。
 - **[在途]** EXEC-A1 已收到 E13/E14/E15 全部口径，继续红用例→实现→绿证→五套变异反证。EXEC-PORT 同步在改测试端口为运行时分配（消除伪造失败）。
+
+## 第613轮：审计乙复验 H-4 增量——R-C/R-D/D-1 盖章，R-A/R-B 各驳回 1 项（均附红证/汇编）
+
+- **[R-C 盖章·汇编级证据]** `SecureWipe` 用 `volatile char*` 逐字节写 0；审计用 `dumpbin /disasm` 定位 `ScrubCredentials`（106 条指令）确认 **5 × `mov byte ptr [r8+rax],r11b` 逐字节 0 循环未被优化掉**、`5 × mov qword ptr [r+x10h],r11` 长度清 0、`5 × mov byte ptr [r],r11b` 写 NUL → 5 字段全覆盖 + volatile 生效；`~RdpSession(){ ScrubCredentials(); }` 幂等。
+- **[R-D 盖章]** `test_server_multisession.cpp:229/268/300` 三处 `session_count()==0` 均在 `Stop(); runner.join();` 之后；checks 49→**52**；5 次连跑 0 失败。
+- **[D-1 盖章]** `test_server.cpp:854-859` 阈值 `>=5` + 注释写明推导；审计独立分布 **52 次 0 失败**（12+40），与其修复前同判据 3/22（14%）一致。
+- **[R-A 驳回·双重扣减]** `:1622-1627` launcher 若**先启动 body 再返回 false/抛异常**，回滚 `:1642-1652` 再 `--live`，body 已扣过一次 → **size_t 下溢**。审计红证 `probe_r5.exe`（launcher 内 `thread(body).join(); return false;`）：`live=18446744073709551615`、`Stop_returned=0 HUNG=1` → **Stop() 永久阻塞**。修复采用**计数交接原子化** `if (counted->exchange(false)) { --live; notify_all(); }`，不依赖 launcher 诚实度。
+- **[R-B 驳回·递减可被异常跳过]** `:1606-1613` 把 `erase`（可抛）与 `--live` 放同一 try；`:1643-1651` 回滚块**完全无 try**（抛则逃出 accept → terminate）。要求：`--live` 与 `notify_all` 移出可抛区或用 scope guard。
+- **[测试缺口]** 现有用例只测"不启动即 false"，测不到"启动后报失败"。要求新增第二分支：launcher `thread(body).join(); return false;` → 断言 `live==0`、`total==0`、`Stop()` 1s 内返回、后续连接仍可服务。
+- **[审计自我更正（好行为）]** 其首次 12 次跑得 11 次失败（含 unhandled-seh），查因是**上一轮探针僵尸进程 PID 34960 占用 3395 端口**；杀掉后 12/12 + 40/40 全绿，主动撤回。→ 已入 discover.md，并强化 EXEC-PORT 的必要性。
+- **[仍存风险]** `server.h:69 accept_any_credentials` 仍为 true（嵌入方静默 accept-all）；Standard RDP 路径只校验用户名/域不校验口令。已要求同批处理。
