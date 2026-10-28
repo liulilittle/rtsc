@@ -10421,3 +10421,13 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - **[当前树状态·不可全量构建（EXEC-GWLIM 中间态）]** `rtc_gateway_tests` 链接失败：`LNK2019 无法解析 HttpMessage::parse(..., const HttpLimits&)` —— 5 参重载**已在头文件声明、.cpp 尚未定义**。这是 EXEC-GWLIM 搬运内存上限的正常中间态；**父代理不跨代理修改**，等待其收口。核心库（`rtsc_proto`/`rtsc_client`/`rtsc_ui`/`rtsc_server`）构建 **CORE_BUILD=0**。
 - **[结论]** A1 批次可提交（乙已盖章），但**必须与 EXEC-GWLIM 收口一起提交**，避免中间态入库。待 GW 收口后：串行跑全量 ctest（先清 `rtsc*` 残留）→ 分批提交（A1 / 服务器 / 端口 / GW 上限）。
 - **[第三方审计丙在途]** `ses_e7f3c64e8ffeJQEbY4719JMAej`，八项独立复验中（不参考甲乙结论）。
+
+## 第617轮：三份独立审计到齐 → 两批提交入库，A1 待修 F1/mutC
+
+- **[提交 3ec4d66·服务器+端口]** `counted->exchange(false)` 原子计数交接（防 size_t 下溢）、`--live` 与可抛 `erase` 解耦、`SecureWipe` volatile 逐字节擦 5 字段 + 析构兜底、`accept_any_credentials` 默认 **false**、`session_count`=活跃/`total_session_count`=累计、`inputs>=10`→`>=5`（零余量修正）；测试端口全部改 `cfg.port=0` + `bound_port()`（`Listener::local_port()` 基于 getsockname，失败 fail-closed），新增 `RTSC_TEST_FILTER`。12 文件 +658/-128。
+- **[提交 c08df4f·网关内存上限]** proto `kMaxHttpHeaderBytes=64KiB`/`kMaxHttpHeaderCount=512`/`kMaxHttpEntityBytes=128KiB` + 5 参 `parse(..., const HttpLimits&)`（3 参保留转发默认）；超限即 `InvalidLength`（**绝不 NeedMoreData**，防对端拖住解析器）；CL 逐位校验先于任何累加（**绝不按 CL 分配**）；net 层 4KiB 栈缓冲 + 会话预算（默认 0=不限）+ 读取次数 + 无进展超时，三类错误文案可区分、不重试放大。修复前 peakPriv 2,745MB → 修复后 **9.9MB**，41 用例单跑全绿。3 文件。
+- **[审计丙·真实缺陷 F1（甲/乙均漏）]** `resample.cpp:360` `inv_total=1.0/total` + `:384-386` `(double)acc*inv+0.5` 截断 → 精确 `.5` 平局被截断为 N。父代理独立验算确认：`total=1296000, w=729000, v=56` → exact 31.5、double 31.499999999999996、trunc **31**（应 32）。端到端红证：**1440x900 @ zoom 0.75（标准预设）→ 1080x675**，随机内容失配 **0.866%**（全 –1）；而 1920x1080/1366x768/1280x1024 恰好 0% → **只在特定缩放比炸**。修法：整数除法 `(acc+total/2)/total`。已写入契约 **E16**（含混合轴规则）。
+- **[审计甲·前置 2 项]** ①**mutC 变异存活**：`uniform 2D 快路径 alpha 取左上角`（`resample.cpp:330`）现有测试检测不到（8x1→4x1 只覆盖 generic 路径），需补 `8x2→4x1` 用例（期望 `0 128 255 255`）；②**阻断提交**：`src/client/resample.{h,cpp}` 是未跟踪文件（`??`）而 CMakeLists 已引用 → 任何只提交已跟踪文件的流程都会编译失败，必须显式 `git add`。
+- **[审计甲的变异反证 5 套]** mutA 相位→floor 1 failing/10；mutB 去 +0.5 3/241；**mutC 存活**；mutC2 generic alpha 1/1；mutD 丢 x 偏移 4/43；mutE 缩小轴走 nearest 8/722。
+- **[审计甲的额外观察]** `3840x2160→1536x864 (0.4x)` 实测 **27.86–28.92ms**（旧 17.6–23.5ms），契约无 0.4x 预算条目 → 待 A1 修复后复测并补档。
+- **[验证]** 全量构建 `FULL_BUILD=0`；排除 A1 套件的 ctest **46/46 passed**。
