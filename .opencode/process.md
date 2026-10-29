@@ -10734,3 +10734,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 目标：自研服务器↔客户端剪贴板互通（服务器侧运营剪贴板宿主=真实交互桌面，如可访问 Win32 剪贴板则服务器剪贴板即为桌面剪贴板）。
 - 甲乙定案中（甲=状态机/后端集成；乙=时序/失败路径/复用）：接口/集成点（server.cpp shared PDU 路径）/并发/多 session/TDD/正常序（防双方死等 MonitorReady）/何为"互通达成"scope。
 - 下一步：合并定案→按设计执行（服务器 channel 分发 + cliprdr handler + 剪贴板后端抽象 + TDD）→ 双审复验 → 服务器模式剪贴板闭环。
+## 第662轮：服务器侧 cliprdr 定案盖章 + 实施派发
+- 乙/甲定案双审完全收敛（防死锁时序=服务器先发；channel 名映射+count u16→u32 既有缺陷修复；MCS 三分支集成；全局剪贴板+seq 轮询+last-writer-wins；scope v1=文本+DIB）。
+- 设计落盘 docs/spec/cliprdr-server-design.md（b79be95）。
+- 实施执行子 ses_e77f5b937ffexzgJ0sMPQO7w0G 在途：CliprdrServer + server 集成 + 测试 S1-S15/E1-E3 + count 修复；客户端零改动。
+- 下一步：实施→甲乙复验→服务器模式剪贴板闭环。
