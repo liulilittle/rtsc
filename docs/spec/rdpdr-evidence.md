@@ -38,3 +38,12 @@ mstscax.dll sha256 d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0ed
 - 决策：rdpdr 深取证**暂缓排期**（记录），优先现有缺失项。若要深挖见 rdpsnd/bitmap 模式=先取 wire/抓包证据。
 - [x] mstscax 侧 rdpdr 插件接口定位
 - [ ] rdpdr.dll 驱动器映射语义（待排期/独立目标）
+
+## ClientId Confirm 长度缺陷证据（2026-10-28 轮次 121）
+
+- [MS-RDPEFS] 2.2.2.6 DR_CORE_SERVER_CLIENTID_CONFIRM（learn.microsoft.com/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e）：
+  Header(4B) + VersionMajor(2B, MUST 0x0001) + VersionMinor(2B, 0x000D/0x000C/0x000A/0x0005/0x0002) + ClientId(4B) = **12 字节**。
+- 交叉实现 IronRDP（ironrdp-rdpdr VersionAndIdPdu）：FIXED_PART_SIZE = 2+2+4 = 8（body），加 shared header 4 = 12。
+- 本仓现状（修复前）：`RdpdrServerClientIdConfirm::encode()` 写 header(4)+client_id(4)=8 字节；parse size>=8。客户端共用该 parse，故内部测试全绿但真实客户端按规范长度校验会拒收。
+- 修复方向：encode/parse 到 12 字节；服务器填 version_major=1/version_minor=0x000C。
+- 发现路径：rdpdr e2e 执行子报"头文件已声明 12B 但序列化未落地"。
