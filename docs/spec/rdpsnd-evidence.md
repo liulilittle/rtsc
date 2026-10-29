@@ -32,3 +32,10 @@ mstsc 的 rdpsnd 默认音频格式（wave2 44100/22050、PCM、块对齐）与 
 仓内 rdpsnd 实现已有 2 个测试套件（Test #31/#32）且实现完整；优先瞄准"差异对齐"则抓包裁决。
 - [x] CRdpSndPlugin 工厂/主 vtable 定位
 - [x] TSSNDCAPS 静态不可锚（→真机抓包）
+## 取证批次 3（2026-10-28 轮次 109）：rdpsnd server_formats=0 根因
+- 真机会话 A：audio server_formats=0、server version 0、rdpsnd chunks=0。
+- 排查一：rdpsnd client 纯被动（无 Start()），规范确认 MS-RDPEA 3.1.5 初始化=**服务器先发 Server Audio Formats and Version PDU**（"Event: connected from client. Action: server sends..."）→ 被动等待正确，非协议缺口。
+- 排查二：channel join 完整（connect_machine.cpp:388-396 将 channel_names 全部加 join_queue，含 "rdpsnd"）→ join 侧正常。
+- **根因结论**：rdpsnd chunks=0 + server_formats=0 = **服务器未发起音频重定向**（会话策略：默认"在远程计算机播放"不向客户端发流；或远程会话禁用音频）。非本仓代码缺陷。
+- **验证手段**（需服务器端配置）：在 192.168.1.7 的会话设置把音频播放改为"在此计算机播放"/"不播放"，或预期场景（有音频播放）再看 server_formats。本机无服务器配置权限，标记"待服务器侧配合"。
+- 关联：rdpsnd client 的 SelectFormat/send ClientAudioFormats/QualityMode 路径在测试网套件（31/32）全绿；缺失的是真机服务器主动发流场景。
