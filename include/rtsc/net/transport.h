@@ -42,6 +42,13 @@ constexpr int kReadTimeout = -2;
 // the timeval precisely would use.
 constexpr int kReadTimeoutMs = 2;
 
+// How long ConnectTcp() waits for the TCP handshake (SYN -> SYN-ACK) to finish
+// before giving up. Without this bound a dead host that silently drops SYN (a
+// firewall blackhole) would block the caller indefinitely. 10 s is large enough
+// for a legitimate remote RDP/Gateway host, yet short enough that the UI cannot
+// appear hung. This bounds the connect itself; Read() keeps its own kReadTimeoutMs.
+constexpr int kConnectTimeoutMs = 10000;
+
 class Transport {
  public:
     virtual ~Transport() = default;

@@ -410,6 +410,15 @@ else()
     target_include_directories(rtsc_net PUBLIC include)
 endif()
 
+# ConnectTcp hardening: connect-timeout / refused / success (and boundary)
+# behavior of the handshake, driven over the public Transport/Listener API.
+# src/net is on the include path for the internal ConnectAddresses() seam the
+# budget-slicing regression test injects an address list through.
+add_executable(rtsc_net_tests tests/test_transport.cpp)
+target_link_libraries(rtsc_net_tests PRIVATE rtsc_net rtsc_util)
+target_include_directories(rtsc_net_tests PRIVATE tests src/net)
+add_test(NAME net COMMAND rtsc_net_tests)
+
 # RD Gateway tunnel + RDP-UDP transport ([MS-TSGU] / [MS-RDPEUDP]).
 # Platform neutral: the transport logic lives in gateway_transport.cpp; the
 # UDP socket seam has a Winsock backend (Windows) and a POSIX backend.
@@ -697,6 +706,7 @@ if(MSVC)
     target_compile_options(rtsc_view_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_session_info_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_client_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_net_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdp_standard_security_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_security_tests PRIVATE /W4 /WX)
