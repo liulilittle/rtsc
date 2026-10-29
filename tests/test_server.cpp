@@ -29,6 +29,8 @@
 #include <thread>
 #include <vector>
 
+#include "rtsc/channel/cliprdr_client.h"
+#include "rtsc/clipboard/clipboard.h"
 #include "rtsc/net/transport.h"
 #include "rtsc/proto/bitmap.h"
 #include "rtsc/proto/byte_order.h"
@@ -1851,6 +1853,179 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     stopper.join();
     runner.join();
     CHECK_EQ(server->session_count(), 0);
+}
+
+// ---- server-side CLIPRDR integration ----------------------------------------
+
+namespace {
+
+// A minimal in-memory clipboard double for the server cliprdr integration
+// tests. The server's cliprdr handler reads the negotiated S-clipboard from it.
+class ServerClipboard final : public rtsc::clipboard::Clipboard {
+ public:
+    std::vector<uint32_t> formats() override { return formats_; }
+    bool read(uint32_t format, std::vector<uint8_t>& out) override {
+        auto it = data_.find(format);
+        if (it == data_.end()) return false;
+        out = it->second;
+        return true;
+    }
+    bool write(uint32_t format, const std::vector<uint8_t>& data) override {
+        data_[format] = data;
+        return true;
+    }
+    uint64_t sequence_number() const override { return 0; }
+
+    std::vector<uint32_t> formats_;
+    std::map<uint32_t, std::vector<uint8_t>> data_;
+};
+
+// Sends one complete cliprdr message to the server's cliprdr static virtual
+// channel (id 1005 for the {"rdpdr","cliprdr","rdpsnd"} client).
+void SendCliprdrPdu(HandshakeResult& r, CliprdrMsgType type, uint16_t flags,
+                    const std::vector<uint8_t>& body) {
+    const auto pdu = BuildCliprdrPdu(type, flags, body);
+    for (const auto& chunk : FragmentChannelMessage(pdu)) {
+        WriteAll(*r.transport,
+                 McsSendData::build_request(r.user_channel, 1005, chunk));
+    }
+}
+
+// Reads one frame from the active session and hands back its cliprdr PDU, when
+// it is one (returns false for a non-cliprdr frame).
+bool ReadCliprdrPdu(HandshakeResult& r, CliprdrPdu& out) {
+    std::vector<uint8_t> frame;
+    if (!r.reader->Read(frame)) return false;
+    McsSendData sd;
+    if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+        return false;
+    }
+    if (sd.channel_id != 1005) return false;
+    if (sd.user_data.size() < ChannelPduHeader::kSize + CliprdrHeader::kSize) {
+        return false;
+    }
+    return CliprdrPdu::parse(sd.user_data.data() + ChannelPduHeader::kSize,
+                             sd.user_data.size() - ChannelPduHeader::kSize,
+                             out) == Status::Ok;
+}
+
+}  // namespace
+
+// S14: the server parses the Client Network Data channel name table, so the
+// cliprdr static virtual channel gets id 1005 (1004 + index) and the server's
+// cliprdr initialization is delivered on that channel -- not on a sibling
+// static channel.
+RTSC_TEST(server_cliprdr_name_table_resolves_channel_1005) {
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    ServerClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetClipboard(&clip);
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    // Drive to active without reading the bitmap: the next frames on the wire
+    // are the server's cliprdr initialization (design §1: server speaks first).
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
+                                      64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+
+    // Clipboard Capabilities, Monitor Ready, Format List, in order, all on the
+    // cliprdr channel (1005), never on 1004 (rdpdr) or 1006 (rdpsnd).
+    CliprdrPdu pdu;
+    CHECK(ReadCliprdrPdu(r, pdu));
+    CHECK(pdu.header.msg_type == CliprdrMsgType::kClipCaps);
+    CHECK(ReadCliprdrPdu(r, pdu));
+    CHECK(pdu.header.msg_type == CliprdrMsgType::kMonitorReady);
+    CHECK(ReadCliprdrPdu(r, pdu));
+    CHECK(pdu.header.msg_type == CliprdrMsgType::kFormatList);
+
+    server.Stop();
+    runner.join();
+}
+
+// S15: the active loop routes by MCS channel id -- the cliprdr channel feeds
+// the CliprdrServer handler (a served Format Data Request round-trips), the
+// I/O channel keeps the input path, and an unregistered static channel is
+// ignored without disturbing the session.
+RTSC_TEST(server_cliprdr_active_loop_three_way_dispatch) {
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    ServerClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    const std::vector<uint8_t> text = {0x48, 0x00, 0x69, 0x00};
+    clip.data_[kCfUnicodeText] = text;
+    std::atomic<int> key_events{0};
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetClipboard(&clip);
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        if (ev.kind == rtsc::server::InputEvent::Kind::kKey) {
+            key_events.fetch_add(1);
+        }
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
+                                      64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+
+    // 1. Cliprdr channel: a client Format Data Request is served by the
+    //    CliprdrServer handler and the answer comes back on channel 1005. The
+    //    server's own initialization (caps / monitor-ready / format list) and
+    //    the first desktop frame are already buffered ahead of the answer, so
+    //    the loop skips them.
+    {
+        ByteWriter body;
+        body.u32le(kCfUnicodeText);
+        SendCliprdrPdu(r, CliprdrMsgType::kFormatDataRequest, 0, body.take());
+        CliprdrPdu resp;
+        bool found = false;
+        for (int i = 0; i < 20 && !found; ++i) {
+            CliprdrPdu p;
+            if (ReadCliprdrPdu(r, p) &&
+                p.header.msg_type == CliprdrMsgType::kFormatDataResponse) {
+                resp = p;
+                found = true;
+            }
+        }
+        CHECK(found);
+        CHECK_EQ(resp.header.msg_flags,
+                 static_cast<uint16_t>(rtsc::proto::kClipResponseOk));
+        CHECK(std::equal(text.begin(), text.end(), resp.data.begin()));
+    }
+
+    // 2. An unregistered static channel (1004 / rdpdr) is ignored: garbage on
+    //    it must not produce a response and must not kill the session.
+    WriteAll(*r.transport,
+             McsSendData::build_request(r.user_channel, 1004,
+                                        std::vector<uint8_t>{0xDE, 0xAD, 0xBE}));
+
+    // 3. The I/O channel still runs the original input path: a fast-path input
+    //    event reaches the callback, proving the session survived step 2.
+    WriteAll(*r.transport,
+             McsSendData::build_request(
+                 r.user_channel, r.io_channel,
+                 EncodeFastPathInputPdu(
+                     {EncodeKeyboardEvent(0x1E, false, false)})));
+    for (int i = 0; i < 100 && key_events.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(key_events.load() >= 1);
+
+    server.Stop();
+    runner.join();
 }
 
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

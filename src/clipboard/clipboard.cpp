@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <mutex>
 #endif
 
 namespace rtsc::clipboard {
@@ -19,9 +20,18 @@ namespace {
 // The Win32 clipboard. The clipboard is a process-wide resource, so the window
 // handle passed to OpenClipboard is nullptr (no WM_DRAWCLIPBOARD owner needed
 // here: the window backend observes changes itself).
+//
+// The server serves one shared clipboard to every session (shared desktop
+// semantics). OpenClipboard is process-global and OpenClipboard/CloseClipboard
+// pairs from two session threads must never interleave, so every backend call
+// is serialized by a process-level mutex; the sequence number the poll reads is
+// lock-free and intentionally outside it.
+std::mutex g_clipboard_mutex;
+
 class Win32Clipboard final : public Clipboard {
  public:
     std::vector<uint32_t> formats() override {
+        std::lock_guard<std::mutex> lock(g_clipboard_mutex);
         std::vector<uint32_t> out;
         if (!OpenClipboard(nullptr)) return out;
         UINT format = EnumClipboardFormats(0);
@@ -34,6 +44,7 @@ class Win32Clipboard final : public Clipboard {
     }
 
     bool read(uint32_t format, std::vector<uint8_t>& out) override {
+        std::lock_guard<std::mutex> lock(g_clipboard_mutex);
         out.clear();
         if (!OpenClipboard(nullptr)) return false;
         HANDLE handle = GetClipboardData(format);
@@ -53,6 +64,7 @@ class Win32Clipboard final : public Clipboard {
     }
 
     bool write(uint32_t format, const std::vector<uint8_t>& data) override {
+        std::lock_guard<std::mutex> lock(g_clipboard_mutex);
         if (!OpenClipboard(nullptr)) return false;
         EmptyClipboard();
         bool ok = true;
@@ -74,6 +86,10 @@ class Win32Clipboard final : public Clipboard {
         }
         CloseClipboard();
         return ok;
+    }
+
+    uint64_t sequence_number() const override {
+        return static_cast<uint64_t>(GetClipboardSequenceNumber());
     }
 };
 #endif

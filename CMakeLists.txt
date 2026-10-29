@@ -66,6 +66,7 @@ target_link_libraries(rtsc_rdpsnd PUBLIC rtsc_proto)
 # the Win32 backend is the platform implementation (user32).
 add_library(rtsc_cliprdr STATIC
     src/channel/cliprdr_client.cpp
+    src/channel/cliprdr_server.cpp
     src/clipboard/clipboard.cpp
     src/clipboard/drop_files.cpp)
 target_include_directories(rtsc_cliprdr PUBLIC include)
@@ -207,6 +208,12 @@ target_include_directories(rtsc_surface_tests PRIVATE tests)
 add_executable(rtsc_cliprdr_tests tests/test_cliprdr.cpp)
 target_link_libraries(rtsc_cliprdr_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_cliprdr_tests PRIVATE tests)
+
+# Server-side cliprdr handler: the protocol mirror of the client handler, driven
+# with an injected fake clipboard (design S1-S13).
+add_executable(rtsc_cliprdr_server_tests tests/test_cliprdr_server.cpp)
+target_link_libraries(rtsc_cliprdr_server_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_cliprdr_server_tests PRIVATE tests)
 
 # Direction-B file-list provider (DropFileList / CreateDropFileListFromBytes).
 add_executable(rtsc_clipboard_tests tests/test_drop_files.cpp)
@@ -539,7 +546,9 @@ add_library(rtsc_server STATIC
     src/server/rsa_posix_stub.cpp
     src/crypto/rsa_server.cpp)
 target_include_directories(rtsc_server PUBLIC include)
-target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security)
+# The server's cliprdr static virtual channel runs the CliprdrServer handler
+# (src/channel/cliprdr_server.cpp, built into rtsc_cliprdr).
+target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr)
 
 add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
@@ -552,6 +561,14 @@ add_executable(rtsc_server_multisession_tests tests/test_server_multisession.cpp
 target_link_libraries(rtsc_server_multisession_tests PRIVATE
                       rtsc_client rtsc_server rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_server_multisession_tests PRIVATE tests)
+
+# Server-side CLIPRDR over real loopback sockets: one server session and the
+# project's own client, asserting the clipboard round-trip in both directions
+# and the handshake counters (design E1-E3).
+add_executable(rtsc_server_cliprdr_e2e_tests tests/test_server_cliprdr_e2e.cpp)
+target_link_libraries(rtsc_server_cliprdr_e2e_tests PRIVATE
+                      rtsc_client rtsc_server rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_server_cliprdr_e2e_tests PRIVATE tests)
 
 # Windows GDI desktop capture: the real-desktop DesktopSource. Windows only;
 # the DesktopSource interface stays platform neutral in rtsc/server/server.h.
@@ -623,6 +640,7 @@ add_test(NAME bitmap COMMAND rtsc_bitmap_tests)
 add_test(NAME channel COMMAND rtsc_channel_tests)
 add_test(NAME surface COMMAND rtsc_surface_tests)
 add_test(NAME cliprdr COMMAND rtsc_cliprdr_tests)
+add_test(NAME cliprdr_server COMMAND rtsc_cliprdr_server_tests)
 add_test(NAME clipboard COMMAND rtsc_clipboard_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
@@ -649,6 +667,7 @@ add_test(NAME ntlm COMMAND rtsc_ntlm_tests)
 add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
 add_test(NAME server_multisession COMMAND rtsc_server_multisession_tests)
+add_test(NAME server_cliprdr_e2e COMMAND rtsc_server_cliprdr_e2e_tests)
 if(WIN32)
     add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
 endif()
@@ -680,6 +699,7 @@ if(MSVC)
     target_compile_options(rtsc_channel_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_surface_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_cliprdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_cliprdr_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_clipboard_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drdynvc_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpusb_tests PRIVATE /W4 /WX)
@@ -724,6 +744,7 @@ if(MSVC)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_multisession_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_cliprdr_e2e_tests PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
         target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)

@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+#include "rtsc/clipboard/clipboard.h"
+#include "rtsc/clipboard/file_list.h"
 #include "rtsc/net/tls.h"
 
 namespace rtsc::server {
@@ -223,6 +225,17 @@ class RdpServer {
     // the session thread, once per decoded Fast-Path input event.
     void SetInputCallback(InputCallback cb);
 
+    // Sets the local clipboard served by every session's cliprdr virtual
+    // channel (nullptr disables clipboard redirection). All sessions share one
+    // clipboard (shared-desktop / last-writer-wins semantics); the Win32
+    // backend serializes access. The pointer must outlive the server; the
+    // server does not take ownership.
+    void SetClipboard(clipboard::Clipboard* clipboard);
+
+    // Sets the file-list provider used by the cliprdr file-serve path (stream
+    // file clip). nullptr leaves every file request failing (the v1 default).
+    void SetFileListProvider(clipboard::FileListProvider* provider);
+
     // Binds and listens. Returns false and fills `error` on failure.
     bool Start(std::string& error);
     // Closes the listener and every live session, then joins their threads.
@@ -266,6 +279,13 @@ class RdpServer {
     DesktopSource* source_ = nullptr;
     Authenticator authenticator_;
     InputCallback input_callback_;
+    // The shared local clipboard for the cliprdr virtual channel, and the
+    // shared file-list provider for its file-serve path. Both are borrowed,
+    // never owned, and read by every session thread (the Win32 backend
+    // serializes clipboard access; the provider must be safe for concurrent
+    // reads).
+    clipboard::Clipboard* clipboard_ = nullptr;
+    clipboard::FileListProvider* file_list_provider_ = nullptr;
     std::string last_error_;
 
     // Says the accept-all WARNING once, when the effective credential policy

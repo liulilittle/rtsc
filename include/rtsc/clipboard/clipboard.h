@@ -48,6 +48,13 @@ class Clipboard {
     virtual std::vector<uint32_t> formats() = 0;
     virtual bool read(uint32_t format, std::vector<uint8_t>& out) = 0;
     virtual bool write(uint32_t format, const std::vector<uint8_t>& data) = 0;
+
+    // A process-local, monotonic clipboard version. The Win32 backend maps it to
+    // GetClipboardSequenceNumber(); test doubles override it to simulate local
+    // edits. The cliprdr server uses it to notice external clipboard changes on
+    // its 1 s poll and to swallow the echo of its own remote-applied write
+    // (design: "自回声吞用应用后 seq").
+    virtual uint64_t sequence_number() const { return 0; }
 };
 
 // No-op clipboard for platforms without a backend (and as a test double).

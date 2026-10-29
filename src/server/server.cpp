@@ -30,6 +30,9 @@
 #include <thread>
 #include <vector>
 
+#include "rtsc/channel/cliprdr_server.h"
+#include "rtsc/clipboard/clipboard.h"
+#include "rtsc/clipboard/file_list.h"
 #include "rtsc/crypto/hash.h"
 #include "rtsc/crypto/random.h"
 #include "rtsc/crypto/rdp_security.h"
@@ -86,6 +89,11 @@ constexpr uint16_t kIoChannelId = 1003;
 constexpr uint16_t kUserChannelId = 1001;
 constexpr uint16_t kServerChannelId = 1002;
 constexpr uint16_t kFirstStaticChannelId = 1004;
+// Upper bound on the static virtual channels one client may request. RDP peers
+// request a handful; the bound keeps the channel table (and thus the Server
+// Network Data channelIdArray) well inside the TPKT u16 length and the channel
+// id range, while still covering every real client.
+constexpr uint32_t kMaxStaticChannels = 32;
 
 constexpr uint8_t kStreamLow = 0x01;
 constexpr size_t kReadChunk = 16384;
@@ -537,13 +545,29 @@ class RdpSession {
  public:
     RdpSession(std::unique_ptr<net::Transport> transport, const ServerConfig& config,
                DesktopSource* source, Authenticator authenticator,
-               InputCallback input_callback, uint32_t session_id)
+               InputCallback input_callback, uint32_t session_id,
+               clipboard::Clipboard* clipboard,
+               clipboard::FileListProvider* file_provider)
         : transport_(std::move(transport)),
           config_(config),
           source_(source),
           authenticator_(std::move(authenticator)),
           input_callback_(std::move(input_callback)),
-          session_id_(session_id) {}
+          session_id_(session_id) {
+        // One CliprdrServer per session, all sharing the borrowed local
+        // clipboard (shared-desktop semantics). It is used only from this
+        // session's thread. The send lambda reads cliprdr_channel_id_ at send
+        // time (it is set later, when the client network data is parsed).
+        if (clipboard != nullptr) {
+            cliprdr_ = std::make_unique<rtsc::channel::CliprdrServer>(
+                clipboard,
+                [this](const std::vector<uint8_t>& message) {
+                    if (cliprdr_channel_id_ == 0) return;
+                    SendMcsUserData(cliprdr_channel_id_, message);
+                });
+            if (file_provider != nullptr) cliprdr_->SetFileListProvider(file_provider);
+        }
+    }
 
     // Serves the connection until the peer disconnects or Stop() is called.
     void Run() {
@@ -648,8 +672,8 @@ class RdpSession {
             const int n = transport_->Read(tmp, sizeof(tmp));
             if (n == net::kReadTimeout) {
                 if (stop_requested_.load(std::memory_order_relaxed)) return false;
+                const auto now = std::chrono::steady_clock::now();
                 if (refresh_due != nullptr && !output_suppressed_) {
-                    const auto now = std::chrono::steady_clock::now();
                     if (now >= *refresh_due) {
                         // Periodic desktop refresh: mstsc discards updates
                         // that arrive before its surface is ready, so the
@@ -668,6 +692,16 @@ class RdpSession {
                         }
                     }
                 }
+                // cliprdr local-clipboard change detection on the same ~1 s
+                // cadence. It is independent of display output suppression
+                // (clipboard sync is not a display update) and of the
+                // handshake (ReadFrame only passes refresh_due in the active
+                // phase).
+                if (refresh_due != nullptr && cliprdr_ != nullptr &&
+                    now >= next_clipboard_poll_) {
+                    next_clipboard_poll_ = now + kRefreshInterval;
+                    cliprdr_->Poll(now);
+                }
                 continue;
             }
             if (n <= 0) return false;
@@ -680,17 +714,25 @@ class RdpSession {
         }
     }
 
-    // Wraps a share PDU (or Demand Active) in an MCS Send Data Indication,
-    // applying the session RC4 layer when encryption is in effect.
-    bool SendRawUserData(const std::vector<uint8_t>& user_data) {
+    // Wraps a share PDU (or any application data) in an MCS Send Data
+    // Indication on `channel_id`, applying the session RC4 layer when
+    // encryption is in effect. Static virtual channels (cliprdr) and the I/O
+    // channel share this path; the two differ only in the channel id.
+    bool SendMcsUserData(uint16_t channel_id,
+                         const std::vector<uint8_t>& user_data) {
         std::vector<uint8_t> ud = user_data;
         if (encrypted_) {
             ud = EncryptPayload(kSecEncrypt, user_data);
             if (ud.empty()) return false;
         }
         const auto frame =
-            proto::McsSendData::build_indication(kServerChannelId, io_channel_, ud);
+            proto::McsSendData::build_indication(kServerChannelId, channel_id, ud);
         return !frame.empty() && Send(frame);
+    }
+
+    // The I/O-channel form of SendMcsUserData (graphics / share PDUs).
+    bool SendRawUserData(const std::vector<uint8_t>& user_data) {
+        return SendMcsUserData(io_channel_, user_data);
     }
 
     // A licensing PDU carries its own Basic security header (SEC_LICENSE_PKT),
@@ -909,14 +951,45 @@ class RdpSession {
             }
         }
 
+        // TS_UD_CS_NET ([MS-RDPBCGR] 2.2.1.3.4): a u32 channelCount followed
+        // by channelDefArray entries of channelName[8] + options(4). The
+        // historical code read the count as a u16 (a misparse of the u32 field)
+        // and never parsed the names, so it could not tell the cliprdr channel
+        // from rdpdr/rdpsnd. The server assigns channel ids 1004 + index and
+        // records which static channel is the cliprdr one for the active-loop
+        // dispatch.
         if (const auto* net = user_data.find(kCsNetwork)) {
-            if (net->payload.size() >= 4) {
-                const uint16_t count =
-                    static_cast<uint16_t>(net->payload[0] | (net->payload[1] << 8));
+            ByteReader net_r(net->payload.data(), net->payload.size());
+            uint32_t count = 0;
+            if (net_r.u32le(count)) {
+                // A peer may request an arbitrary number of channels; clamp the
+                // table so the Server Network Data channelIdArray cannot
+                // overflow the TPKT u16 length or the channel-id range.
+                if (count > kMaxStaticChannels) {
+                    count = kMaxStaticChannels;
+                }
                 requested_channels_.clear();
-                for (uint16_t i = 0; i < count; ++i) {
+                cliprdr_channel_id_ = 0;
+                for (uint32_t i = 0; i < count; ++i) {
+                    // Each entry is name[8] + options(4). A truncated name
+                    // table aborts the parse: nothing further is consumed and
+                    // no more channel ids are assigned (the ones already
+                    // emitted stay valid).
+                    if (net_r.remaining() < 12) break;
+                    char name[9] = {0};
+                    uint8_t byte = 0;
+                    for (size_t k = 0; k < 8; ++k) {
+                        if (!net_r.u8(byte)) break;
+                        name[k] = static_cast<char>(byte);
+                    }
+                    net_r.skip(4);  // options
                     requested_channels_.push_back(
                         static_cast<uint16_t>(kFirstStaticChannelId + i));
+                    if (cliprdr_channel_id_ == 0 &&
+                        name[0] != '\0' && std::strcmp(name, "cliprdr") == 0) {
+                        cliprdr_channel_id_ =
+                            static_cast<uint16_t>(kFirstStaticChannelId + i);
+                    }
                 }
             }
         }
@@ -1266,12 +1339,19 @@ class RdpSession {
     }
 
     void ActiveLoop() {
+        // The cliprdr handler speaks first (design §1 "服务器先发"): started
+        // exactly once, after the connection finalization and before the first
+        // active-loop iteration, so its Clipboard Capabilities / Monitor Ready
+        // / Format List precede any client channel data. With no clipboard
+        // configured there is nothing to do.
+        if (cliprdr_ != nullptr) cliprdr_->Start();
         SendFrame();
         // The single frame sent at active can race the client's Confirm Active
         // processing (mstsc drops updates that arrive before its surface is
         // ready and stays black), so the desktop is refreshed on a fixed ~1 s
         // cadence, independent of client input.
         auto next_refresh = std::chrono::steady_clock::now() + kRefreshInterval;
+        next_clipboard_poll_ = next_refresh;
         std::vector<uint8_t> frame;
         while (!stop_requested_.load(std::memory_order_relaxed)) {
             if (!ReadFrame(frame, &next_refresh)) break;
@@ -1279,10 +1359,30 @@ class RdpSession {
             if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
                 continue;
             }
+            // Three-way dispatch on the MCS channel id (design §3.2 / MCS
+            // integration point 3): the I/O channel keeps the original share
+            // PDU / fast-path input path, the cliprdr static virtual channel
+            // feeds the CliprdrServer handler (reassembling the virtual
+            // channel protocol), and every other static channel is ignored
+            // (rdpdr / rdpsnd / rail are not served in this scope).
+            //
+            // The inbound user data is decrypted for EVERY frame, whatever the
+            // channel: RC4 is a stream cipher, so a SEC_ENCRYPT-carrying frame
+            // that is skipped desynchronises the session's decrypt stream and
+            // corrupts the next real message (regression guard: the GUI send
+            // integration test sends fake channel PDUs under encryption and
+            // asserts the following input still decodes).
             std::vector<uint8_t> payload;
             if (!UnwrapInbound(sd.user_data, payload)) continue;
-            if (!HandleSlowPathPdu(payload, &next_refresh)) break;
-            HandleInputPdu(payload);
+            if (sd.channel_id == io_channel_) {
+                if (!HandleSlowPathPdu(payload, &next_refresh)) break;
+                HandleInputPdu(payload);
+            } else if (cliprdr_ != nullptr && cliprdr_channel_id_ != 0 &&
+                       sd.channel_id == cliprdr_channel_id_) {
+                cliprdr_->OnChannelData(payload.data(), payload.size());
+            }
+            // Other channels: decrypted (keeps the RC4 stream in sync) but
+            // otherwise ignored.
         }
     }
 
@@ -1462,6 +1562,11 @@ class RdpSession {
     uint16_t desktop_height_ = 0;
     std::vector<uint16_t> requested_channels_;
     uint16_t io_channel_ = kIoChannelId;
+    // The MCS channel id of the client's cliprdr static virtual channel,
+    // resolved from the Client Network Data name table in DoConnectResponse
+    // (1004 + index of the "cliprdr" name). 0 when the client did not
+    // advertise the cliprdr channel.
+    uint16_t cliprdr_channel_id_ = 0;
 
     uint32_t chosen_method_ = 0;
     uint32_t encryption_level_ = 0;
@@ -1477,6 +1582,13 @@ class RdpSession {
     // [MS-RDPBCGR] 2.2.11.3.1): suspends the periodic desktop refresh until
     // the client resumes output.
     bool output_suppressed_ = false;
+    // The per-session cliprdr handler. Null when no local clipboard was
+    // configured (RdpServer::SetClipboard); created with the session even
+    // before the client's channel id is known, and started in ActiveLoop.
+    std::unique_ptr<rtsc::channel::CliprdrServer> cliprdr_;
+    // Deadline of the next cliprdr local-clipboard change poll (~1 s cadence,
+    // set at ActiveLoop entry).
+    std::chrono::steady_clock::time_point next_clipboard_poll_{};
     Credentials credentials_;
 };
 
@@ -1542,6 +1654,14 @@ void RdpServer::SetAuthenticator(Authenticator auth) {
 
 void RdpServer::SetInputCallback(InputCallback cb) {
     input_callback_ = std::move(cb);
+}
+
+void RdpServer::SetClipboard(clipboard::Clipboard* clipboard) {
+    clipboard_ = clipboard;
+}
+
+void RdpServer::SetFileListProvider(clipboard::FileListProvider* provider) {
+    file_list_provider_ = provider;
 }
 
 void RdpServer::WarnIfAcceptAll() {
@@ -1620,7 +1740,7 @@ void RdpServer::Run() {
             if (!impl_->running.load(std::memory_order_relaxed)) break;
             session = std::make_shared<RdpSession>(
                 std::move(transport), config_, source_, authenticator_,
-                input_callback_, 0);
+                input_callback_, 0, clipboard_, file_list_provider_);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1739,7 +1859,7 @@ bool RdpServer::ServeOne() {
     auto transport = impl_->listener->Accept();
     if (!transport) return false;
     RdpSession session(std::move(transport), config_, source_, authenticator_,
-                       input_callback_, 0);
+                       input_callback_, 0, clipboard_, file_list_provider_);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it.
     try {
