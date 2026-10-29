@@ -463,3 +463,11 @@
 - 环境：ui/view 在 ctest 全量时因 il2cpp CPU 争用红（单跑均绿，非本批）。
 - 审计组与执行子已 delete 解散。
 - 服务器模式进度：桌面✓ 剪贴板✓ 多会话✓ rdpdr 握手✓（设备列表/IRP 二期）。
+## 第668轮：rdpdr 12字节修复 + e2e 入库 d1191a3
+- 真缺陷修复：ClientIdConfirm 8→12 字节（[MS-RDPEFS] 2.2.2.6 权威证据 8b1c9ca）；服务器填 version 1/0x000C；官方字节串逐字节断言；8/11 字节拒绝；客户端旧 8B 停 kAwaitClientIdConfirm。
+- rdpdr e2e 配对测试 4/119（handler 级真编码配对 + loopback 全栈 + 重复 announce + 断开释放）。
+- 验证：rdpdr 52/325、rdpdr_server 7/91、6/6 rdpdr 家族套件绿；build 0err/0warn。
+- 双审：新审计组甲乙一致盖章（规范原文独立 web 核验 + 变异红复现）；观察项 D1-D7 非阻塞。
+- 审计组/执行子已 delete 解散。
+- 环境：il2cpp 100% CPU 争用持续 → C0 全量（view/ui bench）待争用消退后跑。
+- 服务器模式：桌面✓ 剪贴板✓ 多会话✓ rdpdr 握手✓+12B 规范修正✓。
