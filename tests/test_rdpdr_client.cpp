@@ -409,6 +409,44 @@ RTSC_TEST(rdpdr_client_confirm_sends_capabilities_and_devices) {
     }
 }
 
+// Regression guard for DR_CORE_SERVER_CLIENTID_CONFIRM ([MS-RDPEFS] 2.2.2.6): a
+// server that sends the historical 8-byte form (version fields omitted) is
+// rejected by the length check and the state machine must not advance; the
+// spec 12-byte form still completes the handshake.
+RTSC_TEST(rdpdr_client_rejects_old_8_byte_clientid_confirm) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    CHECK(client.phase() == RdpdrClient::Phase::kAwaitClientIdConfirm);
+
+    // Header(4) + ClientId(4): the off-spec 8-byte confirm.
+    const std::vector<uint8_t> old_form = {
+        0x72, 0x44, 0x43, 0x43,  // RDPDR_HEADER: component "rD", PAKID 0x4343
+        0x07, 0x00, 0x00, 0x00};  // client id only, no version pair
+    FeedMessage(client, old_form);
+    CHECK(client.phase() == RdpdrClient::Phase::kAwaitClientIdConfirm);
+    CHECK_EQ(client.client_capability_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.device_list_announce_count(), static_cast<unsigned>(0));
+
+    // The spec form still works afterwards.
+    proto::RdpdrServerClientIdConfirm good;
+    good.version_major = 1;
+    good.version_minor = 0x000C;
+    good.client_id = 1;
+    FeedMessage(client, good.encode());
+    CHECK(client.phase() == RdpdrClient::Phase::kReady);
+    CHECK_EQ(client.client_capability_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.device_list_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.client_id(), static_cast<uint32_t>(1));
+}
+
 RTSC_TEST(rdpdr_client_server_capability_and_user_logged_on) {
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});

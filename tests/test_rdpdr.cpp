@@ -58,6 +58,37 @@ RTSC_TEST(rdpdr_server_announce_rejects_wrong_packet_id) {
     CHECK(RdpdrServerAnnounce::parse(b.data(), 11, a) == Status::NeedMoreData);
 }
 
+RTSC_TEST(rdpdr_server_clientid_confirm_is_12_bytes) {
+    // [MS-RDPEFS] 2.2.2.6 DR_CORE_SERVER_CLIENTID_CONFIRM is Header(4) +
+    // VersionMajor(2) + VersionMinor(2) + ClientId(4). Real clients enforce
+    // this length and parse both version fields, so the historical 8-byte
+    // (client id only) form is refused.
+    const auto b = FromHex("72 44 43 43 01 00 0c 00 01 00 00 00");
+    CHECK_EQ(b.size(), static_cast<size_t>(12));
+
+    RdpdrServerClientIdConfirm c;
+    CHECK(RdpdrServerClientIdConfirm::parse(b.data(), b.size(), c) == Status::Ok);
+    CHECK_EQ(c.version_major, static_cast<uint16_t>(0x0001));
+    CHECK_EQ(c.version_minor, static_cast<uint16_t>(0x000C));
+    CHECK_EQ(c.client_id, static_cast<uint32_t>(0x00000001));
+
+    // The encoder reproduces the same wire form byte for byte.
+    RdpdrServerClientIdConfirm out;
+    out.version_major = 1;
+    out.version_minor = 0x000C;
+    out.client_id = 1;
+    CHECK(out.encode() == b);
+
+    // The old 8-byte confirm (version fields omitted) is rejected, as is an
+    // 11-byte truncated packet.
+    RdpdrServerClientIdConfirm old_form;
+    const auto eight = FromHex("72 44 43 43 01 00 00 00");
+    CHECK(RdpdrServerClientIdConfirm::parse(eight.data(), eight.size(), old_form) ==
+          Status::NeedMoreData);
+    CHECK(RdpdrServerClientIdConfirm::parse(b.data(), 11, old_form) ==
+          Status::NeedMoreData);
+}
+
 RTSC_TEST(rdpdr_pdu_exposes_trailing_bytes) {
     // Client Name Request: header + PacketLength + Unicode computer name + code page.
     const auto b = FromHex("72 44 4e 43 20 00 00 00 00 00 00 00");

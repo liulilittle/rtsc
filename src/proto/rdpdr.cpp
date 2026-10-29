@@ -122,12 +122,14 @@ std::vector<uint8_t> RdpdrClientAnnounceReply::encode() const {
 
 Status RdpdrServerClientIdConfirm::parse(const uint8_t* data, size_t size,
                                          RdpdrServerClientIdConfirm& out) {
-    if (data == nullptr || size < 8) return Status::NeedMoreData;
+    if (data == nullptr || size < 12) return Status::NeedMoreData;
     RdpdrHeader header;
     if (!ReadCoreHeader(data, size, kPakidCoreClientidConfirm, header)) {
         return Status::InvalidType;
     }
     ByteReader r(data + RdpdrHeader::kSize, size - RdpdrHeader::kSize);
+    r.u16le(out.version_major);
+    r.u16le(out.version_minor);
     r.u32le(out.client_id);
     return Status::Ok;
 }
@@ -138,6 +140,8 @@ std::vector<uint8_t> RdpdrServerClientIdConfirm::encode() const {
     header.packet_id = kPakidCoreClientidConfirm;
     ByteWriter w;
     header.write(w);
+    w.u16le(version_major);
+    w.u16le(version_minor);
     w.u32le(client_id);
     return w.take();
 }

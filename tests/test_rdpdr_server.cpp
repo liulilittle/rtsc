@@ -211,9 +211,16 @@ RTSC_TEST(rdpdr_server_client_announce_brings_server_response_batch) {
         // ClientId Confirm echoes the server's announce client id.
         CHECK_EQ(server.clientid_confirm_count(), static_cast<unsigned>(1));
         proto::RdpdrServerClientIdConfirm confirm;
+        // DR_CORE_SERVER_CLIENTID_CONFIRM is RDPDR_HEADER(4) + VersionMajor(2)
+        // + VersionMinor(2) + ClientId(4) = 12 bytes; the version pair mirrors
+        // the announce the client already accepted (a shorter packet fails a
+        // real client's length check, taking the channel down).
+        CHECK_EQ(StrictBody(sent[2]).size(), static_cast<size_t>(12));
         CHECK(proto::RdpdrServerClientIdConfirm::parse(
                   StrictBody(sent[2]).data(), StrictBody(sent[2]).size(),
                   confirm) == proto::Status::Ok);
+        CHECK_EQ(confirm.version_major, server.version_major());
+        CHECK_EQ(confirm.version_minor, server.version_minor());
         CHECK_EQ(confirm.client_id, server.client_id());
 
         // User LoggedOn: no payload.

@@ -580,6 +580,16 @@ target_link_libraries(rtsc_server_cliprdr_e2e_tests PRIVATE
                       rtsc_client rtsc_server rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_server_cliprdr_e2e_tests PRIVATE tests)
 
+# Server-side RDPDR pairing over real loopback sockets: one server session
+# running the RdpdrServer minimum handshake on its rdpdr static virtual channel
+# and the project's own RdpdrClient, asserting the two sides interoperate
+# (design R1-R5). A companion handler-pair harness pins the server-side
+# diagnostics the live RdpServer does not publish.
+add_executable(rtsc_server_rdpdr_e2e_tests tests/test_server_rdpdr_e2e.cpp)
+target_link_libraries(rtsc_server_rdpdr_e2e_tests PRIVATE
+                      rtsc_client rtsc_server rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_server_rdpdr_e2e_tests PRIVATE tests)
+
 # Windows GDI desktop capture: the real-desktop DesktopSource. Windows only;
 # the DesktopSource interface stays platform neutral in rtsc/server/server.h.
 # The implementation only needs the header plus gdi32/user32, so it does not
@@ -679,6 +689,7 @@ add_test(NAME credssp_sm COMMAND rtsc_credssp_sm_tests)
 add_test(NAME server COMMAND rtsc_server_tests)
 add_test(NAME server_multisession COMMAND rtsc_server_multisession_tests)
 add_test(NAME server_cliprdr_e2e COMMAND rtsc_server_cliprdr_e2e_tests)
+add_test(NAME server_rdpdr_e2e COMMAND rtsc_server_rdpdr_e2e_tests)
 if(WIN32)
     add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
 endif()
@@ -757,6 +768,7 @@ if(MSVC)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_multisession_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_cliprdr_e2e_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_rdpdr_e2e_tests PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
         target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)

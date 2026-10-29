@@ -173,8 +173,14 @@ struct RdpdrClientAnnounceReply {
     std::vector<uint8_t> encode() const;
 };
 
-// DR_CORE_SERVER_CLIENTID_CONFIRM ([MS-RDPEFS] 2.2.2.6), 8 bytes total.
+// DR_CORE_SERVER_CLIENTID_CONFIRM ([MS-RDPEFS] 2.2.2.6), 12 bytes total. The
+// body mirrors the client announce reply: VersionMajor(2) + VersionMinor(2) +
+// ClientId(4). (An earlier 8-byte form with only ClientId was off-spec: real
+// clients parse the version fields here and a shorter packet fails their
+// length check, taking the rdpdr channel down.)
 struct RdpdrServerClientIdConfirm {
+    uint16_t version_major = 0;
+    uint16_t version_minor = 0;
     uint32_t client_id = 0;
 
     static Status parse(const uint8_t* data, size_t size,

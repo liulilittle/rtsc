@@ -137,6 +137,12 @@ void RdpdrServer::OnClientAnnounce(const std::vector<uint8_t>& message) {
     ++server_capability_count_;
 
     rtsc::proto::RdpdrServerClientIdConfirm confirm;
+    // [MS-RDPEFS] 2.2.2.6 carries VersionMajor + VersionMinor before ClientId;
+    // real clients enforce the 12-byte length and parse both version fields.
+    // Fill them from the server's own version pair, which the announce already
+    // advertised (the in-tree client echoes announce.version_minor).
+    confirm.version_major = version_major_;
+    confirm.version_minor = version_minor_;
     confirm.client_id = client_id_;
     SendRaw(confirm.encode());
     ++clientid_confirm_count_;
