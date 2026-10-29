@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "rtsc/channel/cliprdr_server.h"
+#include "rtsc/channel/rdpdr_server.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/file_list.h"
 #include "rtsc/crypto/hash.h"
@@ -567,6 +568,18 @@ class RdpSession {
                 });
             if (file_provider != nullptr) cliprdr_->SetFileListProvider(file_provider);
         }
+        // One RdpdrServer per session for the rdpdr static virtual channel
+        // (the minimum handshake; v1 announces no devices). Created whenever
+        // the server is configured to run it; the client's channel id is
+        // resolved later in DoConnectResponse, so the send lambda reads
+        // rdpdr_channel_id_ at send time like the cliprdr one.
+        if (config.enable_rdpdr_handshake) {
+            rdpdr_ = std::make_unique<rtsc::channel::RdpdrServer>(
+                [this](const std::vector<uint8_t>& message) {
+                    if (rdpdr_channel_id_ == 0) return;
+                    SendMcsUserData(rdpdr_channel_id_, message);
+                });
+        }
     }
 
     // Serves the connection until the peer disconnects or Stop() is called.
@@ -970,6 +983,7 @@ class RdpSession {
                 }
                 requested_channels_.clear();
                 cliprdr_channel_id_ = 0;
+                rdpdr_channel_id_ = 0;
                 for (uint32_t i = 0; i < count; ++i) {
                     // Each entry is name[8] + options(4). A truncated name
                     // table aborts the parse: nothing further is consumed and
@@ -988,6 +1002,11 @@ class RdpSession {
                     if (cliprdr_channel_id_ == 0 &&
                         name[0] != '\0' && std::strcmp(name, "cliprdr") == 0) {
                         cliprdr_channel_id_ =
+                            static_cast<uint16_t>(kFirstStaticChannelId + i);
+                    }
+                    if (rdpdr_channel_id_ == 0 &&
+                        name[0] != '\0' && std::strcmp(name, "rdpdr") == 0) {
+                        rdpdr_channel_id_ =
                             static_cast<uint16_t>(kFirstStaticChannelId + i);
                     }
                 }
@@ -1343,8 +1362,12 @@ class RdpSession {
         // exactly once, after the connection finalization and before the first
         // active-loop iteration, so its Clipboard Capabilities / Monitor Ready
         // / Format List precede any client channel data. With no clipboard
-        // configured there is nothing to do.
+        // configured there is nothing to do. The rdpdr handler follows right
+        // after (its Server Announce is the server half of the channel
+        // handshake); keeping cliprdr first preserves the existing frame
+        // order the integration tests assert on.
         if (cliprdr_ != nullptr) cliprdr_->Start();
+        if (rdpdr_ != nullptr) rdpdr_->Start();
         SendFrame();
         // The single frame sent at active can race the client's Confirm Active
         // processing (mstsc drops updates that arrive before its surface is
@@ -1363,8 +1386,9 @@ class RdpSession {
             // integration point 3): the I/O channel keeps the original share
             // PDU / fast-path input path, the cliprdr static virtual channel
             // feeds the CliprdrServer handler (reassembling the virtual
-            // channel protocol), and every other static channel is ignored
-            // (rdpdr / rdpsnd / rail are not served in this scope).
+            // channel protocol), the rdpdr static virtual channel feeds the
+            // RdpdrServer minimum handshake, and every other static channel
+            // is ignored (rdpsnd / rail are not served in this scope).
             //
             // The inbound user data is decrypted for EVERY frame, whatever the
             // channel: RC4 is a stream cipher, so a SEC_ENCRYPT-carrying frame
@@ -1380,6 +1404,9 @@ class RdpSession {
             } else if (cliprdr_ != nullptr && cliprdr_channel_id_ != 0 &&
                        sd.channel_id == cliprdr_channel_id_) {
                 cliprdr_->OnChannelData(payload.data(), payload.size());
+            } else if (rdpdr_ != nullptr && rdpdr_channel_id_ != 0 &&
+                       sd.channel_id == rdpdr_channel_id_) {
+                rdpdr_->OnChannelData(payload.data(), payload.size());
             }
             // Other channels: decrypted (keeps the RC4 stream in sync) but
             // otherwise ignored.
@@ -1567,6 +1594,10 @@ class RdpSession {
     // (1004 + index of the "cliprdr" name). 0 when the client did not
     // advertise the cliprdr channel.
     uint16_t cliprdr_channel_id_ = 0;
+    // The MCS channel id of the client's rdpdr static virtual channel,
+    // resolved the same way (1004 + index of the "rdpdr" name). 0 when the
+    // client did not advertise the rdpdr channel.
+    uint16_t rdpdr_channel_id_ = 0;
 
     uint32_t chosen_method_ = 0;
     uint32_t encryption_level_ = 0;
@@ -1586,6 +1617,10 @@ class RdpSession {
     // configured (RdpServer::SetClipboard); created with the session even
     // before the client's channel id is known, and started in ActiveLoop.
     std::unique_ptr<rtsc::channel::CliprdrServer> cliprdr_;
+    // The per-session rdpdr handler (the minimum channel handshake). Null when
+    // ServerConfig::enable_rdpdr_handshake is false; created with the session
+    // and started in ActiveLoop.
+    std::unique_ptr<rtsc::channel::RdpdrServer> rdpdr_;
     // Deadline of the next cliprdr local-clipboard change poll (~1 s cadence,
     // set at ActiveLoop entry).
     std::chrono::steady_clock::time_point next_clipboard_poll_{};

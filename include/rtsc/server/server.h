@@ -113,6 +113,13 @@ struct ServerConfig {
     using SessionThreadLauncher = std::function<bool(std::function<void()>)>;
     SessionThreadLauncher session_thread_launcher;
 
+    // Runs the server-side rdpdr (device redirection) minimum handshake on
+    // every session: Server Announce, capabilities, ClientId Confirm and User
+    // LoggedOn. The v1 serves no devices (the client sees an empty redirect
+    // list), so enabling this only completes the channel-level negotiation; a
+    // peer whose rdpdr support is unwanted can disable it. Enabled by default.
+    bool enable_rdpdr_handshake = true;
+
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.
     uint32_t session_id = 0;

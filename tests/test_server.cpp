@@ -44,6 +44,7 @@
 #include "rtsc/proto/mcs.h"
 #include "rtsc/proto/output.h"
 #include "rtsc/proto/rdp_neg.h"
+#include "rtsc/proto/rdpdr.h"
 #include "rtsc/proto/share.h"
 #include "rtsc/proto/tpkt.h"
 #include "rtsc/server/server.h"
@@ -442,54 +443,63 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
         }
     }
 
-    // 10. The server pushes one test-pattern bitmap frame.
+    // 10. The server pushes one test-pattern bitmap frame. Since the server
+    //     speaks first on its static virtual channels at active (the rdpdr
+    //     Server Announce / cliprdr initialization), the first on-wire frame
+    //     after finalization is not necessarily the bitmap; keep reading until
+    //     the graphics update arrives.
     if (!expect_frame) {
         r.reached_active = true;
         r.transport = std::move(transport);
         r.reader = std::move(reader);
         return r;
     }
-    if (!reader->Read(frame)) {
-        r.error = "bitmap frame read";
-        return r;
+    for (;;) {
+        if (!reader->Read(frame)) {
+            r.error = "bitmap frame read";
+            return r;
+        }
+        if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+            continue;  // not an MCS Send Data: keep reading
+        }
+        SlowPathGraphicsUpdate upd;
+        if (SlowPathGraphicsUpdate::parse(sd.user_data.data(),
+                                          sd.user_data.size(), upd) !=
+            Status::Ok) {
+            continue;  // a static virtual channel PDU (rdpdr/cliprdr): skip
+        }
+        UpdateBitmapData bm;
+        if (UpdateBitmapData::parse(upd.update_data.data(),
+                                    upd.update_data.size(), bm) !=
+                Status::Ok ||
+            bm.rectangles.empty()) {
+            r.error = "bitmap update parse";
+            return r;
+        }
+        const BitmapData& rect = bm.rectangles.front();
+        // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2: destRight/destBottom are INCLUSIVE,
+        // so destRight - destLeft + 1 must equal width. mstsc drops the
+        // rectangle when they disagree (the session renders black); this is the
+        // regression check for that failure mode.
+        r.rect_extents_consistent =
+            static_cast<int>(rect.dest_right) - static_cast<int>(rect.dest_left) + 1 ==
+                static_cast<int>(rect.width) &&
+            static_cast<int>(rect.dest_bottom) - static_cast<int>(rect.dest_top) + 1 ==
+                static_cast<int>(rect.height);
+        DecodedBitmap decoded;
+        if (DecodeRawBitmap(rect.bitmap_data.data(), rect.bitmap_data.size(),
+                            rect.width, rect.height, rect.bits_per_pixel,
+                            decoded) != Status::Ok) {
+            r.error = "bitmap decode";
+            return r;
+        }
+        r.got_bitmap = true;
+        r.bitmap_width = decoded.width;
+        r.bitmap_height = decoded.height;
+        r.bitmap_pixels = decoded.pixels;
+        r.share_pdu_bytes = sd.user_data.size();
+        break;
     }
-    if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
-        r.error = "bitmap framing";
-        return r;
-    }
-    SlowPathGraphicsUpdate upd;
-    if (SlowPathGraphicsUpdate::parse(sd.user_data.data(), sd.user_data.size(), upd) !=
-        Status::Ok) {
-        r.error = "graphics update parse";
-        return r;
-    }
-    UpdateBitmapData bm;
-    if (UpdateBitmapData::parse(upd.update_data.data(), upd.update_data.size(), bm) !=
-        Status::Ok || bm.rectangles.empty()) {
-        r.error = "bitmap update parse";
-        return r;
-    }
-    const BitmapData& rect = bm.rectangles.front();
-    // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2: destRight/destBottom are INCLUSIVE, so
-    // destRight - destLeft + 1 must equal width. mstsc drops the rectangle when
-    // they disagree (the session renders black); this is the regression check
-    // for that failure mode.
-    r.rect_extents_consistent =
-        static_cast<int>(rect.dest_right) - static_cast<int>(rect.dest_left) + 1 ==
-            static_cast<int>(rect.width) &&
-        static_cast<int>(rect.dest_bottom) - static_cast<int>(rect.dest_top) + 1 ==
-            static_cast<int>(rect.height);
-    DecodedBitmap decoded;
-    if (DecodeRawBitmap(rect.bitmap_data.data(), rect.bitmap_data.size(), rect.width,
-                        rect.height, rect.bits_per_pixel, decoded) != Status::Ok) {
-        r.error = "bitmap decode";
-        return r;
-    }
-    r.got_bitmap = true;
-    r.bitmap_width = decoded.width;
-    r.bitmap_height = decoded.height;
-    r.bitmap_pixels = decoded.pixels;
-    r.share_pdu_bytes = sd.user_data.size();
 
     // Optionally leave an input PDU on the wire so the caller can observe the
     // server's input callback.
@@ -1909,6 +1919,42 @@ bool ReadCliprdrPdu(HandshakeResult& r, CliprdrPdu& out) {
                              out) == Status::Ok;
 }
 
+// Sends one complete rdpdr message (a full RDPDR PDU, already carrying its
+// 4-byte RDPDR_HEADER) to the server's rdpdr static virtual channel (id 1004
+// for the {"rdpdr","cliprdr","rdpsnd"} client).
+void SendRdpdrPdu(HandshakeResult& r, const std::vector<uint8_t>& pdu) {
+    for (const auto& chunk : FragmentChannelMessage(pdu)) {
+        WriteAll(*r.transport,
+                 McsSendData::build_request(r.user_channel, 1004, chunk));
+    }
+}
+
+// Reads one frame from the active session and hands back its rdpdr PDU, when
+// it is one (returns false for a non-rdpdr frame).
+bool ReadRdpdrPdu(HandshakeResult& r, RdpdrPdu& out) {
+    std::vector<uint8_t> frame;
+    if (!r.reader->Read(frame)) return false;
+    McsSendData sd;
+    if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+        return false;
+    }
+    if (sd.channel_id != 1004) return false;
+    if (sd.user_data.size() < ChannelPduHeader::kSize + RdpdrHeader::kSize) {
+        return false;
+    }
+    return RdpdrPdu::parse(sd.user_data.data() + ChannelPduHeader::kSize,
+                           sd.user_data.size() - ChannelPduHeader::kSize,
+                           out) == Status::Ok;
+}
+
+// Re-assembles a parsed RDPDR PDU into its full wire bytes (header + data).
+std::vector<uint8_t> FullRdpdrPdu(const RdpdrPdu& pdu) {
+    ByteWriter w;
+    pdu.header.write(w);
+    w.bytes(pdu.data.data(), pdu.data.size());
+    return w.take();
+}
+
 }  // namespace
 
 // S14: the server parses the Client Network Data channel name table, so the
@@ -2006,10 +2052,13 @@ RTSC_TEST(server_cliprdr_active_loop_three_way_dispatch) {
         CHECK(std::equal(text.begin(), text.end(), resp.data.begin()));
     }
 
-    // 2. An unregistered static channel (1004 / rdpdr) is ignored: garbage on
-    //    it must not produce a response and must not kill the session.
+    // 2. An unregistered static channel (1006 / rdpsnd, no server handler) is
+    //    ignored: garbage on it must not produce a response and must not kill
+    //    the session. (The rdpdr channel, 1004, is registered and routed to
+    //    the RdpdrServer handler -- covered by server_rdpdr_channel_routes_
+    //    to_rdpdr_handler.)
     WriteAll(*r.transport,
-             McsSendData::build_request(r.user_channel, 1004,
+             McsSendData::build_request(r.user_channel, 1006,
                                         std::vector<uint8_t>{0xDE, 0xAD, 0xBE}));
 
     // 3. The I/O channel still runs the original input path: a fast-path input
@@ -2023,6 +2072,103 @@ RTSC_TEST(server_cliprdr_active_loop_three_way_dispatch) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     CHECK(key_events.load() >= 1);
+
+    server.Stop();
+    runner.join();
+}
+
+// S16: the active loop routes the rdpdr static virtual channel (1004 for the
+// {"rdpdr","cliprdr","rdpsnd"} client) into the RdpdrServer handler: the
+// server's Server Announce is delivered on 1004, and a client announce reply
+// is answered on 1004 with the Server Capability / ClientId Confirm /
+// User LoggedOn batch. The client capability and device list that follow are
+// consumed without producing any rdpdr traffic.
+RTSC_TEST(server_rdpdr_channel_routes_to_rdpdr_handler) {
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false,
+                                      64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+
+    // 1. The Server Announce arrives on the rdpdr channel (1004); the cliprdr
+    //    initialization and the first desktop frame are skipped.
+    RdpdrPdu announce;
+    bool got_announce = false;
+    for (int i = 0; i < 20 && !got_announce; ++i) {
+        if (ReadRdpdrPdu(r, announce)) got_announce = true;
+    }
+    CHECK(got_announce);
+    CHECK(announce.header.packet_id == kPakidCoreServerAnnounce);
+    RdpdrServerAnnounce ann;
+    CHECK(RdpdrServerAnnounce::parse(FullRdpdrPdu(announce).data(),
+                                     FullRdpdrPdu(announce).size(), ann) ==
+          Status::Ok);
+    CHECK_EQ(ann.version_major, static_cast<uint16_t>(1));
+    CHECK(ann.client_id != 0);
+
+    // 2. The client announce reply is routed into the handler, which answers
+    //    back on 1004: Server Capability, then ClientId Confirm, then User
+    //    LoggedOn.
+    RdpdrClientAnnounceReply reply;
+    reply.version_major = 1;
+    reply.version_minor = 0x000C;
+    reply.client_id = ann.client_id;
+    SendRdpdrPdu(r, reply.encode());
+
+    RdpdrPdu pdu;
+    std::vector<uint16_t> batch;
+    for (int i = 0; i < 20 && batch.size() < 3; ++i) {
+        if (ReadRdpdrPdu(r, pdu)) batch.push_back(pdu.header.packet_id);
+    }
+    const std::vector<uint16_t> want = {
+        kPakidCoreServerCapability, kPakidCoreClientidConfirm,
+        kPakidCoreUserLoggedon};
+    CHECK(batch == want);
+
+    // 3. The client's capability and (empty) device list are consumed without
+    //    an answer: no rdpdr frame appears inside a short window.
+    {
+        RdpdrGeneralCapsSet general_body;
+        general_body.protocol_major_version = 1;
+        general_body.protocol_minor_version = 0x000C;
+        general_body.io_code1 = 0x00003FFF;
+        general_body.extended_pdu = kRdpdrUserLoggedonPdu;
+        RdpdrCapabilitySet general;
+        general.header.capability_type = kCapGeneralType;
+        general.header.version = kGeneralCapabilityVersion02;
+        general.data = general_body.encode(general.header.version);
+        general.header.capability_length = static_cast<uint16_t>(
+            RdpdrCapabilityHeader::kSize + general.data.size());
+        RdpdrCoreCapability caps;
+        caps.capabilities.push_back(general);
+        SendRdpdrPdu(r, caps.encode());
+        RdpdrDeviceListAnnounce list;  // deviceCount = 0
+        SendRdpdrPdu(r, list.encode());
+    }
+
+    std::vector<uint8_t> frame;
+    FrameReader no_rdpdr(*r.transport, std::chrono::milliseconds(400));
+    bool rdpdr_seen = false;
+    while (no_rdpdr.Read(frame)) {
+        McsSendData sd;
+        if (McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
+            continue;
+        }
+        if (sd.channel_id == 1004) {
+            rdpdr_seen = true;
+            break;
+        }
+    }
+    CHECK(!rdpdr_seen);
 
     server.Stop();
     runner.join();

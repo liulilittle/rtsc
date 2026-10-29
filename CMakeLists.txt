@@ -85,9 +85,11 @@ target_link_libraries(rtsc_rail PUBLIC rtsc_proto)
 # rdpdr (device redirection) virtual channel handler ([MS-RDPEFS]). Platform
 # neutral: it runs the drive redirection protocol and serves file I/O through
 # the rdpdr::IFileSystem seam; HostFileSystem is the host implementation
-# (std::fstream / std::filesystem).
+# (std::fstream / std::filesystem). rdpdr_server.cpp is the server-side half:
+# the channel-level minimum handshake (v1 announces no devices).
 add_library(rtsc_rdpdr STATIC
     src/channel/rdpdr_client.cpp
+    src/channel/rdpdr_server.cpp
     src/rdpdr/file_system.cpp)
 target_include_directories(rtsc_rdpdr PUBLIC include)
 target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto)
@@ -247,6 +249,11 @@ target_include_directories(rtsc_rdpusb_tests PRIVATE tests)
 add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp tests/test_rdpdr_client.cpp)
 target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpdr_tests PRIVATE tests)
+
+# Server-side rdpdr handler: the channel-level minimum handshake (design S1-S6).
+add_executable(rtsc_rdpdr_server_tests tests/test_rdpdr_server.cpp)
+target_link_libraries(rtsc_rdpdr_server_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpdr_server_tests PRIVATE tests)
 
 add_executable(rtsc_rdpsnd_tests tests/test_rdpsnd.cpp)
 target_link_libraries(rtsc_rdpsnd_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -547,8 +554,10 @@ add_library(rtsc_server STATIC
     src/crypto/rsa_server.cpp)
 target_include_directories(rtsc_server PUBLIC include)
 # The server's cliprdr static virtual channel runs the CliprdrServer handler
-# (src/channel/cliprdr_server.cpp, built into rtsc_cliprdr).
-target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr)
+# (src/channel/cliprdr_server.cpp, built into rtsc_cliprdr); the rdpdr static
+# virtual channel runs the RdpdrServer minimum handshake (built into
+# rtsc_rdpdr).
+target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr rtsc_rdpdr)
 
 add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
@@ -646,6 +655,7 @@ add_test(NAME clipboard COMMAND rtsc_clipboard_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
+add_test(NAME rdpdr_server COMMAND rtsc_rdpdr_server_tests)
 add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
 add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
 add_test(NAME rdp6 COMMAND rtsc_rdp6_tests)
@@ -709,6 +719,7 @@ if(MSVC)
         target_compile_options(rtsc_usb_win32 PRIVATE /W4 /WX)
     endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpdr_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)
