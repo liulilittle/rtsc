@@ -10702,3 +10702,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 验证：rtsc_connect 127.0.0.1 33895 MicrosoftAccount rtsc password → **13 轮握手成功、Client Info PDU sent**（CredSSP server 全状态机 OK，execute 100%）。
 - 结论：此前执行子"服务器回环关接环境问题"= 凭据不匹配误报；回环服务器 CredSSP 正常。真机 192.168.1.7 与凭据也验证过（会话 B）。
 - 更新 discover.md：回环测试必须使用 rtsc_server_host 的默认凭据（rtsc/password, NTDEV）或显式 --user/--password。
+## 第656轮：历史批次补审完成（缩放/网关/服务器全部双审通过）
+- 缩放 5b1e00a：甲乙盖章。乙独立暴力对拍 88,872 cases 0 失配 + 4 变异红绿分离。确认 N1(D-7 悬空)/N2(E17 无守卫)+新 P3-B4(DrawCursor 左边缘相位残留)/P3-B5(边界用例)。
+- 网关 c08df4f：甲乙盖章。28/28 + 乙探针 16/16。整改 A(session_timeout 默认 30s 切断 idle)/B(ContentLength 乘前判可绕回)。
+- 服务器 3ec4d66：甲乙盖章（死锁证明+压力 4 场景 0 失败）。F1-F6 + main.cpp:242 注释矛盾。
+- 整改批次已派执行子 ses_e7943a646fferSXQAz6q3GNKRk（D-4 文档/DrawCursor 相位/网关 A+B/服务器 F4-F6）。
