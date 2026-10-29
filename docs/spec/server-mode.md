@@ -60,3 +60,16 @@ per-session `RdpSession`），并发客户端隔离由
 objective 的「服务器模式（家庭版解禁、多远程用户）」在**实现层面已达成**：
 不依赖 TermService，多会话自管。待补：Home SKU 实跑证据、mstsc 反向互通、
 设备/音频/USB 服务器侧。
+
+## mstsc 反向互通的证书前提（2026-10-28 核查）
+
+服务器 TLS 证书是**每进程自生成 RSA keypair**（server.h:25-26），且构造时
+CertPolicy::kInsecure（tools/rtsc_server/main.cpp:255）。因此：
+
+- mstsc 连接时会因证书不受信弹出警告（需手动确认或导入受信任根）；
+- 每进程新 keypair → 无法预置固定指纹信任，只能每次确认；
+- 自动化验证需要 desktop_control 处理证书对话框，或服务器改为支持固定证书文件
+  （当前无此选项 = 未验证功能）。
+
+结论：mstsc 反向互通可做但属"需外部交互"项；协议层互操作风险集中在
+rdpdr/cliprdr 握手顺序（已被树内客户端配对验证，mstsc 侧未验证）。
