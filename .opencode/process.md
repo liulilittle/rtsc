@@ -10713,3 +10713,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 影响：真实服务器并发停止 + 洪水连接时可能死锁（Stop 永挂）。低概率但真实。
 - 发展：待派执行子修复（TDD 红证：flood 测试改保持连接句柄 open + runner.join 超时检测）。
 
+## 第658轮：审计整改批次入库 a598931（51/51 绿）
+- 内容：缩放 D-4/E17/DrawCursor 相位/边界；网关 session_timeout 默认0/CL 乘前判；服务器 total 口径/3 并发测试/WarnIfAcceptAll/main.cpp 注释；flood 测试改造（根因证伪=环境物 connect 2s×64+无界 join，非服务器死锁——甲乙锁序终裁）。
+- 验证：build 0err/0warn；ctest 51/51（禁 gateway 完整套件）；server 24/216 ~13s。
+- 后续排期：transport connect 无超时加固（阻塞 connect 死主机无限阻塞，乙 A 档建议）；真机 wire；rdpdr.dll；SmartCard。
+- process round 记录已更正（00d5bec）。
