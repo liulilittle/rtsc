@@ -10746,3 +10746,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - scope：v1 文本+DIB 双向；FILECONTENTS 二期。
 - 服务器模式闭环进度：桌面渲染 ✓、剪贴板 ✓；待：rdpdr 服务器侧、家庭版解禁部署、多用户隔离加强、真机 mstsc 互通。
 - 下一步：服务器↔客户端剪贴板实测（headless loopback 已在 e2e 覆盖；GUI 真剪贴板验证待用户配合）。
+## 第664轮：服务器模式剪贴板闭环（ea925c2 + 877fcac）
+- ea925c2：服务器侧 CLIPRDR 实现（CliprdrServer/ActionLoop 分发/CS_NET 修复/剪贴板 seq 后端）+ 双审。
+- 877fcac：rtsc_server_host 接线 SetClipboard（此前零调用，通道休眠）→ 实测 cliprdr chunks 0→6、caps 1/1、data 双向各 1、remote_formats=6（真 Win32 剪贴板）。
+- 教训入档：核验前必须先重建目标 exe（discover 6aed5a2）。
+- 服务器模式进度：桌面渲染 ✓、剪贴板 ✓（文本+DIB v1）；待 rdpdr 服务器侧 / 多用户隔离 / 家庭版部署 / 真机 mstsc 互通。
