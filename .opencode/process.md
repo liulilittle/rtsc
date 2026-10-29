@@ -10751,3 +10751,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 877fcac：rtsc_server_host 接线 SetClipboard（此前零调用，通道休眠）→ 实测 cliprdr chunks 0→6、caps 1/1、data 双向各 1、remote_formats=6（真 Win32 剪贴板）。
 - 教训入档：核验前必须先重建目标 exe（discover 6aed5a2）。
 - 服务器模式进度：桌面渲染 ✓、剪贴板 ✓（文本+DIB v1）；待 rdpdr 服务器侧 / 多用户隔离 / 家庭版部署 / 真机 mstsc 互通。
+## 第665轮：多会话剪贴板测试（工作树 4 测试，待复核）
+- 新增 4 测试：concurrent_handshake / concurrent_writes_last_writer_wins / disconnect_keeps_peer_alive / stress_8_sessions。
+- 实测：multisession 7 tests/173 checks 全绿；8 会话压力 2441ms（163 writes/111 reads，无崩溃）。
+- 原执行子报告在重启中丢失，已派甲乙独立复核（有效性/并发真实性/断言强度/FakeClipboard 线程安全）。
+- 复核通过后提交。
