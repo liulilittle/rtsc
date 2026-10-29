@@ -10739,3 +10739,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 设计落盘 docs/spec/cliprdr-server-design.md（b79be95）。
 - 实施执行子 ses_e77f5b937ffexzgJ0sMPQO7w0G 在途：CliprdrServer + server 集成 + 测试 S1-S15/E1-E3 + count 修复；客户端零改动。
 - 下一步：实施→甲乙复验→服务器模式剪贴板闭环。
+## 第663轮：服务器侧 cliprdr 双审盖章入库 ea925c2（54/54 绿）
+- 实现：CliprdrServer（服务器先发 caps→MR→FL 防死锁）+ ActiveLoop 按 channel_id 分发（先解密全部帧保 RC4 流同步）+ CS_NET count u32/名字解析修复（cliprdr=1005）+ 剪贴板 sequence_number 变更检测 + 全局 mutex/last-writer-wins。
+- 测试：S1-S13 单测 20/161、S14/S15 集成(server 26/230)、E1-E3 loopback e2e 3/29；全量 ctest 54/54；build 0err/0warn。
+- 双审：设计(甲乙收敛)与实现(甲乙复验)双盖章；RC4 失步修复由既有 gui_send 加密测试守卫。
+- scope：v1 文本+DIB 双向；FILECONTENTS 二期。
+- 服务器模式闭环进度：桌面渲染 ✓、剪贴板 ✓；待：rdpdr 服务器侧、家庭版解禁部署、多用户隔离加强、真机 mstsc 互通。
+- 下一步：服务器↔客户端剪贴板实测（headless loopback 已在 e2e 覆盖；GUI 真剪贴板验证待用户配合）。
