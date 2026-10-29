@@ -556,10 +556,11 @@ target_include_directories(rtsc_server_tests PRIVATE tests)
 
 # RDP server multi-session concurrency: N concurrent clients over Standard RDP
 # Security, asserting per-session isolation (desktop geometry, framebuffer
-# capture, session counter).
+# capture, session counter) plus cliprdr shared-clipboard concurrency
+# (handshake, last-writer-wins, disconnect, stress).
 add_executable(rtsc_server_multisession_tests tests/test_server_multisession.cpp)
 target_link_libraries(rtsc_server_multisession_tests PRIVATE
-                      rtsc_client rtsc_server rtsc_proto rtsc_crypto rtsc_util)
+                      rtsc_client rtsc_server rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_server_multisession_tests PRIVATE tests)
 
 # Server-side CLIPRDR over real loopback sockets: one server session and the
