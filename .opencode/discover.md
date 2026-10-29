@@ -1423,3 +1423,8 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
 - [尝试] ctest -R ^view$ 重跑以复现 view 套件红
   [错误] 0.8x bench 25.58ms > 22.00ms 预算，其余用例全绿；同期 F:\il2cpp 项目 6+ cmake 构建进程占满 CPU(LoadPercentage=100)
   [下一步] 确认这是环境争用：il2cpp 构建并行抢 CPU 导致基准计时膨胀；非代码回归。等争用进程消失后独占重跑应为绿。教训：跑性能基准前必须确认 `Get-CimInstance Win32_Processor LoadPercentage` 无高负载，且有非 RTSC 大构建在跑时基准结果作废。
+
+## 2026-10-28 核验流程教训（OBS-1）
+- [尝试] 复核 rtsc_server_host 剪贴板接线时直接跑磁盘上既有 exe 得 cliprdr=0
+- [错误] 盘上 exe 为旧构建（main.cpp 改动晚于上次全量 build）→ 误判"改动未生效"
+- [下一步] **核验任何改动前必须先重建目标 exe**（`cmake --build ... --target <目标>`）；红→绿对照必须基于同一构建系统的新二进制，否则红基线可能是旧产物
