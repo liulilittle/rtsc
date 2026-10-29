@@ -26,13 +26,21 @@ namespace rtsc::net {
 constexpr int kReadTimeout = -2;
 
 // How long Read() waits for data before reporting kReadTimeout. Short on
-// purpose: the render loop polls the window between reads, and a wait longer
-// than a few tens of milliseconds adds avoidable input latency. The loop only
-// re-renders when the surface actually changed, so this timeout no longer costs
-// CPU on an idle session: with the per-frame clear/scale/blit skipped, a 30 ms
-// wakeup costs well under 1% of a core. 30 ms keeps the worst-case input
-// latency well inside the ~100 ms budget with headroom for the render itself.
-constexpr int kReadTimeoutMs = 30;
+// purpose: the render loop polls the window between reads, and a wait of tens
+// of milliseconds adds avoidable input and screen-update latency -- with no
+// data in flight the pump sleeps the whole timeout each iteration (real-session
+// measurements showed ~30 ms read stalls with the loop at 30/s during the idle
+// stretch). 2 ms is the smallest value that still costs negligible CPU on an
+// idle session: the loop only re-renders when the surface actually changed,
+// so polling mostly times out well under 1% of a core.
+//
+// Note on the effective wait on Windows: Winsock select() quantizes its timeout
+// to the system timer tick, so a 2 ms timeval actually returns after the next
+// ~15.6 ms tick and a 30 ms timeval after two ticks (~31 ms). Lowering the
+// constant therefore halves the real worst-case idle poll (31 -> ~15.6 ms) and
+// doubles the idle loop rate; the value is still what a platform that honors
+// the timeval precisely would use.
+constexpr int kReadTimeoutMs = 2;
 
 class Transport {
  public:

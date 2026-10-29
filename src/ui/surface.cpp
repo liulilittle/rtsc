@@ -149,4 +149,38 @@ void Surface::Line(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g,
     }
 }
 
+void RgbaToBgra(uint8_t* dst_bgra, const uint8_t* src_rgba, size_t pixel_count) {
+    const size_t n = pixel_count * 4;
+    // Two pixels per 64-bit word. A little-endian RGBA8888 pixel reads as
+    // R | G<<8 | B<<16 | A<<24; swapping bytes 0 and 2 (and 4 and 6 of the
+    // second pixel) yields B | G<<8 | R<<16 | A<<24 = BGRA8888. The three
+    // mask-and-shift terms move the R bytes up and the B bytes down in one pass
+    // and keep G/A in place; the compiler widens this to SIMD on x86-64.
+    size_t o = 0;
+    for (; o + 16 <= n; o += 16) {
+        uint64_t v0;
+        std::memcpy(&v0, src_rgba + o, 8);
+        uint64_t v1;
+        std::memcpy(&v1, src_rgba + o + 8, 8);
+        const uint64_t w0 = ((v0 & 0x000000FF000000FFull) << 16) |
+                            ((v0 & 0x00FF000000FF0000ull) >> 16) |
+                            (v0 & 0xFF00FF00FF00FF00ull);
+        const uint64_t w1 = ((v1 & 0x000000FF000000FFull) << 16) |
+                            ((v1 & 0x00FF000000FF0000ull) >> 16) |
+                            (v1 & 0xFF00FF00FF00FF00ull);
+        std::memcpy(dst_bgra + o, &w0, 8);
+        std::memcpy(dst_bgra + o + 8, &w1, 8);
+    }
+    // One pixel per 32-bit word tail (n % 16 != 0).
+    for (; o + 4 <= n; o += 4) {
+        uint32_t v;
+        std::memcpy(&v, src_rgba + o, 4);
+        const uint32_t w = ((v & 0x000000FFu) << 16) |
+                           ((v & 0x00FF0000u) >> 16) | (v & 0xFF00FF00u);
+        std::memcpy(dst_bgra + o, &w, 4);
+    }
+    // Trailing bytes of a partial pixel (cannot occur for RGBA) copy as-is.
+    for (; o < n; ++o) dst_bgra[o] = src_rgba[o];
+}
+
 }  // namespace rtsc::ui

@@ -4,6 +4,8 @@
 #include "rtsc/ui/surface.h"
 #include "rtsc/ui/window.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -142,6 +144,144 @@ RTSC_TEST(surface_blit_clips_to_surface) {
     s.Blit(nullptr, 4, 4, 0, 0);
     CHECK(s.GetPixel(0, 0, r, g, b, a));
     CHECK_EQ(g, static_cast<uint8_t>(0x80));  // unchanged
+}
+
+RTSC_TEST(rgba_to_bgra_swaps_red_and_blue_and_preserves_green_alpha) {
+    // A single pixel pair: bytes 0 (R) and 2 (B) swap, G and A stay put. The
+    // vector path writes two pixels (8 bytes) per 64-bit word, so these two
+    // pixels must cover the block path exactly.
+    const uint8_t src[8] = {
+        0x11, 0x22, 0x33, 0x44,  // pixel 0: R G B A
+        0xAA, 0xBB, 0xCC, 0xDD,  // pixel 1
+    };
+    uint8_t dst[8] = {0};
+    rtsc::ui::RgbaToBgra(dst, src, 2);
+    CHECK_EQ(dst[0], static_cast<uint8_t>(0x33));  // B lands in byte 0
+    CHECK_EQ(dst[1], static_cast<uint8_t>(0x22));  // G stays
+    CHECK_EQ(dst[2], static_cast<uint8_t>(0x11));  // R lands in byte 2
+    CHECK_EQ(dst[3], static_cast<uint8_t>(0x44));  // A stays
+    CHECK_EQ(dst[4], static_cast<uint8_t>(0xCC));
+    CHECK_EQ(dst[5], static_cast<uint8_t>(0xBB));
+    CHECK_EQ(dst[6], static_cast<uint8_t>(0xAA));
+    CHECK_EQ(dst[7], static_cast<uint8_t>(0xDD));
+
+    // Zero pixels is a no-op and must not crash.
+    rtsc::ui::RgbaToBgra(dst, src, 0);
+    CHECK_EQ(dst[0], static_cast<uint8_t>(0x33));
+}
+
+RTSC_TEST(rgba_to_bgra_matches_the_per_pixel_reference_and_aliases_in_place) {
+    // The vectorized conversion must be bit-identical to the old Present()
+    // per-pixel loop over a full-size buffer, and must work on a buffer in
+    // place (dst aliasing src is the DIB-backing-store reuse case).
+    constexpr size_t kPx = 1280 * 1024;
+    std::vector<uint8_t> src(kPx * 4);
+    for (size_t i = 0; i < src.size(); ++i) {
+        src[i] = static_cast<uint8_t>(i * 13 + 7);
+    }
+    std::vector<uint8_t> ref(kPx * 4);
+    for (size_t i = 0; i + 3 < ref.size(); i += 4) {
+        ref[i + 0] = src[i + 2];
+        ref[i + 1] = src[i + 1];
+        ref[i + 2] = src[i + 0];
+        ref[i + 3] = src[i + 3];
+    }
+    std::vector<uint8_t> out(kPx * 4);
+    rtsc::ui::RgbaToBgra(out.data(), src.data(), kPx);
+    CHECK(out == ref);
+
+    std::vector<uint8_t> inplace(src);
+    rtsc::ui::RgbaToBgra(inplace.data(), inplace.data(), kPx);
+    CHECK(inplace == ref);
+}
+
+RTSC_TEST(rgba_to_bgra_present_faster_than_the_old_per_pixel_loop) {
+    // Performance regression guard for the Win32 Present() hot path. The real
+    // check is RELATIVE: the vectorised RgbaToBgra must beat the old per-byte
+    // reference loop on the same buffers in the same process, so the result is
+    // load-independent (a slow or loaded CI host slows both equally) and a
+    // rollback to the old scalar loop (measured ~0.8-1.0 ms) can never satisfy
+    // it. The reference writes through a volatile pointer so no compiler can
+    // auto-vectorise it into the fast path, which would make the baseline
+    // unfairly fast on some toolchains. A coarse 5 ms absolute ceiling stays as
+    // a sanity bound for unusably slow hosts only.
+    constexpr size_t kPx = 1280 * 1024;
+    constexpr size_t kBytes = kPx * 4;
+    std::vector<uint8_t> src(kBytes);
+    std::vector<uint8_t> dst_new(kBytes);
+    std::vector<uint8_t> dst_ref(kBytes);
+    for (size_t i = 0; i < src.size(); ++i) {
+        src[i] = static_cast<uint8_t>(i * 3);
+    }
+
+    // Median of kIters runs after a short warm-up.
+    const auto median_us = [](auto&& fn) {
+        for (int i = 0; i < 3; ++i) fn();
+        constexpr int kIters = 30;
+        std::vector<double> us;
+        us.reserve(static_cast<size_t>(kIters));
+        for (int i = 0; i < kIters; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            fn();
+            const auto t1 = std::chrono::steady_clock::now();
+            us.push_back(
+                std::chrono::duration<double, std::micro>(t1 - t0).count());
+        }
+        std::sort(us.begin(), us.end());
+        return us[kIters / 2];
+    };
+
+    const double ref_us = median_us([&] {
+        volatile uint8_t* dv = dst_ref.data();
+        const uint8_t* sv = src.data();
+        for (size_t i = 0; i + 3 < kBytes; i += 4) {
+            dv[i + 0] = sv[i + 2];
+            dv[i + 1] = sv[i + 1];
+            dv[i + 2] = sv[i + 0];
+            dv[i + 3] = sv[i + 3];
+        }
+    });
+    const double new_us = median_us([&] {
+        rtsc::ui::RgbaToBgra(dst_new.data(), src.data(), kPx);
+    });
+
+    std::printf(
+        "  rgba->bgra 1280x1024: reference %.1f us, vectorised %.1f us "
+        "(ratio %.2f, limit 0.60)\n",
+        ref_us, new_us, new_us / ref_us);
+    CHECK(new_us <= 0.6 * ref_us);
+    CHECK(new_us < 5000.0);
+}
+
+RTSC_TEST(rgba_to_bgra_mixes_64bit_block_and_32bit_tail) {
+    // 3 pixels = 12 bytes: the 16-byte fast path cannot start, so the whole
+    // buffer is processed by the 32-bit word tail (expected bytes come from the
+    // old per-pixel reference: 0<->2 of each pixel swap).
+    const std::vector<uint8_t> src3 = {1,  2,  3,  4,  5,  6,  7,  8,
+                                       9,  10, 11, 12};
+    std::vector<uint8_t> out3(12, 0);
+    rtsc::ui::RgbaToBgra(out3.data(), src3.data(), 3);
+    CHECK_BYTES(out3, 3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12);
+
+    // 5 pixels = 20 bytes: one 16-byte block and then a 4-byte 32-bit tail.
+    const std::vector<uint8_t> src5 = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
+                                       11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    std::vector<uint8_t> out5(20, 0);
+    rtsc::ui::RgbaToBgra(out5.data(), src5.data(), 5);
+    CHECK_BYTES(out5, 3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14,
+                13, 16, 19, 18, 17, 20);
+}
+
+RTSC_TEST(rgba_to_bgra_odd_pixel_count_in_place) {
+    // Odd pixel counts exercise the trailing tail path with dst aliasing src
+    // (the DIB Present path never converts in place, but in-place reuse is a
+    // documented property of RgbaToBgra and must not corrupt the tail).
+    std::vector<uint8_t> buf = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
+                                11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    const std::vector<uint8_t> ref = {3,  2,  1,  4,  7,  6,  5,  8,  11, 10,
+                                      9,  12, 15, 14, 13, 16, 19, 18, 17, 20};
+    rtsc::ui::RgbaToBgra(buf.data(), buf.data(), 5);
+    CHECK(buf == ref);
 }
 
 RTSC_TEST(window_headless_present_and_events) {
