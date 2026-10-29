@@ -1,4 +1,4 @@
-# RTSC 进度（process.md）
+﻿# RTSC 进度（process.md）
 
 ## 2026-10-22 第1轮 环境与基线
 - OS Windows 11 10.0.26200；MSVC 14.44.35207；CMake 3.31.6 / Ninja 1.12.1（VS 内置，不在 PATH）
@@ -10707,8 +10707,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 网关 c08df4f：甲乙盖章。28/28 + 乙探针 16/16。整改 A(session_timeout 默认 30s 切断 idle)/B(ContentLength 乘前判可绕回)。
 - 服务器 3ec4d66：甲乙盖章（死锁证明+压力 4 场景 0 失败）。F1-F6 + main.cpp:242 注释矛盾。
 - 整改批次已派执行子 ses_e7943a646fferSXQAz6q3GNKRk（D-4 文档/DrawCursor 相位/网关 A+B/服务器 F4-F6）。
-## 第657轮：发现真死锁（flood-vs-Stop 挂死）+ 审计偏差
+## 第657轮：发现的 flood-vs-Stop 挂死【最终证伪为测试挂死】
 - 复现：rtsc_server_tests 套件 `server_flood_vs_stop_race_converges` 挂死（>60s），此前审计"绿"为偶发/旧二进制。
 - 根因（Phase 1）：注册（server.cpp:1615-16 锁内 live++）与线线程启动（:1695 detach）分离；Stop 快照（:1760-64）可在两者间取得 → 漏掉该 session → 未被 s->Stop() → body 阻塞 Read → live 恒 1 → Stop 永等。乙审计"孤儿计数不可达"结论有缺陷。
 - 影响：真实服务器并发停止 + 洪水连接时可能死锁（Stop 永挂）。低概率但真实。
 - 发展：待派执行子修复（TDD 红证：flood 测试改保持连接句柄 open + runner.join 超时检测）。
+
