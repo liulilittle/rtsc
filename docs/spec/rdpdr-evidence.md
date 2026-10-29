@@ -31,3 +31,10 @@ mstscax.dll sha256 d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0ed
 3. 与仓内 rdpdr_client.cpp 的偏差清单。
 - [ ] 驱动器映射语义取证
 - [ ] 默认重定向清单 + 注册表联动
+## 取证批次 2（2026-10-28 轮次 109）：rdpdr 取证方向与成本判断
+- mstscax 侧仅做 rdpdr 插件加载（"rdpdr.dll"@0x1807eccd0、iCRdpDrPlugin@0x1807ec357、CMsRdpDrive）。实际驱动器映射/盘符枚举逻辑**在外部 rdpdr.dll**，mstscax.dll 无 \tsclient 常量。
+- `m_spRdpDrConfig`@0x1806c71e0 引用点 FUN_1801865f0（配置对象集成）。\\tsclient 路径由 rdpdr.dll 提供。
+- **成本判断**：深排驱动映射语义需另开 rdpdr.dll 目标（REA 重载）+ 较长分析；仓内 rdpdr_client DR_OPEN_FILE 等已有 S3 审计（plan.md:324-334），当前无证据表明仓内实现偏差。
+- 决策：rdpdr 深取证**暂缓排期**（记录），优先现有缺失项。若要深挖见 rdpsnd/bitmap 模式=先取 wire/抓包证据。
+- [x] mstscax 侧 rdpdr 插件接口定位
+- [ ] rdpdr.dll 驱动器映射语义（待排期/独立目标）
