@@ -10679,3 +10679,11 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 回归：perf 守卫改为**相对断言**（new≤0.6×old，回退旧实现必红）+ 3/5 像素混排与奇数原位边界用例。ui 50/265；**全量 ctest 52/52**（view 恢复，争用消退）；build 0err/0warn。
 - 双审：甲乙无条件盖章（各自独立探针复现 ratio 0.30-0.39、回退红证）。
 - 跟进项（记录）：真机再测延迟/帧率；POSIX idle ~500/s（poll 不 tick 量化）；gateway read budget 消耗速率随常量缩放；服务器回环关接问题；rendered 14/s 本质为服务器 dirty 内容率（两修提延迟非帧率）。
+## 第653轮：旧会话 H-4 复验报告核对——全部已落实
+- 被 abort 会话 ses_e8150e46（复验线程泄漏）交付 H-4 第 2 轮复验：6 项裁定可盖章（句柄 98 持平/UAF 无/Stop 语义/counts exactly-once/回落）。
+- 主代理核对**当前位置**（对当前 HEAD）：
+  ① `++live` 回滚守卫 + exactly-once 双锁防护已在 server.cpp:1590-1640（与报告指出的死锁路径方案一致）；
+  ② `accept_any_credentials` 默认已 false（server.h:69）——报告风险 6 已不存在；
+  ③ `server_refresh_continues_during_input` 断言已 `>=10`→`>=5` 并注释 14% 抖动原因（test_server.cpp:923-927）——报告抖动项已修复。
+- 结论：报告的 6 项+2 后续项在当前位置全部已满足；该修复（3ec4d66 服务器生命周期 + 88c2734 相关）此前已双审入库。无新增工作。
+- 注：该旧会话因模型计费组问题已 abort（taotoken 现工作流不受影响）。
