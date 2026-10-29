@@ -114,21 +114,7 @@
   [错误] X.509 需要 DER 解析，属 TLS 层职责；在此强行解析会把 DER 头当 proprietary 头
   [下一步] 返回 InvalidType，由调用方回退到 MCS Connect Response 的证书
 
-## 2026-10-22 记忆文件编码（重要教训）
-
-- [尝试] 用 PowerShell `Add-Content` + 中文 here-string 追加记忆文件
-  [错误] PowerShell 5.1 的 here-string 经管道传给 Add-Content 时按系统代码页（GBK）编码，
-         把 GBK 字节写进了 UTF-8 文件 → 文件变成混合编码，Python/UTF-8 读取报
-         UnicodeDecodeError。四份记忆文件中三份被污染
-  [下一步] 禁止用 PowerShell 的 Add-Content/Set-Content 写中文内容；
-         一律用 write 工具或 Python（显式 encoding='utf-8'）写记忆文件
-
-- [尝试] 用 `Get-Content -Raw` + `Set-Content -Encoding UTF8` 修补已污染的文件
-  [错误] Get-Content 先按 GBK 解码 UTF-8 字节（产生乱码字符），Set-Content 再按 UTF-8
-         编码这些乱码 → 双重编码，损坏加深
-  [下一步] 修补混合编码文件必须按字节处理：逐字节尝试 UTF-8，失败才回退 GBK；
-         或者直接从 write 工具整体重写
-
+## 2026-10-22 记忆文件编码（已合并至 2026-10-23 第三次编码事故条目）
 ## 2026-10-22 共享头 / Fast-Path
 
 - [尝试] 断言 TS_SHARECONTROLHEADER 的 pduType 值 0x0017 中 type 在高 4 位
@@ -530,39 +516,7 @@
   [下一步] 合并**所有提及该状态的 Receive 行**再判断语义。
         教训：**同一概念的说明可能被拆到多行**，检查器必须跨行聚合
 
-## 2026-10-23 假绿工具的同类复发：硬编码换个分支再来一次
-
-- [尝试] 修 `verify_elif_semantics.py` 的 else 硬编码（第⑨步 E1）
-  [错误] **修完 else 硬编码，RENEGOTIATE 分支还留着同类硬编码**：
-        `if 'RENEGOTIATE' in cond and 'negotiated.tls_version' in stripped:`
-        `    if tls13: return ('CONT', None)`
-        `    return ('RET', 'kProtocolError')`
-        —— 只要分支体出现该字符串就直接返回硬编码值，**不读实际写了什么**
-        → 乙用 19 个变异测出 8 个漏检（G1a/G1b/G1c 等）
-  [下一步] **删掉一切"看到某字符串就假定行为"的特例**，改为递归解析嵌套结构。
-        教训：**修硬编码时只修了被指出的那一处，没扫描同类模式**——
-        这与 B4→C4→C11 的"局部改了关联处没改"是同一个病
-
-- [尝试] 区分 `pass` 与 `continue`
-  [错误] 原实现两者都返回 `('CONT', None)`，但语义**完全相反**：
-        `pass` 落到成功路径 → `plaintext_out += tmp`（累加明文）
-        `continue` 回循环顶 → **丢弃本轮明文**
-        → 变异 Y1（OK 分支 pass→continue）让**所有正常数据被静默丢弃**，脚本仍报 PASS
-  [下一步] 拆成 `CONT_SKIP` 与 `FALLTHROUGH_OK` 两个不同结果。
-        教训：**"都算继续执行"是错的抽象**——在循环体里，"继续下一轮"和"继续往下"是两件事
-
-- [尝试] 给 verify_elif 加 G1b/G1c 变异后仍漏检
-  [错误] 不是解析器问题，是**断言维度盲区**：`EXPECT['RENEGOTIATE']` 只测 TLS1.3，
-        1.2 分支的变异天然不可见。**10 个状态的期望表全是 1.3 默认值，
-        等于把 1.2 分支变成不可观测区域**
-  [下一步] 加 TLS1.2 专项断言 `RENEGOTIATE@1.2 必须 == ('RET','kProtocolError')`。
-        教训：**「红证用例数量 ≠ 覆盖的维度」，且「断言维度也不能只测默认路径」**
-
-- [尝试] 用 `count_sec_refs.py` 的人工数字维护 §3.4.2/§3.4.3 引用计数
-  [错误] 同一数字**人工维护错了两次**（父会话 15/20、consult-b 12+15，实测 14/19 与 8/13）
-  [下一步] 加 `--check` 模式：从文档锚点提取断言值，与口径 B 比对，不一致 exit=1，接进门禁。
-        教训：**一个数字错两次，说明人工维护必然失败，必须机械化**
-
+## 2026-10-23 假绿工具前两次复发（已合并至下一条第三次）
 ## 2026-10-23 硬编码反模式第三次复发：运算符也被"猜"
 
 - [尝试] 修 `verify_elif_semantics.py` 的 RENEGOTIATE 硬编码（第⑩步 G1）
@@ -1310,7 +1264,8 @@ version 4 永远到不了那个旧检查，只有早期守卫能拒它。
   [下一步] "会话对象已回收"与"线程句柄已回收"是两件事，分别用 `session_count()` 与 `GetProcessHandleCount` 两条独立证据；线程应在退出路径 join/detach 并 erase
 ## [2026-10-28][主代理] 严重：网关测试进程吃 34GB 内存，差点拖垮系统
 [尝试] 让 EXEC-GW 在 F:\rtsc-wt\gw 实现 [MS-TSGU] RDGSP（401 挑战/重发/隧道封装），并自行跑 ctest -R gateway 反复迭代。
-[错误] 实测 Get-Process 发现 tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"几十个 G"），系统 Free 仅剩约 21GB（总 63.69GB）。已 Kill 该进程，Free 回到 41.6GB。该子代理随后报 UnknownError: unknown certificate verification error 被中断。
+[错误] 实测 Get-Process 发现 
+tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"几十个 G"），系统 Free 仅剩约 21GB（总 63.69GB）。已 Kill 该进程，Free 回到 41.6GB。该子代理随后报 UnknownError: unknown certificate verification error 被中断。
 [根因（待修复批次实证）] 网关链路的 HTTP 读取缺少硬上限：gateway.cpp:93/111-129（按 Content-Length 追加实体）、gateway_transport.cpp:23/74/278/391/423/466 多处 or(;;) 读循环无「单次/累计字节上限 + 次数上限 + 超时」；测试侧 MockGateway 也会无限产出/回放。此前审计 F1 已指出 test_gateway 是假绿（MockGateway 只回 CONNECT 200），本次改造后暴露该无界路径。
 [下一步] ①**任何网关相关测试/探针在加上限前禁止再跑**；②修复必须包含：HTTP 头总长上限、Content-Length 上限（如 64 KiB，超出即失败）、单次 read 上限、循环次数上限、读取总时长上限，并有"恶意 Content-Length=0xFFFFFFFF"与"无限 200 实体"的红→绿用例；③进程管理纪律：所有测试二进制运行时必须能用 Get-Process 快照监控峰值内存，发现 WS>2GB 立即 kill 并记录；④给所有子代理补充"禁止跑无上限读取的循环、跑测试前先设 job object 内存上限（512MB）"的硬约束。
 

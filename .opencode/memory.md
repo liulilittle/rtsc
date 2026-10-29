@@ -1872,8 +1872,8 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 - 流程有效：双审（甲客户端/乙服务器+交叉磋商+三方证据）在 51/51 全绿的情况下仍抓出 2 个高危线格式缺陷——测试绿≠线格式对。
 - 32bpp 注意（2026-10-27 已修复）：RDP6 planar 解码 N1-N7 缺陷（逐扫描线模型/段首 run/CD 头路由）已按 FreeRDP planar.c oracle 修复并经真机 32bpp 会话回归；24bpp 全链已实证。
 
-## ��ѵ��2026-10-28����λͼ����������������
-- 32bpp planar �޸����������崹ֱ��������������˫��+Ԥ�Ի���֤��������bottom-up vs top-down��������©�ˡ��������������ֵȫ�ԡ����򷴡�����λͼ��������Ա��������ֱ���Գ����ݶ��ԣ��������� vs ĩ������ɫ��ͬ���������õ��÷� vFlip ���壨FreeRDP bitmap.c ��λͼ���´� vFlip=TRUE����
+## ��ѵ��2026-10-28����λͼ����������������
+- 32bpp planar �޸����������崹ֱ��������������˫��+Ԥ�Ի���֤��������bottom-up vs top-down��������©�ˡ��������������ֵȫ�ԡ����򷴡�����λͼ��������Ա��������ֱ���Գ����ݶ��ԣ��������� vs ĩ������ɫ��ͬ���������õ��÷� vFlip ���壨FreeRDP bitmap.c ��λͼ���´� vFlip=TRUE����
 
 
 ## 教训（2026-10-28）：位图解码必须断言行序方向
@@ -1884,29 +1884,6 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 ## 环境（2026-10-28）：cmake/ctest 绝对路径
 - cmake 不在 PATH。统一用：C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe（ctest.exe 同目录）。
 - 子代理若报 cmake 找不到，直接用该绝对路径，不要花轮次排查 PATH。
-
-## 【一级纪律·2026-10-28 用户裁定】本工程是逆向工程：禁止 AI 自行编造，必须对齐反汇编证据
-
-**用户原话**：「本工程最顶级纪律这是逆向工程，禁止AI自己乱编，必须对齐反汇编证据。」
-
-### 硬性规则（违反即该批次作废）
-1. **凡涉及微软行为的论断，必须有二进制证据**：REA evidence_id + 函数地址（如 `mstscax.dll!FUN_18003444c`）+ 伪代码/汇编片段，或 pktmon/Wireshark 抓包字节。三者皆无 => 该断言不得写入代码、注释、测试或报告。
-2. **规范只作下限，不作答案**：`[MS-RDPBCGR]` 等只规定「必须怎样」；「微软实际怎么选」（滤波器、常量、默认值、顺序、降级路径）只能来自二进制。规范与二进制冲突时以二进制为准，并在代码注释同时标注两者。
-3. **测试期望值禁止由生产实现反推**：期望必须来自 ①二进制取证 ②规范原文 ③真机抓包/真机截图 ④独立参考实现（且不得调用被测代码）。「先改实现再重钉期望」视为造假。
-4. **代码注释里的「mstsc 是 X」必须附证据**：地址或抓包；无证据的注释必须删除或标注 `UNVERIFIED`。
-5. **每个对齐批次必须产出证据条目**：`docs/spec/<area>-evidence.md`，格式 = 问题 / 证据（地址+片段）/ 结论 / 对应实现位置 / 验证方式。
-
-### 已发生的 4 次「乱编」事故（反例，永久留档）
-- planar 行序：凭 FreeRDP 记忆推断 not from mstsc；结果活机整屏垂直镜像（后以真机 1320B 不对称 tile + 独立预言机修正）。
-- cliprdr 方向：凭「客户端发 Monitor Ready」的错误记忆实现，违反 [MS-RDPECLIP] 2.2.2.2（`Server` Monitor Ready）。
-- drdynvc 裸 DATA：审计与实现都把「无 DATA_FIRST 的 DATA 丢弃」当合规，违反 [MS-RDPEDYC] 3.1.5.2.2（应直接投递）→ 会打断绝大多数真实消息。
-- 缩放插值：`src/client/view.cpp:144-148` 注释断言「Bilinear ... is what mstsc does」；二进制取证证明 mstsc 用 `SetStretchBltMode(hdc,4)`=HALFTONE，且整数倍也走 StretchBlt。
-
-### 当前已取证的事实清单（可复用，勿再猜）
-- `mstscax.dll` sha256 前缀 `d73c76d65721043c`，PDB `mstscax.pdb`。
-- `FUN_18003444c`：`SetStretchBltMode(hdc,4)` + `SetBrushOrgEx(hdc,0,0,NULL)`；仅 `param_7==1.0f && param_8==1.0f` 走 `BitBlt(0xcc0020)`，否则 `StretchBlt(0xcc0020)`；属性 `EnableSmartSizing`、`ZoomLevel`（100=1:1）。
-- 佐证：`FUN_180191d30`、`FUN_1804cfb98` 同样 `SetStretchBltMode(...,4)`；StretchBlt 共 8 个调用点分布在 4 个函数。
-- 输入相关 API 调用点计数：`keybd_event` 10、`SendInput` 4、`SetCursorPos` 7、`MapVirtualKeyW` 126（待逐个定位）。
 
 ## 【最高纪律·2026-10-28 用户裁定】本项目是逆向工程：禁止 AI 自行编造，必须对齐反汇编证据
 

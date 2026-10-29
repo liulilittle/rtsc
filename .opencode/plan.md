@@ -350,14 +350,14 @@
 **工具链**：REA 6.7 + Ghidra 12.1.4，目标 `C:\Windows\System32\mstscax.dll`（sha256 前缀 d73c76d65721043c，PDB mstscax.pdb）与 `mstsc.exe`（1,114,112 B）。证据以 REA evidence_id + 函数地址 + 伪代码片段留档，可复现。
 
 ### 对齐队列（按用户可感知影响排序）
-- [~] **A1 缩放/插值**（进行中）：二进制事实=1:1 用 BitBlt(SRCCOPY)，其余（含整数倍）一律 StretchBlt + `SetStretchBltMode(4)`(HALFTONE) + `SetBrushOrgEx(0,0)`；状态来自属性 `EnableSmartSizing`/`ZoomLevel`(100)。当前代码 1:1 正确，**整数倍最近邻、非整数倍双线性**与二进制不符。取证：FUN_18003444c / FUN_180191d30 / FUN_1804cfb98。
-- [ ] **A2 输入与快捷键**：`keybd_event` 10 个调用点、`SendInput` 4 个、`SetCursorPos` 7 个、`MapVirtualKeyW` 126 个 → 逐个定位 mstsc 的快捷键表（Ctrl+Alt+End / Alt+Tab / Win 键 / 连接栏 / 焦点切换），核对我们的 keymap 与 AltGr 处理。
-- [ ] **A3 位图解码与绘制**：32bpp RDP6 planar 已按 FreeRDP 对齐；仍需核对 8/15/16/24bpp、Bitmap Cache Rev2、order 引擎（ROP3/PatBlt/ScrBlt）与 mstsc 实际路径。
-- [ ] **A4 剪贴板 cliprdr**：已按 [MS-RDPECLIP] 修正方向/时序；需确认 mstsc 在该规范之外的实际偏差（尤其 TempDir、长名协商、文件剪贴板 CF_HDROP）。
-- [ ] **A5 音频 rdpsnd**：格式协商默认值、wave2、训练包、与 mstsc 的差异。
-- [ ] **A6 智能缩放/自适应**：`EnableSmartSizing` 的确切语义（窗口缩放时保持纵横比的方式、何时用 HALFTONE 的快速路径 FUN_180036ba0）。
-- [ ] **A7 连接栏/全屏/多显示器 UI 行为**：mstsc.exe 侧的窗口管理。
-- [ ] **A8 服务器模式**：mstsc 无服务器实现，另以 termsrv.dll/rdpdd.dll 为取证目标（本阶段不做）。
+- [x] **A1 缩放/插值**（完成 5b1e00a；双审 + F1 整数除修复 + 性能达标）：二进制事实=1:1 用 BitBlt(SRCCOPY)，其余（含整数倍）一律 StretchBlt + `SetStretchBltMode(4)`(HALFTONE) + `SetBrushOrgEx(0,0)`；状态来自属性 `EnableSmartSizing`/`ZoomLevel`(100)。当前代码 1:1 正确，**整数倍最近邻、非整数倍双线性**与二进制不符。取证：FUN_18003444c / FUN_180191d30 / FUN_1804cfb98。
+- [x] **A2 输入与快捷键**（完成 959aaa7/fb20d65；双审驳回后修复：SAS/Pause/X键/NumLock/capture/坐标）：`keybd_event` 10 个调用点、`SendInput` 4 个、`SetCursorPos` 7 个、`MapVirtualKeyW` 126 个 → 逐个定位 mstsc 的快捷键表（Ctrl+Alt+End / Alt+Tab / Win 键 / 连接栏 / 焦点切换），核对我们的 keymap 与 AltGr 处理。
+- [~] **A3 位图解码与绘制**（bitmap-evidence 已建；planar 解压器定位；ClearCodec/Progressive 暂缓=无样本可验）：32bpp RDP6 planar 已按 FreeRDP 对齐；仍需核对 8/15/16/24bpp、Bitmap Cache Rev2、order 引擎（ROP3/PatBlt/ScrBlt）与 mstsc 实际路径。
+- [x] **A4 剪贴板 cliprdr**（cliprdr-evidence + FILECONTENTS 方向A/B 双审 d29ec55+b09c4cf；服务器侧 ea925c2；DATA_CHANNEL 二期）：已按 [MS-RDPECLIP] 修正方向/时序；需确认 mstsc 在该规范之外的实际偏差（尤其 TempDir、长名协商、文件剪贴板 CF_HDROP）。
+- [x] **A5 音频 rdpsnd**（rdpsnd-evidence；真机 server_formats=0=服务器策略非缺陷；TSSNDCAPS 需抓包裁决）：格式协商默认值、wave2、训练包、与 mstsc 的差异。
+- [x] **A6 智能缩放/自适应**（裁定 FUN_18003444c=门控缩放；实现 3414ece 双审；EnableSmartSizing=0→1:1）：`EnableSmartSizing` 的确切语义（窗口缩放时保持纵横比的方式、何时用 HALFTONE 的快速路径 FUN_180036ba0）。
+- [x] **A7 连接栏/全屏/多显示器 UI**（multimon-ui-evidence；mstsc.exe=薄壳；全屏/多屏已实现双审 296fcfd）：mstsc.exe 侧的窗口管理。
+- [~] **A8 服务器模式**（自研 RdpServer：桌面渲染✓ 剪贴板✓ 多会话并发✓ rdpdr 握手实施中；不依赖 termsrv→家庭版天然可用）：mstsc 无服务器实现，另以 termsrv.dll/rdpdd.dll 为取证目标（本阶段不做）。
 
 **每项流程（强制）**：①定问题 → ②二进制取证（函数地址 + 伪代码 + 交叉佐证）→ ③写成可复核证据条目 → ④先写失败测试（期望值来自②，禁止用生产输出当期望）→ ⑤最小实现 → ⑥双审独立复验（含变异反证）→ ⑦盖章提交。
 
@@ -373,4 +373,4 @@
 - 批次开工前必须先在 `docs/spec/<area>-evidence.md` 落证据；**没有证据文档的批次不得进入实现**。
 - 交付物必须包含：证据引用（`模块!函数@地址` + 片段）、先红测试（期望来自证据）、变异反证（改回旧行为必须转红）。
 - 已建证据文档：`docs/spec/scaling-evidence.md`（A1 缩放）、`docs/spec/input-evidence.md`（A2 输入/快捷键）。
-- 待建：A3 位图与 order、A4 cliprdr 实偏差、A5 rdpsnd 默认值、A6 EnableSmartSizing 语义、A7 窗口/多屏 UI。
+已建证据文档：bitmap-evidence/cliprdr-evidence/rdpsnd-evidence/smart-sizing-evidence/multimon-ui-evidence/rdpdr-evidence/cliprdr-server-design/rdpdr-server-design。待建（需真机抓包）：cliprdr capset/rdpsnd TSSNDCAPS wire 裁决。
