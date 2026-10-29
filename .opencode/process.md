@@ -10723,3 +10723,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 双审：甲乙独立 V1-V6 对表盖章（F1 反证采纳、甲撤回 O2、V4 注入双轴变异守卫）。
 - 验证：build 0err/0warn；ctest 51/52（view bench 偶发 flaky 与批次无关，单跑绿）；rtsc_net_tests 7/34 双平台。
 - 后续排期：真机 wire / rdpdr.dll / SmartCard。
+## 第660轮：服务器模式完整会话验证成功（自研 server ↔ 自研 client）
+- 命令：rtsc_server_host --port 33922 --any-user --test-pattern ⇄ rtsc_gui 127.0.0.1 ... 800x600 headless --seconds 10
+- 结果：surface 1280x1024 1310708 non-black；view scale 1.000 渲染正确；**loop 399-434/s（2.5ms/帧）**——服务器模式全链路性能优异。
+- 证实：自研 RdpServer 完成 CredSSP/激活 → 自研客户端渲染桌面 → 服务器模式核心达成（objective 服务器模式项推进）。
+- 服务器侧缺失（后续）：cliprdr caps_sent=0（服务器未实现剪贴板通道）、rdpdr=0、rdpsnd server version 0（服务器未播格式）。这些是服务器方向通道实现后续项。
+- 家庭版解禁/多远程用户：本实现自带 RDP server（非依赖 Windows termsrv）→ 理论上天然绕过家庭版限制；多用户需会话隔离扩展（有 multisession 测试基础）。
