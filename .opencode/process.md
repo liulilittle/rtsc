@@ -10718,3 +10718,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 验证：build 0err/0warn；ctest 51/51（禁 gateway 完整套件）；server 24/216 ~13s。
 - 后续排期：transport connect 无超时加固（阻塞 connect 死主机无限阻塞，乙 A 档建议）；真机 wire；rdpdr.dll；SmartCard。
 - process round 记录已更正（00d5bec）。
+## 第659轮：connect 加固双审盖章入库 ab0aad1
+- 内容：非阻塞 connect+超时（select write|except/poll POLLOUT+SO_ERROR）+ kConnectTimeoutMs=10s + N-aware per-address slice（F1 修复共享预算黑洞独吞）+ F2 CI SKIP + V4-HANG 有界 accept。
+- 双审：甲乙独立 V1-V6 对表盖章（F1 反证采纳、甲撤回 O2、V4 注入双轴变异守卫）。
+- 验证：build 0err/0warn；ctest 51/52（view bench 偶发 flaky 与批次无关，单跑绿）；rtsc_net_tests 7/34 双平台。
+- 后续排期：真机 wire / rdpdr.dll / SmartCard。
