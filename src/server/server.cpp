@@ -560,8 +560,11 @@ class RdpSession {
         ActiveLoop();
     }
 
-    // Unblocks a pending Read() so the session thread can exit. Safe to call
-    // from another thread.
+    // Unblocks a pending Read() so the session thread can exit. This is the
+    // only method meant to be called from another thread; todo: the thread
+    // safety of the underlying transport Close is whatever the transport
+    // provides (the TCP transport tolerates a concurrent close, other
+    // transports should document the same).
     void Stop() {
         stop_requested_.store(true, std::memory_order_relaxed);
         if (transport_) transport_->Close();
@@ -1510,6 +1513,10 @@ struct RdpServer::Impl {
     std::atomic<bool> running{false};
     std::shared_ptr<Registry> registry = std::make_shared<Registry>();
     std::atomic<size_t> total_session_count{0};
+    // One-shot guard for the accept-all WARNING. Intentionally a plain bool:
+    // Start()/Run()/ServeOne() may be called concurrently only by embedding
+    // at their own risk; firing a duplicate warning under a racy double
+    // Start is benign and not worth a lock.
     bool warned_accept_all = false;
 
     // Binds the listening socket and records the effective port. Returns false
@@ -1537,16 +1544,13 @@ void RdpServer::SetInputCallback(InputCallback cb) {
     input_callback_ = std::move(cb);
 }
 
-bool RdpServer::Start(std::string& error) {
-    if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
-                             &error)) {
-        last_error_ = error;
-        return false;
-    }
+void RdpServer::WarnIfAcceptAll() {
     // Say it once, loudly: the default configuration does not check
     // credentials (the library default keeps the first-milestone behaviour, and
     // a real deployment is expected to call SetAuthenticator). Silently
-    // accepting every peer is exactly the state an operator must notice.
+    // accepting every peer is exactly the state an operator must notice. The
+    // once flag covers all entry points, so Start()/Run()/ServeOne() together
+    // still warn exactly once per server.
     if ((config_.accept_any_credentials || !authenticator_) &&
         !impl_->warned_accept_all) {
         impl_->warned_accept_all = true;
@@ -1557,6 +1561,15 @@ bool RdpServer::Start(std::string& error) {
                      config_.accept_any_credentials ? "true" : "false",
                      authenticator_ ? "set" : "unset");
     }
+}
+
+bool RdpServer::Start(std::string& error) {
+    if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
+                             &error)) {
+        last_error_ = error;
+        return false;
+    }
+    WarnIfAcceptAll();
     if (impl_->listener) return true;
     std::string why;
     if (!impl_->Listen(why)) {
@@ -1572,6 +1585,7 @@ void RdpServer::Run() {
                              &last_error_)) {
         return;
     }
+    WarnIfAcceptAll();
     if (!impl_->listener) {
         std::string why;
         if (!impl_->Listen(why)) {
@@ -1580,6 +1594,9 @@ void RdpServer::Run() {
         }
     }
     impl_->running.store(true, std::memory_order_relaxed);
+    // Fast-path hint only; use the same relaxed order as the authoritative
+    // re-check under the registry mutex below. Promptness optimisations here
+    // (acquire) would not change any invariant.
     while (impl_->running.load(std::memory_order_relaxed)) {
         auto transport = impl_->listener->Accept();
         if (!transport) break;
@@ -1594,6 +1611,12 @@ void RdpServer::Run() {
             // would make Stop() wait forever). A failed launch rolls it back
             // below.
             std::lock_guard<std::mutex> lock(registry->mu);
+            // Re-check under the registry mutex. Stop() sets `running` false
+            // before taking this same mutex, so once this mutation is visible
+            // here (mutex happens-before, also on weak-memory machines) no
+            // session can register any more, and the Stop() snapshot taken
+            // under the same mutex can never miss a session that registered.
+            // Relaxed is conservative; acquire would only shorten promptness.
             if (!impl_->running.load(std::memory_order_relaxed)) break;
             session = std::make_shared<RdpSession>(
                 std::move(transport), config_, source_, authenticator_,
@@ -1705,6 +1728,7 @@ bool RdpServer::ServeOne() {
                              &last_error_)) {
         return false;
     }
+    WarnIfAcceptAll();
     if (!impl_->listener) {
         std::string why;
         if (!impl_->Listen(why)) {
@@ -1733,6 +1757,14 @@ bool RdpServer::ServeOne() {
 void RdpServer::Stop() {
     // Idempotent and safe when called twice: the wait predicate is the live
     // count, so a second call simply observes zero.
+    // Publishing the stop. Deliberately left relaxed (conservative; an explicit
+    // release/acquire pair would not add an invariant): the correctness chain
+    // is the registry mutex, not the atomic. This store is sequenced before
+    // Stop() takes registry->mu below, and every registration re-checks
+    // running under that same mutex in Run(), so the mutex happens-before edge
+    // (valid on weak-memory machines too) guarantees that a session which
+    // could be missed by the snapshot cannot register: either the snapshot
+    // below already saw it, or the register sees this false and breaks.
     impl_->running.store(false, std::memory_order_relaxed);
     if (impl_->listener) impl_->listener->Close();
 

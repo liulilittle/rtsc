@@ -105,14 +105,14 @@
 [  OK  ] view_scale_integer_2x_is_exact
 [ RUN  ] view_scale_non_integer_upscale_is_nearest
 [  OK  ] view_scale_non_integer_upscale_is_nearest
-[ RUN  ] view_scale_benchmark_1280x1024
+[ RUN  ] view_scale_benchmark_budget
   [bench] 1:1              1280x1024 -> 1280x1024     0.17 ms (budget  1.00)
   [bench] 1:1 letterbox    1280x1024 -> 1280x1200     0.14 ms (budget  0.60)
   [bench] 2x               1920x1080 -> 3840x2160     3.20 ms (budget  8.00)
   [bench] 0.8x             1920x1080 -> 1536x864     18.26 ms (budget 22.00)
   [bench] 0.5x 4K          3840x2160 -> 1920x1080    10.81 ms (budget 25.00)
   [bench] 1.33x            1920x1080 -> 2560x1440     1.70 ms (budget 10.00)
-[  OK  ] view_scale_benchmark_1280x1024
+[  OK  ] view_scale_benchmark_budget
 
 53 tests, 6582 checks, 3 failing tests, 3 failed checks
 crash dumps (if any): F:\rtsc\build\Release\crashes

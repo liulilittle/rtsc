@@ -230,8 +230,9 @@ class RdpServer {
     void Stop();
 
     // The TCP port the server is actually listening on, or 0 before the first
-    // successful bind. With ServerConfig::port == 0 the kernel picks a free
-    // port at Start()/Run()/ServeOne() time and this is the only way to learn
+    // successful bind. Read it only after a successful Start()/Run()/ServeOne()
+    // bind; it is not meaningful before that. With ServerConfig::port == 0 the
+    // kernel picks a free port at bind time and this is the only way to learn
     // it; a test uses that to avoid racing every other process for a fixed
     // port. The value is captured at bind time, so it stays readable after
     // Stop().
@@ -249,9 +250,12 @@ class RdpServer {
     // session object (transport, TLS/CredSSP state and the credential strings)
     // is released when its thread ends.
     size_t session_count() const;
-    // Number of sessions accepted since Start(). Monotonic; never reset. Use
-    // this for "how many clients has this server seen" and session_count() for
-    // "how many are connected now".
+    // Number of sessions launched since Start(): a session is counted only
+    // when its thread actually started (see SessionThreadLauncher), so a
+    // launcher that refuses the thread (thread/handle exhaustion during a
+    // connection flood) does not inflate the count. Monotonic; never reset.
+    // Use this for "how many sessions has this server launched" and
+    // session_count() for "how many are connected now".
     size_t total_session_count() const;
     const std::string& last_error() const { return last_error_; }
 
@@ -263,6 +267,11 @@ class RdpServer {
     Authenticator authenticator_;
     InputCallback input_callback_;
     std::string last_error_;
+
+    // Says the accept-all WARNING once, when the effective credential policy
+    // accepts every peer. Invoked from Start(), Run() and ServeOne() so the
+    // operator sees it no matter which entry point binds the listener.
+    void WarnIfAcceptAll();
 };
 
 }  // namespace rtsc::server

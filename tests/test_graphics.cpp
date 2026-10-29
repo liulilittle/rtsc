@@ -484,6 +484,48 @@ RTSC_TEST(graphics_cursor_maps_through_multi_monitor_origin) {
     CHECK((r == 0x11) && (gg == 0x11) && (b == 0x11));
 }
 
+RTSC_TEST(graphics_cursor_uses_centre_phase_when_scaled) {
+    // The pointer must map through ScaleSurface's centre-phase rule (E8), not
+    // the left edge of the source pixel. On a 100 -> 150 (1.5x) viewport, the
+    // flat formula vt.x + px*vt.width/surface_.width() puts source pixel (1,1)
+    // at viewport (1,1), but the rendered pixel that shows it is
+    //   ((2*1+1)*150 - 1) / (2*100) = 449/200 = 2
+    // so the arrow tip lands at (2,2) and (1,1) must stay desktop colour.
+    GraphicsPipeline g(100, 100);
+    g.surface().Fill(0x11, 0x11, 0x11, 0xFF);  // desktop fill
+
+    const auto def = FastPathPointerStylePdu(0x06);
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(def.data(), def.size(), parsed) == Status::Ok);
+    g.ApplyFastPathOutput(parsed);
+
+    ByteWriter w;
+    w.u8(0x00);
+    w.u8(0x09);
+    w.u8(0x08);
+    w.u16le(4);
+    w.u16le(1);  // pointer at virtual-desktop (1,1)
+    w.u16le(1);
+    const auto pos = w.take();
+    CHECK(FastPathOutputPdu::parse(pos.data(), pos.size(), parsed) == Status::Ok);
+    g.ApplyFastPathOutput(parsed);
+    CHECK(g.has_pointer());
+
+    g.set_zoom(1.5);
+    rtsc::ui::Surface dst(150, 150);
+    g.RenderTo(dst);
+
+    uint8_t r = 0, gg = 0, b = 0, a = 0;
+    // Centre phase: the black arrow tip is at (2,2) ...
+    CHECK(dst.GetPixel(2, 2, r, gg, b, a));
+    CHECK((r == 0) && (gg == 0) && (b == 0));
+    CHECK(dst.GetPixel(3, 4, r, gg, b, a));  // white arrow interior (tip+1,+2)
+    CHECK((r == 0xFF) && (gg == 0xFF) && (b == 0xFF));
+    // ... and the left-edge position (1,1) is untouched desktop fill.
+    CHECK(dst.GetPixel(1, 1, r, gg, b, a));
+    CHECK((r == 0x11) && (gg == 0x11) && (b == 0x11));
+}
+
 namespace {
 
 // Builds a TS_BITMAP_DATA rectangle carrying an opaque compressed payload.

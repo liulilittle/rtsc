@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -746,6 +747,35 @@ RTSC_TEST(http_message_rejects_a_huge_content_length) {
     CHECK(out.headers.size() <= 1);
 }
 
+RTSC_TEST(http_message_rejects_a_wrapping_content_length) {
+    // "18446744073709551616" is 2^64, one unit above a SIZE_MAX ceiling. The
+    // old check multiplied first (value = value*10 + d) and only then compared,
+    // so with a near-SIZE_MAX ceiling the accumulator wrapped to a small value
+    // and the claim sailed through. The bounded compare must reject it from the
+    // digits alone.
+    HttpLimits huge;
+    huge.max_entity_bytes = std::numeric_limits<size_t>::max();
+    const std::string wire_text =
+        "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551616\r\n\r\n";
+    const std::vector<uint8_t> wire(wire_text.begin(), wire_text.end());
+    HttpMessage out;
+    size_t consumed = 0;
+    const Status st =
+        HttpMessage::parse(wire.data(), wire.size(), out, consumed, huge);
+    std::printf("  wrapping content-length: status=%s consumed=%zu\n",
+                to_string(st), consumed);
+    CHECK(st == Status::InvalidLength);
+    CHECK_EQ(consumed, static_cast<size_t>(0));
+    // The smell: a legitimate claim equal to the ceiling is still accepted, so
+    // the ceiling itself is not mis-detected.
+    const std::string ok_text =
+        "HTTP/1.1 200 OK\r\nContent-Length: " +
+        std::to_string(std::numeric_limits<size_t>::max()) + "\r\n\r\n";
+    const std::vector<uint8_t> ok(ok_text.begin(), ok_text.end());
+    CHECK(HttpMessage::parse(ok.data(), ok.size(), out, consumed, huge) ==
+          Status::Ok);
+}
+
 RTSC_TEST(http_message_rejects_an_oversized_header_block) {
     // A head past the 64 KiB ceiling is a hard failure, never NeedMoreData:
     // waiting for more bytes is exactly what would keep growing the buffer.
@@ -1020,6 +1050,58 @@ RTSC_TEST(gateway_tunnel_returns_after_the_supply_stops) {
     CHECK(tunnel.bytes_read() <= kSlices * kSlice + 64);
     CHECK(inner.served() <= kSlices * kSlice + 64);
     CHECK(elapsed < std::chrono::milliseconds(3000));
+}
+
+RTSC_TEST(gateway_data_path_idle_is_not_a_peer_close) {
+    // The no-progress deadline is opt-in. With the default (0) the tunnel must
+    // keep returning kReadTimeout indefinitely after the supply stops: a real
+    // RDP-over-gateway session can be idle for minutes, and treating that as a
+    // peer close used to strand the session (Client::Pump read -1 "no
+    // progress" and gave up on a healthy tunnel). An explicit deadline on the
+    // same supply is exercised by gateway_tunnel_returns_after_the_supply_stops
+    // (300 ms) and gateway_tunnel_gives_up_when... (300 ms), so this test only
+    // proves the default itself does not cut the data path.
+    std::vector<uint8_t> script =
+        Bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    script.resize(script.size() + 8 * 1024, 0x5A);
+    ScriptedStallTransport inner(std::move(script), 4096, 5);
+
+    GatewayTunnel::Config config;
+    config.target = "server.example:3389";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    config.connect_timeout_ms = 2000;
+
+    GatewayTunnel tunnel(inner, config);
+    CHECK(tunnel.open());
+    CHECK_EQ(tunnel.error().find("no progress"), std::string::npos);
+
+    // Drain the offered data; afterwards the inner transport stalls forever.
+    uint8_t buf[4096];
+    for (;;) {
+        const int n = tunnel.Read(buf, sizeof(buf));
+        if (n == kReadTimeout) break;
+        CHECK(n > 0);
+    }
+
+    // Idle for well past a handshake-length deadline: with the default the
+    // tunnel must stay silent, and reads must keep returning kReadTimeout
+    // rather than a -1 "no progress" error.
+    int idle_reads = 0;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(350);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const int n = tunnel.Read(buf, sizeof(buf));
+        if (n != kReadTimeout) break;  // any real result fails below
+        ++idle_reads;
+    }
+    std::printf("  data-path idle: reads=%d error=%s\n", idle_reads,
+                tunnel.error().c_str());
+    CHECK(idle_reads > 0);
+    // The default deadline never fired: no error at all, and in particular not
+    // the inactivity one.
+    CHECK(tunnel.error().find("no progress") == std::string::npos);
+    CHECK(tunnel.error().empty());
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }

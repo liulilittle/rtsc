@@ -336,10 +336,18 @@ void GraphicsPipeline::DrawCursor(ui::Surface& dst,
     // arrow is always drawn.
     const int px = static_cast<int>(pointer_x_) - origin_x_;
     const int py = static_cast<int>(pointer_y_) - origin_y_;
-    // Map the virtual-desktop pointer position into the viewport (the same
-    // mapping ScaleSurface applies to the desktop pixels).
-    const int cx = vt.x + (px * vt.width) / surface_.width();
-    const int cy = vt.y + (py * vt.height) / surface_.height();
+    // Map the virtual-desktop pointer position into the viewport with the same
+    // centre-phase rule ScaleSurface applies to the desktop pixels
+    // (resample.cpp NearestIndex / docs/spec/scaling-evidence.md E8): the cursor
+    // must land on the destination pixel that shows the source pixel under the
+    // pointer. The old left-edge mapping (vt.x + px*vt.width/surface_.width())
+    // drifted a whole pixel off the rendered pixel on non-integer scalings, and
+    // disagreed with MapViewportPoint (the inverse mapping), which already uses
+    // the centre phase.
+    const int cx = vt.x + static_cast<int>(
+        ((2LL * px + 1) * vt.width - 1) / (2LL * surface_.width()));
+    const int cy = vt.y + static_cast<int>(
+        ((2LL * py + 1) * vt.height - 1) / (2LL * surface_.height()));
     // Standard Windows arrow, 12x19: '#' = black outline, 'o' = white fill.
     static const char* kArrow[] = {
         "#...........",

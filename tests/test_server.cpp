@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -1566,6 +1567,290 @@ RTSC_TEST(server_thread_launcher_running_body_then_failing) {
         runner2.join();
         CHECK_EQ(server2.session_count(), 0);
     }
+}
+
+// ---- F5: acceptance invariants only provable from the outside ---------------
+
+RTSC_TEST(server_authenticator_rejection_leaves_no_active_session) {
+    // F5: on the Standard RDP Security path the authenticator is the only real
+    // credential gate, and until this test nothing exercised a rejection -- the
+    // whole suite was green with the gate removed, because every other test
+    // uses the accept-anything default. A rejected Client Info must fail the
+    // handshake (active_ must never be true), and the session must still tear
+    // down so session_count() falls back to zero.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetAuthenticator(
+        [](const rtsc::server::Credentials&) { return false; });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    // The peer is dropped before licensing / Demand Active, so nothing of the
+    // active session may have been emitted.
+    CHECK(!r.reached_active);
+    CHECK(!r.got_demand_active);
+    CHECK(!r.error.empty());
+
+    bool settled = false;
+    for (int i = 0; i < 300 && !settled; ++i) {
+        if (server.session_count() == 0) {
+            settled = true;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(settled);
+    // The session was launched (its thread ran and enforced the gate), never
+    // became active, and cleaned up exactly once.
+    CHECK_EQ(server.total_session_count(), 1);
+    CHECK_EQ(server.session_count(), 0);
+
+    std::atomic<bool> stop_done{false};
+    std::thread stopper([&server, &stop_done]() {
+        server.Stop();
+        stop_done.store(true);
+    });
+    for (int i = 0; i < 100 && !stop_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(stop_done.load());
+    if (stop_done.load()) {
+        stopper.join();
+    } else {
+        stopper.detach();
+    }
+    runner.join();
+    CHECK_EQ(server.session_count(), 0);
+}
+
+RTSC_TEST(server_concurrent_stop_is_idempotent) {
+    // F5: Stop() documents itself as idempotent, but idempotence was only ever
+    // exercised sequentially. Two threads stopping the same server at once must
+    // both return promptly and converge to zero live sessions -- no deadlock in
+    // the registry wait, no double-handoff of the live-count decrement.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+    CHECK_EQ(server.session_count(), 1);
+
+    std::atomic<bool> stop1_done{false}, stop2_done{false};
+    std::thread s1([&server, &stop1_done]() {
+        server.Stop();
+        stop1_done.store(true);
+    });
+    std::thread s2([&server, &stop2_done]() {
+        server.Stop();
+        stop2_done.store(true);
+    });
+    for (int i = 0; i < 500 && (!stop1_done.load() || !stop2_done.load()); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(stop1_done.load());
+    CHECK(stop2_done.load());
+    if (stop1_done.load()) {
+        s1.join();
+    } else {
+        s1.detach();
+    }
+    if (stop2_done.load()) {
+        s2.join();
+    } else {
+        s2.detach();
+    }
+    runner.join();
+
+    // Exactly one session was served and counted; the pair of stops released it
+    // exactly once.
+    CHECK_EQ(server.session_count(), 0);
+    CHECK_EQ(server.total_session_count(), 1);
+}
+
+// Test-only helper for the flood-vs-Stop case: how long the session-thread
+// launcher should pause before starting a body, widening the "registered but
+// body not started" window. Defaults to 40 ms; RTSC_TEST_LAUNCH_DELAY_MS
+// overrides it (0 = original detach timing, used as a control run).
+int launch_delay_ms() {
+#if defined(_MSC_VER)
+    char* buf = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&buf, &len, "RTSC_TEST_LAUNCH_DELAY_MS") != 0 ||
+        buf == nullptr) {
+        return 40;
+    }
+    const int ms = std::atoi(buf);
+    std::free(buf);
+    return ms;
+#else
+    const char* v = std::getenv("RTSC_TEST_LAUNCH_DELAY_MS");
+    return v == nullptr ? 40 : std::atoi(v);
+#endif
+}
+
+RTSC_TEST(server_flood_vs_stop_race_converges) {
+    // F5: the worst connection shape for Stop() is a connection flood meeting
+    // the listener while it closes. Between a session's registration and its
+    // body actually starting there is a window; the session_thread_launcher
+    // hook widens it so Stop() reliably takes its registry snapshot while
+    // sessions are registered-but-not-yet-started. The invariant this guards:
+    // Stop() must reap every registered session and converge (live==0) in
+    // bounded time, whoever wins the race.
+    //
+    // Red/green contract: every flood socket is kept open (a silent peer that
+    // never finishes the handshake), so each accepted session blocks in its
+    // read unless Stop() explicitly stops it. The flood finishes while the
+    // listener is still open (a connect to a closed loopback listener costs
+    // ~2 s to fail on this host and would dominate the runtime, not the server
+    // logic), then Stop() fires while the launcher still holds several bodies
+    // in the registered-but-unstarted window. Stop() runs in a background
+    // thread and the test waits with a bounded timeout: a Stop() that never
+    // returns is a red, never a suite hang.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    constexpr int kConnect = 8;
+    const int delay_ms = launch_delay_ms();
+    std::atomic<int> launches{0};
+    std::atomic<bool> stop_began{false};
+    std::atomic<int> started_after_stop{0};
+    cfg.session_thread_launcher = [&launches, &stop_began, &started_after_stop,
+                                   delay_ms](std::function<void()> body) {
+            if (delay_ms > 0) {
+                // Widen the "registered but body not started" window: far
+                // longer than Stop() needs to take its snapshot, so the
+                // snapshot-vs-launch ordering is exercised every run, not by
+                // scheduling luck.
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(delay_ms));
+            }
+            launches.fetch_add(1, std::memory_order_relaxed);
+            if (stop_began.load(std::memory_order_relaxed)) {
+                // Detached after Stop() had already begun: this session was
+                // registered but not yet started when Stop() took its snapshot.
+                // A nonzero count is a necessary -- not sufficient -- witness
+                // that the amplifier actually widened the window; whether
+                // Stop() reaps every registered session is the convergence
+                // assertion below, not this stat.
+                started_after_stop.fetch_add(1, std::memory_order_relaxed);
+            }
+            std::thread(std::move(body)).detach();
+            return true;
+        };
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    // Heap-owned so a failing (red) run can leak the server instead of hanging
+    // the suite in its destructor.
+    auto server = std::make_unique<RdpServer>(cfg);
+    server->SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server->Start(error));
+    std::thread runner([&server]() { server->Run(); });
+
+    std::atomic<bool> flood_done{false};
+    std::vector<std::unique_ptr<rtsc::net::Transport>> keep_open;
+    std::thread flood([&server, &flood_done, &keep_open]() {
+        // Connect-and-hold: the server accepts each connection and registers a
+        // session whose body blocks in the never-driven handshake read. The
+        // listener is still open here, so every connect completes.
+        for (int i = 0; i < kConnect; ++i) {
+            std::string e;
+            auto t =
+                rtsc::net::ConnectTcp("127.0.0.1", server->bound_port(), e);
+            if (t) keep_open.push_back(std::move(t));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        flood_done.store(true);
+    });
+
+    bool flood_finished = false;
+    for (int i = 0; i < 50 && !flood_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    flood_finished = flood_done.load();
+    flood.join();
+
+    // Wait until all kConnect sessions are registered (live count raised at
+    // registration, before the launcher starts the body). The most recent
+    // launcher is then still inside its sleep window: exactly the state Stop()
+    // must be able to reap.
+    bool all_registered = false;
+    for (int i = 0; i < 100 && !all_registered; ++i) {
+        if (server->session_count() >= kConnect) {
+            all_registered = true;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    std::atomic<bool> stop_done{false};
+    stop_began.store(true);
+    std::thread stopper([&server, &stop_done]() {
+        server->Stop();
+        stop_done.store(true);
+    });
+
+    // Regression detector: a Stop() that hangs is a red (bounded wait trips),
+    // never a suite hang.
+    bool stop_cleared = false;
+    for (int i = 0; i < 50 && !stop_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    stop_cleared = stop_done.load();
+    const size_t live = server->session_count();
+    std::printf(
+        "  flood_vs_stop: stop_5s=%s launches=%d registered=%d live=%zu "
+        "total=%zu sockets=%zu delay_ms=%d started_after_stop=%d\n",
+        stop_cleared ? "yes" : "RED_TIMEOUT", launches.load(),
+        all_registered ? kConnect : -1, live, server->total_session_count(),
+        keep_open.size(), delay_ms, started_after_stop.load());
+    CHECK(flood_finished);
+    CHECK(all_registered);
+    CHECK(launches.load() >= kConnect);
+    if (delay_ms > 0) {
+        // Necessary-not-sufficient witness for the window: at least one body
+        // must have been started after Stop() had already begun, otherwise the
+        // launcher pause did not actually widen anything. Sufficiency of the
+        // reaping is asserted by stop_cleared / live==0 below, not here.
+        CHECK(started_after_stop.load() >= 1);
+    }
+    CHECK(stop_cleared);
+
+    if (!stop_cleared) {
+        // Already red above. Close the client sockets so the server sides
+        // observe EOF and blocked bodies can drain; only if even that is
+        // ineffective do we leak the server to keep the suite alive.
+        keep_open.clear();
+        for (int i = 0; i < 100 && !stop_done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!stop_done.load()) {
+            stopper.detach();
+            runner.detach();
+            (void)server.release();
+            return;
+        }
+        stopper.join();
+        runner.join();
+        return;
+    }
+    stopper.join();
+    runner.join();
+    CHECK_EQ(server->session_count(), 0);
 }
 
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

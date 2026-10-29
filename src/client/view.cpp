@@ -89,7 +89,7 @@ Resample ChooseResample(const ViewTransform& vt, int sw, int sh) {
         return Resample::kExact;
     }
     // Size equality, not a zero origin: a centred view with letterbox bars is
-    // still a 1:1 copy (docs/spec/scaling-evidence.md E5 / D7).
+    // still a 1:1 copy (docs/spec/scaling-evidence.md E5 / D-4).
     if (vt.width == sw && vt.height == sh) return Resample::kExact;
     // Any shrinking axis takes the area average, even when the other axis is
     // growing or unchanged: averaging is what the reference does for a

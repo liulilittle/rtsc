@@ -324,8 +324,8 @@ RTSC_TEST(view_upscale_never_invents_a_colour) {
 }
 
 RTSC_TEST(view_letterbox_1to1_does_not_read_outside_the_source) {
-    // D7: widening the exact-copy test to "destination size == source size" is
-    // only correct if both the read and the write carry the view offset. A
+    // D-4: widening the exact-copy test to "destination size == source size"
+    // is only correct if both the read and the write carry the view offset. A
     // 16x8 source placed at y = 2 in a 16x12 viewport previously read source
     // rows 2..9 (two rows past the end) and copied the wrong pixels.
     Surface src(16, 8);
@@ -428,6 +428,88 @@ RTSC_TEST(view_downscale_2d_fast_path_averages_alpha) {
     ScaleSurface(src, dst, MakeVT(8, 2, 4, 1));
     static const uint8_t expect[4] = {0, 128, 255, 255};
     for (int x = 0; x < 4; ++x) CHECK_EQ(ChannelOf(dst, x, 0, 3), expect[x]);
+}
+
+RTSC_TEST(view_downscale_1x2_to_1x1_tie_rounds_up) {
+    // total = 2, exact tie: (0 + 255) / 2 = 127.5 must round half up to 128
+    // (D-1). A truncating implementation gives 127; this is the smallest shape
+    // that still discriminates the rounding convention.
+    Surface src(1, 2);
+    src.SetPixel(0, 0, 0, 0, 0, 255);
+    src.SetPixel(0, 1, 255, 255, 255, 255);
+    Surface dst(1, 1);
+    ScaleSurface(src, dst, MakeVT(1, 2, 1, 1));
+    CHECK_EQ(ChannelOf(dst, 0, 0, 0), 128);
+    CHECK_EQ(ChannelOf(dst, 0, 0, 3), 255);
+}
+
+RTSC_TEST(view_downscale_2x3_matches_reference) {
+    // An explicit non-uniform 2x3 -> 1x2 reduction, verified both against the
+    // independent double reference and against hand-computed literals, so a
+    // coverage-weighting regression cannot hide behind the round 2:1 figures.
+    // Values R = 10*x + y: acc(0,0) = ((0+10)*1 + (1+11)*0.5)/3 = 16/3 -> 5,
+    // acc(0,1) = ((1+11)*0.5 + (2+12)*1)/3 = 20/3 -> 7.
+    Surface src(2, 3);
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            const uint8_t v = static_cast<uint8_t>(10 * x + y);
+            src.SetPixel(x, y, v, static_cast<uint8_t>(y * 7),
+                         static_cast<uint8_t>(x * 3),
+                         static_cast<uint8_t>(64 + 64 * y));
+        }
+    }
+    Surface dst(1, 2);
+    ScaleSurface(src, dst, MakeVT(2, 3, 1, 2));
+    CHECK_EQ(ChannelOf(dst, 0, 0, 0), 5);
+    CHECK_EQ(ChannelOf(dst, 0, 1, 0), 7);
+    for (int c = 0; c < 4; ++c) {
+        const std::vector<uint8_t> ref = ReferenceArea(src, 1, 2, c);
+        CHECK_EQ(ChannelOf(dst, 0, 0, c), ref[0]);
+        CHECK_EQ(ChannelOf(dst, 0, 1, c), ref[1]);
+    }
+}
+
+RTSC_TEST(view_downscale_semi_transparent_alpha_averages) {
+    // D-2: alpha is averaged with the same weights as R/G/B even when it is
+    // semi-transparent, not only on the 0/255 hard edges of the alpha cases
+    // above. 2x2 -> 1x1 gives every weight 1, so each channel is the mean.
+    Surface src(2, 2);
+    src.SetPixel(0, 0, 200, 100, 50, 64);
+    src.SetPixel(1, 0, 100, 200, 25, 128);
+    src.SetPixel(0, 1, 150, 50, 200, 192);
+    src.SetPixel(1, 1, 50, 150, 100, 255);
+    Surface dst(1, 1);
+    ScaleSurface(src, dst, MakeVT(2, 2, 1, 1));
+    // R: (200+100+150+50)/4 = 125; G = 125; B: 375/4 = 93.75 -> 94;
+    // A: (64+128+192+255)/4 = 159.75 -> 160.
+    CHECK_EQ(ChannelOf(dst, 0, 0, 0), 125);
+    CHECK_EQ(ChannelOf(dst, 0, 0, 1), 125);
+    CHECK_EQ(ChannelOf(dst, 0, 0, 2), 94);
+    CHECK_EQ(ChannelOf(dst, 0, 0, 3), 160);
+}
+
+RTSC_TEST(view_scale_zero_source_is_safe) {
+    // A 0-sized source must be a no-op, not a crash or an out-of-bounds read:
+    // ScaleSurface's size guard returns before any resample choice is made.
+    // The destination rectangle is deliberately non-trivial so it is the source
+    // guard -- not the viewport guard -- that must do the work.
+    Surface src(0, 0);
+    Surface dst(8, 8);
+    dst.Fill(0x11, 0x22, 0x33, 0xFF);
+    ViewTransform vt;
+    vt.width = 8;
+    vt.height = 8;
+    vt.scale = 1.0;
+    vt.scale_x = 1.0;
+    vt.scale_y = 1.0;
+    ScaleSurface(src, dst, vt);  // must not crash
+    // The whole viewport is untouched: no copy, no resample writes anything.
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            CHECK_EQ(ChannelOf(dst, x, y, 0), static_cast<uint8_t>(0x11));
+            CHECK_EQ(ChannelOf(dst, x, y, 3), static_cast<uint8_t>(0xFF));
+        }
+    }
 }
 
 RTSC_TEST(view_downscale_exact_half_tie_rounds_up) {
@@ -1331,11 +1413,12 @@ RTSC_TEST(view_scale_non_integer_upscale_is_nearest) {
     }
 }
 
-RTSC_TEST(view_scale_benchmark_1280x1024) {
-    // Timing guard over the six contract shapes. Thresholds are deliberately
-    // loose (a few times the measured value) so they catch an algorithmic
-    // regression -- e.g. a return to per-pixel division or a float resample --
-    // without failing on CI jitter.
+RTSC_TEST(view_scale_benchmark_budget) {
+    // Timing guard over the seven contract shapes (1:1 / letterbox up to 1080p,
+    // 2x / 1.33x / 0.8x on 1080p, 0.5x and 0.4x on 4K). Thresholds are
+    // deliberately loose (a few times the measured value) so they catch an
+    // algorithmic regression -- e.g. a return to per-pixel division or a float
+    // resample -- without failing on CI jitter.
     struct Case {
         int sw, sh, dw, dh;
         const char* label;
@@ -1348,6 +1431,7 @@ RTSC_TEST(view_scale_benchmark_1280x1024) {
         {1920, 1080, 1536, 864, "0.8x", 22.0},
         {3840, 2160, 1920, 1080, "0.5x 4K", 25.0},
         {1920, 1080, 2560, 1440, "1.33x", 10.0},
+        {3840, 2160, 1536, 864, "0.4x 4K", 35.0},
     };
     for (const Case& c : cases) {
         Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));

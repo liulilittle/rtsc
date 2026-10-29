@@ -53,8 +53,11 @@ void AppendCrLf(ByteWriter& w) {
 
 // Validates the Content-Length claims of a message against the entity ceiling.
 // The check runs while the digits are scanned, so an announced length is
-// rejected before anything is sized from it: `length` never holds a value that
-// already failed the ceiling, so the multiply cannot overflow.
+// rejected before anything is sized from it. The comparison is made before each
+// multiply: "value * 10 + digit > limit" is asked as
+//   value > limit/10 || (value == limit/10 && digit > limit%10)
+// (the overflow-free form), so a ceiling close to SIZE_MAX cannot be bypassed
+// by wrapping the accumulator.
 Status CheckContentLength(const std::vector<HttpHeader>& headers,
                           const HttpLimits& limits) {
     bool has_length = false;
@@ -65,8 +68,16 @@ Status CheckContentLength(const std::vector<HttpHeader>& headers,
         size_t value = 0;
         for (char c : header.value) {
             if (c < '0' || c > '9') return Status::InvalidField;
-            value = value * 10 + static_cast<size_t>(c - '0');
-            if (value > limits.max_entity_bytes) return Status::InvalidLength;
+            const size_t digit = static_cast<size_t>(c - '0');
+            // Check before the multiply: value * 10 + digit > limit, without
+            // overflowing the accumulator (a near-SIZE_MAX ceiling made the
+            // previous post-multiply check wrappable).
+            if (value > limits.max_entity_bytes / 10 ||
+                (value == limits.max_entity_bytes / 10 &&
+                 digit > limits.max_entity_bytes % 10)) {
+                return Status::InvalidLength;
+            }
+            value = value * 10 + digit;
         }
         if (has_length && value != length) return Status::InvalidField;
         length = value;

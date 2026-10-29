@@ -237,7 +237,7 @@ void CopyExact(const uint8_t* src, const ScaleRect& r, uint8_t* dst,
     const size_t bytes = static_cast<size_t>(n) * 4;
     // Both the read and the write carry the view offset: a centred 1:1 view is a
     // copy with letterbox bars, not a resample. Dropping the offset on the source
-    // side would read rows past the end of the source (D7 in
+    // side would read rows past the end of the source (D-4 in
     // docs/spec/scaling-evidence.md).
     const int sx = r.x0 - r.dx;
     for (int y = r.y0; y < r.y1; ++y) {

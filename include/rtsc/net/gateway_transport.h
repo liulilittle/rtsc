@@ -128,10 +128,17 @@ class GatewayTunnel : public Transport {
         // cap is only useful as a hardening / test setting.
         size_t max_session_read_bytes = 0;
         size_t max_session_reads = 0;
-        // Inactivity deadline for waiting on the gateway (not a session lifetime),
-        // so a healthy long-lived but active RDP session is unaffected. <= 0
-        // disables it.
-        int session_timeout_ms = 30000;
+        // No-progress deadline: if the peer delivers nothing for this long the read
+        // fails with its own "no progress" error instead of waiting forever.
+        // 0 (the default) disables it everywhere. It must NOT be treated as a
+        // session lifetime: a real RDP-over-gateway session is legitimately
+        // idle for long stretches (an open desktop with no input), and a
+        // default data-path cutoff used to strand such sessions because
+        // Client::Pump read "no progress" as a peer close. The CONNECT
+        // handshake is still bounded by connect_timeout_ms independently, so a
+        // dead gateway cannot hang even with this left at 0. An embedder that
+        // wants an idle cutoff may still set one explicitly.
+        int session_timeout_ms = 0;
     };
 
     GatewayTunnel(Transport& inner, const Config& config);

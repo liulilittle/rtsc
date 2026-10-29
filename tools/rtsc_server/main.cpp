@@ -239,9 +239,10 @@ int main(int argc, char** argv) {
     cfg.port = opt.port;
     cfg.desktop_width = opt.width;
     cfg.desktop_height = opt.height;
-    // Credential policy, set explicitly: the library default is accept-any,
-    // and this host only uses it when --allow-any-credentials is passed (which
-    // is announced below and in the help).
+    // Credential policy, set explicitly: the library default is
+    // accept_any_credentials=false (the authenticator decides), and this host
+    // only widens it when --allow-any-credentials is passed (which is
+    // announced below and in the help).
     cfg.accept_any_credentials = opt.allow_any_credentials;
     cfg.enable_enhanced_security = opt.enhanced;
     cfg.tls_config.role = rtsc::tls::Role::kServer;
@@ -382,7 +383,8 @@ int main(int argc, char** argv) {
     const bool bounded = opt.seconds > 0;
     for (;;) {
         // session_count() is the number of sessions alive right now;
-        // total_session_count() is the monotonic accepted count. Log both so a
+        // total_session_count() is the monotonic count of sessions launched
+        // (a launcher that refused a thread is not counted). Log both so a
         // disconnect is visibly a live-count drop, not a lost session.
         const size_t live = server.session_count();
         const size_t total = server.total_session_count();
