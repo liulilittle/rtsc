@@ -10666,3 +10666,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - N1：ToggleFullscreen 接线+菜单同步+4 测+守卫（ui 44/243）。
 - N2-①：kCmdConnectionInfo→ShowConnectionInfoDialog（真实 getter 不伪造；rtt 诚实 N/A）；NoteFrame 接线 fps；CMake 补对话框源（死代码根因）；守卫含 continue 断言（补 N1-D1）。ui 45/249、session_info 14/53。
 - 遗留跟进：N-csi-1 RTT 接线（需真实写 PDU 输入点）；N-csi-2 守卫换绑变异盲区；N2-②③ SmartCard/Help no-op；A7 多屏 UI 取证。
+## 第651轮：卡顿根因定位 + 性能修复执行子派发
+- 根因（用户实测"整体都卡"，会话 A 数据 4440loop/234rendered）：
+  ① transport.h:35 kReadTimeoutMs=30 → Pump 每轮干等最多 30ms，输入/画面响应量化 30ms，静止时冻结；
+  ② window_win32.cpp:248 Present 每帧全屏逐像素 RGBA→BGRA（1280x1024=1.3M 循环/帧）纯软件。
+- 用户裁定修复方向="改 Present+读节流"（非 GPU 重构）。
+- 执行子 ses_e79d90772ffembaE4kwnz0sXZD 在途：Phase 3 先探针量化（convert/memcpy/render 单帧 us）→按数据定方案→验收含性能回归测试+真机对比。
+- 纪律：不 git 写；禁 gateway；探针存 %TEMP%。
