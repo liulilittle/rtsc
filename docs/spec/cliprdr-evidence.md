@@ -165,3 +165,25 @@ C++ 接口：proto 层 CliprdrFileContentsRequest/Response + CliprdrFileDescript
 - 测试：rtsc_clipboard_tests 30/93（新套件）；rtsc_cliprdr 106/553（+端到端缺失文件 SIZE→FAIL）。
 - C0：全量 build 0err/0warn；ctest 51/52 绿（view 0.8x bench 因外部 il2cpp 构建 CPU 争用红，非代码，discover.md 已记录，独占复跑仍需在无争用窗口）。
 - 审计遗留：GUI 真拖放端到端；真机互通；ANSI(fWide==0) 可选；方向B 变异脚本 UNVERIFIED。
+## 真机互通验证：会话 A（2026-10-28 轮次 105，real-server-test.ps1 headless）
+命令：RTSC_HOST=192.168.1.7 RTSC_DOMAIN=MicrosoftAccount RTSC_USER=windowsvipcuv@live.cn RTSC_PASS=*** RTSC_UI_BACKEND=headless .\scripts\real-server-test.ps1
+结果（rtsc_gui exit=0, reached active session）：
+- surface: 1280x1024, 1310720 px, 1307487 non-black, 826 distinct colours
+- view: 1280x1024 -> 1280x1024 at (384,18), scale 1.000 (zoom), 1307487 non-black
+- virtual channel chunks: rdpdr=2 cliprdr=3 rail=0  （rdpdr/cliprdr 数据在传，rail 无）
+- application sends: input=922 channel=3
+- clipboard: long_names=yes remote_formats=0 caps_sent=1 server_caps=1 remote_lists=0 local_lists=1 responses=0 data_req=0 data_resp_sent=0 data_resp=0 temp_dir= locks=0/0
+- audio: server_formats=0 client_formats=0 quality_mode=0 wave2=0 … backend unavailable, server version 0
+- 分析：
+  1. cliprdr CAPS 交换成功（caps_sent=1/server_caps=1），local_lists=1（我方发送 FORMAT_LIST）→ 我方 → 服务器单向可用。
+  2. remote_lists=0 / remote_formats=0：远端无复制内容（需人工在远端触发复制以裁决 msgType wire 值）→ B1 wire 裁决待人工协作。
+  3. audio server version 0：**rdpsnd 未协商成功**（服务器未响应或我方广告不匹配）→ A5 真机缺陷证据，待深究。
+  4. rail 零活动正常。
+
+## wire 裁决进度
+- [x] 通道握手可达（cliprdr/rdpdr 在传）
+- [x] caps 交换成功（双方各 1）
+- [ ] 远端复制→FORMAT_LIST msgType 抓包/统计（需 GUI 人工协作）
+- [ ] capset 字节（CLIP_CAPS payload）抓包
+- [ ] rdpdr 文件操作
+- [ ] rdpsnd server version 0 根因（A5 缺陷候选）
