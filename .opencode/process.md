@@ -10695,3 +10695,10 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
   | avg | 221/s 波动 | 68.7/s 稳定 |
 - 响应量化 31.4→15.6ms 真机确认；view 1.000 渲染正常；cliprdr 握手正常。
 - 用户主观跟手性改善待确认。
+## 第655轮：回环关接排查——根因=凭据不匹配（非代码 bug）
+- 现象：rtsc_connect 127.0.0.1 回环到 rtsc_server_host，round 4 后 peer closed (n=0)。
+- 排查：服务器 Capability CredSSP step3（NTLM AUTHENTICATE 478B）后关闭 → server 日志空 → 怀疑代码。深入读 credssp_server.cpp BuildPubKeyEcho：lookup_ 用 domain/user 查密码 → Ntowfv2 验算 → 不匹配则失败。
+- **根因**：rtsc_server_host 默认 --user=rtsc --domain=NTDEV --password=password；而之前 rtsc_connect 用 test/test → NTLMv2 校验失败 → 正常关闭。**非代码 bug**。
+- 验证：rtsc_connect 127.0.0.1 33895 MicrosoftAccount rtsc password → **13 轮握手成功、Client Info PDU sent**（CredSSP server 全状态机 OK，execute 100%）。
+- 结论：此前执行子"服务器回环关接环境问题"= 凭据不匹配误报；回环服务器 CredSSP 正常。真机 192.168.1.7 与凭据也验证过（会话 B）。
+- 更新 discover.md：回环测试必须使用 rtsc_server_host 的默认凭据（rtsc/password, NTDEV）或显式 --user/--password。
