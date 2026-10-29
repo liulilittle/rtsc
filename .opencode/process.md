@@ -10756,3 +10756,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 实测：multisession 7 tests/173 checks 全绿；8 会话压力 2441ms（163 writes/111 reads，无崩溃）。
 - 原执行子报告在重启中丢失，已派甲乙独立复核（有效性/并发真实性/断言强度/FakeClipboard 线程安全）。
 - 复核通过后提交。
+## 第666轮：多会话剪贴板并发测试入库 998d7cd
+- 4 测试（并发握手/收敛无陈旧复活/断开保活/8 会话压力），multisession 7/184 绿、5 次连跑无 flaky。
+- 甲乙双审盖章；N2（硬编码 1005→ChannelIdForName）与 N3（改名+契约注释）已修；D7（异值强 winner 断言）父裁决不采纳（必 flaky）。
+- 覆盖边界记档：Win32 后端 g_clipboard_mutex 不被本组测试约束（fake 自带锁）；测试零宿主剪贴板污染（seq 前后恒等实证）。
+- 服务器模式进度：桌面 ✓ 剪贴板 ✓ 多会话并发 ✓（v1 文本+DIB）。
+- 后续：rdpdr 服务器侧 / 家庭版部署 / 真机 mstsc 互通。
