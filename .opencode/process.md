@@ -456,3 +456,10 @@
 - 覆盖边界记档：Win32 后端 g_clipboard_mutex 不被本组测试约束（fake 自带锁）；测试零宿主剪贴板污染（seq 前后恒等实证）。
 - 服务器模式进度：桌面 ✓ 剪贴板 ✓ 多会话并发 ✓（v1 文本+DIB）。
 - 后续：rdpdr 服务器侧 / 家庭版部署 / 真机 mstsc 互通。
+## 第667轮：服务器侧 rdpdr 最小握手入库 bf9d2ec
+- RdpdrServer：Start=Server Announce；收 Client Announce 即发 Capability+ClientId Confirm+User LoggedOn（防与树内客户端互等死锁）；空设备列表（合法）、DeviceIoRequest 忽略+计数；剥 RDPDR 头修复 16B 截断体误判。
+- 集成 server.cpp channel 分发（先解密再路由）+ enable_rdpdr_handshake。
+- 测试：rdpdr_server 7/88、server 27/239、rdpdr 50/309 等 10 套件绿；build 0err/0warn。双审盖章。
+- 环境：ui/view 在 ctest 全量时因 il2cpp CPU 争用红（单跑均绿，非本批）。
+- 审计组与执行子已 delete 解散。
+- 服务器模式进度：桌面✓ 剪贴板✓ 多会话✓ rdpdr 握手✓（设备列表/IRP 二期）。
