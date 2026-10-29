@@ -10729,3 +10729,8 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 证实：自研 RdpServer 完成 CredSSP/激活 → 自研客户端渲染桌面 → 服务器模式核心达成（objective 服务器模式项推进）。
 - 服务器侧缺失（后续）：cliprdr caps_sent=0（服务器未实现剪贴板通道）、rdpdr=0、rdpsnd server version 0（服务器未播格式）。这些是服务器方向通道实现后续项。
 - 家庭版解禁/多远程用户：本实现自带 RDP server（非依赖 Windows termsrv）→ 理论上天然绕过家庭版限制；多用户需会话隔离扩展（有 multisession 测试基础）。
+## 第661轮：服务器侧 cliprdr 设计定案双審派发
+- 服务器现状：channel join 接受但运行期 static channel 数据静默丢弃；cliprdr(1005) 无 handler。
+- 目标：自研服务器↔客户端剪贴板互通（服务器侧运营剪贴板宿主=真实交互桌面，如可访问 Win32 剪贴板则服务器剪贴板即为桌面剪贴板）。
+- 甲乙定案中（甲=状态机/后端集成；乙=时序/失败路径/复用）：接口/集成点（server.cpp shared PDU 路径）/并发/多 session/TDD/正常序（防双方死等 MonitorReady）/何为"互通达成"scope。
+- 下一步：合并定案→按设计执行（服务器 channel 分发 + cliprdr handler + 剪贴板后端抽象 + TDD）→ 双审复验 → 服务器模式剪贴板闭环。
