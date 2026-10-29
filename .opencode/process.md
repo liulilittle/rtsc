@@ -10673,3 +10673,9 @@ M8 CacheBitmapRev2 压缩头/DoNotCache 未处理。
 - 用户裁定修复方向="改 Present+读节流"（非 GPU 重构）。
 - 执行子 ses_e79d90772ffembaE4kwnz0sXZD 在途：Phase 3 先探针量化（convert/memcpy/render 单帧 us）→按数据定方案→验收含性能回归测试+真机对比。
 - 纪律：不 git 写；禁 gateway；探针存 %TEMP%。
+## 第652轮：性能修复双审盖章入库 f77b90f（ctest 52/52）
+- 根因（真机会话 A 4440loop/234rendered + 用户"整体卡"）：①transport.h kReadTimeoutMs 30→2（Pump 读节流，响应量化 30ms）；②Present 逐像素 RGBA→BGRA（~967µs/帧 1280x1024）。
+- 修复：①读节流 30→2（Windows select 按 tick 量化，实测 idle 31.4→15.6ms、loop 30→64/s；注释按实测不虚标）；②新增 RgbaToBgra 两像素三掩码 64 位交换（bit-exact、in-place、任意像素数）：967→355µs（2.7x）。
+- 回归：perf 守卫改为**相对断言**（new≤0.6×old，回退旧实现必红）+ 3/5 像素混排与奇数原位边界用例。ui 50/265；**全量 ctest 52/52**（view 恢复，争用消退）；build 0err/0warn。
+- 双审：甲乙无条件盖章（各自独立探针复现 ratio 0.30-0.39、回退红证）。
+- 跟进项（记录）：真机再测延迟/帧率；POSIX idle ~500/s（poll 不 tick 量化）；gateway read budget 消耗速率随常量缩放；服务器回环关接问题；rendered 14/s 本质为服务器 dirty 内容率（两修提延迟非帧率）。
