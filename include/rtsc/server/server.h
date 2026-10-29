@@ -228,8 +228,10 @@ class RdpServer {
     // Sets the local clipboard served by every session's cliprdr virtual
     // channel (nullptr disables clipboard redirection). All sessions share one
     // clipboard (shared-desktop / last-writer-wins semantics); the Win32
-    // backend serializes access. The pointer must outlive the server; the
-    // server does not take ownership.
+    // backend serializes access. The pointer must outlive the server (including
+    // Stop()): session threads read and write it until the server has stopped,
+    // so the object it points to may be destroyed only after that. The server
+    // does not take ownership.
     void SetClipboard(clipboard::Clipboard* clipboard);
 
     // Sets the file-list provider used by the cliprdr file-serve path (stream

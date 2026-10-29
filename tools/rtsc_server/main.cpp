@@ -7,6 +7,11 @@
 // until stopped. It is the standalone entry point used to verify the server
 // against Windows' own mstsc.exe.
 //
+// Clipboard redirection (CLIPRDR) is enabled by default: every session serves
+// the host clipboard through the server's cliprdr virtual channel. Platforms
+// without a clipboard backend fall back to a no-op clipboard (the channel still
+// handshakes, it just never reads or writes local data).
+//
 // Usage:
 //   rtsc_server_host [--port N] [--enhanced|--no-enhanced] [--user U]
 //                    [--domain D] [--password P] [--any-user]
@@ -57,6 +62,7 @@
 #ifdef _WIN32
 #include "rtsc/server/desktop_gdi.h"
 #endif
+#include "rtsc/clipboard/clipboard.h"
 #include "rtsc/net/tls.h"
 #include "rtsc/server/server.h"
 #include "rtsc/util/crash_guard.h"
@@ -267,6 +273,22 @@ int main(int argc, char** argv) {
         return accepted_password;
     };
 
+    // Clipboard redirection (CLIPRDR): every session serves one shared host
+    // clipboard. On platforms without a backend CreatePlatformClipboard()
+    // returns nullptr and the no-op NullClipboard keeps the channel handshake
+    // running (it just never reads or writes local data). The flag records the
+    // real backend for the startup log below.
+    //
+    // Lifetime: the clipboard must outlive the server object, because the
+    // session threads touch it until Stop() joins them. Declared before
+    // `server`, it is destroyed after `server` (whose destructor stops it).
+    std::unique_ptr<rtsc::clipboard::Clipboard> local_clipboard =
+        rtsc::clipboard::CreatePlatformClipboard();
+    const bool clipboard_unavailable = (local_clipboard == nullptr);
+    if (clipboard_unavailable) {
+        local_clipboard = std::make_unique<rtsc::clipboard::NullClipboard>();
+    }
+
     SessionLog log(opt.log_path);
     log.line(std::string(kVersion) + " starting");
     log.line("port=" + std::to_string(cfg.port) +
@@ -275,7 +297,10 @@ int main(int argc, char** argv) {
              " account=" + accepted_user + "@" + accepted_domain +
              " desktop=" + std::to_string(cfg.desktop_width) + "x" +
              std::to_string(cfg.desktop_height) +
-             " source=" + (opt.test_pattern ? "test-pattern" : "gdi-desktop"));
+             " source=" + (opt.test_pattern ? "test-pattern" : "gdi-desktop") +
+             " clipboard=" +
+             std::string(clipboard_unavailable ? "unavailable (null backend)"
+                                               : "enabled"));
     if (opt.allow_any_credentials) {
         log.line(
             "WARNING: credential validation is DISABLED "
@@ -342,6 +367,7 @@ int main(int argc, char** argv) {
         });
     }
     server.SetDesktopSource(source);
+    server.SetClipboard(local_clipboard.get());
     // Input events are only forwarded by the session's active loop, so a key or
     // pointer callback is a server-side proof that a session reached the active
     // phase. It is deliberately cheap and logs nothing sensitive.
