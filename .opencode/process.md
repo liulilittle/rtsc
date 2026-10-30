@@ -496,3 +496,9 @@
 - 乙发现 D12 简单复位 started_ 会 std::terminate（audio_win32.cpp:55-76 thread_ joinable 重赋）；采纳方案 B（Worker 常驻+reopen_ 重试+退避），已落证据 c857303 并 relay 执行 AI。
 - 甲乙审计闭合待命（重点 6 项已记录）。
 - 执行 AI ses_e755e22c6ffectQ5JL0PI32kzA busy 中，工作树尚无改动（TDD 红阶段）。
+## 第675轮：D12 甲乙冲突 → 回①磋商
+- 甲：失败前持锁 started_=false + thread_.detach()；否决常驻 worker（称 reopen_ 恒真→忙等）。
+- 乙：常驻 worker + 重试门。
+- 主代理核实（audio_win32.cpp:100-101 精确读取）：谓词 stopping_||reopen_||!queue_.empty()；失败路径 queue_.clear()+reopen_=false+continue → 三支全假 → cv 正常阻塞，甲"忙等"理由不成立。
+- 甲方案真实风险：detach 后 Worker 返回时解锁 this->mu_，析构因 joinable()==false 跳过 join → UAF（audio_win32.cpp:43）。
+- 决定：回①要求甲乙直连磋商输出唯一方案；执行 AI 已收「D12 暂缓，先做步骤1-5」。
