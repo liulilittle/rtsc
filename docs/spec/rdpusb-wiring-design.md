@@ -116,3 +116,24 @@ P0-1 OUT 载荷（后端按 `transfer_flags&1` 分 IN/OUT，`usb_win32.cpp:234-2
 - 后端级控制 OUT 数据断言（需 WinUSB seam；当前无）
 - V2 caps + 捆绑
 - `UsbSpecAllows` 白名单单测
+
+## 6. 二次验证（甲，11 项全 PASS，2 小注）
+
+### 结论
+batch 2 四项必修全部 PASS，无 FAIL。构建 0err/0warn（/W4 /WX）；rdpusb 57/259、drdynvc 16/192、channel 10/71、gui_send 2/35、rdpdr_e2e 7/147、cliprdr_e2e 3/29 全绿。独立变异 2/2 真红（临时副本，未动工程树）。
+
+### PASS 要点（含甲的关键判定）
+- **P0-1 语义边界（曾疑新缺陷）**：`WinUsb_ControlTransfer` 写方向强制 `BufferLength == Setup.Length`，`input.size() != pkt.Length` 时 **fail-closed**，不会错发。服务器声明长度与载荷不一致属畸形请求，fail-closed 正确。
+- 源码守卫无静默跳过：`RTSC_SOURCE_DIR` 缺失走 `#else CHECK(false)` 真红。
+- 无符号下溢：`remaining >= 1 + id_size` 前置保证，`remaining-(pdu_off-offset)` 安全。
+- 夹具修正属"改规格"非"改测试迁就实现"：旧夹具声称 V2 却缺 8 字节 charges，本身不合规。
+- CAPS：V1=4、V2=12、V3=12（web 核验 2.2.1.1.1/1.2/1.3）；`ReadU16Le(data+offset+2)` 位置正确。
+
+### 小注 1（P2）：空串环境变量仍广告 drdynvc
+- `tools/rtsc_gui/main.cpp:377-384`：`usb_spec != nullptr` 传给 `MakeDriver`；`RTSC_REDIRECT_USB=`（设为空串）时 `_dupenv_s` 返回非空指针 → `usb_redirect=true` → drdynvc 静态通道被广告、DrdynvcClient/RdpUsbClient 状态机被建。
+- 实际不重定向任何设备（`UsbSpecAllows` `:131` `spec[0]=='\0'` 返回 false），故为资源/攻击面浪费而非功能错误。
+- 修复：`usb_spec != nullptr && usb_spec[0] != '\''\0'\''`。
+
+### 小注 2（P3）：early-exit 泄漏
+- `usb_spec_storage` 分配于 `:374`，释放于 `:1004`；`:530`（connect 失败）与 `:641`（多窗创建失败）在此之间 `return 1` → 进程退出级泄漏。
+- 修复：改用 `std::unique_ptr<char, decltype(&std::free)>` 或 RAII 包装。
