@@ -541,3 +541,8 @@
 - sine_source.cpp 59 行（真实 44100/16/2 正弦）、rdpsnd_server.cpp 297 行（六态状态机）。
 - 主代理独立重建并跑：rtsc_rdpsnd_server_tests **12 tests/368 checks 全绿**；rtsc_audio_source_tests **2 tests/24 checks 全绿**；build 0 error/0 warning。
 - 执行子下一步：server 接线 + main.cpp --audio → e2e → D12。
+## 第687轮：server 接线已完成（主代理审阅 diff）
+- server.h：enable_rdpsnd=true + audio_source_factory seam（注释明确"无工厂不建 handler→默认零可观察变化"）。
+- server.cpp：rdpsnd 名表分支 + 复位 + 每会话 handler（有工厂才建）+ Start 序 cliprdr→rdpdr→rdpsnd + 分发 + 每 tick Poll 泵（与 cliprdr 同在 timeout 分支，rdpsnd 内部 20ms 发射窗门）。
+- main.cpp：--audio off|sine，默认 off（隐私默认关门）。
+- 执行子 busy 继续 e2e + D12。
