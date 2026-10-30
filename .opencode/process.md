@@ -471,3 +471,8 @@
 - 审计组/执行子已 delete 解散。
 - 环境：il2cpp 100% CPU 争用持续 → C0 全量（view/ui bench）待争用消退后跑。
 - 服务器模式：桌面✓ 剪贴板✓ 多会话✓ rdpdr 握手✓+12B 规范修正✓。
+## 第669轮：C0 全量 56/56 通过（il2cpp 争用消退后）
+- ctest -C Release -E gateway --timeout 120：**56/56 passed，0 failed**。
+- 包含新增套件：server_rdpdr_e2e、rdpdr_server、cliprdr_server、server_cliprdr_e2e、clipboard。
+- 环境：CPU 37%、无构建进程争用（此前 view/ui bench 超预算均为 il2cpp 争用，非代码回归，本轮消除后全绿）。
+- 至此基线：build 0err/0warn + ctest 56/56。
