@@ -771,3 +771,12 @@
 2. `direction` 必须显式传入
 3. OUT CL:0 维持 UNVERIFIED 标注
 4. D14 FEC/FIN 帧处理未做
+
+## 第753轮：Gateway 阶段2 前置证据入库 + 双审派出
+- 反编译 5 个出厂函数（REA/Ghidra），落 `docs/spec/gateway-stage2-evidence.md`（a18219c）：
+  - `FUN_1801bc14c`：IN 通道方法**硬编码 `RDG_IN_DATA`**，无分支；端口 `+0x6a6`、host `+0x28c`、URL 缓冲 `+0xe14`、HTTPS 开关 `+0x6a8`
+  - `FUN_1801bc3c4`：OUT 方法由 `*(param_1+0x1440)` 选 —— **0/其它→GET、1→RDG_OUT_DATA、2→POST**；端口 `+0x6a4`
+  - `FUN_1801bd574`：URL = `%s://%s:%hu%s`，默认 `/remoteDesktopGateway/`，`0x6a8==0` 降为 `http`（**明文模式内建，可作桩测试**）
+  - `FUN_1801bfd60`（779 行）：`:158 if (local_4a8 == 0x65)` → **101 只允许 OUT**；IN 收 101 报 `Server returned switch protocols for IN channel` 并失败；OUT 成功后 `0xd20=4`、`0xd24=1`(Upgraded)、`0xd1c=0xb`、`0xd38=0`(重试清零)；`:192 == 200` 为正常路径；状态码**数值比较**
+- 关键设计约束：升级后走裸字节流不经 chunked；401 有 `MaxRetryCount` 上限（数值 UNVERIFIED）；认证状态机 `0xd20` 1→2→4，8/0x10/0x40/0x80 = 原生/SMARTCARD/claims/CONNID
+- 双审已派：甲 ses_e716dd16（证据补全 + 架构路线 + 握手状态机 + 失败路径 + 测试策略），乙 ses_e716db85（接缝可行性 + **单 socket 双通道死锁分析** + 安全（TLS/SSRF/凭据）+ 回归），已双向互告 ID。
