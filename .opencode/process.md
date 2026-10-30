@@ -587,3 +587,8 @@
 ## 第698轮：等待 D-C（避免编辑冲突）
 - D-A/D-B/D-E 已落地；D-C（server.cpp:1406 Start 门控）未落地。
 - 执行子 busy 且 wrote 时间戳持续更新（1793334001622），主代理暂不直接编辑以免写冲突。
+## 第699轮：D-A~D-E 全部整改完成（主代理接管 D-C/D-D）
+- 执行子空转被 abort；主代理直接完成 D-C（server.cpp Start 门控）与 D-D（泵移入 ActiveLoop 每轮迭代 + 删除超时分支调用）。
+- 修正执行子遗留的编译断点：.h 的 SendTrainingPduAndWait 声明补 now 参数；tests 中 quality_mode_sent_count 全部移除（S3 线序改 {Formats,Training,Wave2}；version7 断言改 phase==kAwaitQualityMode）。
+- 验证：rtsc_rdpsnd_server_tests **13 tests/377 checks 全绿**（新增 quality_timeout_advances_to_training）；12/12 受影响套件全绿（rdpsnd/rdpsnd_client/rdpsnd_server/audio_source/server/server_multisession/server_cliprdr_e2e/server_rdpdr_e2e/server_rdpsnd_e2e/gui_send/server_security/rdp_standard_security）；build 0 error。
+- 已通知甲乙复审 D-A~D-E。
