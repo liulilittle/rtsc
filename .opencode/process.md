@@ -563,3 +563,7 @@
 ## 第691轮：等待执行子整改（D-A~D-E）
 - rdpsnd_server.cpp 327 行，quality_mode_sent_count_ 仍在、quality_mode_timeout 未出现 → D-A/D-B 尚未落地。
 - 执行子 busy，wrote 时间戳未推进（1793332186445）。持续观察，若再现零输出停滞按熔断处理。
+## 第692轮：整改进度（D-C 已落地）
+- server.cpp 已有 rdpsnd_channel_id_ != 0 的 Start 门控（D-C ✓）。
+- rdpsnd_server.cpp 仍 327 行、quality_mode_sent_count_ 在、quality_mode_timeout 未出现（D-A/D-B 待落地）。
+- tests 已新增 rdpsnd_server_quality_timeout_advances_to_training 用例（红阶段）。
