@@ -723,3 +723,9 @@
 - 额外修复：devpkey DEVPKEY_Device_ContainerId LNK2019 → 本地 constexpr。
 - 未提交（dirty=9）。
 - 双审已派第⑤步验证：甲侧重代码逐条审查（OUT 方向语义/多 PDU 定界/门控健壮性/渲染循环开销），乙侧重重跑 usbrepro 探针证明红转绿 + 独立变异抽验。
+## 第729轮：第⑤步验证 2 项 FAIL + 修复批次 2
+- 甲第⑤步：14 项核实 → 1 FAIL（FAIL-1: CREATE_RSP 定界）；随后更正 P0-1 判定为 FAIL（FAIL-2: WinUSB 后端 OUT 清零）。
+- 主代理核实 FAIL-2：`usb_win32.cpp:235-236` 只零初始化 buffer，`input` 从未拷入；对照 `:279` Bulk OUT 的 `copy = input` 正确。两条均由甲+乙同证。
+- 主代理 web 核验 FAIL-1 规范：`[MS-RDPEDYC] 2.2.2.2` CREATE_RSP 无 ChannelName，成立。
+- 定案文档 §4/§5 入库（ed69dad / 559409a）。
+- 修复批次 2 派执行 AI：FAIL-2 后端 assign + 源码守卫测试；FAIL-1 定长消费 + 重写捆绑单测；CAPS 定界按版本核查（需先 web 核验）；env 门控 channel_names。
