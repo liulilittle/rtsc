@@ -766,3 +766,10 @@
 - 主代理核实守卫实现有效：`FindLineIn(lines, "the remote peer can")` 与 `"rdpusb->AddDevice(device)"` 均唯一命中（main.cpp 内无注释干扰）；作用域扫描至首个 `);` 行，覆盖 `usb_devices_added_count`。
 - **发现 P3（美观）**：`tests/test_rdpusb.cpp:1501-1508` 测试注释两段语义重叠（"W11 wrap-up: the GUI must print an explicit privacy notice..." 与 "W11 wrap-up: the privacy notice must report..."），属编辑残留，应合并。
 - **乙的第 6 点（AddDevice≠服务器接受）主代理初判 P3**：`AddDevice`（`rdpusb_client.cpp:265-289`）= Open 成功 + 发 ADD_VIRTUAL_CHANNEL + 请求 DVC 通道 + 本地登记；返回 true 后路径已建立（服务器已收到通告与 channel id），"can access" 在能力意义上成立，未等 CREATE_RSP 确认属实现细节而非承诺虚假。等双审判定。
+
+## 第739轮：FAIL-3 双章关闭，USB 全链路双章定稿
+- 甲双章终稿：批次 3 五点复验 + 8 项核验全 PASS，守卫方向需求推导无回固化，FAIL-3 关闭。
+- USB 重定向接线全链路（接线 + P0/P1 修复 + 收尾小修 + 批次 3）双章定稿通过。
+- 遗留 P2（乙提出，甲复核确认，入后续）：隐私提示计数 = 本地 AddDevice 成功（Open + announce fire-and-forget）；服务器拒绝设备级 DVC create/ADD_DEVICE 不回传计数 → 极端场景提示虚高。控制通道被拒时 ready() 永假已挡主场景，fails-closed 无授权后果。修复需 RdpUsbClient create 失败回退回调（架构级，超本批）。
+- 遗留 P3：`tests/test_rdpusb.cpp:1501-1502` 注释冗余；两 else 分支文案互换不可被守卫捕获（甲建议加 token 断言）。
+- 最终收尾小修（注释合并 + token 断言）已派执行 AI；做完即提交。
