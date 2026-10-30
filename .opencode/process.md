@@ -750,3 +750,24 @@
   3. `test_gateway.cpp:341` 新用例 `rdg_channel_request_rejects_empty_method`；`:470` 注入用例含 method
 - 主代理自行重建 0err/0warn + 定向 8 套件 8/8 Passed + 三探针 failures=0。
 - 已派双审轻量确认（甲 ses_e71b053e / 乙 ses_e71b00e0），要求只核 SHA/守卫全路径/断言强度/数字吻合（71→72 应 +1 test +2 checks）。
+
+## 第752轮：Gateway RDGSP 阶段1 入库 5a361e0 + 子代理全解散
+- 双章最终成立（甲 ses_e71b053e + 乙 ses_e71b00e0，各自独立 SHA 复算 + 72/333 直跑一致）。
+- **C0 全量 ctest 62/62 全绿**（主代理自跑，67.34s）。
+- 提交 `5a361e0`：9 文件（gateway.cpp/h + gateway_transport.cpp/h + test_gateway.cpp + 4 evidence 文件），+1639/-94。
+- 5 个子代理全部 delete 解散（child_subagents=0）。
+
+### 阶段1 交付内容（双章）
+- **A 头部**：Host=authority；IN 流式 TE:chunked 无 CL；OUT Keep-Alive+CL:0（UNVERIFIED，全库 0 命中由 WinHTTP 隐式生成）；方向按 ruling（connection-id/diagnostics/correlation 双通道；user-id IN-only+base64；app-build/generation/LB OUT-only；retry IN-only）
+- **B chunked**：增量解码 + 单块 16MiB/总 64MiB 上限（分配前检查）；严格文法（拒前导空白/0x/+ 号/尾随垃圾/裸 LF，仅 `;` 允扩展）；编码器 + IsChunkedBody plain 回退
+- **C 状态映射**：401/407/502/504/PasswordExpired（出厂 FUN_1801bdd8c）
+- **D 多挑战**：多挑战/引号逗号/token68
+- **E UDP**：有界 FIFO；**入队即 ACK**（消费后 ACK 在双写场景死锁）；ACK/超时/错误三值区分；序号 wrap；脏包计数不致命
+- **F1 安全**：11 字段 + CONNECT 5 字段 CR/LF/NUL → 空 vector（含空 method 与 base64 前原始用户名；实测曾可注入完整额外头）
+- **F2 文法**：`0x10` 曾被判为终止块并静默截断 body（finished=1/failed=0）
+
+### 阶段2 前置注记（双审归档）
+1. RdgspTransport 接线必须校验 builder 返回空 vector（勿把空请求当合法发出）
+2. `direction` 必须显式传入
+3. OUT CL:0 维持 UNVERIFIED 标注
+4. D14 FEC/FIN 帧处理未做
