@@ -812,3 +812,54 @@
 - 乙关键判定（有价值）：RDGSP 方法是**自定义动词 RDG_IN_DATA/RDG_OUT_DATA**，非 POST；响应体 chunked 解码完全缺失；`Client::Connect` 硬 30s 若在构造内握手会冻结 GUI 消息泵。
 - 乙标注 UNVERIFIED 的部分（SYNEX 探测、MultitransportResponse 字段序、OUT chunked、服务器响应方法语义）—— 符合纪律。
 - 等甲（证据补全 + 架构路线合并）后磋商。
+
+## 四步形态（Gateway RDGSP 缺陷批次，主代理）
+
+### ① 查问题（探针先于缺陷结论，已实证）
+**探针 A · 出厂侧**（`C:\Users\liulilte\AppData\Local\Temp\opencode\scripts\probe_gateway_evidence.ps1`）
+[BASH: powershell -File probe_gateway_evidence.ps1]
+- `[PASS] factory "RDG_Diagnostics-Info" hits=1` / `RDG-Client-AppBuild` 2 / `RDG-Client-Generation` 4 / `RDG-Auth-Scheme` 1 / `RDG-INCHANNEL-RETRYMODE` 1 / `IN_CHANNEL_RETRY_COUNT_%d` 1 / `chunked` 3 / `transfer-encoding` 3
+- `[ABSENT-CONFIRMED] "application/soap+xml" hits=0`、`"text/xml" hits=0`、`"s:Envelope" hits=0`
+- 出厂 `WebSocket` 40 命中、`WinHttpWebSocketCompleteUpgrade` 2、`SendStreamModeRequestAsync` 5
+
+**探针 B · 我方运行期**（`C:\...\gateway_probe\build.bat` → `probe_gw.exe`，链接真实 Release 库）
+[BASH: SUMMARY failures=8]
+```
+[FAIL] host header is an authority, not the URL path
+[FAIL] request carries Transfer-Encoding: chunked
+[FAIL] request has no Content-Length: 0 on a streaming body
+[FAIL] request carries RDG-Diagnostics-Info
+[FAIL] request carries RDG-Client-AppBuild
+[FAIL] request carries RDG-Client-Generation
+[FAIL] request carries RDG-Auth-Scheme
+[FAIL] request carries RDG-INCHANNEL-RETRYMODE
+[PASS] request carries Connection: Keep-Alive
+```
+实产字节（`evidence/gateway-probe-runtime.txt`）：
+`Host: /remoteDesktopGateway/`、`Content-Length: 0`、无任何 `Transfer-Encoding`。
+
+**探针 C · 我方 UDP**（源码实证）
+[READ:src/net/gateway_transport.cpp:126-128] `StashPayload` 内 `stashed_ = std::move(payload)` 无条件覆盖
+[READ:src/net/gateway_transport.cpp:111] `if (reliable()) SendAck(frame.source.source_start);` 每帧立即 ACK
+[READ:src/net/gateway_transport.cpp:28-31] `ReceiveDatagram` 返回 0（ACK 到达）时 `Read` 直接 `return kReadTimeout`
+
+### ② 根因（ROOTCAUSE）
+- **ROOTCAUSE-1（P1）** `Host: /remoteDesktopGateway/`：`BuildRdgChannelRequest` 把 **URL 路径**误当 **authority** 写入 Host 头。根因=实现者按"CONNECT 目标的写法"套用到 RDGSP，未区分 RFC7230 Host 语义。[READ:src/proto/gateway.cpp:263]
+- **ROOTCAUSE-2（P1）** `Content-Length: 0` + 缺 `Transfer-Encoding: chunked`：请求体被当成"无体"构造；出厂用 stream-mode chunked 流式体。[READ:src/proto/gateway.cpp:268]
+- **ROOTCAUSE-3（P1）** 头部缺失 6 项 + 方向性错误：实现只写了 `RDG-Connection-Id/Correlation-Id/User-Id`，未按 OUT-only 区分，且缺 Diagnostics/AppBuild/Generation/Auth-Scheme/RetryMode。根因=按 [MS-TSGU] 最小集实现，未对齐出厂全集。[READ:src/proto/gateway.cpp:269-273]
+- **ROOTCAUSE-4（P1）** chunked 编解码缺失：`GatewayTunnel::Read` 原样泄流，无 chunked 解帧。[READ:src/net/gateway_transport.cpp:279-293]
+- **ROOTCAUSE-5（P1）** UDP 可靠模式永久丢帧：单槽 `stashed_` 被新帧覆盖 **且** 覆盖前已发 ACK → 发送方不再重传，接收方数据丢失。根因=ACK 时机早于消费，缓冲深度 1 与声明窗口 64 不符。[READ:src/net/gateway_transport.cpp:103-111,126-128]
+- **ROOTCAUSE-6（P1）** ACK 与读超时同返 0：`ReceiveDatagram` 对"收到 ACK"和"socket 超时"都返回 0，`Read` 无法区分 → 正常 ACK 被误报为读超时。[READ:src/net/gateway_transport.cpp:28-31,91-98]
+- **ROOTCAUSE-7（P2）** `RdgChannelRequestOptions::method` 无默认值 → 未设置时产出非法请求行（`" /remoteDesktopGateway/ HTTP/1.1"`，方法为空）。[READ:include/rtsc/proto/gateway.h:143]
+
+### ③ 方案（方案A，双审推荐）
+新建 `RdgspTransport : net::Transport` 装饰器，包裹 gateway 的单条 TCP/TLS 字节流：
+- `Write` → IN 请求体（chunked 编码）；`Read` → OUT 响应体（chunked 解码 + plain 回退）
+- 构造期完成握手（401→NTLM→200/101），自持 deadline（不借 `Client::Connect` 的 30s）
+- 上层 `Client`/`ConnectionDriver` **零改动**（已吃 `Transport&`）
+- 同时修复 UDP 三项（槽队列、ACK 延后到消费、ACK 与超时区分）
+
+### ④ 协商（进行中）
+双审（甲 ses_e720e33f / 乙 ses_e720e1cd）已盖章定案；**主代理独立探针 RED 已完成**（8/9 FAIL）。
+主代理自我纠错 1 项：曾以"无 `Switching Protocols` 字面串"否定 101 升级 —— 错误，
+因状态码是数值比较（`WinHttpQueryHeaders`），已更正并记入证据文档 §9。
