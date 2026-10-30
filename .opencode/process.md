@@ -692,3 +692,7 @@
 - 8 要点：异步正确性/匹配/生命周期/客户端加固/path_guard/变异/测试真实性 全 PASS；超时清理曾死缺陷已修（server.cpp:1438-1439 gate+Poll，源码级守卫测试 7/147）。
 - 新缺陷：K1（Poll 在 remove_if 谓词内回调 → 重入 push_back → 迭代器失效 UB；析构同根）P1 必修；K3（ReadFile 缺 20B Padding，WriteFile 有 Read 漏）P2 必修；K2（completion_id 不校 device_id）P3 建议。
 - 已派执行 AI 修 K1/K3/K2 + 补重入/帧长/device_id 错配/F3 单测。
+## 第723轮：K1/K2/K3 修复完成 + 主代理验证 + 派最终复验
+- K1 Poll 两遍式（rdpdr_server.cpp:319-339）+ 析构同修 + 重入用例；K3 Read 补 20B Padding + 五 API 帧长断言；K2 联合匹配 (completion_id, device_id)。
+- 主代理独立验证：rdpdr_server_io 13/379 全绿，build 0err/0warn。
+- 派甲乙最终复验（甲：K1/K3 正确性 + 独立变异；乙：析构重入副作用 + 五 API 规范核对 + 联合匹配误拒风险）。
