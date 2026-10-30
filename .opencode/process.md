@@ -584,3 +584,6 @@
 ## 第697轮：D-A/D-B 已落地
 - rdpsnd_server.cpp 352 行；quality_mode_sent_count_ 已删、quality_mode_timeout 已出现 → D-A（删发送）D-B（超时放行）落地。
 - D-C（Start 门控）仍未落地。等待执行子继续。
+## 第698轮：等待 D-C（避免编辑冲突）
+- D-A/D-B/D-E 已落地；D-C（server.cpp:1406 Start 门控）未落地。
+- 执行子 busy 且 wrote 时间戳持续更新（1793334001622），主代理暂不直接编辑以免写冲突。
