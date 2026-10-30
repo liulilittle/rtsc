@@ -625,3 +625,5 @@
 ## 第707轮：执行 AI 步骤1 落盘（drive_enum helper）
 - 新增 include/rtsc/rdpdr/drive_enum.h（SelectDrives 纯函数 + EnumerateLocalDrives 薄包装，DriveType 镜像枚举）、src/rdpdr/drive_enum_win32.cpp、tests/test_drive_enum.cpp；CMakeLists 已改。
 - 设计符合路线 B：纯过滤可单测，平台 API 收一处。
+## 第708轮：步骤1 主代理独立验证
+- rtsc_drive_enum_tests 重建 + 跑：5 tests/18 checks 全绿，build 0 err。
