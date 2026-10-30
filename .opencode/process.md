@@ -726,3 +726,8 @@
   - 方向探针 failures=0
   - 原始未改探针 failures=6（仅未设新字段，预期）
 - 双审终验已派（甲 ses_e71b053e / 乙 ses_e71b00e0），各 9 项 + 各自关注点（甲：F1 全路径覆盖/ParseSizeLine 非靠调用方过滤；乙：11+5 字段覆盖/empty method/空 vector 误发风险/base64 前预检）。
+
+## 第749轮：甲 9 项全 PASS 出章 + 1 项非阻断建议
+- 甲独立复核（8/8 SHA 逐字一致、3 次观测稳定）：
+  1. 构建 0err/0warn PASS；2. ctest gateway 71/331/0 PASS（与执行 AI 逐字一致）；3. F2 chunked PASS（`ParseSizeLine` 首字符必须 hex，`:512-548`，实测 0x10/4+2/4xy 全拒）；4. F1 CRLF/NUL PASS（11 字段 + user_id **在 base64 之前**预检 `:387`，`BuildHttpConnectRequest` 5 字段 `:343-350`）；5. D8 合同 PASS（文档+实现+三条 UDP 用例齐）；6. R3 方向 PASS（OUT 无 user-id `test:404`、IN 有 base64 `:418`）；7. MUTATION 7 文件零命中 + 独立反向变异承重证明；8. evidence §2 作废标注 PASS；9. 三个证据 txt 与冻结 lib 重编输出**逐字节 IDENTICAL**。
+- **甲的非阻断建议（主代理判定为真缺陷，需修）**：`o.method` 显式设为空串时产出 `" /remoteDesktopGateway/ HTTP/1.1"`（前导空格，非法请求行）。虽非注入面（无 CRLF），但属错误路径未覆盖（C1-C3 要求正常/边界/错误全路径）。修复成本一行，**决定修**，但等乙报告后统一处理，避免二次冻结打断乙的复核。
