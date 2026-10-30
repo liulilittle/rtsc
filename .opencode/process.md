@@ -560,3 +560,6 @@
 - 双章：①②③⑤⑥ PASS；④ 驳回。必修 D-A（删服务器发 QualityMode）D-B（quality 超时放行+单测）D-C（Start 门控 channel_id!=0）D-D（泵移入每轮迭代）D-E（formats 防御校验）。
 - 契约修订：静默分支（ALIVE=0 / formats 无效）须 source_->Stop() 释放采集；协商超时 formats/train-confirm 仍 CLOSE。
 - 执行子已收两轮指令（D-A~D-E + 静默停源/泵 now 采样），整改中。
+## 第691轮：等待执行子整改（D-A~D-E）
+- rdpsnd_server.cpp 327 行，quality_mode_sent_count_ 仍在、quality_mode_timeout 未出现 → D-A/D-B 尚未落地。
+- 执行子 busy，wrote 时间戳未推进（1793332186445）。持续观察，若再现零输出停滞按熔断处理。
