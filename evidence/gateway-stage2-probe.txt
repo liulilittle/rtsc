@@ -1,0 +1,9 @@
+  [INFO] RDGSP request bytes=0
+[PASS] D-A4: builder returns empty vector on CRLF injection
+[FAIL] D-A4: caller can distinguish 'reject' from 'empty but valid'
+  [INFO] CONNECT request bytes=0
+[PASS] D-A4: CONNECT builder returns empty on CRLF injection
+  [INFO] empty Write() would be accepted by the send loop (while sent < 0 is false immediately)
+[FAIL] D-A1: empty request is not detected before Write
+
+SUMMARY failures=2
