@@ -773,3 +773,18 @@
 - 遗留 P2（乙提出，甲复核确认，入后续）：隐私提示计数 = 本地 AddDevice 成功（Open + announce fire-and-forget）；服务器拒绝设备级 DVC create/ADD_DEVICE 不回传计数 → 极端场景提示虚高。控制通道被拒时 ready() 永假已挡主场景，fails-closed 无授权后果。修复需 RdpUsbClient create 失败回退回调（架构级，超本批）。
 - 遗留 P3：`tests/test_rdpusb.cpp:1501-1502` 注释冗余；两 else 分支文案互换不可被守卫捕获（甲建议加 token 断言）。
 - 最终收尾小修（注释合并 + token 断言）已派执行 AI；做完即提交。
+
+## 第740轮：USB 批次全部入库 290d557 + 子代理全解散
+- 最终收尾交付：注释合并（:1501-1509 两段重叠 → 一段）+ 守卫补强（两 else 分支 token 断言，`find_split` 跨行匹配，checks 273→278）；MUT-B3C（互换两 else 文案）实测红。
+- 主代理独立核实：`main.cpp:396-408` RAII（unique_ptr + decltype(&std::free)）+ UsbGateEnabled；`git diff` 全量审阅无调试残留。
+- **C0 全量 ctest 62/62 全绿**（自跑，非采信）；build 0err/0warn。
+- 提交 `290d557`（3 文件：usb_gate.h 新增 + main.cpp + test_rdpusb.cpp）。
+- 三个子代理全部 delete 解散（甲/乙/执行），child_subagents=0。
+
+### USB 批次总结（2026-10-28，共 15 轮）
+**交付**：RDPUSB 重定向完整接线（drdynvc 静态通道 + DrdynvcClient + RdpUsbClient + WinUSB 后端），opt-in 门控，隐私告示。
+**修复缺陷**：OUT 载荷三层丢失（客户端传递 / Control 后端零填 / Bulk 正确）；接口号 kProxy 改写导致 completion 误投；未知设备 URB 不补全导致服务器悬挂；IN 超发；CREATE_RSP 捆绑定界错误；CAPS 版本定界错误；CREATE_RSP 失败悬挂；Open 失败仍宣布幻影设备；空串 env 误开启；early-exit 内存泄漏；隐私文案用候选数虚报；守卫固化缺陷方向。
+**方法教训（入 discover.md）**：单测用实现者自造布局假绿；修复一层掩盖另一层；守卫测试固化缺陷方向。
+**遗留 P2（架构级，后续）**：AddDevice 异步反馈缺失 —— 服务器拒绝设备级 DVC create/ADD_DEVICE 时本地计数不回滚，隐私文案可能虚高（fails-closed，无授权后果；需 create 失败回调）。
+**遗留 P3**：复合设备（WinUsb_GetAssociatedInterface）、kIoControl/kInternalIoControl、控制类 URB 合成 setup packet、热插拔 RemoveDevice、同步 WinUSB 阻塞消息泵、Isoch、hresult 精确映射、NoAck 抑制。
+**W5 未验证**：真机 Windows RDS + USB 实体设备双向 I/O。
