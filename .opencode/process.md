@@ -683,3 +683,8 @@
 - 定案落 docs/spec/rdpdr-server-io-design.md §6/§7/§8（d48084c + a98b0c0）。
 - 旧审计组甲乙 delete 解散。
 - 执行 AI：ses_e735fda45ffeZAB4HMxl3drm30（4 步 TDD：path_guard 提取 → 服务器异步 I/O 引擎 → 客户端 S2/S4/S6 加固 → 测试）。
+## 第721轮：路线A 执行交付 + 主代理独立核查发现真缺陷
+- 执行交付：path_guard 提取、服务器异步 I/O 引擎（outstanding_/5 API/OnDeviceIoCompletion/超时/析构清理）、客户端 S2/S4/S6 加固；rdpdr 60/891、rdpdr_server 9/114、rdpdr_server_io 10/338；4 变异红证；C0 0err/0warn。
+- 主代理独立验证三项套件全绿。
+- **独立核查发现真缺陷**：src/server/server.cpp ActiveLoop 只有 cliprdr_->Poll(:735) 和 rdpsnd_->Poll(:1420)，**无 rdpdr_->Poll** → IRP 超时清理永不触发，outstanding_ 无限滞留。已派执行 AI 修复（接线 + e2e 证明生产路径）。
+- 双审复核已派出（甲侧重异步正确性/Poll接线；乙侧重状态机/并发/重入/协议细节），已互告 ID。
