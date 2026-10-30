@@ -51,6 +51,7 @@
 #include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
 #include "rtsc/usb/usb_device.h"
+#include "rtsc/usb/usb_gate.h"
 #include "rtsc/util/crash_guard.h"
 #if defined(_WIN32)
 #include "rtsc/usb/usb_win32.h"
@@ -174,6 +175,26 @@ bool UsbSpecAllows(const char* spec, const rtsc::usb::UsbDeviceInfo& info) {
         start = comma + 1;
     }
     return matched;
+}
+
+// True when the RTSC_REDIRECT_USB spec asks for every device (after the same
+// trim + uppercase normalisation UsbSpecAllows applies), so the privacy notice
+// can advertise the "ALL" scope without contradicting the effective filter.
+bool UsbSpecIsAll(const char* spec) {
+    if (spec == nullptr || spec[0] == '\0') return false;
+    std::string whole(spec);
+    const auto trim = [](std::string s) {
+        const size_t b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) return std::string{};
+        const size_t e = s.find_last_not_of(" \t\r\n");
+        return s.substr(b, e - b + 1);
+    };
+    whole = trim(whole);
+    for (char& c : whole) {
+        c = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(c)));
+    }
+    return whole == "ALL";
 }
 #endif  // _WIN32
 
@@ -368,20 +389,23 @@ int main(int argc, char** argv) {
 
     // USB redirection gate (RTSC_REDIRECT_USB), read before the driver is
     // built so the "drdynvc" static channel is only advertised when USB
-    // redirection is actually requested. Unset/empty = off; "ALL" = every
-    // device; "VID:PID,VID:PID" = a whitelist. Same opt-in policy as
-    // RTSC_REDIRECT_DRIVES.
-    char* usb_spec_storage = nullptr;
+    // redirection is actually requested. Unset and empty both mean off; "ALL"
+    // = every device; "VID:PID,VID:PID" = a whitelist. Same opt-in policy as
+    // RTSC_REDIRECT_DRIVES. The holder releases on every return path (RAII),
+    // including the early Connect-failure return below.
+    std::unique_ptr<char, decltype(&std::free)> usb_spec_holder(nullptr,
+                                                               &std::free);
     size_t usb_spec_len = 0;
-    const char* usb_spec = nullptr;
-    if (_dupenv_s(&usb_spec_storage, &usb_spec_len, "RTSC_REDIRECT_USB") == 0 &&
-        usb_spec_storage != nullptr) {
-        usb_spec = usb_spec_storage;
+    char* usb_spec_raw = nullptr;
+    if (_dupenv_s(&usb_spec_raw, &usb_spec_len, "RTSC_REDIRECT_USB") == 0 &&
+        usb_spec_raw != nullptr) {
+        usb_spec_holder.reset(usb_spec_raw);
     }
+    const char* usb_spec = usb_spec_holder.get();
 
     rtsc::client::Client client(
         MakeDriver(host, domain, user, password, standard_rdp, rail_mode,
-                   usb_spec != nullptr),
+                   rtsc::usb::UsbGateEnabled(usb_spec)),
         width, height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
@@ -569,7 +593,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<rtsc::channel::DrdynvcClient> drdynvc;
     std::unique_ptr<rtsc::usb::UsbDeviceEnumerator> usb_enumerator;
     std::unique_ptr<rtsc::channel::RdpUsbClient> rdpusb;
-    if (usb_spec != nullptr) {
+    if (rtsc::usb::UsbGateEnabled(usb_spec)) {
         const uint16_t drdynvc_id = client.driver().ChannelIdForName("drdynvc");
         if (drdynvc_id == 0) {
             std::printf(
@@ -738,16 +762,45 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
         if (!usb_devices_added && rdpusb != nullptr && rdpusb->ready()) {
             const auto usb_devices = usb_enumerator->Enumerate();
+            // Count the devices the gate matches first so a "matched but not
+            // opened" report is possible; the actual sharing is decided by the
+            // AddDevice calls below (a device the backend cannot open is never
+            // announced, so it is never shared).
+            unsigned usb_matched = 0;
             for (const auto& device : usb_devices) {
-                if (!UsbSpecAllows(usb_spec, device)) {
+                if (UsbSpecAllows(usb_spec, device)) {
+                    ++usb_matched;
+                } else {
                     ++usb_devices_skipped;
-                    continue;
                 }
+            }
+            for (const auto& device : usb_devices) {
+                if (!UsbSpecAllows(usb_spec, device)) continue;
                 if (rdpusb->AddDevice(device)) {
                     ++usb_devices_added_count;
                 }
             }
             usb_devices_added = true;
+            // Privacy notice AFTER the announcements, reporting the number of
+            // devices actually redirected - never the gate-matched candidates,
+            // which may include devices that failed to open.
+            if (usb_devices_added_count > 0) {
+                std::printf(
+                    "rdpusb: redirected %u USB device(s)%s; "
+                    "the remote peer can access the redirected local USB "
+                    "devices\n",
+                    usb_devices_added_count,
+                    UsbSpecIsAll(usb_spec) ? " (ALL)" : "");
+            } else if (usb_matched > 0) {
+                std::printf(
+                    "rdpusb: %u USB device(s) matched the gate but none could "
+                    "be opened; no local USB device is shared\n",
+                    usb_matched);
+            } else {
+                std::printf(
+                    "rdpusb: RTSC_REDIRECT_USB is set but no device matched "
+                    "the gate; no local USB device is shared\n");
+            }
             std::printf("rdpusb: ready, %zu device(s) enumerated, %u redirected"
                         ", %u skipped by the RTSC_REDIRECT_USB gate\n",
                         usb_devices.size(), usb_devices_added_count,
@@ -1001,7 +1054,6 @@ int main(int argc, char** argv) {
             break;
         }
     }
-    std::free(usb_spec_storage);
 
     // Surface statistics: a real session renders a non-trivial image (the
     // desktop), not a blank surface. Report non-black pixels and the number of

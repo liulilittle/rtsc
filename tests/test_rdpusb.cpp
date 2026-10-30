@@ -14,6 +14,7 @@
 #include "rtsc/proto/drdynvc.h"
 #include "rtsc/proto/rdpusb.h"
 #include "rtsc/usb/usb_device.h"
+#include "rtsc/usb/usb_gate.h"
 #include "test_framework.h"
 #include "test_main.h"
 
@@ -1480,6 +1481,139 @@ RTSC_TEST(gui_main_advertises_drdynvc_only_under_usb_gate) {
         // `if (usb_redirect) channels.push_back("drdynvc");` satisfies this).
         CHECK(push >= gate);
     }
+#else
+    std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
+    CHECK(false);
+#endif
+}
+
+// The RTSC_REDIRECT_USB gate: an unset OR empty spec disables USB redirection
+// (the GUI used to treat RTSC_REDIRECT_USB= as "on", advertising the drdynvc
+// channel for a redirect that shares nothing).
+RTSC_TEST(usb_gate_enabled_semantics) {
+    CHECK(!rtsc::usb::UsbGateEnabled(nullptr));
+    CHECK(!rtsc::usb::UsbGateEnabled(""));
+    CHECK(rtsc::usb::UsbGateEnabled("ALL"));
+    CHECK(rtsc::usb::UsbGateEnabled("1234:5678"));
+    CHECK(rtsc::usb::UsbGateEnabled(" 1234 : 5678 , 90ab:cdef "));
+}
+
+// W11 wrap-up: the GUI's privacy notice must never overstate what is actually
+// shared with the remote peer. It reports the number of devices the backend
+// actually redirected (usb_devices_added_count), never the gate-matched
+// candidates (usb_matched) - AddDevice can fail to open a device, so the claim
+// "the remote peer can access ..." is printed only after every announcement.
+// The two fallbacks ("none could be opened" for a matched-but-unopened set,
+// "no device matched the gate" for an empty match) must stay in their own
+// printf statements. Printing the notice before AddDevice, citing usb_matched,
+// or merging/swapping the fallbacks is a red mutation.
+RTSC_TEST(gui_main_usb_privacy_notice_uses_actual_redirected_count) {
+#ifdef RTSC_SOURCE_DIR
+    const std::filesystem::path src =
+        std::filesystem::path(RTSC_SOURCE_DIR) / "tools" / "rtsc_gui" /
+        "main.cpp";
+    std::ifstream in(src, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) {
+        std::printf("  FAIL: cannot open %s\n", src.string().c_str());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+
+    const size_t notice = FindLineIn(lines, "the remote peer can");
+    const size_t add_device = FindLineIn(lines, "rdpusb->AddDevice(device)");
+    CHECK(notice != std::string::npos);
+    CHECK(add_device != std::string::npos);
+    if (notice != std::string::npos && add_device != std::string::npos) {
+        // The notice comes after every announcement, never before one.
+        CHECK(add_device < notice);
+    }
+    // The notice statement must cite the actual redirected count, never the
+    // gate-matched candidate count. The scan runs from the notice string to
+    // the printf terminator (the first line ending with ");").
+    if (notice != std::string::npos) {
+        bool used_added = false;
+        bool used_matched = false;
+        for (size_t i = notice;
+             i < lines.size() && lines[i].find(");") == std::string::npos;
+             ++i) {
+            if (lines[i].find("usb_devices_added_count") != std::string::npos) {
+                used_added = true;
+            }
+            if (lines[i].find("usb_matched") != std::string::npos) {
+                used_matched = true;
+            }
+        }
+        CHECK(used_added);
+        CHECK(!used_matched);
+    }
+    // The two fallback branches must stay distinct. "none could be opened"
+    // (matched > 0 but every open failed) is the matched>0 branch and must
+    // precede "no device matched the gate" (matched == 0). Their string
+    // literals are split across two source lines, so each token is matched as
+    // a head fragment on one line plus the tail fragment on the next. Each
+    // token must sit in its own std::printf: a merged branch puts both under
+    // one printf, a swapped branch breaks the head/tail pairing and inverts
+    // their order.
+    const auto find_split = [&](const char* head, const char* tail) -> size_t {
+        for (size_t i = 0; i + 1 < lines.size(); ++i) {
+            if (lines[i].find(head) != std::string::npos &&
+                lines[i + 1].find(tail) != std::string::npos) {
+                return i;
+            }
+        }
+        return std::string::npos;
+    };
+    const size_t none_opened = find_split("none could ", "be opened;");
+    const size_t no_match = find_split("no device matched ", "the gate;");
+    CHECK(none_opened != std::string::npos);
+    CHECK(no_match != std::string::npos);
+    if (none_opened != std::string::npos &&
+        no_match != std::string::npos) {
+        CHECK(none_opened != no_match);  // different lines, not one merged line
+        // The matched>0 fallback precedes the matched==0 fallback.
+        CHECK(none_opened < no_match);
+        // Each token is enclosed by a different std::printf statement.
+        const auto printf_start_of = [&](size_t token_line) -> size_t {
+            size_t i = token_line;
+            while (i > 0 &&
+                   lines[i].find("std::printf(") == std::string::npos) {
+                --i;
+            }
+            return i;
+        };
+        CHECK(printf_start_of(none_opened) != printf_start_of(no_match));
+    }
+#else
+    std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
+    CHECK(false);
+#endif
+}
+
+// W11 wrap-up: usb_spec_storage must be released by RAII (a manual
+// std::free after the render loop leaked on the early Connect-failure return).
+RTSC_TEST(gui_main_usb_spec_released_by_raii) {
+#ifdef RTSC_SOURCE_DIR
+    const std::filesystem::path src =
+        std::filesystem::path(RTSC_SOURCE_DIR) / "tools" / "rtsc_gui" /
+        "main.cpp";
+    std::ifstream in(src, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) {
+        std::printf("  FAIL: cannot open %s\n", src.string().c_str());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+
+    const size_t raii = FindLineIn(lines, "decltype(&std::free)");
+    CHECK(raii != std::string::npos);
+    // A manual free that can be skipped by an early return must not remain.
+    const size_t manual_free = FindLineIn(lines, "std::free(usb_spec_storage)");
+    CHECK(manual_free == std::string::npos);
 #else
     std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
     CHECK(false);
