@@ -1383,3 +1383,10 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 - [尝试] 复核 rtsc_server_host 剪贴板接线时直接跑磁盘上既有 exe 得 cliprdr=0
 - [错误] 盘上 exe 为旧构建（main.cpp 改动晚于上次全量 build）→ 误判"改动未生效"
 - [下一步] **核验任何改动前必须先重建目标 exe**（`cmake --build ... --target <目标>`）；红→绿对照必须基于同一构建系统的新二进制，否则红基线可能是旧产物
+
+## 2026-10-28 rdpsnd/D12 — WaveOutPlayer 无设备永久静默（双审闭合）
+
+- [尝试] 初步修复方案"OpenDeviceLocked 失败前复位 started_=false"。
+- [错误] 该方案会触发 `std::thread` 对 joinable 对象移动赋值 → `std::terminate`（红探针 EXITCODE=-1073740791，输出止于 "before reassign (worker joinable)"）。根因：`src/audio/audio_win32.cpp:104-111` 失败路径 return 不复位 started_（:69-74 判启）→ 永久静默 wedge；若复位则 :74 重赋 joinable thread_ → terminate。
+- [下一步] 已定案常驻 worker + next_retry_ 1s 退避 + have_format_/reopen_=false + continue，零 detach，thread_ 仅首启赋一次。行为探针：BUGGY_PLAYS=0 → FIXED_PLAYS=4（RED=>GREEN OK）。
+- 教训：修复"线程已退出"类缺陷必须先证伪重赋/重入路径；不变量=thread_ 只能对非 joinable 对象赋值。
