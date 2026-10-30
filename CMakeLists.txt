@@ -56,8 +56,13 @@ target_include_directories(rtsc_proto PUBLIC include)
 target_link_libraries(rtsc_proto PUBLIC rtsc_crypto)
 
 # rdpsnd (audio output) virtual channel handler. Platform neutral: it decodes
-# the [MS-RDPEA] protocol and hands PCM to an injected AudioPlayer.
-add_library(rtsc_rdpsnd STATIC src/channel/rdpsnd_client.cpp)
+# the [MS-RDPEA] protocol and hands PCM to an injected AudioPlayer; the server
+# half captures PCM from an injected AudioCaptureSource (sine_source for the
+# deterministic test / v1 path, a WASAPI loopback backend in a later phase).
+add_library(rtsc_rdpsnd STATIC
+    src/channel/rdpsnd_client.cpp
+    src/channel/rdpsnd_server.cpp
+    src/audio/sine_source.cpp)
 target_include_directories(rtsc_rdpsnd PUBLIC include)
 target_link_libraries(rtsc_rdpsnd PUBLIC rtsc_proto)
 
@@ -262,6 +267,18 @@ target_include_directories(rtsc_rdpsnd_tests PRIVATE tests)
 add_executable(rtsc_rdpsnd_client_tests tests/test_rdpsnd_client.cpp)
 target_link_libraries(rtsc_rdpsnd_client_tests PRIVATE rtsc_rdpsnd rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpsnd_client_tests PRIVATE tests)
+
+# Server-side rdpsnd handler: byte-exact Wire2/formats contract, the training
+# gate, the 8-block in-flight window, block-number wrap and the negotiation
+# timeouts (design 7.1/7.2).
+add_executable(rtsc_rdpsnd_server_tests tests/test_rdpsnd_server.cpp)
+target_link_libraries(rtsc_rdpsnd_server_tests PRIVATE rtsc_rdpsnd rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpsnd_server_tests PRIVATE tests)
+
+# Server-side audio capture source seam and the sine test source.
+add_executable(rtsc_audio_source_tests tests/test_audio_source.cpp)
+target_link_libraries(rtsc_audio_source_tests PRIVATE rtsc_rdpsnd rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_audio_source_tests PRIVATE tests)
 
 add_executable(rtsc_rdp6_tests tests/test_rdp6.cpp)
 target_link_libraries(rtsc_rdp6_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -556,8 +573,10 @@ target_include_directories(rtsc_server PUBLIC include)
 # The server's cliprdr static virtual channel runs the CliprdrServer handler
 # (src/channel/cliprdr_server.cpp, built into rtsc_cliprdr); the rdpdr static
 # virtual channel runs the RdpdrServer minimum handshake (built into
-# rtsc_rdpdr).
-target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr rtsc_rdpdr)
+# rtsc_rdpdr); the rdpsnd static virtual channel runs the RdpsndServer audio
+# handler fed by the ServerConfig audio_source_factory seam (built into
+# rtsc_rdpsnd).
+target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr rtsc_rdpdr rtsc_rdpsnd)
 
 add_executable(rtsc_server_tests tests/test_server.cpp)
 target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
@@ -590,6 +609,18 @@ target_link_libraries(rtsc_server_rdpdr_e2e_tests PRIVATE
                       rtsc_client rtsc_server rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_server_rdpdr_e2e_tests PRIVATE tests)
 
+# Server-side RDPSND over real loopback sockets: one server session running the
+# RdpsndServer audio handler on its rdpsnd static virtual channel with the
+# deterministic sine capture source, paired with the project's own RdpsndClient
+# and a mock sink, asserting the negotiated wire handshake, that the client's
+# Wave Confirm count matches the received Wave2 count, the channel id the name
+# table assigns, and that a second concurrent session streams to a second
+# client too (design 7.6).
+add_executable(rtsc_server_rdpsnd_e2e_tests tests/test_server_rdpsnd_e2e.cpp)
+target_link_libraries(rtsc_server_rdpsnd_e2e_tests PRIVATE
+                      rtsc_client rtsc_server rtsc_rdpsnd rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_server_rdpsnd_e2e_tests PRIVATE tests)
+
 # Windows GDI desktop capture: the real-desktop DesktopSource. Windows only;
 # the DesktopSource interface stays platform neutral in rtsc/server/server.h.
 # The implementation only needs the header plus gdi32/user32, so it does not
@@ -609,7 +640,7 @@ endif()
 # (mstsc). The GDI desktop capture is Windows-only; other platforms fall back to
 # the synthetic test pattern inside the tool.
 add_executable(rtsc_server_host tools/rtsc_server/main.cpp)
-target_link_libraries(rtsc_server_host PRIVATE rtsc_server rtsc_util)
+target_link_libraries(rtsc_server_host PRIVATE rtsc_server rtsc_util rtsc_rdpsnd)
 if(WIN32)
     target_link_libraries(rtsc_server_host PRIVATE rtsc_server_desktop_gdi)
 endif()
@@ -668,6 +699,8 @@ add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
 add_test(NAME rdpdr_server COMMAND rtsc_rdpdr_server_tests)
 add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
 add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
+add_test(NAME rdpsnd_server COMMAND rtsc_rdpsnd_server_tests)
+add_test(NAME audio_source COMMAND rtsc_audio_source_tests)
 add_test(NAME rdp6 COMMAND rtsc_rdp6_tests)
 add_test(NAME nsc COMMAND rtsc_nsc_tests)
 add_test(NAME orders COMMAND rtsc_orders_tests)
@@ -690,6 +723,7 @@ add_test(NAME server COMMAND rtsc_server_tests)
 add_test(NAME server_multisession COMMAND rtsc_server_multisession_tests)
 add_test(NAME server_cliprdr_e2e COMMAND rtsc_server_cliprdr_e2e_tests)
 add_test(NAME server_rdpdr_e2e COMMAND rtsc_server_rdpdr_e2e_tests)
+add_test(NAME server_rdpsnd_e2e COMMAND rtsc_server_rdpsnd_e2e_tests)
 if(WIN32)
     add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
 endif()
@@ -734,6 +768,8 @@ if(MSVC)
     target_compile_options(rtsc_rdpdr PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpsnd_server_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_audio_source_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_cliprdr PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_audio PRIVATE /W4 /WX)
@@ -769,6 +805,7 @@ if(MSVC)
     target_compile_options(rtsc_server_multisession_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_cliprdr_e2e_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_rdpdr_e2e_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_rdpsnd_e2e_tests PRIVATE /W4 /WX)
     if(WIN32)
         target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
         target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)

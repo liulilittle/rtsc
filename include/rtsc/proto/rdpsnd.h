@@ -161,6 +161,53 @@ struct SndTraining {
     static Status parse(const std::vector<uint8_t>& body, SndTraining& out);
 };
 
+// Wave Confirm PDU body ([MS-RDPEA] 2.2.3.8): wTimeStamp + cConfirmedBlockNo
+// + bPad. This is the client-to-server acknowledgement that a Wave / Wave2
+// block was consumed; the server uses it to free one in-flight window slot.
+struct SndWaveConfirm {
+    static constexpr size_t kFixedSize = 4;
+
+    uint16_t time_stamp = 0;
+    uint8_t block_no = 0;
+    uint8_t pad = 0;
+};
+
+// Quality Mode PDU body ([MS-RDPEA] 2.2.2.3): wQualityMode + reserved.
+struct SndQualityModeBody {
+    static constexpr size_t kFixedSize = 4;
+
+    uint16_t quality_mode = 0;
+    uint16_t reserved = 0;
+};
+
+// Builds the Wave2 PDU body ([MS-RDPEA] 2.2.3.4): wTimeStamp + wFormatNo +
+// cBlockNo + bPad(3) + dwAudioTimeStamp + data. The server side writes Wave2
+// PDUs (the client side only parses them via SndWave2::parse).
+std::vector<uint8_t> BuildWave2Body(uint16_t time_stamp, uint16_t format_no,
+                                    uint8_t block_no, uint32_t audio_time_stamp,
+                                    const std::vector<uint8_t>& data);
+
+// Builds the Training PDU body ([MS-RDPEA] 2.2.3.1): wTimeStamp + wPackSize
+// and, when pack data is supplied, the trailing exercise bytes. The v1 server
+// sends the empty-body form (wPackSize = 0) and awaits the client's echoed
+// Training Confirm.
+std::vector<uint8_t> BuildTrainingBody(uint16_t time_stamp, uint16_t pack_size,
+                                       const std::vector<uint8_t>& data = {});
+
+// Parses a Wave Confirm PDU body ([MS-RDPEA] 2.2.3.8).
+Status ParseWaveConfirmBody(const std::vector<uint8_t>& body,
+                            SndWaveConfirm& out);
+
+// Parses a Quality Mode PDU body ([MS-RDPEA] 2.2.2.3).
+Status ParseQualityModeBody(const std::vector<uint8_t>& body,
+                            SndQualityModeBody& out);
+
+// Parses a Training Confirm PDU body ([MS-RDPEA] 2.2.3.2): the client echoes
+// the server's wTimeStamp and wPackSize verbatim, so the layout is identical
+// to the Training PDU body (SndTraining).
+Status ParseTrainingConfirmBody(const std::vector<uint8_t>& body,
+                                SndTraining& out);
+
 // SNDWAVE2 ([MS-RDPEA] 2.2.3.4): the Wave2 PDU body.
 struct SndWave2 {
     uint16_t time_stamp = 0;

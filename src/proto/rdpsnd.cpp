@@ -189,4 +189,54 @@ Status SndTraining::parse(const std::vector<uint8_t>& body, SndTraining& out) {
     return Status::Ok;
 }
 
+// ---- Wave2 / Training builders and the confirm-side parsers ----------------
+
+std::vector<uint8_t> BuildWave2Body(uint16_t time_stamp, uint16_t format_no,
+                                    uint8_t block_no, uint32_t audio_time_stamp,
+                                    const std::vector<uint8_t>& data) {
+    ByteWriter w;
+    w.u16le(time_stamp);
+    w.u16le(format_no);
+    w.u8(block_no);
+    w.u8(0); w.u8(0); w.u8(0);  // bPad (3 bytes)
+    w.u32le(audio_time_stamp);
+    if (!data.empty()) w.bytes(data.data(), data.size());
+    return w.take();
+}
+
+std::vector<uint8_t> BuildTrainingBody(uint16_t time_stamp, uint16_t pack_size,
+                                       const std::vector<uint8_t>& data) {
+    ByteWriter w;
+    w.u16le(time_stamp);
+    w.u16le(pack_size);
+    if (!data.empty()) w.bytes(data.data(), data.size());
+    return w.take();
+}
+
+Status ParseWaveConfirmBody(const std::vector<uint8_t>& body,
+                            SndWaveConfirm& out) {
+    if (body.size() < SndWaveConfirm::kFixedSize) return Status::NeedMoreData;
+    ByteReader r(body.data(), body.size());
+    r.u16le(out.time_stamp);
+    r.u8(out.block_no);
+    r.u8(out.pad);
+    return Status::Ok;
+}
+
+Status ParseQualityModeBody(const std::vector<uint8_t>& body,
+                            SndQualityModeBody& out) {
+    if (body.size() < SndQualityModeBody::kFixedSize) return Status::NeedMoreData;
+    ByteReader r(body.data(), body.size());
+    r.u16le(out.quality_mode);
+    r.u16le(out.reserved);
+    return Status::Ok;
+}
+
+Status ParseTrainingConfirmBody(const std::vector<uint8_t>& body,
+                                SndTraining& out) {
+    // The client echoes the Training PDU body verbatim ([MS-RDPEA] 2.2.3.2), so
+    // the parsing is literally SndTraining's.
+    return SndTraining::parse(body, out);
+}
+
 }  // namespace rtsc::proto

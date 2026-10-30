@@ -40,6 +40,10 @@
 //                     refused)
 //   --height H        default desktop height (default 1024; same range)
 //   --once            serve a single accepted connection, then exit
+//   --audio MODE      server-side audio capture for the rdpsnd virtual
+//                     channel: "off" (default; no capture) or "sine" (a
+//                     deterministic 440 Hz test tone through the same source
+//                     seam a WASAPI loopback backend will use later)
 //   --log FILE        append human-readable session lines to FILE
 //
 // The password is only ever handed to the NTLM computation; it is never written
@@ -62,6 +66,7 @@
 #ifdef _WIN32
 #include "rtsc/server/desktop_gdi.h"
 #endif
+#include "rtsc/audio/audio_source.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/net/tls.h"
 #include "rtsc/server/server.h"
@@ -86,6 +91,9 @@ struct Options {
     bool once = false;
     long seconds = 0;  // 0 = run until stopped
     std::string log_path;
+    // Server-side audio capture for the rdpsnd virtual channel.
+    enum class AudioSource { kOff, kSine };
+    AudioSource audio = AudioSource::kOff;  // default: no capture (privacy)
 };
 
 void usage() {
@@ -95,7 +103,8 @@ void usage() {
         "                       [--domain D] [--password P] [--any-user]\n"
         "                       [--allow-any-credentials] [--test-pattern]\n"
         "                       [--monitor N] [--width W] [--height H]\n"
-        "                       [--once] [--seconds N] [--log FILE]\n",
+        "                       [--once] [--seconds N] [--audio off|sine]\n"
+        "                       [--log FILE]\n",
         kVersion);
 }
 
@@ -191,6 +200,18 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
             if (!ParseDimension(v, "--height", &opt.height)) return false;
         } else if (arg == "--once") {
             opt.once = true;
+        } else if (arg == "--audio") {
+            std::string v;
+            if (!need(v)) return false;
+            if (v == "off") {
+                opt.audio = Options::AudioSource::kOff;
+            } else if (v == "sine") {
+                opt.audio = Options::AudioSource::kSine;
+            } else {
+                std::printf("invalid --audio: '%s' (expected off or sine)\n",
+                            v.c_str());
+                return false;
+            }
         } else if (arg == "--seconds") {
             std::string v;
             if (!need(v)) return false;
@@ -273,6 +294,16 @@ int main(int argc, char** argv) {
         return accepted_password;
     };
 
+    // Server-side audio capture for the rdpsnd virtual channel (--audio). Off
+    // by default: system-audio capture is privacy-sensitive and the operator
+    // must opt in explicitly. `sine` drives the deterministic tone through the
+    // same AudioCaptureSource seam a WASAPI loopback backend will use later.
+    if (opt.audio == Options::AudioSource::kSine) {
+        cfg.audio_source_factory = [] {
+            return rtsc::audio::CreateSineSource();
+        };
+    }
+
     // Clipboard redirection (CLIPRDR): every session serves one shared host
     // clipboard. On platforms without a backend CreatePlatformClipboard()
     // returns nullptr and the no-op NullClipboard keeps the channel handshake
@@ -300,7 +331,10 @@ int main(int argc, char** argv) {
              " source=" + (opt.test_pattern ? "test-pattern" : "gdi-desktop") +
              " clipboard=" +
              std::string(clipboard_unavailable ? "unavailable (null backend)"
-                                               : "enabled"));
+                                               : "enabled") +
+             " audio=" +
+             std::string(opt.audio == Options::AudioSource::kSine ? "sine"
+                                                                  : "off"));
     if (opt.allow_any_credentials) {
         log.line(
             "WARNING: credential validation is DISABLED "

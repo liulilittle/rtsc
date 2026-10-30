@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 
+#include "rtsc/audio/audio_source.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/file_list.h"
 #include "rtsc/net/tls.h"
@@ -119,6 +120,19 @@ struct ServerConfig {
     // list), so enabling this only completes the channel-level negotiation; a
     // peer whose rdpdr support is unwanted can disable it. Enabled by default.
     bool enable_rdpdr_handshake = true;
+
+    // Server-side rdpsnd (audio output): when the static virtual channel is
+    // requested by the client, every session runs an RdpsndServer fed by its
+    // own capture source created through `audio_source_factory`. The factory
+    // is a seam: the deterministic sine source (`rtsc::audio::CreateSineSource`)
+    // powers the tests / v1, a future WASAPI loopback backend slots in behind
+    // the same interface. Enabled by default so a configured factory is
+    // honoured everywhere, but with no factory installed the handler is not
+    // created at all, so the default configuration has zero observable change.
+    bool enable_rdpsnd = true;
+    using AudioSourceFactory =
+        std::function<std::unique_ptr<rtsc::audio::AudioCaptureSource>()>;
+    AudioSourceFactory audio_source_factory;
 
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.

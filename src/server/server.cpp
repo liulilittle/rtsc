@@ -32,6 +32,7 @@
 
 #include "rtsc/channel/cliprdr_server.h"
 #include "rtsc/channel/rdpdr_server.h"
+#include "rtsc/channel/rdpsnd_server.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/file_list.h"
 #include "rtsc/crypto/hash.h"
@@ -580,6 +581,24 @@ class RdpSession {
                     SendMcsUserData(rdpdr_channel_id_, message);
                 });
         }
+        // One RdpsndServer per session for the rdpsnd static virtual channel
+        // (server-side audio output), each fed by its own capture source
+        // created through the ServerConfig factory seam. Like the rdpdr and
+        // cliprdr handlers it is started in ActiveLoop, and the send lambda
+        // reads rdpsnd_channel_id_ at send time (resolved later, in
+        // DoConnectResponse). With no factory configured nothing is created,
+        // so the default configuration does not change.
+        if (config.enable_rdpsnd && config.audio_source_factory) {
+            auto audio_source = config.audio_source_factory();
+            if (audio_source) {
+                rdpsnd_ = std::make_unique<rtsc::channel::RdpsndServer>(
+                    std::move(audio_source),
+                    [this](const std::vector<uint8_t>& message) {
+                        if (rdpsnd_channel_id_ == 0) return;
+                        SendMcsUserData(rdpsnd_channel_id_, message);
+                    });
+            }
+        }
     }
 
     // Serves the connection until the peer disconnects or Stop() is called.
@@ -715,6 +734,12 @@ class RdpSession {
                     next_clipboard_poll_ = now + kRefreshInterval;
                     cliprdr_->Poll(now);
                 }
+                // rdpsnd audio is pumped from the ActiveLoop body (every
+                // iteration), not here: a client that keeps sending input
+                // never lets ReadFrame time out, and pumping only on the
+                // timeout path would silence audio exactly while the user is
+                // interacting. The pump has its own 20 ms emission window, so
+                // calling it on every iteration is cheap.
                 continue;
             }
             if (n <= 0) return false;
@@ -984,6 +1009,7 @@ class RdpSession {
                 requested_channels_.clear();
                 cliprdr_channel_id_ = 0;
                 rdpdr_channel_id_ = 0;
+                rdpsnd_channel_id_ = 0;
                 for (uint32_t i = 0; i < count; ++i) {
                     // Each entry is name[8] + options(4). A truncated name
                     // table aborts the parse: nothing further is consumed and
@@ -1007,6 +1033,11 @@ class RdpSession {
                     if (rdpdr_channel_id_ == 0 &&
                         name[0] != '\0' && std::strcmp(name, "rdpdr") == 0) {
                         rdpdr_channel_id_ =
+                            static_cast<uint16_t>(kFirstStaticChannelId + i);
+                    }
+                    if (rdpsnd_channel_id_ == 0 &&
+                        name[0] != '\0' && std::strcmp(name, "rdpsnd") == 0) {
+                        rdpsnd_channel_id_ =
                             static_cast<uint16_t>(kFirstStaticChannelId + i);
                     }
                 }
@@ -1368,6 +1399,11 @@ class RdpSession {
         // order the integration tests assert on.
         if (cliprdr_ != nullptr) cliprdr_->Start();
         if (rdpdr_ != nullptr) rdpdr_->Start();
+        // Only start audio capture when the client actually joined the rdpsnd
+        // channel: a peer that never requested it must not make us open a
+        // capture device (a real WASAPI backend would otherwise record the
+        // console's audio for a client that will never hear it).
+        if (rdpsnd_ != nullptr && rdpsnd_channel_id_ != 0) rdpsnd_->Start();
         SendFrame();
         // The single frame sent at active can race the client's Confirm Active
         // processing (mstsc drops updates that arrive before its surface is
@@ -1377,6 +1413,12 @@ class RdpSession {
         next_clipboard_poll_ = next_refresh;
         std::vector<uint8_t> frame;
         while (!stop_requested_.load(std::memory_order_relaxed)) {
+            // Pump the rdpsnd channel once per iteration (20 ms gate inside
+            // Poll), so audio keeps flowing while the client is streaming
+            // input and ReadFrame never times out.
+            if (rdpsnd_ != nullptr && rdpsnd_channel_id_ != 0) {
+                rdpsnd_->Poll(std::chrono::steady_clock::now());
+            }
             if (!ReadFrame(frame, &next_refresh)) break;
             proto::McsSendData sd;
             if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {
@@ -1387,8 +1429,9 @@ class RdpSession {
             // PDU / fast-path input path, the cliprdr static virtual channel
             // feeds the CliprdrServer handler (reassembling the virtual
             // channel protocol), the rdpdr static virtual channel feeds the
-            // RdpdrServer minimum handshake, and every other static channel
-            // is ignored (rdpsnd / rail are not served in this scope).
+            // RdpdrServer minimum handshake, the rdpsnd static virtual channel
+            // feeds the RdpsndServer audio handler, and every other static
+            // channel is ignored (rail is not served in this scope).
             //
             // The inbound user data is decrypted for EVERY frame, whatever the
             // channel: RC4 is a stream cipher, so a SEC_ENCRYPT-carrying frame
@@ -1407,6 +1450,9 @@ class RdpSession {
             } else if (rdpdr_ != nullptr && rdpdr_channel_id_ != 0 &&
                        sd.channel_id == rdpdr_channel_id_) {
                 rdpdr_->OnChannelData(payload.data(), payload.size());
+            } else if (rdpsnd_ != nullptr && rdpsnd_channel_id_ != 0 &&
+                       sd.channel_id == rdpsnd_channel_id_) {
+                rdpsnd_->OnChannelData(payload.data(), payload.size());
             }
             // Other channels: decrypted (keeps the RC4 stream in sync) but
             // otherwise ignored.
@@ -1598,6 +1644,10 @@ class RdpSession {
     // resolved the same way (1004 + index of the "rdpdr" name). 0 when the
     // client did not advertise the rdpdr channel.
     uint16_t rdpdr_channel_id_ = 0;
+    // The MCS channel id of the client's rdpsnd static virtual channel,
+    // resolved the same way (1004 + index of the "rdpsnd" name). 0 when the
+    // client did not advertise the rdpsnd channel.
+    uint16_t rdpsnd_channel_id_ = 0;
 
     uint32_t chosen_method_ = 0;
     uint32_t encryption_level_ = 0;
@@ -1621,6 +1671,10 @@ class RdpSession {
     // ServerConfig::enable_rdpdr_handshake is false; created with the session
     // and started in ActiveLoop.
     std::unique_ptr<rtsc::channel::RdpdrServer> rdpdr_;
+    // The per-session rdpsnd handler (server-side audio output). Null when
+    // ServerConfig::enable_rdpsnd is false or no audio_source_factory is
+    // installed; created with the session and started in ActiveLoop.
+    std::unique_ptr<rtsc::channel::RdpsndServer> rdpsnd_;
     // Deadline of the next cliprdr local-clipboard change poll (~1 s cadence,
     // set at ActiveLoop entry).
     std::chrono::steady_clock::time_point next_clipboard_poll_{};

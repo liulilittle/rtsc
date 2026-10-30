@@ -224,4 +224,102 @@ RTSC_TEST(snd_wave_info_parses) {
     CHECK(SndWaveInfo::parse(short_body, info) == Status::NeedMoreData);
 }
 
+RTSC_TEST(snd_wave2_write_round_trip) {
+    // BuildWave2Body -> SndWave2::parse must round-trip the header fields and
+    // the data, with the byte-exact 12-byte header layout preceding the data.
+    const std::vector<uint8_t> data = {0x11, 0x22, 0x33};
+    const auto body = BuildWave2Body(0x1234, 0, 0x07, 0xAABBCCDD, data);
+    // 12-byte header + payload.
+    CHECK_EQ(body.size(), static_cast<size_t>(15));
+    // wTimeStamp(2) wFormatNo(2) cBlockNo(1) bPad(3) dwAudioTimeStamp(4) data.
+    CHECK_BYTES(body, 0x34, 0x12, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0xDD,
+                0xCC, 0xBB, 0xAA, 0x11, 0x22, 0x33);
+
+    SndWave2 parsed;
+    CHECK(SndWave2::parse(body, parsed) == Status::Ok);
+    CHECK_EQ(parsed.time_stamp, static_cast<uint16_t>(0x1234));
+    CHECK_EQ(parsed.format_no, static_cast<uint16_t>(0));
+    CHECK_EQ(parsed.block_no, static_cast<uint8_t>(0x07));
+    CHECK_EQ(parsed.audio_time_stamp, static_cast<uint32_t>(0xAABBCCDD));
+    CHECK(parsed.data == data);
+
+    // A block number of 0 and an empty data payload are both legal.
+    const auto empty = BuildWave2Body(0, 0, 0, 0, {});
+    CHECK_EQ(empty.size(), static_cast<size_t>(12));
+    SndWave2 p2;
+    CHECK(SndWave2::parse(empty, p2) == Status::Ok);
+    CHECK(p2.data.empty());
+}
+
+RTSC_TEST(snd_training_body_builder) {
+    // Empty-body training (the v1 handshake form): wTimeStamp + wPackSize only.
+    const auto body = BuildTrainingBody(0xBEEF, 0);
+    CHECK_EQ(body.size(), static_cast<size_t>(4));
+    CHECK_BYTES(body, 0xEF, 0xBE, 0x00, 0x00);
+    SndTraining t;
+    CHECK(SndTraining::parse(body, t) == Status::Ok);
+    CHECK_EQ(t.time_stamp, static_cast<uint16_t>(0xBEEF));
+    CHECK_EQ(t.pack_size, static_cast<uint16_t>(0));
+    CHECK(t.data.empty());
+
+    // With trailing exercise data the same body carries the payload after the
+    // fixed 4-byte header, which SndTraining::parse must recover.
+    const auto with_data = BuildTrainingBody(0x0001, 16, {0xAA, 0xBB});
+    CHECK_EQ(with_data.size(), static_cast<size_t>(6));
+    SndTraining t2;
+    CHECK(SndTraining::parse(with_data, t2) == Status::Ok);
+    CHECK_EQ(t2.pack_size, static_cast<uint16_t>(16));
+    CHECK(t2.data.size() == 2 && t2.data[0] == static_cast<uint8_t>(0xAA));
+}
+
+RTSC_TEST(snd_parse_wave_confirm_body) {
+    // wTimeStamp(2) + cConfirmedBlockNo(1) + bPad(1).
+    const std::vector<uint8_t> good = {0x34, 0x12, 0x42, 0x00};
+    SndWaveConfirm c;
+    CHECK(ParseWaveConfirmBody(good, c) == Status::Ok);
+    CHECK_EQ(c.time_stamp, static_cast<uint16_t>(0x1234));
+    CHECK_EQ(c.block_no, static_cast<uint8_t>(0x42));
+    CHECK_EQ(c.pad, static_cast<uint8_t>(0));
+
+    // A truncation is a hard error, not a silent partial parse.
+    CHECK(ParseWaveConfirmBody({}, c) == Status::NeedMoreData);
+    CHECK(ParseWaveConfirmBody({0x34, 0x12, 0x42}, c) == Status::NeedMoreData);
+}
+
+RTSC_TEST(snd_parse_quality_mode_body) {
+    // wQualityMode(2) + reserved(2).
+    const std::vector<uint8_t> good = {0x02, 0x00, 0x00, 0x00};
+    SndQualityModeBody q;
+    CHECK(ParseQualityModeBody(good, q) == Status::Ok);
+    CHECK_EQ(q.quality_mode, static_cast<uint16_t>(kQualityHigh));
+    CHECK_EQ(q.reserved, static_cast<uint16_t>(0));
+
+    // The build helper used by the client side must parse back.
+    const auto built = BuildQualityModeBody(kQualityMedium);
+    SndQualityModeBody q2;
+    CHECK(ParseQualityModeBody(built, q2) == Status::Ok);
+    CHECK_EQ(q2.quality_mode, static_cast<uint16_t>(kQualityMedium));
+
+    CHECK(ParseQualityModeBody({0x02, 0x00}, q) == Status::NeedMoreData);
+}
+
+RTSC_TEST(snd_parse_training_confirm_body_echo) {
+    // The client echoes the server's Training body verbatim; the layout is
+    // SndTraining (wTimeStamp + wPackSize + optional data).
+    const auto sent = BuildTrainingBody(0xCAFE, 0x0100);
+    SndTraining echoed;
+    CHECK(ParseTrainingConfirmBody(sent, echoed) == Status::Ok);
+    CHECK_EQ(echoed.time_stamp, static_cast<uint16_t>(0xCAFE));
+    CHECK_EQ(echoed.pack_size, static_cast<uint16_t>(0x0100));
+
+    // BuildTrainingConfirmBody (the client's own writer) parses the same way.
+    const auto client_pdu = BuildTrainingConfirmBody(0x1234, 0x5678);
+    SndTraining t;
+    CHECK(ParseTrainingConfirmBody(client_pdu, t) == Status::Ok);
+    CHECK_EQ(t.time_stamp, static_cast<uint16_t>(0x1234));
+    CHECK_EQ(t.pack_size, static_cast<uint16_t>(0x5678));
+
+    CHECK(ParseTrainingConfirmBody({0xEF, 0xBE, 0x00}, t) == Status::NeedMoreData);
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_rdpsnd_tests"); }

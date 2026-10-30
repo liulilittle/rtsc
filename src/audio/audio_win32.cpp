@@ -18,8 +18,10 @@
 #include <mmsystem.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -28,6 +30,11 @@
 
 namespace rtsc::audio {
 namespace {
+
+// How long an OpenDeviceLocked() failure postpones the next reopen attempt.
+// Set in the worker loop so a missing / busy audio device cannot turn the
+// sink into a busy loop (design D12).
+constexpr auto kDeviceRetryInterval = std::chrono::milliseconds(1000);
 
 class WaveOutPlayer final : public AudioSink {
  public:
@@ -102,14 +109,32 @@ class WaveOutPlayer final : public AudioSink {
                 });
                 if (stopping_.load()) return;
                 if (reopen_) {
+                    const auto now = std::chrono::steady_clock::now();
+                    // Backoff gate (design D12): after a device-open failure
+                    // wait out kDeviceRetryInterval before trying again, so a
+                    // missing / busy device cannot spin the worker.
+                    if (next_retry_ && now < *next_retry_) {
+                        queue_.clear();
+                        have_format_ = false;
+                        reopen_ = false;
+                        continue;
+                    }
                     {
                         std::lock_guard<std::mutex> dk(device_mu_);
                         CloseDeviceLocked();
                         if (!OpenDeviceLocked()) {
+                            // Failure keeps the worker resident (no `return`,
+                            // no detach): the queue is dropped, the format is
+                            // forgotten so the next Submit re-arms reopen_,
+                            // and the retry is postponed.
                             queue_.clear();
-                            return;
+                            have_format_ = false;
+                            next_retry_ = now + kDeviceRetryInterval;
+                            reopen_ = false;
+                            continue;
                         }
                     }
+                    next_retry_.reset();
                     reopen_ = false;
                 }
                 local.swap(queue_);
@@ -192,6 +217,10 @@ class WaveOutPlayer final : public AudioSink {
     bool have_format_ = false;
     PcmFormat format_{2, 44100, 16};
     std::vector<std::vector<uint8_t>> queue_;
+    // Earliest time at which a new device-open attempt may run (design D12).
+    // Guarded by mu_; set after an OpenDeviceLocked() failure, reset on a
+    // successful open.
+    std::optional<std::chrono::steady_clock::time_point> next_retry_;
     DWORD volume_ = 0xFFFFFFFFu;
     bool volume_dirty_ = false;
 
