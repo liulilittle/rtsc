@@ -1,0 +1,6 @@
+  [INFO] Write returned 1, wire bytes=40 (asked 100)
+[FAIL] Write must not claim success when only part was consumed
+  [INFO] two reads delivered 16 bytes; backend produced 516
+[FAIL] Read must not silently discard the tail beyond the buffer
+
+SUMMARY failures=2
