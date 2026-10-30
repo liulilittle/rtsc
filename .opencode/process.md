@@ -700,32 +700,9 @@
 - K1（Poll 两遍式+析构）/K3（Read 20B Padding，五 API 帧长核对）/K2（联合匹配）全部 PASS。
 - 甲独立变异复现（恢复旧 remove_if → R9 异常中止）；ctest 5/5 PASS；C0 5 目标 0err/0warn。
 - 等乙章后提交。
-## 第725轮：rdpdr 路线A 入库 3290402（双章）+ 全量 61/61
-- 双章放行（甲乙独立复验 K1/K3/K2，各自独立变异红证）。
-- 提交 feat(rdpdr): server-side async IRP engine (route A, spec direction)；工作树干净。
-- 验证：build 全量 0err/0warn；ctest 61/61 全绿。
-- 全部子代理 delete 解散。
-- 服务器模式 rdpdr：路线 A 异步引擎完成（服务器可发 IRP 访问客户端共享盘）；客户端 S2/S4/S6 加固。
-- 非阻塞后续：teardown 回调重入 phase_=kIdle 一行加固；未知 completion 计数不撕通道（有意）。
-## 第726轮：功能盘点 + 启动 USB 重定向批次
-- 盘点（df6477b 入 plan.md）：剪贴板✅ 音频✅ 驱动器✅ 多显示器✅ 已接线 RAIL✅ 已接线；**USB ❌ 完全未接线**；Gateway ⚠️ 是 HTTP CONNECT 代理非 RDGSP。
-- USB 已知 6 项缺陷（N8-EXEC-1 S2 阻断项）。
-- 派双审计（甲 ses_e72e0868 侧重协议链路/接线点/后端/失败路径/测试；乙 ses_e72e0840 侧重 drdynvc 串包根因/URB 丢数据/QI-IFACE/CompleteUrb/安全策略），已双向互告 ID。
-## 第727轮：USB 双审定案 + 派执行
-- 双章终稿（甲 ses_e72e0868 / 乙 ses_e72e0840）：六项已知缺陷全部复核仍存在；乙 4 项探针红证（OUT 载荷 0/8B 丢失、未知设备无 completion、接口号 0x40000001≠0x80000001）。
-- 主代理逐条核实 P0：OUT 传 {}（:475-478,:492-495）、未知设备 return（:516-517）、接口号 kProxy 改写（:302-307,:518-520）。
-- 定案落 docs/spec/rdpusb-wiring-design.md（41f0c84）：P0 三项 + P1 七项 + 路线 A 接线；不修项记录。
-- 执行 AI：ses_e72be6839ffePSyvwAm5HRocxw（4 步 TDD）。
-- 审计组保留待命（交付后复核）。
-## 第728轮：USB 执行交付，双审进入第⑤步验证
-- 执行 AI 交付：9 文件改动（+964/-86），P0/P1 全项 + GUI 接线 + 安全门控 + 2 处偏离（kInvalidHandle→kRequestFailed；无 ready() 用 Open()==nullptr）。
-- 报称：build 0err/0warn；rdpusb 53/242、drdynvc 16/192、channel 10/71、gui_send 2/35、server_rdpdr_e2e 7/147、server_cliprdr_e2e 3/29；4 项变异红证。
-- 额外修复：devpkey DEVPKEY_Device_ContainerId LNK2019 → 本地 constexpr。
-- 未提交（dirty=9）。
-- 双审已派第⑤步验证：甲侧重代码逐条审查（OUT 方向语义/多 PDU 定界/门控健壮性/渲染循环开销），乙侧重重跑 usbrepro 探针证明红转绿 + 独立变异抽验。
-## 第729轮：第⑤步验证 2 项 FAIL + 修复批次 2
-- 甲第⑤步：14 项核实 → 1 FAIL（FAIL-1: CREATE_RSP 定界）；随后更正 P0-1 判定为 FAIL（FAIL-2: WinUSB 后端 OUT 清零）。
-- 主代理核实 FAIL-2：`usb_win32.cpp:235-236` 只零初始化 buffer，`input` 从未拷入；对照 `:279` Bulk OUT 的 `copy = input` 正确。两条均由甲+乙同证。
-- 主代理 web 核验 FAIL-1 规范：`[MS-RDPEDYC] 2.2.2.2` CREATE_RSP 无 ChannelName，成立。
-- 定案文档 §4/§5 入库（ed69dad / 559409a）。
-- 修复批次 2 派执行 AI：FAIL-2 后端 assign + 源码守卫测试；FAIL-1 定长消费 + 重写捆绑单测；CAPS 定界按版本核查（需先 web 核验）；env 门控 channel_names。
+## 第725-729轮（USB 重定向批次，归档摘要）
+- 725: rdpdr 路线A 入库 3290402（双章）；全量 61/61；子代理全解散。
+- 726: 功能盘点 df6477b —— 剪贴板/音频/驱动器/多显示器/RAIL 已就位；USB 完全未接线；Gateway 是 HTTP CONNECT 非 RDGSP。派双审（甲 ses_e72e0868 / 乙 ses_e72e0840）。
+- 727: 双章确认六项缺陷仍存在；乙 4 探针红证；定案 41f0c84（P0x3 + P1x7 + 路线 A）；派执行 ses_e72be683。
+- 728: 执行交付 9 文件 +964/-86，P0/P1 全项 + GUI 接线 + RTSC_REDIRECT_USB 门控；报称 build 0err/0warn、各套件绿；双审进第5步。
+- 729: 第5步验证抓到 2 FAIL：**FAIL-1** `drdynvc_client.cpp:74-90` CREATE_RSP 按不存在的 ChannelName 定界（[MS-RDPEDYC] 2.2.2.2 web 核验无 name；捆绑丢包，单测用错误布局假绿）；**FAIL-2** `usb_win32.cpp:235-236` Control OUT 只零初始化、`input` 未拷入 -> 发全零（对照 `:279` Bulk OUT 正确）。另有 P2：CAPS 定界按版本、env 门控 channel_names。修复批次已派。
