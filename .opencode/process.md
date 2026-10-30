@@ -614,3 +614,7 @@
 - 主代理核实并修正：F4 撤回（rdpdr_client.cpp:410 已含 kFileSupersede，乙误读）；F2 升级确定性触发（悬空 symlink 枚举抛 filesystem_error）；F5 确认（OnRead:448 返 UNSUCCESSFUL 而非 INVALID_HANDLE）；F6 确认（OnWrite 无上限）。
 - 收敛后批内：GUI 接线 + F2 + F3 + F5 + F6；批外：F1（16MiB 重组上限，P 项）+ F7/F8 + 服务器 ANNOUNCE_RSP 独立小批 + 服务器 I/O 引擎 P 项。
 - 等甲终版报告后派执行 TDD。
+## 第705轮：rdpdr 接线终版定案 d015dd0 + 派执行
+- 甲终版报告（甲乙双章）落 docs/spec/rdpdr-client-wiring-design.md §7：路线 B（库内 drive_enum helper）、默认仅 DRIVE_FIXED、RTSC_REDIRECT_DRIVES env、批内 F2/F3/F5/F6、批外 F1/D2/D3/D4/F7/服务器 I/O 引擎。
+- 执行 AI：ses_e74625ad4ffeiHyOozzQ0r5a0p（TDD 4 步，要求每步 relay）。
+- 审计组甲 ses_e74bf690 / 乙 ses_e74bf57a 保留待命，交付后复核。
