@@ -578,3 +578,6 @@
 - server.cpp: rdpsnd_->Poll(now) 已出现（D-D 部分落地）；Start 门控仍无（D-C 未落地）。
 - rdpsnd_server.cpp 未变（D-A/D-B 未落地）。
 - 执行子 busy，wrote 持续更新。继续观察，不干预。
+## 第696轮：向执行子发最小化 4 处编辑指令
+- 观察：rdpsnd_server.cpp 被触碰但 D-A/D-B 内容未改（多轮空转）。
+- 已发最小化指令（编辑1 D-A 删 QualityMode 发送+计数器；编辑2 D-B Poll 分档+quality_mode_timeout_count_；编辑3 D-C Start 门控；编辑4 D-E formats 防御+source_->Stop），要求每处编辑后 build+跑测并回报。
