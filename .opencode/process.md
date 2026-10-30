@@ -546,3 +546,7 @@
 - server.cpp：rdpsnd 名表分支 + 复位 + 每会话 handler（有工厂才建）+ Start 序 cliprdr→rdpdr→rdpsnd + 分发 + 每 tick Poll 泵（与 cliprdr 同在 timeout 分支，rdpsnd 内部 20ms 发射窗门）。
 - main.cpp：--audio off|sine，默认 off（隐私默认关门）。
 - 执行子 busy 继续 e2e + D12。
+## 第688轮：执行交付 + 主代理验证 + 派双审复核
+- 执行子（ses_e75442500ffeT4eCFXqR2YxuNV）六步完成交付。
+- 主代理独立验证：rtsc_server_rdpsnd_e2e_tests 构建成功；ctest 9/9 全绿（rdpsnd/audio_source/server/server_multisession/server_cliprdr/server_rdpdr 家族）。
+- 已派甲乙复核①-⑥（甲侧重实现正确性，乙侧重失败路径/并发/协议边界/D12 逐行）。
