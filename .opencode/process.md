@@ -524,3 +524,6 @@
 ## 第681轮：CMake 已就绪，等待 server 实现与测试
 - CMakeLists 已加 rtsc_rdpsnd_server_tests / rtsc_audio_source_tests（含 /W4 /WX 与 add_test）→ configure 因 test_rdpsnd_server.cpp 缺失而暂失败（中途态）。
 - rdpsnd_server.cpp 仍 12 行占位；执行 AI busy（wrote 时间戳新鲜）。待其完成。
+## 第682轮：执行 AI 停滞询问
+- 执行 AI wrote 时间戳连续多轮未变（1793328483225），rdpsnd_server.cpp 仍 12 行占位，test_rdpsnd_server.cpp 缺失 → CMake configure 失败。
+- 已发进度询问，要求小步落地（先骨架测试 → 最小实现 → S2-S10 逐个 → 接线/e2e/D12），每步可编译。
