@@ -643,3 +643,9 @@
 - 主代理独立验证：drive_enum 5/18、rdpdr 57/351、e2e 6/137、rtsc_gui 0err/0warn。
 - 派甲乙复核（甲侧重 F3/F5/F6/F2/drive_enum/GUI 接线；乙侧重 F2 语义深挖/F5 表一致性/F3 规范码/drive_enum 边界/Linux 门禁/隐私默认）。
 - 执行 AI 三条偏离已核（F6 复用 kMaxReadLength、drive_enum_win32 无条件加源、_dupenv_s）均在许可内。
+## 第713轮：rdpdr 接线入库 bd44d52 + C0 全量 60/60
+- 双审双章通过（甲乙七复核点全 PASS，变异①②③红证，乙六项独立探针）。
+- 隐私治理项：用户裁定"默认关闭需显式指定"→ SelectDrives(null/"") 返回空；test_drive_enum 改名断言空；main.cpp 启动打印实际重定向盘列表 + "remote peer has read/write access"；docs §9。
+- 验证：build 全量 0err/0warn；**ctest 60/60 全绿**（含 view bench，vmmemWSL 争用已消退）。
+- 全部子代理 delete 解散（甲乙审计组 + 执行 AI）。
+- 客户端能力：剪贴板✓ 音频✓ rdpdr 驱动器✓（opt-in）。
