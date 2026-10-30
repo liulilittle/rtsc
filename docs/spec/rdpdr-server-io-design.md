@@ -69,3 +69,34 @@ rdpdr 有两个相反方向，此前双审把两者混为一谈：
 两条路线的产品价值与成本差异大，必须与用户对齐：
 - **路线 B**（双审推荐 R1）：自研 client⇄server 闭合对可见服务器文件；违反规范、需门控默认关、两端补腿、mstsc 不可用。
 - **路线 A**（规范方向）：mstsc 可把自己的盘共享给我们的服务器；需异步引擎 350-600 行，死锁风险需仔细设计。
+
+## 8. 用户裁定（2026-10-28，G1）：走路线 A（规范方向）
+
+用户选择：**路线 A = 客户端把本地盘共享给服务器（规范唯一方向）**，需异步 completion 引擎。
+
+### 为什么 A 需要异步（第一性原理）
+服务器发 `DR_DEVICE_IOREQUEST` 给客户端后，必须继续跑 ActiveLoop（收其它通道帧、发桌面、泵音频），**不能阻塞等待 `DR_DEVICE_IOCOMPLETION`**。因为：
+- completion 由客户端跨网络回来，需要服务器继续读 socket；
+- 若同步等待 → 服务器不再读 → 客户端发不出 completion → 死锁。
+
+### 架构（A 方向）
+1. **服务器发 IOREQUEST**：新增"服务器侧 I/O 客户端"角色 —— `RdpdrServer` 增加主动 API（`OpenFile/ReadFile/WriteFile/CloseFile/QueryDirectory`），每次分配 `completion_id` 并登记到 `outstanding_` 表（`completion_id → 回调/结果槽`）。
+2. **completion 到达**：`OnDeviceIoRequest` 改为 `OnDeviceIoCompletion`（收 0x4943）→ 查 `outstanding_` 按 `completion_id` 匹配 → 填结果 + 唤醒等待者。
+3. **等待语义**：调用方（未来的"服务器访问客户端盘"功能，如把 \\tsclient\C 暴露给服务器上的应用）用**异步回调**而非阻塞等待。v1 可先只提供"异步 API + 测试验证往返"，不接入具体消费方。
+4. **超时**：`outstanding_` 每项有 deadline（默认 30s），超时清理并回调失败；会话断开时全部回调失败并清空。
+5. **completion_id 单调递增**，`outstanding_` 有上限（如 256），满则拒绝新请求。
+6. **客户端侧已具备**：`rdpdr_client.cpp` 的 `OnDeviceIoRequest` 就是应答方（服务端发来的 IRP 它已经会处理并回 completion）——**A 方向客户端腿已完整**，只需服务器补腿。
+
+### 与双审报告的关系
+双审报告的 S1/S2/S4/S5/S6 缺陷与建议**全部仍适用**（路径守卫、句柄上限、root 自检、device_id 回查），只是作用对象从"服务器腿 B"变为"服务器发 IRP 的 A 腿 + 客户端应答腿的加固"。
+
+### 范围（本批）
+- 服务器：IOREQUEST 发送 API + outstanding 表 + completion 分派 + 超时清理。
+- 客户端：device_id 回查加固（S6，双审实证）、句柄上限（S2，双审实证 300 无界）。
+- 路径守卫提取（path_guard.h，双审共识）。
+- 不做：把客户端盘接入具体服务器消费方（如文件浏览 UI）——留后续。
+
+### 验收
+- 新套件 `test_rdpdr_server_io.cpp`：服务器发 IOREQUEST → 客户端应答 → 服务器收到 completion（Pair harness 真编码回环）；completion_id 匹配/未知拒/重复拒；outstanding 上限；超时清理；会话断开清理。
+- 变异：①删 outstanding 匹配 → 错配用例红；②删超时 → 超时用例红；③删上限 → 上限用例红。
+- C0：build 0err/0warn；影响面全绿。
