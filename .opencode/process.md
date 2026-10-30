@@ -555,3 +555,8 @@
 - 主代理核实：确认缺陷成立（:236-240 三态合并处理）。
 - 已派执行子修 F-A（分档超时）+ 补 quality 超时放行单测；同时要求核对 F-C（QualityMode 方向，rdpsnd_client.cpp:151-155 显示客户端发 → 服务器不应发）。
 - F-B 防御校验、F-D 单测、F-E 加密路径 W5、F-F 阻塞文档化待处理。
+## 第690轮：双审联署终稿（D-A~D-E 必修）→ 执行子整改中
+- 规范权威核验（Microsoft Learn [MS-RDPEA] 2.2.2.3 + 3.1.5 事件5/6 + 脚注16/19）：QualityMode 由客户端发、服务器仅等待；超时→DYNAMIC_QUALITY 放行进 Training。→ D-A/D-B 确认为真缺陷。
+- 双章：①②③⑤⑥ PASS；④ 驳回。必修 D-A（删服务器发 QualityMode）D-B（quality 超时放行+单测）D-C（Start 门控 channel_id!=0）D-D（泵移入每轮迭代）D-E（formats 防御校验）。
+- 契约修订：静默分支（ALIVE=0 / formats 无效）须 source_->Stop() 释放采集；协商超时 formats/train-confirm 仍 CLOSE。
+- 执行子已收两轮指令（D-A~D-E + 静默停源/泵 now 采样），整改中。
