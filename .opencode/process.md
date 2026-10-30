@@ -740,3 +740,13 @@
   - 修 2：`udp_transport_two_sides_write_concurrently_progresses` 注释改为入队 ACK 描述
   - 修 3：`method` 字段 CRLF 注入用例（已守未测 → 补测）
 - 预期：73 tests，重冻结后报新 SHA。
+
+## 第751轮：三项注记修复完成 + 重新冻结 + 主代理独立核实
+- 执行 AI 交付：仅改 2 文件（gateway.cpp / test_gateway.cpp），其余零改动。
+- 主代理核实：8 个 SHA 逐字一致且 3 秒稳定（BB7B7BEEF1DA429A / B341DFCAF42CFDED，其余未变）。
+- 三项源码落地核实：
+  1. `gateway.cpp:386` `if (o.method.empty() || ContainsCrlfOrNul(o.method) || ...)`
+  2. `test_gateway.cpp:1346-1350` 注释改为入队 ACK 语义
+  3. `test_gateway.cpp:341` 新用例 `rdg_channel_request_rejects_empty_method`；`:470` 注入用例含 method
+- 主代理自行重建 0err/0warn + 定向 8 套件 8/8 Passed + 三探针 failures=0。
+- 已派双审轻量确认（甲 ses_e71b053e / 乙 ses_e71b00e0），要求只核 SHA/守卫全路径/断言强度/数字吻合（71→72 应 +1 test +2 checks）。
