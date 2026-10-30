@@ -521,3 +521,6 @@
 - 工作树 9 文件；rdpsnd_server.cpp 仍 12 行占位，test_audio_source.cpp 77 行、sine_source.cpp 21 行。
 - CMakeLists 已引用 rtsc_rdpsnd_server_tests 但源文件未创建 → configure 失败（中途态，非缺陷；执行 AI 仍在写）。
 - 已与定案对齐项：AudioCaptureSource 接口（Start/Stop/Poll/format/ok）、每会话源工厂 seam、正弦源 44100/16/2 20ms 块。
+## 第681轮：CMake 已就绪，等待 server 实现与测试
+- CMakeLists 已加 rtsc_rdpsnd_server_tests / rtsc_audio_source_tests（含 /W4 /WX 与 add_test）→ configure 因 test_rdpsnd_server.cpp 缺失而暂失败（中途态）。
+- rdpsnd_server.cpp 仍 12 行占位；执行 AI busy（wrote 时间戳新鲜）。待其完成。
