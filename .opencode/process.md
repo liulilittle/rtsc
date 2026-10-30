@@ -531,3 +531,6 @@
 - 熔断 ses_e755e22c（零输出×6，wrote 停滞），已 abort+delete 解散；discover 记录 c8e02d3。
 - 新执行子 ses_e75442500ffeT4eCFXqR2YxuNV 已派（复用 proto/audio_source/CMake 半成品，要求每步 relay 进度）。
 - 新执行子已创建 tests/test_rdpsnd_server.cpp（487 行）。
+## 第684轮：新执行子 TDD 红阶段
+- test_rdpsnd_server.cpp 487 行已建；rdpsnd_server.cpp / sine_source.cpp 仍占位（符合先红顺序）。
+- 执行子 busy，wrote=null（尚未写入新文件）；等待其实现步骤。
