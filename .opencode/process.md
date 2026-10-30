@@ -663,3 +663,7 @@
 - D2：rdpdr_server.cpp:205-211 每设备发 RdpdrDeviceReply{device_id,0}（encode 已含 RDPDR_HEADER，直接 SendRaw）。
 - 主代理独立验证：rdpdr_server 9/114、channel 10/71、ctest 13/13 全绿。
 - 派甲乙复核（甲侧重 F1 边界/16MiB 对 cliprdr 是否够用/D2 编码；乙侧重失败路径/多通道内存放大/drdynvc 一致性/协议结构），已双向互告 ID。
+## 第717轮：F1+D2 执行最终报告 + crash dump 清理
+- 执行报告：F1（channel.h 常量 + Feed 双守卫 + 3 用例）、D2（device_reply_count + 每设备回复 + 2 用例）；变异①②实跑红后恢复；11 套件全绿；C0 0err/0warn。
+- 清理 build/Release/crashes 历史 minidump（约 10MB，含 10-24/10-27/10-28 历史红证残留）。
+- 甲乙复核在途。
