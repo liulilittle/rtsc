@@ -374,3 +374,23 @@
 - 交付物必须包含：证据引用（`模块!函数@地址` + 片段）、先红测试（期望来自证据）、变异反证（改回旧行为必须转红）。
 - 已建证据文档：`docs/spec/scaling-evidence.md`（A1 缩放）、`docs/spec/input-evidence.md`（A2 输入/快捷键）。
 已建证据文档：bitmap-evidence/cliprdr-evidence/rdpsnd-evidence/smart-sizing-evidence/multimon-ui-evidence/rdpdr-evidence/cliprdr-server-design/rdpdr-server-design。待建（需真机抓包）：cliprdr capset/rdpsnd TSSNDCAPS wire 裁决。
+
+## 功能缺口盘点（2026-10-28，主代理取证）
+
+| 功能 | 状态 | 证据 |
+|---|---|---|
+| 剪贴板 cliprdr | ✅ 客户端+服务器 | 已入库 |
+| 音频 rdpsnd | ✅ 客户端+服务器 | 9b1ecbf |
+| 驱动器 rdpdr | ✅ 客户端(opt-in)+服务器路线A异步引擎 | bd44d52, 3290402 |
+| 多显示器 | ✅ 已接线（`--multimon` + 每显示器窗口 + span） | main.cpp:487-501 |
+| RAIL | ✅ 已接线（`--rail` + SetRailSender + StartRailChannel） | main.cpp:460-476 |
+| **USB rdpusb** | ❌ **完全未接线** | `src/channel/rdpusb_client.cpp` 仅自身引用；`tools/`、`src/client/` 零引用 |
+| Gateway | ⚠️ 是 HTTP CONNECT 代理，非 [MS-TSGU] RDGSP | `src/proto/gateway.cpp:220` "CONNECT ... HTTP/1.1" |
+
+### USB 已知缺陷（N8-EXEC-1 定案 S2 阻断项，待复核）
+1. drdynvc 未请求（`main.cpp:161,163` 通道列表无动态通道请求）
+2. `rtsc_urbrdc`/`rtsc_usb_win32` 未链接到 GUI
+3. URB 数据通路双向丢数据（`rdpusb_client.cpp:350,468-500`）
+4. drdynvc 串包（`drdynvc_client.cpp:113-119`）
+5. QI/IFACE_RELEASE 缺失（S2-10）
+6. `CompleteUrb` 恒 `hresult=0` 且设备未知不发 URBCOMPLETION（`:509-542`）
