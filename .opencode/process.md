@@ -931,3 +931,24 @@
 - 判定采纳：CRLF 注入**现实存在**（阶段1低暴露/阶段2高危，接线前必修）；chunked 语法**非走私**但 `0x` 是数据完整性缺陷；D8 合同撕裂成立。
 - 开单给执行 AI 四项：A 文法严格化 + B CRLF 中心化校验 + C 文档/测试对齐 + D 证据重生成。
 - 已 relay 乙确认。
+
+## 第747轮：OUT 通道 Content-Length 取证（回应乙预备核查第4点）
+乙问：执行 AI 在 OUT 请求加 `Content-Length: 0`（gateway.cpp:397），裁决文件只示 `Connection: Keep-Alive`，无 CL 依据。
+
+主代理实测取证（`C:\...\scripts\probe_http_headers.ps1`，全量 mstscax.dll 宽字符+ASCII 扫描）：
+```
+pat='Content-Length'   hits=0
+pat='content-length'   hits=0
+pat='ContentLength'    hits=0
+pat='Transfer-Encoding' hits=0
+pat='transfer-encoding' hits=3   (仅 IN 通道错误串)
+pat='Host:'            hits=0
+pat='Content-Type'     hits=9
+```
+叠加 `FUN_1801c3818` 反汇编内 `Content-Length` 零命中。
+
+**裁定**：
+1. 出厂**从不显式设置** `Content-Length` 与 `Host`（0 命中）→ 这两个头由 WinHTTP 自动生成。因此"出厂行为"层面**不存在**可对齐的 CL 取值。
+2. `param_3 != 0`（IN）+ `param_4 == 0` 时才 `transfer-encoding: chunked`（`:170-172`）；否则只 `Connection: Keep-Alive`（`:188`）。
+3. 方向语义还原：**IN = 请求体流式（客户端上行）**；**OUT = 响应体流式（网关下行）**。故 OUT 的**请求**无体 → `Content-Length: 0` 语义正确，但属"WinHTTP 默认行为"而非出厂显式头 → 标 `UNVERIFIED` 并写明理由，**不得**当作有证据的出厂行为。
+4. 阶段 2 改用裸 socket 后，OUT 请求若仍无体，保留 `Content-Length: 0` 并注明 UNVERIFIED；若将来 OUT 也需要上行体，必须重新取证，禁止沿用。
