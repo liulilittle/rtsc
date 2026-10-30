@@ -766,3 +766,10 @@
 - F1 执行已派 `ses_e70fdf498ffeYs1dPwL4nS6qr3`：kStrict/kTofu 改 DEFERRED + 链/主机名/SAN 通配校验 + pin memcmp；4 个新用例（kStrict 拒自签 / pin mismatch / pin match / kInsecure 回归）；2 项变异红证；server 角色需先判 role 避免误伤。
 - F2（rtsc_connect）与 F3（写线程 deadline）按乙建议排序，F1 双章后执行。
 - **教训（同型家族第 5 例）**：改了默认值 ≠ 改了行为；默认值变更必须配套"该策略确实会拒绝"的测试。
+
+## 第761轮：主代理独立审查新增 TlsByteTransport，抓到 2 项 P1 数据丢失
+- 审查 `src/net/gateway_transport.cpp:531-545`（Write）与 `:489-529`（Read），对照 `include/rtsc/net/tls.h:151-177` 的契约。
+- **D-T1（P1）Write 忽略 `consumed`**：`tls_openssl.cpp:207-220` 在 SSL_write WANT_READ/WANT_WRITE 时 `break` 并 `consumed = written`（< size）**仍返回 kOk**；适配器不检查 `consumed==size` 就 `return true` → 尾部永久丢失，违反 `net::Transport::Write` 契约（"Sends all size bytes"）。
+- **D-T2（P1）Read 丢弃超出缓冲的明文**：`gateway_transport.cpp:502-506/521-524` 用 `min(size, plaintext.size())` 拷贝后把局部 `plaintext` 丢弃；而 `tls.h:167-175` 明确 `max_out` 是软阈值、"may exceed it by up to one record"、"may append from several records"，调用方必须保留剩余。
+- **探针实证 2/2 RED**（`evidence/gateway-tlsadapt-probe.txt`，b6ed7f0）：Write 返回 true 但只写出 40/100 字节；两次 Read 共取回 16 字节而后端已解密 516 字节。
+- 判为**阶段 2 新代码引入**（非既有缺陷）→ 属本批范围，已 relay 给 F1 执行 AI 同批修复，含 2 个新用例与 2 项变异红证。
