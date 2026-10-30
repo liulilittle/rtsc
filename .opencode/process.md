@@ -863,3 +863,11 @@
 双审（甲 ses_e720e33f / 乙 ses_e720e1cd）已盖章定案；**主代理独立探针 RED 已完成**（8/9 FAIL）。
 主代理自我纠错 1 项：曾以"无 `Switching Protocols` 字面串"否定 101 升级 —— 错误，
 因状态码是数值比较（`WinHttpQueryHeaders`），已更正并记入证据文档 §9。
+
+## 第743轮：Gateway 定案入库 + 派执行阶段1
+- 主代理探针红证（本轮实跑）：`probe_gw.exe` → `SUMMARY failures=8`（Host 路径/无 TE:chunked/有 CL:0/缺 5 项头）。
+- 出厂探针：`IN_CHANNEL_RETRY_COUNT_%d`、`Win32#0.0=7`、`%s#%d.%d=%d`、`Content-Type: application/json`、`ProcessResponse401/307` 全部实测命中；`application/soap+xml`/`s:Envelope`/`SOAPAction` 全 0 命中。
+- **主代理自我纠错**：曾以"无 `Switching Protocols` 字面串"否定 101 升级 → 错误（状态码是数值比较，`WinHttpQueryHeaders`）；已更正，出厂确有 WebSocket 升级（`WinHttpWebSocketCompleteUpgrade` 2 命中 + `CreateOutChannelOrWebSocketRequest` 2 命中 = 升级/OUT 通道二选一）。
+- 定案入库 `docs/spec/gateway-rdgsp-design.md`（24b69da）：14 缺陷（D1-D14，全部附红证）、路线 A、阶段 1/2 切分、验收判据。
+- 执行 AI 派出 `ses_e71e343deffeYMNPn43gPJY1qb`（阶段 1：A 头部修复 / B chunked 编解码 / C 状态映射 / D 多挑战 / E UDP 四项 / F 测试）。
+- 明确禁止 encode→decode 自证（对齐 discover 已记录的缺陷模式）。
