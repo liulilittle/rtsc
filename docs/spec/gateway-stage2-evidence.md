@@ -202,3 +202,91 @@ REA procedure_pseudo_code 0x1801bfd60   # 响应处理 + 101 分支
 REA procedure_pseudo_code 0x1801c3818   # 头部构造（阶段 1 已用）
 REA procedure_pseudo_code 0x1801bdd8c   # 状态码 → HRESULT
 ```
+
+## 10. 拓扑裁定：**双连接**（不是单连接双请求）
+
+审计乙（`ses_e716db85`）质疑设计稿 §2 的"单连接双请求"假设。主代理用反汇编裁决，结论：**乙正确，设计稿 §2 错误**。
+
+### 10.1 证据链（三条独立证据互相印证）
+
+**证据 1 — IN 与 OUT 各自调用 `CreateConnection`，且端口字段不同**
+
+```
+FUN_1801bc14c（IN 通道）:26-27
+  uVar2 = (**(*param_2 + 0x30))(param_2, &local_res8,
+                                param_1 + 0x28c,                    // host
+                                *(undefined2 *)(param_1 + 0x6a6));  // ← IN 端口
+
+FUN_1801bc3c4（OUT 通道）:19-20
+  uVar4 = (**(*param_2 + 0x30))(param_2, plVar1,
+                                param_1 + 0x28c,                    // host（同一个）
+                                *(undefined2 *)(param_1 + 0x6a4));  // ← OUT 端口（不同字段）
+```
+
+- IN 结果存入 `local_res8`（局部），OUT 结果存入 `param_1 + 0xde8`（成员）。
+- 两处调用的是**同一个工厂方法**（vtable `+0x30` = `CreateConnection`），各自返回**独立连接对象**。
+- 错误串明确区分：`pSession->CreateConnection (IN channel) failed`（`FUN_1801bc14c:72`）与 `pSession->CreateConnection (OUT channel) failed`。
+- **端口是分离字段**（`0x6a6` vs `0x6a4`）→ 允许 IN/OUT 走不同端口。
+
+**证据 2 — 两个独立的 request 对象槽**
+
+```
+FUN_1801bc3c4:17
+  plVar1 = (longlong *)(param_1 + 0xde8);      // OUT 连接槽
+FUN_1801bfd60:177
+  *(longlong **)(param_1 + 0xdf0) = param_5;   // OUT 升级后的流对象槽（+0xde8 之后）
+```
+
+`0xde8`（OUT 连接）与 `0xdf0`（OUT 升级流）相邻但独立；IN 侧用局部/另一槽。若为单连接，无需两套槽。
+
+**证据 3 — 101 只对 OUT，且 IN 侧收到 101 是错误**
+
+```
+FUN_1801bfd60:158-170
+  if ((int)local_4a8 == 0x65) {          // 101
+    if (local_4b8 != 0) {                // 该响应属于 IN 通道
+      // "Server returned switch protocols for IN channel" → 失败
+    }
+    // OUT: 接受升级，转裸字节流
+```
+
+若 IN 与 OUT 共用一个 HTTP 连接，HTTP/1.1 不允许在响应体进行中 pipeline 另一个请求；而 IN 通道的响应体是**持续流**（chunked 下行），永不到达结尾 → 在同连接上再发 OUT 请求在协议上不可能。**101 只能出现在 OUT**这一点进一步印证二者是不同连接。
+
+### 10.2 定案拓扑
+
+```
+            ┌──────────────── TCP/TLS 连接 A（OUT）────────────────┐
+客户端 ────▶│ 请求: RDG_OUT_DATA（或 GET/POST）                     │
+            │ 响应 200 → 响应体 = 网关→客户端 RDP 下行（chunked 解码）│
+            │ 响应 101 → 升级为裸双工字节流（不再 chunked）          │
+            └──────────────────────────────────────────────────────┘
+
+            ┌──────────────── TCP/TLS 连接 B（IN）─────────────────┐
+客户端 ────▶│ 请求: RDG_IN_DATA                                     │
+            │ 请求体 = 客户端→网关 RDP 上行（chunked 编码，持续）     │
+            └──────────────────────────────────────────────────────┘
+```
+
+- **OUT 连接承载下行**（网关 → 客户端），是"请求-响应"形态，响应体即数据流。
+- **IN 连接承载上行**（客户端 → 网关），请求体即数据流（chunked 持续写）。
+- 两条连接各自独立建立、独立 TLS、独立失败重试。
+- 这解释了为什么 `Write` 走 IN、`Read` 走 OUT，以及为什么 101 升级只会发生一次（在 OUT 上）。
+
+### 10.3 对设计的修正
+
+| 原设计稿 §2 | 修正后 |
+|---|---|
+| "RDGSP 同一 TCP/TLS 连接上 OUT 上行与 IN 下行交错" | **OUT=下行、IN=上行，两条独立连接** |
+| 风险 P1："单连接双请求多路复用层（死锁风险）" | **该风险不存在**（改为双连接后无多路复用） |
+| 需要自实现"单 socket 双请求多路复用" | **不需要**；改为两个 `Transport` 实例 |
+
+**乙指出的死锁（`WinsockTransport::Write` 无超时 + 双写互等）在双连接下仍然存在**，因为：
+- 上行（IN）的 `Write` 可能阻塞（`src/net/winsock_transport.cpp:52-62`，无 `SO_SNDTIMEO`，全库 grep 为空）；
+- 下行（OUT）的 `Read` 若不调用，服务器的发送窗口会填满。
+- 但双连接下两者独立，可通过"读线程 + 写线程分离"或"Write 分块 + 中间穿插 Read"缓解；单连接下则是**必然死锁**。
+
+### 10.4 残留 UNVERIFIED
+
+- `0x6a4` 与 `0x6a6` 在正常配置下是否总是取相同值（若是，则端口虽分离但实际同端口；双连接仍成立）。
+- OUT 的 `200` 与 `101` 是否互斥（同一连接不可能两次升级）——从 `FUN_1801bfd60` 的状态转移看是互斥分支，但需真机确认。
+- 两条连接是否共享 TLS 会话（resumption）——静态证据不足。
