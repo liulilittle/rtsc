@@ -721,3 +721,10 @@
 - 提交 7e5f13b（9 文件，USB 接线 + P0/P1 + CAPS + 门控，双章）。
 - **C0 全量 ctest 62/62 全绿**（含 gateway 单测 1.41s，非 34GB 套件）。
 - 三项遗留（P2 空串 env / P2 ALL 隐私提示 / P3 early-exit 泄漏）派执行 AI 收尾小修。
+
+## 第732轮：收尾小修交付 + 双审快审
+- 执行 AI 交付 3 项：`include/rtsc/usb/usb_gate.h`（UsbGateEnabled 纯函数，平台中性可单测）；隐私提示（枚举→统计 matched→打印→AddDevice）；`std::unique_ptr<char, decltype(&std::free)>` RAII。
+- 报称 rdpusb 60/271；2 项变异红证；3 新用例；build 0err/0warn。工作树 3 项（2 M + 1 ??）。
+- 主代理核实：`usb_gate.h` 语义正确；`:396-404` RAII；`:596` 门控同步；`:763-797` 顺序为 Enumerate→统计→打印→AddDevice；`UsbSpecIsAll`(:183-198) 与 `UsbSpecAllows`(:130-144) 的 ALL 归一一致（同 trim+toupper）。
+- **主代理自查发现（待双审确认）**：隐私提示用 `usb_matched`（候选数）声称 "remote peer can access"，但随后 `AddDevice` 可能因 WinUSB Open 失败返回 false（P1-9 行为）→ 文案可能虚假；且 `:794` 日志用 `usb_devices_added_count`（实际数）与提示口径不一致。建议改为先 AddDevice 再用实际成功数打印。
+- 双审快审已派：甲（RAII/边界/测试/构建），乙（隐私文案真实性/USB 安全/skipped 累加/归一一致性）。
