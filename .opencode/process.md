@@ -803,3 +803,12 @@
   5. 错误区分 proxy denied(`0x1806cf630`) / server denied(`0x1806cf4b0`) / switch protocols(`0x1806cf530`)。
   6. 隧道认证状态机 Initializing→Authenticating→Authorizing（`0x1807939a8`…）；UDP 有独立认证（`0x1807940b0`…）。
 - 双审计已派（甲：证据补全+架构路线对比+接线点；乙：现有代码规范审计+安全+UDP 正确性+测试盲区），双向互告 ID。
+
+## 第742轮：Gateway 甲/乙 审计（乙第一轮，主代理抽样核实）
+- 乙报 13 项缺陷 + 5 安全项 + 3 UDP 正确性 + 测试盲区 + 3 协议判定 + 6 实施风险。
+- 主代理抽查核实 2 项最硬：
+  1. **Host 头错用路径**：`gateway.cpp:263` `write_header("Host", "/remoteDesktopGateway/")` —— 确认，违反 RFC7230 5.4（Host 必须是 authority）。
+  2. **UDP stash 单帧覆盖丢数据**：`gateway_transport.cpp:103-109` 收到新帧即 `stashed_ = std::move(payload)` 无条件覆盖；`:111` 每帧立即 `SendAck` → 未消费帧被覆盖且发送方已 ACK 不重传 → 永久丢数据。确认。
+- 乙关键判定（有价值）：RDGSP 方法是**自定义动词 RDG_IN_DATA/RDG_OUT_DATA**，非 POST；响应体 chunked 解码完全缺失；`Client::Connect` 硬 30s 若在构造内握手会冻结 GUI 消息泵。
+- 乙标注 UNVERIFIED 的部分（SYNEX 探测、MultitransportResponse 字段序、OUT chunked、服务器响应方法语义）—— 符合纪律。
+- 等甲（证据补全 + 架构路线合并）后磋商。
