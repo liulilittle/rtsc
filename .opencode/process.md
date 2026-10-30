@@ -653,3 +653,9 @@
 - 取证：channel.cpp Feed 的 expected_length_=header.length 无上限（F1 确认）；rdpdr_server.cpp:189-203 收 DeviceList 不发回复（D2 确认）；RdpdrDeviceReply::encode() 已具备。
 - 定案落 docs/spec/channel-reassembler-limit.md（7b6f1cf）：F1 16MiB 上限（对齐 drdynvc kMaxMessageLength）；D2 每设备发 ANNOUNCE_RSP。
 - 执行 AI：ses_e73fd669affecHYwj60WwvZOSf（TDD，两项）。
+## 第715轮：F1 完成 + 主代理独立验证
+- channel.cpp:30-33 FIRST 上限守卫（设 expected 前 Reset+InvalidLength）、:44-48 累积上限守卫（减法防 size_t 溢出）。
+- channel.h 加 kMaxChannelMessageBytes=16MiB。
+- 3 新用例（超限 FIRST / 累积超限 / 恰好 16MiB 通过）；变异①禁用守卫双红。
+- rtsc_channel_tests **10 tests/71 checks 全绿**（主代理重建复跑确认）；既有 7 用例零回归。
+- 执行 AI 继续 D2。
