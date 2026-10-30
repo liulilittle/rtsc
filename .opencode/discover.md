@@ -1428,3 +1428,14 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 3. 编解码往返测试（encode→parse→compare）双双错而互相印证
 
 **共同防法**：测试数据的布局/顺序/边界必须引用外部权威（规范原文/用户裁定/证据文档），并允许实现"以另一种正确方式"通过。
+
+## P0 记录（2026-10-31，阶段2 复核）
+
+### SChannel 后端对 kStrict/kTofu 均零校验 → Windows 上默认 kStrict 是安全剧场
+- **症状**：阶段 2 把 `main.cpp` 默认从 `kInsecure` 改成 `kStrict`，但 Windows 只编 SChannel 后端（`tls_factory.cpp:36-42`），而 SChannel 三策略全走 `ISC_REQ_MANUAL_CRED_VALIDATION` 且无后续校验。
+- **根因**：`tls_schannel.cpp:143-155` 三种策略都置 MANUAL（`:148-149` 注释明说 MANUAL 会让 kStrict≡kInsecure，代码却仍写 MANUAL）；`:663-677` 握手完成只查 STREAM_SIZES；`:437-473` 有 `PeerSubjectPublicKeyInfo` 但从不与 `pinned_spki_sha256` 比较。
+- **为何测试没抓到**：`tests/test_tls.cpp:246-251` 全部用例使用 `InsecureConfig()`（kInsecure），**零 kStrict/kTofu 用例**。
+- **对照**：`tls_openssl.cpp:118-126` kTofu 与 kStrict 都用 `SSL_VERIFY_PEER`（链校验），仅 kStrict 额外 `SSL_set1_host`；`:427-445` 真做 pin memcmp。语义正确但 Windows 用不到。
+- **影响**：本机所有 TLS（直连 CredSSP step5 密码密封 + 网关外层 + `--gateway-trust` pin）全部无校验 → 中间人可读明文密码。
+- **裁定**：F1 为阶段 2 签署前置条件。修复见 `docs/spec/tls-schannel-p0-verification.md` §5。F2（`tools/rtsc_connect/main.cpp:109` 仍 kInsecure）在 F1 后独立提交。
+- **教训（同型家族第 5 例）**："改了默认值"不等于"改了行为"——必须验证后端是否真的实现了该策略；默认值变更必须配套"该策略确实会拒绝"的测试。
