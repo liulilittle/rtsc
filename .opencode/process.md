@@ -780,3 +780,13 @@
   - `FUN_1801bfd60`（779 行）：`:158 if (local_4a8 == 0x65)` → **101 只允许 OUT**；IN 收 101 报 `Server returned switch protocols for IN channel` 并失败；OUT 成功后 `0xd20=4`、`0xd24=1`(Upgraded)、`0xd1c=0xb`、`0xd38=0`(重试清零)；`:192 == 200` 为正常路径；状态码**数值比较**
 - 关键设计约束：升级后走裸字节流不经 chunked；401 有 `MaxRetryCount` 上限（数值 UNVERIFIED）；认证状态机 `0xd20` 1→2→4，8/0x10/0x40/0x80 = 原生/SMARTCARD/claims/CONNID
 - 双审已派：甲 ses_e716dd16（证据补全 + 架构路线 + 握手状态机 + 失败路径 + 测试策略），乙 ses_e716db85（接缝可行性 + **单 socket 双通道死锁分析** + 安全（TLS/SSRF/凭据）+ 回归），已双向互告 ID。
+
+## 第754轮：拓扑裁定——双连接（乙质疑成立，设计稿 §2 推翻）
+- 乙（ses_e716db85）质疑"单连接双请求"假设，主代理用反汇编裁决：**乙正确**。
+- 三条独立证据（入库 `docs/spec/gateway-stage2-evidence.md` §10，f1a75bf）：
+  1. IN/OUT 各自调用 `CreateConnection`（vtable +0x30），**端口字段不同**（IN=`+0x6a6`，OUT=`+0x6a4`），结果存不同槽（local_res8 vs `+0xde8`），错误串分开
+  2. 两套槽：`+0xde8`（OUT 连接）、`+0xdf0`（OUT 升级流）
+  3. 101 只对 OUT，IN 收 101 报错；HTTP/1.1 不允许响应体进行中 pipeline，IN 响应体是持续 chunked 流 → 同连接再发 OUT 请求协议上不可能
+- **定案**：OUT=下行（网关→客户端，200 chunked 解码 / 101 裸双工）；IN=上行（客户端→网关，chunked 持续写）；两条独立连接/TLS/重试。原"单连接多路复用 P1"**不存在**。
+- 乙的死锁发现仍成立（`winsock_transport.cpp:52-62` 无 SO_SNDTIMEO，全库 grep 空）但双连接下可缓解（读写分离/分块穿插）；单连接下必然死锁。
+- 已核实并接受乙另三项：`main.cpp:265` kInsecure 硬编码（须改 gateway 外层 kStrict）；`gateway_transport.cpp:268-272` 空请求静默 Write(0)（须显式报错，同阶段1前置要求1）；307 零跟随维持。
