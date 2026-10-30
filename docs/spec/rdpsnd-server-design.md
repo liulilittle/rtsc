@@ -43,3 +43,10 @@
 ## 5. 待双审裁决项（甲乙磋商中）
 
 ① formatNo 恒=0 ② 8-bit PCM 客户端 wedge 论证 ③ 自写 float→int16+DSP vs AUTOCONVERTPCM ④ enable_rdpsnd_capture 默认值 ⑤ test_server.cpp:2055 断言迁移。
+
+## 6. 主代理独立核查（对甲乙分歧的事实取证）
+
+1. **客户端无 phase 门**（裁决争议1）：`src/channel/rdpsnd_client.cpp:159-166` OnWave2 直接 parse→PlaySample，**不检查** training/quality 阶段是否完成；`OnPdu` 无状态机（:75-103）。→ 结论：客户端收到 Wave2 就会播，Training 顺序对**本客户端**不构成硬门；但规范 3.3.5.1.1.4 顺序要求应遵守（mstsc 互操作保真）。v1 应发 Training+收 Confirm 再开流（甲口径），但这是"协议正确性"而非"客户端兼容必需"。
+2. **D12 客户端 wedge 真缺陷**（核实）：`src/audio/audio_win32.cpp:110` OpenDeviceLocked 失败 → `return` 退出 Worker，但 `:69-70` 已置 `started_=true`；此后 Submit 的 `start_thread=!started_` 恒 false → 永不再起线程 → 永久静默，且 `thread_` 为已结束线程（析构时 join 需检查 joinable）。成立，纳入修复。
+3. **Wave2 无 write**（核实）：`include/rtsc/proto/rdpsnd.h` 只有 `SndWave2::parse`，无 write/BuildWave2Body；`SndServerFormats` 只有 parse，无 server 方向 builder → proto 缺口确认。
+4. **Training 可由服务器复用**：`BuildSndPdu(kTraining, body)` 已可用（`src/proto/rdpsnd.cpp`），只需 body = wTimeStamp+wPackSize。
