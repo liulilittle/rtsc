@@ -2,10 +2,12 @@
 
 #include "rtsc/proto/gateway.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 namespace rtsc::proto {
 
@@ -31,6 +33,130 @@ std::string Trim(const std::string& s) {
         --end;
     }
     return s.substr(begin, end - begin);
+}
+
+// Splits `s` at every `delimiter` that appears outside double-quoted spans (a
+// comma inside a quoted auth-param value, e.g. realm="a,b", belongs to the
+// value). The fragments are trimmed; empty ones stay (the caller filters).
+std::vector<std::string> SplitOutsideQuotes(const std::string& s, char delimiter) {
+    std::vector<std::string> parts;
+    bool in_quote = false;
+    size_t start = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '"') {
+            in_quote = !in_quote;
+        } else if (s[i] == delimiter && !in_quote) {
+            parts.push_back(Trim(s.substr(start, i - start)));
+            start = i + 1;
+        }
+    }
+    parts.push_back(Trim(s.substr(start)));
+    return parts;
+}
+
+// Splits `s` on whitespace outside double-quoted spans (a quoted value may
+// contain spaces, e.g. realm="terminal services"). Quotes stay in the tokens
+// and are stripped later by the challenge parser.
+std::vector<std::string> SplitWhitespaceOutsideQuotes(const std::string& s) {
+    std::vector<std::string> parts;
+    bool in_quote = false;
+    std::string current;
+    for (const char c : s) {
+        if (c == '"') {
+            in_quote = !in_quote;
+            current.push_back(c);
+        } else if (!in_quote &&
+                   std::isspace(static_cast<unsigned char>(c)) != 0) {
+            if (!current.empty()) {
+                parts.push_back(current);
+                current.clear();
+            }
+        } else {
+            current.push_back(c);
+        }
+    }
+    if (!current.empty()) parts.push_back(current);
+    return parts;
+}
+
+// Strips a pair of surrounding double quotes, if present.
+std::string Unquote(const std::string& s) {
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+// True when `s` is an RFC 7235 token68: characters from the token set with at
+// most a trailing run of '=' (base64 padding: "TlRMTVNT...=="). This
+// distinguishes a token payload from an auth-param ("realm=\"x\"" has a
+// non-trailing '=').
+bool IsToken68Like(const std::string& s) {
+    if (s.empty()) return false;
+    const auto is_token68_char = [](char c) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        return (u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') ||
+               (u >= '0' && u <= '9') || c == '-' || c == '.' || c == '_' ||
+               c == '~' || c == '+' || c == '/';
+    };
+    const size_t first_eq = s.find('=');
+    if (first_eq == std::string::npos) {
+        for (const char c : s) {
+            if (!is_token68_char(c)) return false;
+        }
+        return true;
+    }
+    if (first_eq == 0) return false;
+    for (size_t i = 0; i < first_eq; ++i) {
+        if (!is_token68_char(s[i])) return false;
+    }
+    for (size_t i = first_eq; i < s.size(); ++i) {
+        if (s[i] != '=') return false;  // '=' only in a trailing run
+    }
+    return true;
+}
+
+// RFC 4648 base64 encoding. The factory base64-encodes the user name before
+// writing RDG-User-Id (docs/spec/gateway-header-direction-ruling.md
+// :544/:568), so the builder applies the same transform to the raw name.
+std::string EncodeBase64(const std::string& bytes) {
+    static constexpr char kTable[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 3 <= bytes.size(); i += 3) {
+        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
+                           (static_cast<unsigned char>(bytes[i + 1]) << 8) |
+                           static_cast<unsigned char>(bytes[i + 2]);
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back(kTable[(v >> 6) & 0x3F]);
+        out.push_back(kTable[v & 0x3F]);
+    }
+    const size_t rest = bytes.size() - i;
+    if (rest == 1) {
+        const uint32_t v = static_cast<unsigned char>(bytes[i]) << 16;
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (rest == 2) {
+        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
+                           (static_cast<unsigned char>(bytes[i + 1]) << 8);
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back(kTable[(v >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+// True when a configured value could smuggle a header or a request-line break:
+// CR, LF or a NUL byte. These must never reach the wire (header injection).
+bool ContainsCrlfOrNul(const std::string& s) {
+    return s.find_first_of("\r\n") != std::string::npos ||
+           s.find('\0') != std::string::npos;
 }
 
 // Finds the next CRLF in `data` (of `size` bytes) starting at `start`; returns
@@ -215,6 +341,13 @@ std::string HttpMessage::header_or(const std::string& name,
 }
 
 std::vector<uint8_t> BuildHttpConnectRequest(const ConnectRequestOptions& o) {
+    // The configured target and every header value must be injection-free;
+    // otherwise report failure as an empty request the caller can detect.
+    if (ContainsCrlfOrNul(o.target) || ContainsCrlfOrNul(o.gateway_host) ||
+        ContainsCrlfOrNul(o.user_agent) || ContainsCrlfOrNul(o.cookie) ||
+        ContainsCrlfOrNul(o.authorization)) {
+        return {};
+    }
     ByteWriter w;
     const std::string request_line =
         "CONNECT " + o.target + " HTTP/1.1";
@@ -246,6 +379,20 @@ std::vector<uint8_t> BuildHttpConnectRequest(const ConnectRequestOptions& o) {
 }
 
 std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
+    // Every configured value (the method belongs to the request line) must be
+    // injection-free, and the method must not be empty (an empty method would
+    // yield a request line with a leading space). A violation is reported as
+    // an empty request vector the caller can detect.
+    if (o.method.empty() || ContainsCrlfOrNul(o.method) ||
+        ContainsCrlfOrNul(o.gateway_host) ||
+        ContainsCrlfOrNul(o.user_agent) || ContainsCrlfOrNul(o.connection_id) ||
+        ContainsCrlfOrNul(o.correlation_id) || ContainsCrlfOrNul(o.user_id) ||
+        ContainsCrlfOrNul(o.client_generation) ||
+        ContainsCrlfOrNul(o.load_balancer_cookie) ||
+        ContainsCrlfOrNul(o.app_build) || ContainsCrlfOrNul(o.auth_scheme) ||
+        ContainsCrlfOrNul(o.diagnostics_info)) {
+        return {};
+    }
     ByteWriter w;
     const std::string request_line =
         o.method + " /remoteDesktopGateway/ HTTP/1.1";
@@ -260,19 +407,311 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
         AppendCrLf(w);
     };
 
-    write_header("Host", "/remoteDesktopGateway/");
+    // D1: Host is the gateway authority (host:port), never the URL path. The
+    // factory's request goes to "%s://%s:%hu%s" where the authority part is
+    // what Host must carry.
+    write_header("Host", o.gateway_host);
     write_header("User-Agent", o.user_agent);
     write_header("Accept", "*/*");
     write_header("Cache-Control", "no-cache");
-    write_header("Connection", "Keep-Alive");
-    write_header("Content-Length", "0");
+    // Transfer coding splits by direction (doc: gateway-header-direction-ruling.md
+    // FUN_1801c3818 :170-188): the IN channel streams with Transfer-Encoding:
+    // chunked (and no Content-Length); the OUT channel is a plain Keep-Alive
+    // request with an empty body.
+    if (o.direction == RdgChannelDirection::kIn) {
+        write_header("Transfer-Encoding", "chunked");
+    } else {
+        write_header("Connection", "Keep-Alive");
+        // Content-Length: 0 -- the OUT request has no entity body. This is
+        // UNVERIFIED against the factory binary: mstscax.dll has no explicit
+        // Content-Length / Host strings (0 hits; WinHTTP generates them
+        // implicitly), so this header is our own equivalent, not "as shipped".
+        write_header("Content-Length", "0");
+    }
+
+    // Headers sent on both channels (ruling :74/:248/:226).
     write_header(kRdgConnectionIdHeader, o.connection_id);
+    if (!o.diagnostics_info.empty()) {
+        write_header(kRdgDiagnosticsInfoHeader, o.diagnostics_info);
+    }
     if (!o.correlation_id.empty()) {
         write_header(kRdgCorrelationIdHeader, o.correlation_id);
     }
-    if (!o.user_id.empty()) write_header(kRdgUserIdHeader, o.user_id);
+
+    if (o.direction == RdgChannelDirection::kIn) {
+        // RDG-User-Id is IN-only and carries the base64 form of the user name
+        // (ruling :544/:568).
+        if (!o.user_id.empty()) {
+            write_header(kRdgUserIdHeader, EncodeBase64(o.user_id));
+        }
+    } else {
+        // OUT-only header set (ruling: `local_298 == 0` branch, :299-383 plus
+        // the load balancer cookie at :77-95).
+        if (!o.client_generation.empty()) {
+            write_header(kRdgClientGenerationHeader, o.client_generation);
+        }
+        if (!o.app_build.empty()) {
+            write_header(kRdgClientAppBuildHeader, o.app_build);
+        }
+        if (!o.load_balancer_cookie.empty()) {
+            write_header(kRdgLoadBalancerCookieHeader,
+                         o.load_balancer_cookie);
+        }
+    }
+
+    // Optional header with no factory value evidence (UNVERIFIED); configurable
+    // on both channels.
+    if (!o.auth_scheme.empty()) write_header(kRdgAuthSchemeHeader, o.auth_scheme);
+
+    // IN-channel retry mode (ruling :264-269, IN-only + retry flag).
+    if (o.direction == RdgChannelDirection::kIn && o.retry_count > 0) {
+        write_header(kRdgInchannelRetryModeHeader,
+                     "IN_CHANNEL_RETRY_COUNT_" + std::to_string(o.retry_count));
+    }
+
     AppendCrLf(w);
     return w.take();
+}
+
+// ---- chunked transfer coding -------------------------------------------------
+
+const char* to_string(ChunkedError e) {
+    switch (e) {
+        case ChunkedError::kNone: return "none";
+        case ChunkedError::kTruncated: return "truncated";
+        case ChunkedError::kInvalidHex: return "invalid hex";
+        case ChunkedError::kNegativeLength: return "negative length";
+        case ChunkedError::kChunkTooLarge: return "chunk too large";
+        case ChunkedError::kTotalTooLarge: return "total too large";
+        case ChunkedError::kInvalidField: return "invalid field";
+    }
+    return "unknown";
+}
+
+std::vector<uint8_t> ChunkedEncode(const uint8_t* data, size_t size) {
+    ByteWriter w;
+    if (size > 0) {
+        char size_line[32];
+        std::snprintf(size_line, sizeof(size_line), "%zx",
+                      static_cast<size_t>(size));
+        const size_t line_len = std::strlen(size_line);
+        w.bytes(reinterpret_cast<const uint8_t*>(size_line), line_len);
+        AppendCrLf(w);
+        w.bytes(data, size);
+        AppendCrLf(w);
+    }
+    w.u8('0');
+    AppendCrLf(w);
+    AppendCrLf(w);
+    return w.take();
+}
+
+ChunkedDecoder::ChunkedDecoder(size_t max_chunk_bytes, size_t max_total_bytes)
+    : max_chunk_bytes_(max_chunk_bytes), max_total_bytes_(max_total_bytes) {}
+
+// Parses one "[hex-digits][chunk-ext]" size line. Empty/extenseless handling
+// is the caller's (the state machine knows whether non-empty was required).
+ChunkedError ChunkedDecoder::ParseSizeLine(const std::string& line,
+                                           size_t& out) const {
+    // RFC 9112: chunk-size = 1*HEXDIG. The first character must be a hex
+    // digit (leading whitespace is rejected: the grammar has none), and after
+    // the digits only a ';' chunk-extension may follow. Any other character
+    // ("0x10" -> 'x', "4 garbage" -> ' ', "+4" -> '+') is a hard error, so a
+    // "0x10" size line cannot be mis-read as a terminal 0-chunk.
+    uint64_t value = 0;
+    int digits = 0;
+    size_t i = 0;
+    for (; i < line.size(); ++i) {
+        const char c = line[i];
+        int nibble = -1;
+        if (c >= '0' && c <= '9') {
+            nibble = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            nibble = 10 + (c - 'a');
+        } else if (c >= 'A' && c <= 'F') {
+            nibble = 10 + (c - 'A');
+        } else {
+            break;  // not a hex digit: see the ';'-only rule below
+        }
+        if (value > (0xFFFFFFFFFFFFFFFFull - nibble) / 16) {
+            return ChunkedError::kNegativeLength;  // would wrap past 2^64
+        }
+        value = value * 16 + static_cast<uint64_t>(nibble);
+        ++digits;
+    }
+    if (digits == 0) return ChunkedError::kInvalidHex;
+    if (i < line.size() && line[i] != ';') return ChunkedError::kInvalidHex;
+    if (value >= (1ull << 63)) return ChunkedError::kNegativeLength;
+    if (value > static_cast<uint64_t>(max_chunk_bytes_)) {
+        return ChunkedError::kChunkTooLarge;
+    }
+    out = static_cast<size_t>(value);
+    return ChunkedError::kNone;
+}
+
+std::vector<uint8_t> ChunkedDecoder::Feed(const uint8_t* data, size_t size) {
+    std::vector<uint8_t> out;
+    if (data == nullptr || size == 0) return out;
+    if (error_ != ChunkedError::kNone || finished_) return out;
+
+    buffer_.insert(buffer_.end(), data, data + size);
+
+    // Largest single size line we will buffer: 16 hex digits plus the
+    // extension run. A peer that never sends a newline past this is rejected.
+    constexpr size_t kMaxSizeLineBytes = 256;
+    constexpr size_t kMaxTrailerBytes = 64 * 1024;
+
+    for (;;) {
+        if (state_ == State::kSize) {
+            const char* base = reinterpret_cast<const char*>(buffer_.data());
+            const std::string_view view(base, buffer_.size());
+            const size_t nl = view.find('\n', 0);
+            if (nl == std::string_view::npos) {
+                if (buffer_.size() > kMaxSizeLineBytes) {
+                    error_ = ChunkedError::kInvalidField;
+                    buffer_.clear();
+                    return out;
+                }
+                return out;  // need more data
+            }
+            // RFC 9112: every line ends with CRLF; a lone LF is invalid (a
+            // lone '\r' just means the LF half is still in flight).
+            const bool cr = nl > 0 && view[nl - 1] == '\r';
+            if (!cr) {
+                error_ = ChunkedError::kInvalidField;
+                buffer_.clear();
+                return out;
+            }
+            const size_t line_end = nl - 1;
+            const std::string line(view.data(), line_end);
+
+            size_t chunk;
+            const ChunkedError e = ParseSizeLine(line, chunk);
+            if (e != ChunkedError::kNone) {
+                error_ = e;
+                buffer_.clear();
+                return out;
+            }
+            if (chunk == 0) {
+                state_ = State::kTrailers;
+            } else {
+                if (decoded_total_ > max_total_bytes_ ||
+                    chunk > max_total_bytes_ - decoded_total_) {
+                    error_ = ChunkedError::kTotalTooLarge;
+                    buffer_.clear();
+                    return out;
+                }
+                pending_ = chunk;
+                state_ = State::kData;
+            }
+            buffer_.erase(buffer_.begin(),
+                          buffer_.begin() +
+                              static_cast<std::ptrdiff_t>(nl + 1));
+            continue;
+        }
+
+        if (state_ == State::kData) {
+            const size_t take = (std::min)(pending_, buffer_.size());
+            out.insert(out.end(), buffer_.begin(),
+                       buffer_.begin() + static_cast<std::ptrdiff_t>(take));
+            buffer_.erase(buffer_.begin(),
+                          buffer_.begin() + static_cast<std::ptrdiff_t>(take));
+            pending_ -= take;
+            decoded_total_ += take;
+            if (pending_ == 0) state_ = State::kChunkEnd;
+            if (buffer_.empty()) return out;
+            continue;
+        }
+
+        if (state_ == State::kChunkEnd) {
+            // Each chunk's data must be followed by a CRLF (RFC 9112); a lone
+            // '\r' just means the LF half is still in flight.
+            if (buffer_.size() >= 2 && buffer_[0] == '\r' &&
+                buffer_[1] == '\n') {
+                buffer_.erase(buffer_.begin(), buffer_.begin() + 2);
+            } else if (buffer_.size() == 1 && buffer_[0] == '\r') {
+                return out;
+            } else {
+                error_ = ChunkedError::kInvalidField;
+                buffer_.clear();
+                return out;
+            }
+            state_ = State::kSize;
+            continue;
+        }
+
+        if (state_ == State::kTrailers) {
+            // After the 0-chunk: header lines until an empty line. The trailing
+            // header fields are skipped, bounded so they cannot be a memory
+            // sink in themselves.
+            const char* base = reinterpret_cast<const char*>(buffer_.data());
+            const std::string_view view(base, buffer_.size());
+            const size_t nl = view.find('\n', 0);
+            if (nl == std::string_view::npos) {
+                if (buffer_.size() > kMaxTrailerBytes) {
+                    error_ = ChunkedError::kInvalidField;
+                    buffer_.clear();
+                    return out;
+                }
+                return out;  // need more data
+            }
+            // RFC 9112: trailer lines end with CRLF.
+            const bool cr = nl > 0 && view[nl - 1] == '\r';
+            if (!cr) {
+                error_ = ChunkedError::kInvalidField;
+                buffer_.clear();
+                return out;
+            }
+            const size_t line_end = nl - 1;
+            const bool empty = line_end == 0;
+            buffer_.erase(buffer_.begin(),
+                          buffer_.begin() +
+                              static_cast<std::ptrdiff_t>(nl + 1));
+            if (empty) {
+                state_ = State::kDone;
+                finished_ = true;
+                return out;
+            }
+            continue;
+        }
+
+        // State::kDone: the terminal 0-chunk (and any trailers) were consumed.
+        return out;
+    }
+}
+
+std::vector<uint8_t> ChunkedDecoder::Feed(const std::vector<uint8_t>& bytes) {
+    return Feed(bytes.data(), bytes.size());
+}
+
+void ChunkedDecoder::EndOfStream() {
+    if (finished_) return;
+    if (error_ == ChunkedError::kNone) error_ = ChunkedError::kTruncated;
+}
+
+bool IsChunkedBody(const HttpMessage& message) {
+    const HttpHeader* transfer = message.find("transfer-encoding");
+    if (transfer == nullptr) return false;
+    // The value may be a comma-separated coding list ("gzip, chunked"); tokens
+    // are compared case-insensitively.
+    for (const std::string& coding : SplitOutsideQuotes(transfer->value, ',')) {
+        if (ToLower(Trim(coding)) == "chunked") return true;
+    }
+    return false;
+}
+
+uint32_t MapGatewayStatusToHresult(int status_code, bool password_expired) {
+    // Evidence: mstscax FUN_1801bdd8c.
+    if (password_expired) return 0x80070532;  // ERROR_PASSWORD_EXPIRED
+    switch (status_code) {
+        case 401: return 0x80070005;          // E_ACCESSDENIED
+        case 407: return 0x800706C1;          // ERROR_PROXY_ACCESS_DENIED
+        case 502:
+        case 504: return 0x800706BA;          // ERROR_SERVER_UNAVAILABLE
+        default:
+            return 0x80190000u |
+                   static_cast<uint32_t>(status_code);
+    }
 }
 
 // ---- authentication ----------------------------------------------------------
@@ -281,24 +720,67 @@ Status RdgAuthChallenge::parse_www_authenticate(const std::string& value,
                                                  RdgAuthChallenge& out) {
     const std::string trimmed = Trim(value);
     if (trimmed.empty()) return Status::InvalidField;
-    const size_t space = trimmed.find(' ');
+    const size_t space = trimmed.find_first_of(" \t");
+    RdgAuthChallenge result;
     if (space == std::string::npos) {
-        out.scheme = trimmed;
-        out.realm.clear();
+        result.scheme = trimmed;
+        out = std::move(result);
         return Status::Ok;
     }
-    out.scheme = trimmed.substr(0, space);
+    result.scheme = trimmed.substr(0, space);
     const std::string rest = Trim(trimmed.substr(space + 1));
-    const size_t eq = rest.find('=');
-    if (eq == std::string::npos) return Status::InvalidField;
-    const std::string key = Trim(rest.substr(0, eq));
-    std::string realm = Trim(rest.substr(eq + 1));
-    if (!realm.empty() && realm.front() == '"' && realm.back() == '"') {
-        realm = realm.substr(1, realm.size() - 2);
+    if (rest.empty()) return Status::InvalidField;
+    // An RFC 7235 challenge body is either a single token68 ("NTLM <base64>",
+    // whose trailing '=' is padding) or a list of auth-params, never a mixture.
+    const std::vector<std::string> tokens = SplitWhitespaceOutsideQuotes(rest);
+    if (tokens.size() == 1 && IsToken68Like(tokens[0])) {
+        result.token = rest;
+        out = std::move(result);
+        return Status::Ok;
     }
-    if (ToLower(key) != "realm") return Status::InvalidField;
-    out.realm = realm;
+    for (const std::string& token : tokens) {
+        const size_t eq = token.find('=');
+        if (eq == std::string::npos) return Status::InvalidField;
+        const std::string key = Trim(token.substr(0, eq));
+        if (key.empty()) return Status::InvalidField;
+        const std::string raw = Trim(token.substr(eq + 1));
+        const std::string param_value = Unquote(raw);
+        result.params.push_back({key, param_value});
+        if (ToLower(key) == "realm") result.realm = param_value;
+    }
+    out = std::move(result);
     return Status::Ok;
+}
+
+Status RdgAuthChallenge::parse_challenges(const std::string& header_value,
+                                          std::vector<RdgAuthChallenge>& out) {
+    std::vector<std::string> fragments = SplitOutsideQuotes(header_value, ',');
+    // Drop empty fragments left by repeated commas / trailing commas.
+    fragments.erase(
+        std::remove_if(fragments.begin(), fragments.end(),
+                       [](const std::string& s) { return Trim(s).empty(); }),
+        fragments.end());
+    if (fragments.empty()) return Status::InvalidField;
+    for (const std::string& fragment : fragments) {
+        RdgAuthChallenge challenge;
+        const Status st = parse_www_authenticate(fragment, challenge);
+        if (st != Status::Ok) return st;
+        out.push_back(std::move(challenge));
+    }
+    return Status::Ok;
+}
+
+Status ParseWwwAuthenticateHeaders(const HttpMessage& message,
+                                   std::vector<RdgAuthChallenge>& out) {
+    bool found = false;
+    for (const HttpHeader& header : message.headers) {
+        if (ToLower(header.name) != "www-authenticate") continue;
+        found = true;
+        const Status st =
+            RdgAuthChallenge::parse_challenges(header.value, out);
+        if (st != Status::Ok) return st;
+    }
+    return found ? Status::Ok : Status::InvalidField;
 }
 
 std::string RdgAuthRequest::header_value() const {

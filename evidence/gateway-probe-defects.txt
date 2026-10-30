@@ -1,21 +1,11 @@
-  [INFO] feed "0x10\r\nabc...": decoded=0 finished=1 failed=0
-[FAIL] 0x-prefixed size line is rejected (not read as terminal 0-chunk)
-[FAIL] leading space before chunk size is rejected
-[FAIL] trailing junk after chunk size is rejected
-[FAIL] lone LF line endings are rejected
+﻿  [INFO] feed "0x10\r\nabc...": decoded=0 finished=0 failed=1
+[PASS] 0x-prefixed size line is rejected (not read as terminal 0-chunk)
+[PASS] leading space before chunk size is rejected
+[PASS] trailing junk after chunk size is rejected
+[PASS] lone LF line endings are rejected
 [PASS] chunk extension ';ext=1' still accepted
-  [INFO] request=RDG_IN_DATA /remoteDesktopGateway/ HTTP/1.1
-Host: gw:443
-User-Agent: ua
-Accept: */*
-Cache-Control: no-cache
-Connection: Keep-Alive
-Transfer-Encoding: chunked
-RDG-Connection-Id: CID
-X-Injected: 1
-
+  [INFO] request=
+[PASS] CRLF in connection_id cannot inject a header
+[PASS] CRLF in gateway_host cannot inject a header
 
-[FAIL] CRLF in connection_id cannot inject a header
-[FAIL] CRLF in gateway_host cannot inject a header
-
-SUMMARY failures=6
+SUMMARY failures=0

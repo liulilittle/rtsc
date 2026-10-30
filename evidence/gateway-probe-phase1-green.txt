@@ -1,0 +1,66 @@
+﻿---- BuildRdgChannelRequest(RDG_OUT_DATA) (470 bytes) ----
+RDG_OUT_DATA /remoteDesktopGateway/ HTTP/1.1\r\n
+Host: gw.example:443\r\n
+User-Agent: rtsc\r\n
+Accept: */*\r\n
+Cache-Control: no-cache\r\n
+Connection: Keep-Alive\r\n
+Content-Length: 0\r\n
+RDG-Connection-Id: 11111111-2222-3333-4444-555555555555\r\n
+RDG-Diagnostics-Info: rdg diagnostics\r\n
+RDG-Correlation-Id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\r\n
+RDG-Client-Generation: Win32#10.0=22631\r\n
+RDG-Client-AppBuild: 10.0.22631\r\n
+Load Balancer Cookie: Cookie: mstshash=ABCD\r\n
+RDG-Auth-Scheme: SMARTCARD\r\n
+\r\n
+
+== assertions on the OUT RDGSP channel request ==
+[PASS] OUT host header is an authority, not the URL path
+[PASS] OUT carries Connection: Keep-Alive (plain request)
+[PASS] OUT has no Transfer-Encoding: chunked
+[PASS] OUT carries RDG-Connection-Id
+[PASS] OUT carries RDG-Diagnostics-Info
+[PASS] OUT carries RDG-Correlation-Id
+[PASS] OUT carries RDG-Client-Generation
+[PASS] OUT carries RDG-Client-AppBuild
+[PASS] OUT carries RDG-Auth-Scheme
+[PASS] OUT carries Load Balancer Cookie
+[PASS] OUT does NOT carry the IN-only user id
+---- BuildRdgChannelRequest(RDG_IN_DATA, retry) (389 bytes) ----
+RDG_IN_DATA /remoteDesktopGateway/ HTTP/1.1\r\n
+Host: gw.example:443\r\n
+User-Agent: rtsc\r\n
+Accept: */*\r\n
+Cache-Control: no-cache\r\n
+Transfer-Encoding: chunked\r\n
+RDG-Connection-Id: 11111111-2222-3333-4444-555555555555\r\n
+RDG-Diagnostics-Info: rdg diagnostics\r\n
+RDG-Correlation-Id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\r\n
+RDG-User-Id: dXNlckBleGFtcGxl\r\n
+RDG-INCHANNEL-RETRYMODE: IN_CHANNEL_RETRY_COUNT_1\r\n
+\r\n
+
+== assertions on the IN RDGSP channel request ==
+[PASS] IN host header is an authority, not the URL path
+[PASS] IN carries Transfer-Encoding: chunked
+[PASS] IN has no Content-Length on the streaming body
+[PASS] IN carries RDG-Diagnostics-Info
+[PASS] IN carries RDG-Correlation-Id
+[PASS] IN carries the base64 RDG-User-Id
+[PASS] IN carries RDG-INCHANNEL-RETRYMODE with a retry count
+[PASS] IN does NOT carry the OUT-only client generation
+[PASS] IN does NOT carry the OUT-only app build
+[PASS] IN does NOT carry the OUT-only load balancer cookie
+---- BuildHttpConnectRequest (117 bytes) ----
+CONNECT rdphost:3389 HTTP/1.1\r\n
+Host: gw.example:443\r\n
+User-Agent: rtsc\r\n
+X-Transport: 0x00000001\r\n
+Content-Length: 0\r\n
+\r\n
+
+== assertions on the CONNECT request ==
+[PASS] CONNECT host header is the gateway authority
+
+SUMMARY failures=0

@@ -5,9 +5,26 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <utility>
 
 namespace rtsc::net {
+
+namespace {
+
+// RDP-UDP source sequence numbers wrap at 2^32 (RFC 1982 serial arithmetic):
+// `a` is "after" `b` when their signed difference is positive. Plain
+// comparison mis-orders a frame that arrives right after a wrap (the old
+// `acked_source_ >= start` / `start <= highest` comparisons did exactly that).
+inline bool SeqAfter(uint32_t a, uint32_t b) {
+    return static_cast<int32_t>(a - b) > 0;
+}
+
+inline bool SeqAtOrAfter(uint32_t a, uint32_t b) {
+    return static_cast<int32_t>(a - b) >= 0;
+}
+
+}  // namespace
 
 UdpTransport::UdpTransport(std::unique_ptr<UdpSocket> socket,
                            const Config& config)
@@ -19,15 +36,30 @@ int UdpTransport::Read(uint8_t* buf, size_t size) {
     if (closed_ || buf == nullptr || size == 0) return closed_ ? -1 : 0;
     for (;;) {
         if (!stashed_.empty()) {
-            const size_t n = std::min(size, stashed_.size());
-            std::memcpy(buf, stashed_.data(), n);
-            stashed_.erase(stashed_.begin(),
-                           stashed_.begin() + static_cast<std::ptrdiff_t>(n));
+            const size_t n = std::min(size, stashed_.front().payload.size());
+            std::memcpy(buf, stashed_.front().payload.data(), n);
+            if (n < stashed_.front().payload.size()) {
+                // Partial read of one frame: keep the remainder queued.
+                stashed_.front().payload.erase(
+                    stashed_.front().payload.begin(),
+                    stashed_.front().payload.begin() +
+                        static_cast<std::ptrdiff_t>(n));
+                return static_cast<int>(n);
+            }
+            // The frame was ACKed when it was queued (D8): an ACK means "the
+            // frame is durably buffered in the bounded FIFO", never "the
+            // reader consumed it". That keeps peer progress independent of the
+            // application's read cadence (R1) while the queue guarantees the
+            // frame is never dropped by an overwrite. Consuming just delivers.
+            stashed_.pop_front();
             return static_cast<int>(n);
         }
         const int r = ReceiveDatagram();
-        if (r == 1) continue;
-        if (r == 0) return kReadTimeout;
+        if (r == kDatagramPayload || r == kDatagramAck ||
+            r == kDatagramSkipped) {
+            continue;  // queued payload / consumed ACK / skipped bad datagram
+        }
+        if (r == kDatagramTimeout) return kReadTimeout;
         return -1;
     }
 }
@@ -69,8 +101,9 @@ bool UdpTransport::SendDataFrame(const std::vector<uint8_t>& payload) {
             std::chrono::steady_clock::now() +
             std::chrono::milliseconds(config_.ack_timeout_ms);
         for (;;) {
+            // D12: wrap-safe "acked_source_ covers our frame".
             if (has_acked_source_ &&
-                acked_source_ >= frame.source.source_start) {
+                SeqAtOrAfter(acked_source_, frame.source.source_start)) {
                 return true;
             }
             if (std::chrono::steady_clock::now() >= deadline) break;
@@ -84,8 +117,8 @@ bool UdpTransport::SendDataFrame(const std::vector<uint8_t>& payload) {
 int UdpTransport::ReceiveDatagram() {
     uint8_t buf[65536];
     const int n = socket_->Receive(buf, sizeof(buf));
-    if (n == 0) return 0;
-    if (n < 0) return -1;
+    if (n == 0) return kDatagramTimeout;
+    if (n < 0) return kDatagramError;
     const std::vector<uint8_t> datagram(buf, buf + n);
 
     proto::UdpAckFrame ack;
@@ -94,24 +127,51 @@ int UdpTransport::ReceiveDatagram() {
         acked_source_ = ack.fec.source_ack;
         has_acked_source_ = true;
         ++ack_count_;
-        return 0;
+        // D9: an ACK is not a read timeout; it is its own outcome so Read()
+        // keeps polling instead of reporting kReadTimeout for a live peer.
+        return kDatagramAck;
     }
 
     proto::UdpDataFrame frame;
     if (proto::UdpDataFrame::parse(datagram.data(), datagram.size(), frame) ==
         proto::Status::Ok) {
         if (has_highest_received_ &&
-            frame.source.source_start <= highest_received_) {
+            !SeqAfter(frame.source.source_start, highest_received_)) {
             ++duplicate_count_;
+            // A repeat of a frame already accepted: re-ACK it so a stop-and-wait
+            // sender whose ACK was lost does not burn a retransmission timeout.
+            if (reliable()) SendAck(frame.source.source_start);
+        } else if (config_.receive_window_size > 0 &&
+                   stashed_.size() >=
+                       static_cast<size_t>(config_.receive_window_size)) {
+            // R2: the inbound queue is bounded (the receive window), so a peer
+            // that floods without a reader cannot grow memory without bound. A
+            // frame received while the queue is full is dropped and NOT ACKed
+            // (the honest "I have not accepted this data" signal that makes a
+            // reliable sender retry once a slot frees).
+            ++stash_drop_count_;
         } else {
             highest_received_ = frame.source.source_start;
             has_highest_received_ = true;
-            StashPayload(std::move(frame.payload));
+            StashPayload(frame.source.source_start, std::move(frame.payload));
+            // D8/R1: a frame ACKed here is durably queued (the FIFO never
+            // overwrites, and it is bounded), so ACKing at enqueue is lossless
+            // and keeps the peer's stop-and-wait independent of this side's
+            // read cadence.
+            if (reliable()) SendAck(frame.source.source_start);
         }
-        if (reliable()) SendAck(frame.source.source_start);
-        return 1;
+        return kDatagramPayload;
     }
-    return -1;
+
+    // D13: a malformed datagram is counted and skipped instead of tearing the
+    // link down on the first offender; only a flood past the configured cap
+    // forces the -1 failure.
+    ++bad_datagram_count_;
+    if (config_.max_bad_datagrams > 0 &&
+        static_cast<unsigned>(config_.max_bad_datagrams) < bad_datagram_count_) {
+        return kDatagramError;
+    }
+    return kDatagramSkipped;
 }
 
 void UdpTransport::SendAck(uint32_t source_start) {
@@ -123,8 +183,11 @@ void UdpTransport::SendAck(uint32_t source_start) {
     socket_->Send(bytes.data(), bytes.size());
 }
 
-void UdpTransport::StashPayload(std::vector<uint8_t> payload) {
-    stashed_ = std::move(payload);
+void UdpTransport::StashPayload(uint32_t source_start,
+                                std::vector<uint8_t> payload) {
+    // FIFO (D8): a single slot used to drop the previous unconsumed frame when
+    // a second one arrived.
+    stashed_.push_back({source_start, std::move(payload)});
 }
 
 // ---- gateway tunnel ----------------------------------------------------------

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,10 @@ class UdpTransport : public Transport {
         uint16_t receive_window_size = 64;
         int ack_timeout_ms = 100;
         int max_retries = 5;
+        // D13: malformed datagrams are counted and skipped instead of tearing
+        // the link down; only once the count exceeds this cap is the transport
+        // failed. 0 disables the cap (never fail on bad datagrams).
+        int max_bad_datagrams = 16;
     };
 
     UdpTransport(std::unique_ptr<UdpSocket> socket, const Config& config);
@@ -72,15 +77,36 @@ class UdpTransport : public Transport {
     unsigned retry_count() const { return retry_count_; }
     unsigned ack_count() const { return ack_count_; }
     unsigned duplicate_count() const { return duplicate_count_; }
+    unsigned bad_datagram_count() const { return bad_datagram_count_; }
+    unsigned stash_drop_count() const { return stash_drop_count_; }
 
  private:
+    // ReceiveDatagram() outcome codes. The transport distinguishes "an ACK was
+    // consumed" (0) from "the bounded wait elapsed" (another value) and from a
+    // hard failure (-1); in particular an ACK-only datagram must never surface
+    // as a read timeout (D9).
+    enum DatagramResult : int {
+        kDatagramError = -1,   // socket error / bad-datagram cap exceeded
+        kDatagramAck = 0,      // an ACK datagram was consumed
+        kDatagramPayload = 1,  // a data frame was queued for Read()
+        kDatagramTimeout = 2,  // bounded wait elapsed, no datagram
+        kDatagramSkipped = 3,  // malformed datagram counted and skipped (D13)
+    };
+
+    // One queued inbound data frame and the source sequence number it must be
+    // ACKed with once the payload has been handed to the reader (D8).
+    struct StashedFrame {
+        uint32_t source_start = 0;
+        std::vector<uint8_t> payload;
+    };
+
     // Sends one data frame and (in reliable mode) waits for its ACK.
     bool SendDataFrame(const std::vector<uint8_t>& payload);
-    // Receives one datagram; dispatches it. Returns 1 when a payload was stashed
-    // for Read(), 0 on timeout / ACK-only, -1 on error.
+    // Receives one datagram; dispatches it. Returns one of the DatagramResult
+    // codes above.
     int ReceiveDatagram();
     void SendAck(uint32_t source_start);
-    void StashPayload(std::vector<uint8_t> payload);
+    void StashPayload(uint32_t source_start, std::vector<uint8_t> payload);
 
     std::unique_ptr<UdpSocket> socket_;
     Config config_;
@@ -93,12 +119,16 @@ class UdpTransport : public Transport {
     uint32_t acked_source_ = 0;
     bool has_acked_source_ = false;
 
-    std::vector<uint8_t> stashed_;
+    // FIFO of received-but-not-yet-consumed frames (D8: a single slot used to
+    // let a second frame overwrite an unconsumed first one).
+    std::deque<StashedFrame> stashed_;
 
     unsigned send_count_ = 0;
     unsigned retry_count_ = 0;
     unsigned ack_count_ = 0;
     unsigned duplicate_count_ = 0;
+    unsigned bad_datagram_count_ = 0;
+    unsigned stash_drop_count_ = 0;
 };
 
 // An HTTP/1.1 CONNECT tunnel over a byte transport.

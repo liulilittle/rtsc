@@ -1,5 +1,9 @@
 // Runtime probe: print the ACTUAL bytes our gateway builders emit today.
-// Links the real Release libs; no stubs. Proves the defects at byte level.
+// Links the real Release libs; no stubs. Header direction follows the
+// disassembly ruling docs/spec/gateway-header-direction-ruling.md
+// (mstscax FUN_1801c3818): correlation both channels, user-id IN-only
+// (base64), generation / app-build / LB cookie OUT-only, chunked IN-only /
+// Keep-Alive OUT.
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -32,36 +36,78 @@ int main() {
         if (!ok) ++failures;
     };
 
-    // 1) RDG channel request (IN channel shape) as the current code builds it.
-    RdgChannelRequestOptions ch;
-    ch.method = kRdgInData;
-    ch.connection_id = "11111111-2222-3333-4444-555555555555";
-    ch.user_agent = "rtsc";
-    ch.correlation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    ch.user_id = "user@example";
-    const std::vector<uint8_t> req = BuildRdgChannelRequest(ch);
-    Dump("BuildRdgChannelRequest(RDG_IN_DATA)", req);
+    // 1) OUT channel request: OUT-only set present, user-id / chunked absent.
+    RdgChannelRequestOptions out;
+    out.method = kRdgOutData;
+    out.direction = RdgChannelDirection::kOut;
+    out.gateway_host = "gw.example:443";
+    out.connection_id = "11111111-2222-3333-4444-555555555555";
+    out.user_agent = "rtsc";
+    out.correlation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    out.user_id = "user@example";
+    out.client_generation = "Win32#10.0=22631";
+    out.load_balancer_cookie = "Cookie: mstshash=ABCD";
+    out.app_build = "10.0.22631";
+    out.auth_scheme = "SMARTCARD";
+    out.diagnostics_info = "rdg diagnostics";
+    const std::vector<uint8_t> oreq = BuildRdgChannelRequest(out);
+    Dump("BuildRdgChannelRequest(RDG_OUT_DATA)", oreq);
 
-    std::printf("== assertions on the RDGSP channel request ==\n");
-    check("host header is an authority, not the URL path",
-          Has(req, "Host: /remoteDesktopGateway/") == false);
-    check("request carries Transfer-Encoding: chunked",
-          Has(req, "Transfer-Encoding: chunked") ||
-              Has(req, "transfer-encoding: chunked"));
-    check("request has no Content-Length: 0 on a streaming body",
-          Has(req, "Content-Length: 0") == false);
-    check("request carries RDG-Diagnostics-Info",
-          Has(req, "RDG-Diagnostics-Info"));
-    check("request carries RDG-Client-AppBuild",
-          Has(req, "RDG-Client-AppBuild"));
-    check("request carries RDG-Client-Generation",
-          Has(req, "RDG-Client-Generation"));
-    check("request carries RDG-Auth-Scheme", Has(req, "RDG-Auth-Scheme"));
-    check("request carries RDG-INCHANNEL-RETRYMODE",
-          Has(req, "RDG-INCHANNEL-RETRYMODE"));
-    check("request carries Connection: Keep-Alive", Has(req, "Keep-Alive"));
+    std::printf("== assertions on the OUT RDGSP channel request ==\n");
+    check("OUT host header is an authority, not the URL path",
+          Has(oreq, "Host: /remoteDesktopGateway/") == false);
+    check("OUT carries Connection: Keep-Alive (plain request)",
+          Has(oreq, "Connection: Keep-Alive"));
+    check("OUT has no Transfer-Encoding: chunked",
+          Has(oreq, "Transfer-Encoding") == false);
+    check("OUT carries RDG-Connection-Id", Has(oreq, "RDG-Connection-Id"));
+    check("OUT carries RDG-Diagnostics-Info", Has(oreq, "RDG-Diagnostics-Info"));
+    check("OUT carries RDG-Correlation-Id", Has(oreq, "RDG-Correlation-Id"));
+    check("OUT carries RDG-Client-Generation",
+          Has(oreq, "RDG-Client-Generation"));
+    check("OUT carries RDG-Client-AppBuild", Has(oreq, "RDG-Client-AppBuild"));
+    check("OUT carries RDG-Auth-Scheme", Has(oreq, "RDG-Auth-Scheme"));
+    check("OUT carries Load Balancer Cookie", Has(oreq, "Load Balancer Cookie"));
+    check("OUT does NOT carry the IN-only user id",
+          Has(oreq, "RDG-User-Id") == false);
 
-    // 2) CONNECT request for comparison (generic proxy path).
+    // 2) IN channel request (retry mode active): IN-only set present, OUT-only
+    //    set absent.
+    RdgChannelRequestOptions in;
+    in.method = kRdgInData;
+    in.direction = RdgChannelDirection::kIn;
+    in.gateway_host = "gw.example:443";
+    in.connection_id = "11111111-2222-3333-4444-555555555555";
+    in.user_agent = "rtsc";
+    in.correlation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    in.user_id = "user@example";
+    in.client_generation = "Win32#10.0=22631";
+    in.retry_count = 1;
+    in.diagnostics_info = "rdg diagnostics";
+    const std::vector<uint8_t> ireq = BuildRdgChannelRequest(in);
+    Dump("BuildRdgChannelRequest(RDG_IN_DATA, retry)", ireq);
+
+    std::printf("== assertions on the IN RDGSP channel request ==\n");
+    check("IN host header is an authority, not the URL path",
+          Has(ireq, "Host: /remoteDesktopGateway/") == false);
+    check("IN carries Transfer-Encoding: chunked",
+          Has(ireq, "Transfer-Encoding: chunked"));
+    check("IN has no Content-Length on the streaming body",
+          Has(ireq, "Content-Length") == false);
+    check("IN carries RDG-Diagnostics-Info", Has(ireq, "RDG-Diagnostics-Info"));
+    check("IN carries RDG-Correlation-Id", Has(ireq, "RDG-Correlation-Id"));
+    check("IN carries the base64 RDG-User-Id",
+          Has(ireq, "RDG-User-Id: dXNlckBleGFtcGxl"));
+    check("IN carries RDG-INCHANNEL-RETRYMODE with a retry count",
+          Has(ireq, "RDG-INCHANNEL-RETRYMODE: IN_CHANNEL_RETRY_COUNT_1"));
+    check("IN does NOT carry the OUT-only client generation",
+          Has(ireq, "RDG-Client-Generation") == false);
+    check("IN does NOT carry the OUT-only app build",
+          Has(ireq, "RDG-Client-AppBuild") == false);
+    check("IN does NOT carry the OUT-only load balancer cookie",
+          Has(ireq, "Load Balancer Cookie") == false);
+
+    // 3) CONNECT request (generic proxy path), unchanged.
     ConnectRequestOptions co;
     co.target = "rdphost:3389";
     co.gateway_host = "gw.example:443";

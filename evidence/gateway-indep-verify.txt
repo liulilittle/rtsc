@@ -1,0 +1,51 @@
+﻿[PASS] chunked: RFC example not failed
+[PASS] chunked: RFC example yields Wikipedia
+[PASS] chunked: RFC example finished
+[PASS] chunked: uppercase hex + extension accepted
+[PASS] chunked: 0xA bytes decoded
+[PASS] chunked: trailer skipped
+[PASS] chunked: trailer body is exactly abc
+[PASS] chunked: truncated chunk latches an error
+[PASS] chunked: invalid hex rejected
+[PASS] chunked: byte-by-byte feed works
+[PASS] chunked: total ceiling rejects oversize
+[PASS] chunked-encode: starts with b\r\n
+[PASS] chunked-encode: ends with 0\r\n\r\n
+[PASS] chunked-encode: contains the payload verbatim
+[PASS] chunked-encode: length token equals payload size
+[PASS] IsChunkedBody: chunked
+[PASS] IsChunkedBody: CHUNKED
+[PASS] IsChunkedBody: gzip, chunked
+[PASS] IsChunkedBody: gzip only
+[PASS] IsChunkedBody: absent header
+[PASS] status 401
+[PASS] status 407
+[PASS] status 502
+[PASS] status 504
+[PASS] status 500 generic
+[PASS] password expired
+[PASS] OUT: Host is the authority
+[PASS] OUT: no URL path in Host
+[PASS] OUT: Keep-Alive (plain request)
+[PASS] OUT: no chunked coding
+[PASS] OUT: correlation id
+[PASS] OUT: client generation
+[PASS] OUT: app build
+[PASS] OUT: lb cookie
+[PASS] OUT: connection id
+[PASS] OUT: no IN-only user id
+[PASS] IN: chunked streaming
+[PASS] IN: no Content-Length
+[PASS] IN: retry header carries the count
+[PASS] IN: correlation id
+[PASS] IN: user id base64
+[PASS] IN: no client generation leak
+[PASS] IN: no app build leak
+[PASS] IN: no lb cookie leak
+[PASS] default method is RDG_IN_DATA
+[PASS] default request line starts with RDG_IN_DATA
+[PASS] multi-challenge parses
+[PASS] multi-challenge yields 3
+[PASS] quoted comma not split
+
+SUMMARY failures=0

@@ -133,35 +133,187 @@ struct ConnectRequestOptions {
 std::vector<uint8_t> BuildHttpConnectRequest(const ConnectRequestOptions& options);
 
 // RDGSP HTTP transport custom methods and headers ([MS-TSGU] 2.2.3).
+// The header set and its directionality follow the factory evidence
+// (docs/spec/gateway-evidence.md section 2: the strings procured from
+// mstscax.dll).
 inline constexpr const char* kRdgInData = "RDG_IN_DATA";
 inline constexpr const char* kRdgOutData = "RDG_OUT_DATA";
 inline constexpr const char* kRdgConnectionIdHeader = "RDG-Connection-Id";
 inline constexpr const char* kRdgCorrelationIdHeader = "RDG-Correlation-Id";
 inline constexpr const char* kRdgUserIdHeader = "RDG-User-Id";
+inline constexpr const char* kRdgDiagnosticsInfoHeader = "RDG-Diagnostics-Info";
+inline constexpr const char* kRdgClientAppBuildHeader = "RDG-Client-AppBuild";
+inline constexpr const char* kRdgClientGenerationHeader = "RDG-Client-Generation";
+inline constexpr const char* kRdgAuthSchemeHeader = "RDG-Auth-Scheme";
+inline constexpr const char* kRdgLoadBalancerCookieHeader = "Load Balancer Cookie";
+inline constexpr const char* kRdgInchannelRetryModeHeader = "RDG-INCHANNEL-RETRYMODE";
+
+// Direction of an RDGSP channel request. The factory's error strings separate
+// headers sent on both channels ("AddRequestHeader ... for IN or OUT channel
+// failed") from OUT-only ones ("... for OUT channel failed"), so the caller
+// must tell the builder which channel it is targeting.
+enum class RdgChannelDirection { kIn, kOut };
 
 struct RdgChannelRequestOptions {
-    std::string method;         // RDG_IN_DATA / RDG_OUT_DATA
-    std::string connection_id;  // client-generated GUID
+    std::string method = kRdgInData;  // D10: default to the IN channel method
+    RdgChannelDirection direction = RdgChannelDirection::kIn;
+    std::string gateway_host;  // D1: Host = the gateway authority (host:port)
+    std::string connection_id;  // client-generated GUID (both channels)
     std::string user_agent;
-    std::string correlation_id; // optional
-    std::string user_id;        // optional
+    // Header direction follows docs/spec/gateway-header-direction-ruling.md
+    // (mstscax FUN_1801c3818). Both channels carry correlation-id; the
+    // user-id is IN-only (base64 on the wire); client generation / app build /
+    // Load Balancer Cookie are OUT-only.
+    std::string correlation_id;
+    std::string user_id;           // IN-only, base64-encoded when emitted
+    std::string client_generation; // OUT-only
+    std::string load_balancer_cookie;  // OUT-only
+    // Optional headers (value formats not in the factory evidence, UNVERIFIED):
+    // app build is OUT-only; auth scheme is sent on both channels.
+    std::string app_build;         // RDG-Client-AppBuild (OUT-only)
+    std::string auth_scheme;       // RDG-Auth-Scheme (factory values e.g.
+                                   // SMARTCARD / CONNID; none defaulted here)
+    std::string diagnostics_info;  // RDG-Diagnostics-Info
+    // IN-channel retry mode (evidence section 3: `0x1806d0f60` carries
+    // `RDG-INCHANNEL-RETRYMODE` and `IN_CHANNEL_RETRY_COUNT_%d`). Emitted only
+    // for kIn when retry_count is positive, as
+    //   RDG-INCHANNEL-RETRYMODE: IN_CHANNEL_RETRY_COUNT_<retry_count>
+    int retry_count = 0;
 };
 
 // Builds an RDGSP HTTP channel request (the IN/OUT channel creation request).
 std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& options);
 
 // ---------------------------------------------------------------------------
+// HTTP chunked transfer coding (RFC 9112 section 7.1)
+// ---------------------------------------------------------------------------
+
+// Ceilings for the chunked body decoder: a single chunk is bounded by the
+// project channel-message ceiling and the whole decoded body by 64 MiB. Both
+// are checked at the chunk-size line, before any data is buffered, so a peer
+// cannot make the decoder allocate in proportion to a size announcement. The
+// defaults are the memory-safety bounds; a caller may lower them per instance.
+inline constexpr size_t kMaxChunkedChunkBytes = 16u * 1024u * 1024u;
+inline constexpr size_t kMaxChunkTotalBytes = 64u * 1024u * 1024u;
+
+// Encodes `data` as one HTTP chunked entity: "<hex-size>\r\n<data>\r\n" with a
+// lowercase hex size, terminated by "0\r\n\r\n" (empty input encodes as just
+// "0\r\n\r\n").
+std::vector<uint8_t> ChunkedEncode(const uint8_t* data, size_t size);
+inline std::vector<uint8_t> ChunkedEncode(const std::vector<uint8_t>& data) {
+    return ChunkedEncode(data.data(), data.size());
+}
+
+// Why the chunked decoder failed. kNone is not a failure; every other value is
+// a hard error the decoder latches and reports from then on.
+enum class ChunkedError {
+    kNone,
+    kTruncated,       // the stream ended before the terminating 0-chunk
+    kInvalidHex,      // the chunk-size line has no parseable hex length
+    kNegativeLength,  // the chunk size wraps past 2^63 (an "unsigned -1")
+    kChunkTooLarge,   // a single chunk exceeds the per-chunk ceiling
+    kTotalTooLarge,   // the decoded total exceeds the overall ceiling
+    kInvalidField,    // structural violation (bad terminator, empty size line)
+};
+
+const char* to_string(ChunkedError e);
+
+// Incremental chunked-body decoder (RFC 9112 section 7.1). Feed the stream
+// fragments as they arrive; each call returns the data fully decoded by that
+// call. Sizes are case-insensitive hex, chunk extensions (";ext=val") and
+// trailing header fields after the terminating 0-chunk are skipped.
+class ChunkedDecoder {
+ public:
+    explicit ChunkedDecoder(size_t max_chunk_bytes = kMaxChunkedChunkBytes,
+                            size_t max_total_bytes = kMaxChunkTotalBytes);
+
+    ChunkedDecoder(const ChunkedDecoder&) = delete;
+    ChunkedDecoder& operator=(const ChunkedDecoder&) = delete;
+
+    // Decodes as much of `data` as possible and returns the freshly decoded
+    // data. On a latched failure or after the terminal chunk returns an empty
+    // vector; check finished()/error().
+    std::vector<uint8_t> Feed(const uint8_t* data, size_t size);
+    std::vector<uint8_t> Feed(const std::vector<uint8_t>& bytes);
+
+    // Signals that the underlying byte stream has ended. If the body had not
+    // reached its terminating 0-chunk the decoder latches kTruncated.
+    void EndOfStream();
+
+    bool finished() const { return finished_; }
+    bool failed() const { return error_ != ChunkedError::kNone; }
+    ChunkedError error() const { return error_; }
+    size_t decoded_total() const { return decoded_total_; }
+
+ private:
+    enum class State { kSize, kData, kChunkEnd, kTrailers, kDone };
+
+    // Parses a chunk-size line into `out`; extension text after the hex digits
+    // is skipped. Returns kInvalidHex / kNegativeLength / kInvalidField.
+    ChunkedError ParseSizeLine(const std::string& line, size_t& out) const;
+
+    size_t max_chunk_bytes_;
+    size_t max_total_bytes_;
+    size_t decoded_total_ = 0;
+    size_t pending_ = 0;                 // bytes remaining in the current chunk
+    std::vector<uint8_t> buffer_;        // unconsumed input across feeds
+    State state_ = State::kSize;
+    bool finished_ = false;
+    ChunkedError error_ = ChunkedError::kNone;
+};
+
+// Plain fallback probe: true when the HTTP response's Transfer-Encoding says
+// the entity body is chunked (case-insensitive token scan; the value may be a
+// comma-separated list). A missing header means a plain (non-chunked) body.
+bool IsChunkedBody(const HttpMessage& message);
+
+// Maps a failed RDGSP channel HTTP status code to an HRESULT, following the
+// factory's status mapping (evidence: mstscax `FUN_1801bdd8c`).
+//   401 -> E_ACCESSDENIED (0x80070005)
+//   password-expired -> ERROR_PASSWORD_EXPIRED (0x80070532)
+//   407 -> ERROR_PROXY_ACCESS_DENIED (0x800706C1)
+//   502 / 504 -> ERROR_SERVER_UNAVAILABLE (0x800706BA)
+//   anything else -> 0x80190000 | status
+uint32_t MapGatewayStatusToHresult(int status_code, bool password_expired);
+
+// ---------------------------------------------------------------------------
 // RD Gateway authentication (TLSAuth / SOAP)
 // ---------------------------------------------------------------------------
 
-// A parsed WWW-Authenticate challenge: `scheme realm="..."` or a bare scheme.
+// A key=value authentication parameter of a challenge.
+struct RdgAuthParam {
+    std::string key;
+    std::string value;  // quotes stripped
+};
+
+// A parsed WWW-Authenticate challenge: `scheme` plus its auth params (RFC
+// 7235). `realm` is the convenience mirror of the realm= param, preserved from
+// the original single-challenge API. An RFC 7235 challenge is either a
+// token68 (`NTLM <base64>`) or a param list; `token` carries the token68 body
+// when the challenge has no params at all.
 struct RdgAuthChallenge {
     std::string scheme;
     std::string realm;
+    std::string token;
+    std::vector<RdgAuthParam> params;
 
+    // Parses ONE challenge: `scheme`, `scheme k=v`, or `scheme k=v k2=v2`.
+    // Backward compatible with the original `scheme realm="..."` form.
     static Status parse_www_authenticate(const std::string& value,
                                          RdgAuthChallenge& out);
+
+    // Parses one header value that may contain several comma-separated
+    // challenges (a comma inside a quoted value does not split) and appends
+    // each to `out`. Multiple WWW-Authenticate header values are handled by
+    // calling this once per header value (see ParseWwwAuthenticateHeaders).
+    static Status parse_challenges(const std::string& header_value,
+                                   std::vector<RdgAuthChallenge>& out);
 };
+
+// Parses every WWW-Authenticate header of `message` (a response may carry
+// several header lines). Returns InvalidField when the message carries none.
+Status ParseWwwAuthenticateHeaders(const HttpMessage& message,
+                                   std::vector<RdgAuthChallenge>& out);
 
 // An Authorization header value: `scheme token`.
 struct RdgAuthRequest {
