@@ -394,3 +394,15 @@
 4. drdynvc 串包（`drdynvc_client.cpp:113-119`）
 5. QI/IFACE_RELEASE 缺失（S2-10）
 6. `CompleteUrb` 恒 `hresult=0` 且设备未知不发 URBCOMPLETION（`:509-542`）
+
+### USB 批次进展（2026-10-28，第726-729轮）
+
+**已定案并已接线**（未提交，等双章）：drdynvc 静态通道请求 + ChannelIdForName + RegisterChannel + DrdynvcClient + RdpUsbClient + CreateWin32Enumerator；CMake 链 rtsc_urbrdc/rtsc_usb_win32；`RTSC_REDIRECT_USB` 安全门控（默认空=不重定向）。
+
+**第⑤步验证抓到 2 项阻断 FAIL（均已 web/源码核实）**：
+- FAIL-1 `drdynvc_client.cpp:74-90`：CREATE_RSP 按 NUL 名字定界；规范 2.2.2.2 无 ChannelName（只有 ChannelId+CreationStatus 4B）→ 捆绑时第二条丢失；单测用错误布局假绿。
+- FAIL-2 `usb_win32.cpp:235-236`：Control OUT 只零初始化 buffer，`input` 未拷入 → 发全零载荷（Bulk OUT `:279` 正确）。
+
+**P2 同批**：CAPS 定界按版本（V2/3 PriorityCharge）、`RTSC_REDIRECT_USB` 空时仍广告 drdynvc 静态通道。
+
+**真机未验证**：Windows RDS + USB 实体设备双向 I/O（需用户环境）。
