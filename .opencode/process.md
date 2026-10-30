@@ -581,3 +581,6 @@
 ## 第696轮：向执行子发最小化 4 处编辑指令
 - 观察：rdpsnd_server.cpp 被触碰但 D-A/D-B 内容未改（多轮空转）。
 - 已发最小化指令（编辑1 D-A 删 QualityMode 发送+计数器；编辑2 D-B Poll 分档+quality_mode_timeout_count_；编辑3 D-C Start 门控；编辑4 D-E formats 防御+source_->Stop），要求每处编辑后 build+跑测并回报。
+## 第697轮：D-A/D-B 已落地
+- rdpsnd_server.cpp 352 行；quality_mode_sent_count_ 已删、quality_mode_timeout 已出现 → D-A（删发送）D-B（超时放行）落地。
+- D-C（Start 门控）仍未落地。等待执行子继续。
