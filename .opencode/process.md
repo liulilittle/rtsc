@@ -759,3 +759,10 @@
 - 主代理核实：`main.cpp` 两次读取 SHA256 一致（2c066deba4123cc6，56586B）；无 mutation 注释残留；`rtsc_gui` 重建成功（rtsc_gui.exe）。
 - 实现顺序已正确：AddDevice(:777-782) → added=true(:783) → 三分支提示(:787-803，added>0 用实际计数) → ready 汇总(:804)。
 - 双审五点复验已派；甲额外查"测试能否区分三分支"（三分支文案互换是否仍绿）；乙额外查"AddDevice 成功≠服务器接受，隐私文案是否仍不实"（P2/P3 判定）。
+
+## 第738轮：执行 AI 交付批次3 + 主代理核实
+- 交付：后置打印（AddDevice 循环 :777-782 → added=true :783 → 三分支提示 :787-803）+ 守卫反转（`gui_main_usb_privacy_notice_uses_actual_redirected_count`，断言 `add_device < notice` 且提示作用域含 `usb_devices_added_count` 不含 `usb_matched`）。
+- 报称 rdpusb 60/273；2 项变异红证；build 0err/0warn。
+- 主代理核实守卫实现有效：`FindLineIn(lines, "the remote peer can")` 与 `"rdpusb->AddDevice(device)"` 均唯一命中（main.cpp 内无注释干扰）；作用域扫描至首个 `);` 行，覆盖 `usb_devices_added_count`。
+- **发现 P3（美观）**：`tests/test_rdpusb.cpp:1501-1508` 测试注释两段语义重叠（"W11 wrap-up: the GUI must print an explicit privacy notice..." 与 "W11 wrap-up: the privacy notice must report..."），属编辑残留，应合并。
+- **乙的第 6 点（AddDevice≠服务器接受）主代理初判 P3**：`AddDevice`（`rdpusb_client.cpp:265-289`）= Open 成功 + 发 ADD_VIRTUAL_CHANNEL + 请求 DVC 通道 + 本地登记；返回 true 后路径已建立（服务器已收到通告与 channel id），"can access" 在能力意义上成立，未等 CREATE_RSP 确认属实现细节而非承诺虚假。等双审判定。
