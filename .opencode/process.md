@@ -742,3 +742,15 @@
 - 剩余子代理：乙 ses_e716db85（idle，保留待复核）、执行 ses_e715ef62（busy/pending，工作中）。
 - 执行进度：`tests/test_gateway.cpp` 已修改（TDD 红测先行），源码尚未动 → 符合"先红后绿"。
 - 乙的复核时机：待执行交付 + 主代理核实 SHA 稳定后。
+
+## 第759轮：阶段2 执行交付 + 主代理独立验证 + 派乙复核
+- 执行 AI（ses_e715ef62）一次交付全部 A-F：12 文件 +2949/-47（gateway_transport.cpp +816、test_gateway.cpp +1294、main.cpp +226、gateway.cpp +284）。
+- 报称：gateway 72→109 tests / 333→1125 checks 全绿；9 影响面套件全绿；C0 0err/0warn；4 项变异红证。
+- **主代理独立核实**：
+  - SHA 稳定（4 秒复测一致）
+  - 自建 Release `BUILD_RC=0`、0 err/0 warn
+  - 自跑 9 套件 **9/9 Passed**
+  - 关键实现就位：`:703` RDGSP 空请求拒绝、`:927` IN 101 硬错、`:886/:940` 重试上限、`:280` GatewayTunnel 同款拒绝
+  - 自写探针 `evidence/gateway-stage2-verify.cpp`：**16/16 PASS**（commit 0f8ad36）—— builder 拒 CRLF×3、clean IN = RDG_IN_DATA+chunked+无CL、RFC6455 FIN/opcode/MASK/长度/mask key 线上字节 44 33 22 11/payload 掩码、解码器接受外部未掩码帧
+  - **主代理首版探针的 mask 期望写错**（误以为小端），实为 RFC 大端 → 实现正确，已修正探针
+- 乙复核 7 项 + 重点（pinned SPKI 正确性 / ChunkedEncodeChunk 无界 / UNVERIFIED 合理性 / 独立变异 2 项 / rtsc_connect 仍 kInsecure 是否同批修）。
