@@ -492,3 +492,7 @@
 - 执行 AI：ses_e755e22c6ffectQ5JL0PI32kzA（TDD，含 D12 修复）。
 - 审计组甲 ses_e7577b947ffe0u079GJhkmmY3y / 乙 ses_e7577858cffeF4E1KTM6NePgY0 保持待命，交付后复核。
 - 关键裁决：Phase 六态（含 kAwaitQualityMode）；超时分档（formats/train-confirm 致命、quality 放行）；v1 每会话独立源实例（工厂 seam），广播总线=二期；enable_rdpsnd=true 默认但无源不建 handler；Training 按规范先发但客户端无 phase 门（双用例覆盖）。
+## 第674轮：D12 方案修正 + 等待执行
+- 乙发现 D12 简单复位 started_ 会 std::terminate（audio_win32.cpp:55-76 thread_ joinable 重赋）；采纳方案 B（Worker 常驻+reopen_ 重试+退避），已落证据 c857303 并 relay 执行 AI。
+- 甲乙审计闭合待命（重点 6 项已记录）。
+- 执行 AI ses_e755e22c6ffectQ5JL0PI32kzA busy 中，工作树尚无改动（TDD 红阶段）。
