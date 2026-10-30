@@ -31,6 +31,7 @@
 #include "connection_info_dialog_win32.h"
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
+#include "rtsc/channel/rdpdr_client.h"
 #include "rtsc/channel/rdpsnd_client.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/drop_files.h"
@@ -41,6 +42,8 @@
 #include "rtsc/net/transport.h"
 #include "rtsc/proto/connect_machine.h"
 #include "rtsc/proto/rdp_neg.h"
+#include "rtsc/rdpdr/drive_enum.h"
+#include "rtsc/rdpdr/file_system.h"
 #include "rtsc/security/connection_driver.h"
 #include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
@@ -387,8 +390,52 @@ int main(int argc, char** argv) {
     cliprdr.EnableFileClip();
 
     rtsc::channel::RdpsndClient rdpsnd(audio_sink.get(), send_rdpsnd);
+
+    // Drive redirection (RDPDR): redirect local drives to the remote session.
+    // The handler owns no file-system state; HostFileSystem must live at least
+    // as long as RdpdrClient, and RdpdrClient must be declared before
+    // RegisterChannel (the channel lambda captures it by reference).
+    auto host_fs = std::make_unique<rtsc::rdpdr::HostFileSystem>();
+    std::vector<rtsc::channel::RdpdrClient::Device> devices;
+    {
+        uint32_t device_id = 1;
+        char* env_spec = nullptr;
+        size_t env_spec_len = 0;
+        const char* spec = nullptr;
+        if (_dupenv_s(&env_spec, &env_spec_len, "RTSC_REDIRECT_DRIVES") == 0 &&
+            env_spec != nullptr) {
+            spec = env_spec;
+        }
+        for (const auto& drive : rtsc::rdpdr::EnumerateLocalDrives(spec)) {
+            devices.push_back(
+                {device_id++, drive.dos_name, drive.local_root});
+        }
+        std::free(env_spec);
+        // Drive redirection is opt-in (RTSC_REDIRECT_DRIVES), so an empty list
+        // is the normal case. Print what is actually shared - the remote peer
+        // gets read/write access to every redirected drive, and silently
+        // sharing a whole disk would be a nasty surprise.
+        if (devices.empty()) {
+            std::printf("rdpdr: no drives redirected "
+                        "(set RTSC_REDIRECT_DRIVES=C,E or ALL)\n");
+        } else {
+            std::printf("rdpdr: redirecting %zu drive(s):", devices.size());
+            for (const auto& device : devices) {
+                std::printf(" %s", device.dos_name.c_str());
+            }
+            std::printf(" (remote peer has read/write access)\n");
+        }
+    }
+    const auto send_rdpdr = [&](const std::vector<uint8_t>& message) {
+        send_channel(kChannelRdpdr, message);
+    };
+    rtsc::channel::RdpdrClient rdpdr(host_fs.get(), std::move(devices), "RTSC",
+                                     send_rdpdr);
     client.RegisterChannel(kChannelRdpdr,
-                           [&](const uint8_t*, size_t) { ++vc_rdpdr; });
+                           [&](const uint8_t* data, size_t size) {
+                               ++vc_rdpdr;
+                               rdpdr.OnChannelData(data, size);
+                           });
     client.RegisterChannel(kChannelCliprdr,
                            [&](const uint8_t* data, size_t size) {
                                ++vc_cliprdr;

@@ -95,7 +95,8 @@ target_link_libraries(rtsc_rail PUBLIC rtsc_proto)
 add_library(rtsc_rdpdr STATIC
     src/channel/rdpdr_client.cpp
     src/channel/rdpdr_server.cpp
-    src/rdpdr/file_system.cpp)
+    src/rdpdr/file_system.cpp
+    src/rdpdr/drive_enum_win32.cpp)
 target_include_directories(rtsc_rdpdr PUBLIC include)
 target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto)
 
@@ -259,6 +260,12 @@ target_include_directories(rtsc_rdpdr_tests PRIVATE tests)
 add_executable(rtsc_rdpdr_server_tests tests/test_rdpdr_server.cpp)
 target_link_libraries(rtsc_rdpdr_server_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpdr_server_tests PRIVATE tests)
+
+# Drive-enumeration policy: default fixed drives / whitelist / ALL / invalid
+# spec over an injected candidate list, so no case touches a real drive.
+add_executable(rtsc_drive_enum_tests tests/test_drive_enum.cpp)
+target_link_libraries(rtsc_drive_enum_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_drive_enum_tests PRIVATE tests)
 
 add_executable(rtsc_rdpsnd_tests tests/test_rdpsnd.cpp)
 target_link_libraries(rtsc_rdpsnd_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
@@ -551,7 +558,7 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp)
 target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_proto rtsc_util)
-target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr)
+target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr)
 if(WIN32)
     target_link_libraries(rtsc_gui PRIVATE rtsc_audio)
 endif()
@@ -697,6 +704,7 @@ add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
 add_test(NAME rdpdr_server COMMAND rtsc_rdpdr_server_tests)
+add_test(NAME drive_enum COMMAND rtsc_drive_enum_tests)
 add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
 add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
 add_test(NAME rdpsnd_server COMMAND rtsc_rdpsnd_server_tests)
@@ -765,6 +773,7 @@ if(MSVC)
     endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr_server_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_drive_enum_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_client_tests PRIVATE /W4 /WX)

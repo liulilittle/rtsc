@@ -362,6 +362,10 @@ void RdpdrClient::OnDeviceIoRequest(const std::vector<uint8_t>& body) {
         rtsc::proto::Status::Ok) {
         return;
     }
+    if (phase_ != Phase::kReady) {
+        SendIoCompletion(request, rtsc::proto::kStatusUnsuccessful);
+        return;
+    }
     switch (request.major_function) {
         case rtsc::proto::kIrpMjCreate: OnCreate(body); break;
         case rtsc::proto::kIrpMjRead: OnRead(body); break;
@@ -438,6 +442,10 @@ void RdpdrClient::OnRead(const std::vector<uint8_t>& body) {
         rtsc::proto::Status::Ok) {
         return;
     }
+    if (open_files_.find(req.request.file_id) == open_files_.end()) {
+        SendIoCompletion(req.request, kStatusInvalidHandle);
+        return;
+    }
     if (req.length > rdpdr::kMaxReadLength) {
         SendIoCompletion(req.request, rtsc::proto::kStatusInvalidParameter);
         return;
@@ -462,6 +470,10 @@ void RdpdrClient::OnWrite(const std::vector<uint8_t>& body) {
     rtsc::proto::RdpdrWriteReq req;
     if (rtsc::proto::RdpdrWriteReq::parse(body, req) !=
         rtsc::proto::Status::Ok) {
+        return;
+    }
+    if (req.data.size() > rdpdr::kMaxReadLength) {
+        SendIoCompletion(req.request, rtsc::proto::kStatusInvalidParameter);
         return;
     }
     const auto access = file_writable_.find(req.request.file_id);
@@ -508,6 +520,10 @@ void RdpdrClient::OnQueryDirectory(const std::vector<uint8_t>& body) {
     rtsc::proto::RdpdrQueryDirectoryReq req;
     if (rtsc::proto::RdpdrQueryDirectoryReq::parse(body, req) !=
         rtsc::proto::Status::Ok) {
+        return;
+    }
+    if (open_files_.find(req.request.file_id) == open_files_.end()) {
+        SendIoCompletion(req.request, kStatusInvalidHandle);
         return;
     }
     std::vector<uint8_t> data;

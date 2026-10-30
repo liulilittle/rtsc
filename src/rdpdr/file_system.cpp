@@ -67,16 +67,27 @@ std::vector<uint8_t> Utf16Le(const std::u16string& text) {
     return out;
 }
 
-// Encodes one directory entry in the requested [MS-FSCC] 2.4 layout.
+// Encodes one directory entry in the requested [MS-FSCC] 2.4 layout. Returns an
+// empty vector when the entry's stat data cannot be read (a dangling symlink,
+// or a file deleted mid-enumeration): the caller skips such entries instead of
+// letting a filesystem_error escape the enumeration.
 std::vector<uint8_t> EncodeDirectoryEntry(const fs::directory_entry& entry,
                                           uint32_t info_class) {
-    const std::u16string name = entry.path().filename().u16string();
+    const fs::path path = entry.path();
+    const std::u16string name = path.filename().u16string();
     const std::vector<uint8_t> name_utf16 = Utf16Le(name);
     const uint32_t name_len = static_cast<uint32_t>(name_utf16.size());
     const uint32_t attributes = entry.is_directory() ? 0x10 : 0x20;
-    const uint64_t file_size = entry.is_directory() ? 0 : entry.file_size();
 
-    const auto last = fs::last_write_time(entry.path());
+    std::error_code ec;
+    const uint64_t file_size =
+        entry.is_directory()
+            ? 0
+            : static_cast<uint64_t>(fs::file_size(path, ec));
+    if (ec) return {};
+    ec.clear();
+    const auto last = fs::last_write_time(path, ec);
+    if (ec) return {};
     const uint64_t write = ToFileTime(last);
 
     std::vector<uint8_t> out;
@@ -246,14 +257,16 @@ bool HostFileSystem::QueryDirectory(uint32_t file_id, bool initial,
     File* file = Find(file_id);
     if (file == nullptr || !file->is_directory) return false;
     if (initial) BuildDirectoryEntries(*file, file->directory);
-    if (file->next_entry >= file->entries.size()) return false;
-
-    const std::string full_path = file->entries[file->next_entry++];
-    std::error_code ec;
-    const fs::directory_entry entry(full_path, ec);
-    if (ec) return false;
-    out = EncodeDirectoryEntry(entry, fs_information_class);
-    return true;
+    while (file->next_entry < file->entries.size()) {
+        const std::string full_path = file->entries[file->next_entry++];
+        std::error_code ec;
+        const fs::directory_entry entry(full_path, ec);
+        if (ec) continue;  // unreachable entry: skip
+        out = EncodeDirectoryEntry(entry, fs_information_class);
+        if (out.empty()) continue;  // stat failed (e.g. dangling symlink): skip
+        return true;
+    }
+    return false;
 }
 
 bool HostFileSystem::Stat(const std::string& local_path, bool& is_directory) {

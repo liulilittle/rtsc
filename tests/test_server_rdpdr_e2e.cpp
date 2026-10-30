@@ -21,11 +21,13 @@
 #include "rtsc/channel/rdpdr_server.h"
 #include "rtsc/client/client.h"
 #include "rtsc/proto/rdp_neg.h"
+#include "rtsc/rdpdr/file_system.h"
 #include "rtsc/server/server.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -37,6 +39,8 @@
 using namespace rtsc::proto;
 using rtsc::channel::RdpdrClient;
 using rtsc::channel::RdpdrServer;
+using rtsc::rdpdr::HostFileSystem;
+using rtsc::rdpdr::IFileSystem;
 using rtsc::server::RdpServer;
 using rtsc::server::ServerConfig;
 
@@ -57,19 +61,31 @@ struct Pair {
 
 // Constructs the handlers in a caller-owned Pair. The send lambdas capture the
 // Pair's address, so the Pair must not be moved afterwards (returning it by
-// value would leave the captures dangling).
-void InitPair(Pair& p, const char* name) {
+// value would leave the captures dangling). `fs` / `devices` drive the client
+// side: the driver-wiring case passes a HostFileSystem backed by a temporary
+// directory and one device.
+void InitPair(Pair& p, const char* name, IFileSystem* fs = nullptr,
+              std::vector<RdpdrClient::Device> devices = {}) {
     p.server = std::make_unique<RdpdrServer>(
         [&p](const std::vector<uint8_t>& chunk) {
             p.server_to_client.push_back(chunk);
             p.server_captured.push_back(chunk);
         });
     p.client = std::make_unique<RdpdrClient>(
-        nullptr, std::vector<RdpdrClient::Device>{}, name,
+        fs, std::move(devices), name,
         [&p](const std::vector<uint8_t>& chunk) {
             p.client_to_server.push_back(chunk);
             p.client_captured.push_back(chunk);
         });
+}
+
+std::filesystem::path MakeTempDir(const char* tag) {
+    static unsigned counter = 0;
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+        ("rtsc_rdpdr_e2e_" + std::string(tag) + "_" +
+         std::to_string(++counter));
+    std::filesystem::create_directories(dir);
+    return dir;
 }
 
 // Drains every pending message across both directions until the queues empty
@@ -262,6 +278,46 @@ RTSC_TEST(rdpdr_e2e_handler_pair_handshake_completes) {
     CHECK_EQ(p.client->control_count(), static_cast<unsigned>(0));
 }
 
+// The driver-wiring form of the Pair: the client is backed by a real
+// HostFileSystem over a temporary directory and announces exactly one device.
+// The server observes the list (device_list_announce_count == 1) and both
+// sides reach READY over the real wire encoding.
+RTSC_TEST(rdpdr_e2e_handler_pair_announces_one_device) {
+    const std::filesystem::path dir = MakeTempDir("pair_dev");
+    HostFileSystem host_fs;
+    Pair p;
+    InitPair(p, "RTSC-E2E", &host_fs, {{1, "C:", dir.string()}});
+    p.server->Start();
+    PumpPair(p);
+
+    CHECK(p.server->phase() == RdpdrServer::Phase::kReady);
+    CHECK(p.client->phase() == RdpdrClient::Phase::kReady);
+    CHECK_EQ(p.server->device_list_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(p.client->device_list_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(p.client->devices().size(), static_cast<size_t>(1));
+
+    RdpdrDeviceListAnnounce list;
+    bool saw_list = false;
+    for (const auto& chunk : p.client_captured) {
+        const auto body = StrictBody(chunk);
+        RdpdrPdu pdu;
+        if (RdpdrPdu::parse(body.data(), body.size(), pdu) != Status::Ok) continue;
+        if (pdu.header.packet_id != kPakidCoreDevicelistAnnounce) continue;
+        CHECK(RdpdrDeviceListAnnounce::parse(body, list) == Status::Ok);
+        saw_list = true;
+    }
+    CHECK(saw_list);
+    CHECK_EQ(list.device_count, static_cast<uint32_t>(1));
+    CHECK_EQ(list.devices.size(), static_cast<size_t>(1));
+    if (list.devices.size() == 1) {
+        CHECK_EQ(list.devices[0].device_id, static_cast<uint32_t>(1));
+        CHECK(list.devices[0].dos_name() == "C:");
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 // R1+R2 (wire-visible half) + R3 over a real loopback session: the RdpServer
 // runs the RdpdrServer handler on its rdpdr static virtual channel and the
 // project's own RdpdrClient is wired onto the client side. The client finishes
@@ -348,6 +404,69 @@ RTSC_TEST(rdpdr_e2e_loopback_pairing) {
     transport->Close();
     server.Stop();
     runner.join();
+}
+
+// Loopback with one redirected device: a HostFileSystem backed by a temporary
+// directory and a single "C:" drive. The handshake settles (READY) exactly as
+// the empty-list loopback does, with the client announcing its one device.
+// This is also the wiring-proof mutation target: dropping the OnChannelData
+// call from the channel lambda leaves the handshake stuck and this test red.
+RTSC_TEST(rdpdr_e2e_loopback_with_device_ready) {
+    const std::filesystem::path dir = MakeTempDir("loop_dev");
+    HostFileSystem host_fs;
+
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    std::string cerr;
+    auto transport = rtsc::net::ConnectTcp("127.0.0.1", server.bound_port(), cerr);
+    CHECK(transport != nullptr);
+    if (transport == nullptr) {
+        server.Stop();
+        runner.join();
+        return;
+    }
+    rtsc::client::Client client(MakeDriver(64, 48), 64, 48);
+    std::atomic<bool> send_failed{false};
+    const uint16_t rdpdr_id = 1004;
+    RdpdrClient client_rdpdr(
+        &host_fs, {{1, "C:", dir.string()}}, "RTSC-E2E",
+        [&](const std::vector<uint8_t>& message) {
+            std::string perr;
+            if (!client.SendChannelPdu(*transport, rdpdr_id, message, perr)) {
+                send_failed.store(true);
+            }
+        });
+    client.RegisterChannel(rdpdr_id, [&](const uint8_t* data, size_t size) {
+        client_rdpdr.OnChannelData(data, size);
+    });
+
+    CHECK(client.Connect(*transport, cerr));
+    const bool ready = PumpUntil(
+        client, *transport, std::chrono::seconds(8),
+        [&]() { return RdpdrHandshakeSettled(client_rdpdr); });
+    CHECK(ready);
+    if (ready) {
+        CHECK_EQ(client_rdpdr.device_list_announce_count(),
+                 static_cast<unsigned>(1));
+        CHECK_EQ(client_rdpdr.devices().size(), static_cast<size_t>(1));
+    }
+    CHECK(!send_failed.load());
+
+    transport->Close();
+    server.Stop();
+    runner.join();
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 // R4: once the exchange is settled a duplicate client announce reply is out of

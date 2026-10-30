@@ -103,3 +103,15 @@ ctest：rdpdr + rdpdr_server + server_rdpdr_e2e 全绿 + 新增用例全绿。
 | F4(撤销) | `missing-file SUPERSEDE created io_status=0x00000000` | rdpdr_client.cpp:410 create 名单已含 kFileSupersede，无缺陷 |
 
 修复方案合计约 19 行 + 6 个新测试，已并入 §7 批内范围。
+
+## 9. 隐私策略裁定（用户决定，2026-10-28）
+
+双审提出的治理项：默认重定向全部 `DRIVE_FIXED`（含系统盘 `C:\`）→ 远端可读写整盘，无警示。
+
+**用户裁定：默认关闭，需显式指定**（等价 mstsc 逐盘勾选语义）。
+
+实现：
+- `SelectDrives(candidates, nullptr/"")` → 返回空（不再默认选 FIXED）。`src/rdpdr/drive_enum_win32.cpp`。
+- `tests/test_drive_enum.cpp`：`drive_enum_default_selects_fixed_drives_only` → 改名 `drive_enum_default_redirects_nothing`，断言空。
+- `tools/rtsc_gui/main.cpp`：启动打印实际重定向的盘列表（或"no drives redirected"），并注明"remote peer has read/write access"。
+- 用法：`RTSC_REDIRECT_DRIVES=C,E`（白名单）或 `ALL`。

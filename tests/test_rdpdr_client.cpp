@@ -692,11 +692,24 @@ RTSC_TEST(rdpdr_client_query_directory_returns_entry) {
     confirm.client_id = 1;
     FeedMessage(client, confirm.encode());
 
+    // F5: a directory query is only served against a live handle, so open one
+    // first (the old test used the never-opened handle 0x100).
     FeedBody(client, proto::kPakidCoreDeviceIorequest,
-             QueryDirBody(kDeviceId, 0x100, 14, 0x0C, true, "*.txt"));
+             CreateBody(kDeviceId, 13, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\dir"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(crsp != nullptr);
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryDirBody(kDeviceId, file_id, 14, 0x0C, true, "*.txt"));
 
     CHECK_EQ(fs.query_calls, static_cast<unsigned>(1));
-    CHECK_EQ(fs.last_query_id, static_cast<uint32_t>(0x100));
+    CHECK_EQ(fs.last_query_id, file_id);
     CHECK_EQ(fs.last_query_initial, true);
     CHECK_EQ(fs.last_query_class, static_cast<uint32_t>(0x0C));
     CHECK_EQ(client.query_directory_count(), static_cast<unsigned>(1));
@@ -899,8 +912,21 @@ RTSC_TEST(rdpdr_client_read_rejects_oversized_length) {
                       [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
     MakeReady(client);
 
+    // F5: the length gate is on the read path after the file_id check, so the
+    // probe needs a live handle (0x100 was never opened).
     FeedBody(client, proto::kPakidCoreDeviceIorequest,
-             ReadBody(kDeviceId, 0x100, 11, 0xFFFFFFFFu, 0));
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\big.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(crsp != nullptr);
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, file_id, 11, 0xFFFFFFFFu, 0));
 
     CHECK_EQ(fs.read_calls, static_cast<unsigned>(0));
     CHECK_EQ(client.read_count(), static_cast<unsigned>(0));
@@ -1566,6 +1592,149 @@ RTSC_TEST(rdpdr_client_unknown_handle_is_invalid_handle) {
     if (wrsp != nullptr) {
         CHECK_EQ(U32At(*wrsp, 20), static_cast<uint32_t>(0xC0000008));
     }
+}
+
+// ---- batch safety fixes (F3, F5, F6) --------------------------------------
+
+// F3: an I/O request received before the handshake reached kReady must be
+// answered with STATUS_UNSUCCESSFUL and never touch the file system.
+RTSC_TEST(rdpdr_client_io_request_before_ready_is_unsuccessful) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    CHECK(client.phase() != RdpdrClient::Phase::kReady);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\x.txt"));
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusUnsuccessful));
+    }
+}
+
+// F5: reading or querying a file id that was never handed out answers
+// STATUS_INVALID_HANDLE instead of running an unvalidated operation.
+RTSC_TEST(rdpdr_client_read_unknown_handle_is_invalid_handle) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, 0x100, 11, 4, 0));
+    CHECK_EQ(fs.read_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.read_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_query_directory_unknown_handle_is_invalid_handle) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryDirBody(kDeviceId, 0x100, 14, 0x0C, true, "*.txt"));
+    CHECK_EQ(fs.query_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.query_directory_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+// F6: a write larger than the symmetric 1 MiB read cap is rejected with
+// STATUS_INVALID_PARAMETER and never reaches the file system.
+RTSC_TEST(rdpdr_client_write_rejects_oversized_payload) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 20, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\big.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(crsp != nullptr);
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    const std::vector<uint8_t> big(rtsc::rdpdr::kMaxReadLength + 1, 0xAA);
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(kDeviceId, file_id, 21, 0, big));
+    CHECK_EQ(fs.write_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.write_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusInvalidParameter));
+    }
+}
+
+// F2: enumerate a directory that contains a dangling symlink: the failing
+// stat calls are skipped, the loop completes, and the surviving entry is still
+// returned.
+RTSC_TEST(rdpdr_filesystem_query_directory_dangling_symlink_skipped) {
+    const std::filesystem::path dir = MakeTempDir("f2_dangling");
+    {
+        std::ofstream out(dir / "a.txt", std::ios::binary);
+        out.put('a');
+    }
+    std::error_code ec;
+    const std::filesystem::path link = dir / "dangling";
+    std::filesystem::create_symlink(dir / "missing_target.bin", link, ec);
+    if (ec) {
+        std::printf("  SKIP: cannot create symlink (%d: %s)\n", ec.value(),
+                    ec.message().c_str());
+        CHECK(true);
+    } else {
+        HostFileSystem fs;
+        uint32_t id = 0;
+        CHECK(fs.Open(dir.string(), false, false, false, id));
+
+        unsigned entries = 0;
+        bool threw = false;
+        std::vector<uint8_t> out_data;
+        try {
+            while (fs.QueryDirectory(id, entries == 0, 0x0C, out_data)) {
+                ++entries;
+            }
+        } catch (...) {
+            threw = true;
+        }
+        if (threw) std::printf("  dangling symlink enumeration threw\n");
+        CHECK(!threw);
+        if (!threw) {
+            if (entries != 1u) {
+                std::printf("  entries=%u (want 1: 'a.txt' only)\n", entries);
+            }
+            CHECK_EQ(entries, static_cast<unsigned>(1));
+        }
+        fs.Close(id);
+    }
+    std::filesystem::remove_all(dir, ec);
 }
 
 // ---- reparse point escape (R3) --------------------------------------------
