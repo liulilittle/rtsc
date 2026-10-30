@@ -406,3 +406,28 @@
 **P2 同批**：CAPS 定界按版本（V2/3 PriorityCharge）、`RTSC_REDIRECT_USB` 空时仍广告 drdynvc 静态通道。
 
 **真机未验证**：Windows RDS + USB 实体设备双向 I/O（需用户环境）。
+
+## USB 批次（2026-10-28）后续待办清单
+
+### P2（架构级，需新增回调）
+- **AddDevice 异步反馈缺失**：`RdpUsbClient::AddDevice` 返回 true 只代表本地 Open + 发 ADD_VIRTUAL_CHANNEL + 本地 CreateChannel；服务器拒绝设备级 DVC create/ADD_DEVICE 时计数不回滚 → 隐私文案可能虚高。修复需 `RdpUsbClient` 增加 create 失败/close 回调（`OnChannelCreated` 里 status!=0 时回调 provider），GUI 侧据此修正。fails-closed，无授权后果。
+- **DVC create 失败不可恢复**：`drdynvc_client.cpp` 清 `pending_` 后不再重试，id 永久不可用（设计明确只要求"不悬挂"；如需恢复需加退避重试）。
+
+### P3（功能完整度，非阻断）
+- 复合设备：`usb_win32.cpp:158` 只 `WinUsb_Initialize` 绑 interface 0，缺 `WinUsb_GetAssociatedInterface`
+- `kIoControl`/`kInternalIoControl` 无 case（`rdpusb_client.cpp` default break）→ 无 IO_CONTROL_COMPLETION
+- 控制类 URB 合成 setup packet（Descriptor/Feature/GetStatus），当前全返 kInvalidUrbFunction
+- 热插拔 RemoveDevice 未监测
+- 同步 WinUSB 阻塞消息泵
+- Isoch 传输无实现
+- `hresult` 恒 0（status 已在 ts_urb_result.usbd_status）
+- NoAck 未抑制补全帧
+- `SelectInterface` 服务器请求 alt-setting 不在表内 → kInvalidParameter
+
+### W5 未验证（需真机）
+- Windows RDS + USB 实体设备双向 I/O 闭环
+- 拔出 → RETRACT → 通道关闭 → 设备移除
+- mstsc 互通（服务器每进程自签 RSA，需手动信任）
+
+### 其他功能缺口（全局盘点）
+- **Gateway**：当前是 HTTP CONNECT 代理，非 [MS-TSGU] 3.3.5.1 RDGSP，零接线（需完整实现）
