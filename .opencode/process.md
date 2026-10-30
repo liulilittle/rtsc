@@ -631,3 +631,6 @@
 - F3 门控（rdpdr_client.cpp:365）、F5 句柄校验（:445 OnRead / :525 OnQueryDirectory）、F6 写上限（:475 对称 kMaxReadLength）、F2 error_code 重载（file_system.cpp EncodeDirectoryEntry）。
 - RED 5 失败测试/13 检查 → GREEN rtsc_rdpdr_tests **57 tests/351 checks 全绿**；主代理重建复跑确认。
 - 执行 AI 进入步骤3 GUI 接线。
+## 第710轮：步骤3 GUI 接线完成
+- main.cpp:398 host_fs unique_ptr、:409 EnumerateLocalDrives(spec)、:415 send_rdpdr、:418 RdpdrClient（先于 RegisterChannel）、:420 RegisterChannel 内 ++vc_rdpdr + OnChannelData。
+- _dupenv_s 适配 /WX C4996；CMake rtsc_gui 链 rtsc_rdpdr；build 0err/0warn。
