@@ -17,7 +17,7 @@
 | D5 | P1 | 头部缺 5 项 + 方向性错 | `[FAIL] RDG-Diagnostics-Info/Client-AppBuild/Client-Generation/Auth-Scheme/INCHANNEL-RETRYMODE` |
 | D6 | P1 | 无 101/WebSocket 升级直通 | 出厂 `WinHttpWebSocketCompleteUpgrade` 2 命中、`CreateOutChannelOrWebSocketRequest` 2 命中 |
 | D7 | P1 | 无状态码→HRESULT 映射、无 IN 重试 | 出厂 `ProcessResponse401 CurrentRetryCount=%d is larger than MaxRetryCount=%d`、`IN_CHANNEL_RETRY_COUNT_%d` |
-| D8 | P1 | UDP 单槽 stash 覆盖 + 抢先 ACK → 永久丢帧 | `[READ:gateway_transport.cpp:103-111,126-128]` |
+| D8 | P1 | UDP 单槽 stash 覆盖 + 抢占 ACK → 永久丢帧 | `[READ:gateway_transport.cpp:103-111,126-128]` |
 | D9 | P1 | ACK 与读超时同返 0 → 正常 ACK 误报超时 | `[READ:gateway_transport.cpp:28-31,91-98]` |
 | D10 | P2 | `method` 无默认值 → 空方法请求行 | `[READ:include/rtsc/proto/gateway.h:143]` |
 | D11 | P2 | `parse_www_authenticate` 不支持多挑战 | `[READ:gateway.cpp:280-302]` |
@@ -56,7 +56,7 @@ Read(buf)     →  OUT 响应体（chunked 解码；检测到非 chunked 则 pla
 | `include/rtsc/proto/gateway.h` | `RdgChannelRequestOptions` 增 `app_build`/`client_generation`/`auth_scheme`/`retry_count`/`diagnostics_info`；`method` 默认 `kRdgInData`；新增 `RdgChannelDirection { kIn, kOut }` |
 | `src/proto/gateway.cpp` | D1 Host=authority；D2/D3 流式体（去掉 CL:0，加 `Transfer-Encoding: chunked`）；D5 头部全集 + 方向性；新增 chunked 编码/解码纯函数；新增 `MapGatewayStatusToHresult`；D11 多挑战解析 |
 | `include/rtsc/net/gateway_transport.h` | 新增 `RdgspTransport` 声明 + `RdgspConfig`（host/port/connection_id/auth_scheme/retry 上限/deadline） |
-| `src/net/gateway_transport.cpp` | `RdgspTransport` 实现（握手状态机 + 双通道 chunked 编解码 + 升级分支）；D8 槽队列 + ACK 延后到消费；D9 ACK/超时区分；D12 序号 wrap；D13 脏包计数不立即断连 |
+| `src/net/gateway_transport.cpp` | `RdgspTransport` 实现（握手状态机 + 双通道 chunked 编解码 + 升级分支）；D8 有界 FIFO + **入队即 ACK**；D9 ACK/超时区分；D12 序号 wrap；D13 脏包计数不立即断连 |
 | `tests/test_gateway.cpp` | 纯协议层红→绿用例 + `StubGateway`（TCP 线程）端到端 + UDP wrap/丢帧探针 |
 | `tools/rtsc_gui/main.cpp` | `--gateway=host:port` + `RTSC_GATEWAY` 环境变量；TLS 策略独立（禁默认 `kInsecure`） |
 | `src/client/session_info.cpp` | gateway 字段代入真实值 |
@@ -69,11 +69,19 @@ Read(buf)     →  OUT 响应体（chunked 解码；检测到非 chunked 则 pla
 ## 4. 验收判据（阶段 1）
 
 1. **C0**：`/W4 /WX` 零错零警；定向子集全绿（**禁跑 gateway 全量套件**，只跑 `-R gateway`）。
-2. **探针红转绿**：`probe_gw.exe` 由 `failures=8` → `failures=0`。
+2. **探针红转绿**：`probe_gw.exe`（按 `gateway-header-direction-ruling.md` 的头部方向表重写后）与 `probe_defects.exe`（chunked 文法 + CRLF 注入 6 项）均 `failures=0`。
 3. chunked 编解码往返：给定字节串 → decode → 断言字段；encode → 逐字节比对（**布局取自规范/出厂证据，不取自实现**）。
-4. UDP：两帧连发不丢（槽队列）；ACK 在消费后才发；ACK 到达时 `Read` 返回数据而非 `kReadTimeout`；序号 wrap 用例。
+4. **UDP（D8 定案：入队即 ACK）**：
+   - 有界 FIFO（上界 = `receive_window_size`），两帧连发不丢；
+   - **ACK 在帧入队时发出**（`sourceAck` = 已入缓冲区间的右沿，即"已收到"而非"已消费"——对齐 [MS-RDPEUDP] 的 sourceAck 语义）；
+   - 队列满时丢帧**且不 ACK**，发送方重传；消费腾出空间后重传的帧必须成功入队并被消费（防止静默永久丢弃）；
+   - 重复帧收到即补 ACK（防重传死等）；
+   - ACK 到达时 `Read` 不得返回 `kReadTimeout`；序号 wrap 用例。
+   - **理由**：ACK-on-consume 在"双侧同时 Write、无中间 Read"时双侧互等至超时（实测 RED），属 P1 死锁回归，故不采用。
 5. 状态映射：401→`0x80070005`、407→`0x800706c1`、502/504→`0x800706ba`、PasswordExpired→`0x80070532`。
 6. 变异红证：逐条回退 D1..D12 的修复，对应用例必须转红。
+7. **头部值安全**：任何头值（含 `gateway_host`/`connection_id`/`user_agent`/`correlation_id`/`user_id`/`client_generation`/`load_balancer_cookie`/`app_build`/`auth_scheme`/`diagnostics_info`）含 `\r`/`\n`/`\0` 时必须被拒绝**且调用方可感知失败**（不可静默丢头）。实测漏洞：`connection_id="CID\r\nX-Injected: 1"` 可注入独立头。
+8. **chunked 文法严格性**：拒绝前导空白、`0x` 前缀、`+` 号、十六进制后的尾随垃圾、裸 LF 行尾；仅 `;` 后允许 chunk 扩展。实测 `Feed("0x10\r\n...")` 会被当作终止块并静默截断数据（`finished=1, failed=0`）。
 
 ## 5. 风险
 

@@ -1,4 +1,4 @@
-# RD Gateway (RDGSP) — 二进制证据
+﻿# RD Gateway (RDGSP) — 二进制证据
 
 目标：`C:\Windows\System32\mstscax.dll`
 SHA-256：`d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0eda05`
@@ -29,6 +29,10 @@ mstscax 明确实现**两条独立 HTTP 通道**，各有独立连接对象与�
   与出厂实现的 RDGSP 双通道模型不同 → 缺失功能，不是缺陷（mstsc 在 gateway 模式下不用 CONNECT）。
 
 ## 2. 每通道的 HTTP 请求头（出厂证据全集）
+
+> **本节头部方向结论已作废**。原结论按“报错文本措辞”推断头部归属，方法无效。
+> 权威取代版：`docs/spec/gateway-header-direction-ruling.md`（基于 `FUN_1801c3818` 的支配关系）。
+> 下文保留原文以留纠错痕迹，阅读时以 ruling 为准。
 
 | 证据地址 | 字符串 |
 |---|---|
