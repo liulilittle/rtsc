@@ -550,3 +550,8 @@
 - 执行子（ses_e75442500ffeT4eCFXqR2YxuNV）六步完成交付。
 - 主代理独立验证：rtsc_server_rdpsnd_e2e_tests 构建成功；ctest 9/9 全绿（rdpsnd/audio_source/server/server_multisession/server_cliprdr/server_rdpdr 家族）。
 - 已派甲乙复核①-⑥（甲侧重实现正确性，乙侧重失败路径/并发/协议边界/D12 逐行）。
+## 第689轮：复核驳回 F-A（真缺陷）→ 派执行修复
+- 乙复核：①②③⑤⑥ PASS；④ 部分驳回 —— src/channel/rdpsnd_server.cpp:233-241 Poll 把 kAwaitQualityMode 超时也 SendClose()，定案要求"放行到 Training（非致命）"。
+- 主代理核实：确认缺陷成立（:236-240 三态合并处理）。
+- 已派执行子修 F-A（分档超时）+ 补 quality 超时放行单测；同时要求核对 F-C（QualityMode 方向，rdpsnd_client.cpp:151-155 显示客户端发 → 服务器不应发）。
+- F-B 防御校验、F-D 单测、F-E 加密路径 W5、F-F 阻塞文档化待处理。
