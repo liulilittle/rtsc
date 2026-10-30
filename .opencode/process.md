@@ -659,3 +659,7 @@
 - 3 新用例（超限 FIRST / 累积超限 / 恰好 16MiB 通过）；变异①禁用守卫双红。
 - rtsc_channel_tests **10 tests/71 checks 全绿**（主代理重建复跑确认）；既有 7 用例零回归。
 - 执行 AI 继续 D2。
+## 第716轮：D2 完成 + 双审复核派出
+- D2：rdpdr_server.cpp:205-211 每设备发 RdpdrDeviceReply{device_id,0}（encode 已含 RDPDR_HEADER，直接 SendRaw）。
+- 主代理独立验证：rdpdr_server 9/114、channel 10/71、ctest 13/13 全绿。
+- 派甲乙复核（甲侧重 F1 边界/16MiB 对 cliprdr 是否够用/D2 编码；乙侧重失败路径/多通道内存放大/drdynvc 一致性/协议结构），已双向互告 ID。
