@@ -618,3 +618,7 @@
 - 甲终版报告（甲乙双章）落 docs/spec/rdpdr-client-wiring-design.md §7：路线 B（库内 drive_enum helper）、默认仅 DRIVE_FIXED、RTSC_REDIRECT_DRIVES env、批内 F2/F3/F5/F6、批外 F1/D2/D3/D4/F7/服务器 I/O 引擎。
 - 执行 AI：ses_e74625ad4ffeiHyOozzQ0r5a0p（TDD 4 步，要求每步 relay）。
 - 审计组甲 ses_e74bf690 / 乙 ses_e74bf57a 保留待命，交付后复核。
+## 第706轮：双审红证附录入库 d16b3e0
+- 甲本机探针直接红证（F3 pre-handshake CREATE phase=0 成功；F5 io_status=0xC0000001 应为 0xC0000008；F2 悬空 symlink 抛 filesystem_error；F6 2MiB 写被接受）；F4 撤销红证（SUPERSEDE 正常创建）。
+- 已落 docs/spec/rdpdr-client-wiring-design.md §8 证据表。
+- 执行 AI ses_e74625ad4f busy，工作树尚无改动（TDD 红阶段）。
