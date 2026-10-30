@@ -649,3 +649,7 @@
 - 验证：build 全量 0err/0warn；**ctest 60/60 全绿**（含 view bench，vmmemWSL 争用已消退）。
 - 全部子代理 delete 解散（甲乙审计组 + 执行 AI）。
 - 客户端能力：剪贴板✓ 音频✓ rdpdr 驱动器✓（opt-in）。
+## 第714轮：新小批 F1 + D2 启动
+- 取证：channel.cpp Feed 的 expected_length_=header.length 无上限（F1 确认）；rdpdr_server.cpp:189-203 收 DeviceList 不发回复（D2 确认）；RdpdrDeviceReply::encode() 已具备。
+- 定案落 docs/spec/channel-reassembler-limit.md（7b6f1cf）：F1 16MiB 上限（对齐 drdynvc kMaxMessageLength）；D2 每设备发 ANNOUNCE_RSP。
+- 执行 AI：ses_e73fd669affecHYwj60WwvZOSf（TDD，两项）。
