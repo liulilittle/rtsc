@@ -605,3 +605,8 @@
 - 取证：rdpdr 客户端实现完整（RdpdrClient + HostFileSystem + ResolvePathUnderRoot 防穿越 + kMaxReadLength 1MiB）；缺口=tools/rtsc_gui/main.cpp:390-391 仅计数未接真实 handler（N8-1 S3 剩余项）。
 - 服务器侧缺口：src/channel/rdpdr_server.cpp:189-218 收 Device List 不回 Device Reply、I/O 请求只计数（v1）。
 - 本轮动作：W11 派双审计（甲 ses_e74bf690 侧重方案/接线/驱动器枚举；乙 ses_e74bf57a 侧重安全/协议契约/服务器缺口），已双向互告 ID。
+## 第703轮：rdpdr 接线审计发现 + 定案入库 acf6098
+- 乙一审（主代理逐条核实）：F1 ChannelReassembler 无上限（channel.h 确认）；F2 QueryDirectory last_write_time 无 error_code（file_system.cpp:79 确认）；F3 OnDeviceIoRequest 无 phase 门（rdpdr_client.cpp:359-376 确认）；F8 junction TOCTOU（记录）。
+- 协议裁决：Device Reply 对初始列表非必需（[MS-RDPEFS] 1.3.2 optional）→ 我们服务器不回不违规（推翻甲初稿担忧）。
+- 服务器 I/O 引擎（350-600 行、须异步防死锁）**不并入本批**，单列；批内只补 ANNOUNCE_RSP。
+- 定案落 docs/spec/rdpdr-client-wiring-design.md：GUI 接线 + F1/F2/F3 修复 + SUPERSEDE/file_id/写上限 + 服务器 ANNOUNCE_RSP。
