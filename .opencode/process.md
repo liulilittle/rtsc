@@ -747,3 +747,10 @@
 - 甲复验报：工作树仍 3 项，FAIL-3 原状未变（提示仍在 AddDevice 前、仍用 usb_matched、守卫仍 notice<add_device）—— 甲如实上报而非虚构验证，符合 W5。
 - get_goal 核实：执行 AI `ses_e72be6839ffePSyv` status=busy pending=true（批次3 处理中）；乙 busy；甲 idle。
 - 调度决定：不重复派发（执行 AI 在途），等其交付。
+
+## 第736轮：乙发现执行中途撕裂态（关键拦截）
+- 乙报 `main.cpp:801` 语法撕裂 `; else if`、`:794` 残留变异注释、提示未后置 → 拒绝在撕裂态盖章（正确处置）。
+- 主代理核实（两次读取结果不同）：:777-793 提示仍在 AddDevice(:795-800) 前，条件用 `usb_devices_added_count > 0` 但递增在 :798 之后 → **恒为 0，永远走"matched but none opened"分支**；:794 残留 `// mutation 1:` 注释；乙上轮报的 `; else if` 已消失 → 文件在变。
+- get_goal：执行 AI busy/pending=true（在途编辑）。
+- **主代理新发现风险（已告知乙作第 5 点复验）**：提示块位置正确但计数条件在循环前 → 正向文案"redirected N ... remote peer can access"永不触发（文案静默消失），比原缺陷更隐蔽；测试若只断言"提示存在"仍绿。
+- 处置：令乙本轮静默不轮询；等执行 AI 交付 + 主代理核实稳定（两次读取一致 + rtsc_gui 重建成功）后再复验。
