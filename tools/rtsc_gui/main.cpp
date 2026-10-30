@@ -10,6 +10,7 @@
 // the window, present, and forward window input as Fast-Path input PDUs.
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -31,8 +32,10 @@
 #include "connection_info_dialog_win32.h"
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
+#include "rtsc/channel/drdynvc_client.h"
 #include "rtsc/channel/rdpdr_client.h"
 #include "rtsc/channel/rdpsnd_client.h"
+#include "rtsc/channel/rdpusb_client.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/drop_files.h"
 #include "rtsc/client/client.h"
@@ -47,7 +50,11 @@
 #include "rtsc/security/connection_driver.h"
 #include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
+#include "rtsc/usb/usb_device.h"
 #include "rtsc/util/crash_guard.h"
+#if defined(_WIN32)
+#include "rtsc/usb/usb_win32.h"
+#endif
 
 namespace {
 
@@ -115,6 +122,61 @@ constexpr uint16_t kChannelRdpsnd = 1006;
 constexpr uint32_t kRailBuildNumber = 0x00001DB0;
 constexpr uint32_t kRailClientFlags = 0;
 
+// RTSC_REDIRECT_USB gate, mirroring the RTSC_REDIRECT_DRIVES opt-in policy
+// (drive_enum_win32.cpp): an unset/empty spec redirects nothing, "ALL" shares
+// every enumerated device, and a comma-separated "VID:PID" list is a
+// whitelist. An invalid token selects nothing - it never widens the set.
+#if defined(_WIN32)
+bool UsbSpecAllows(const char* spec, const rtsc::usb::UsbDeviceInfo& info) {
+    if (spec == nullptr || spec[0] == '\0') return false;
+    std::string whole(spec);
+    const auto trim = [](std::string s) {
+        const size_t b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) return std::string{};
+        const size_t e = s.find_last_not_of(" \t\r\n");
+        return s.substr(b, e - b + 1);
+    };
+    whole = trim(whole);
+    for (char& c : whole) {
+        c = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(c)));
+    }
+    if (whole == "ALL") return true;
+
+    bool matched = false;
+    size_t start = 0;
+    while (true) {
+        const size_t comma = whole.find(',', start);
+        const std::string token = trim(whole.substr(
+            start, comma == std::string::npos ? std::string::npos
+                                              : comma - start));
+        const size_t colon = token.find(':');
+        if (colon == std::string::npos || colon == 0 ||
+            token.size() < colon + 2) {
+            return false;
+        }
+        const std::string vs = token.substr(0, colon);
+        const std::string ps = token.substr(colon + 1);
+        char* vid_end = nullptr;
+        char* pid_end = nullptr;
+        const unsigned long vid = std::strtoul(vs.c_str(), &vid_end, 16);
+        const unsigned long pid = std::strtoul(ps.c_str(), &pid_end, 16);
+        const bool vid_ok = vid_end != vs.c_str() && *vid_end == '\0' &&
+                            vid <= 0xFFFFul;
+        const bool pid_ok = pid_end != ps.c_str() && *pid_end == '\0' &&
+                            pid <= 0xFFFFul;
+        if (!vid_ok || !pid_ok) return false;
+        if (static_cast<uint16_t>(vid) == info.vendor_id &&
+            static_cast<uint16_t>(pid) == info.product_id) {
+            matched = true;
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return matched;
+}
+#endif  // _WIN32
+
 void usage() {
     std::printf(
         "%s\n"
@@ -144,7 +206,8 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
                                             const std::string& user,
                                             const std::string& password,
                                             bool standard_rdp,
-                                            bool rail_mode) {
+                                            bool rail_mode,
+                                            bool usb_redirect) {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
     if (standard_rdp) {
@@ -162,11 +225,14 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
     // Static virtual channels ([MS-RDPBCGR] 2.2.1.11). The "rail" channel is
     // only advertised in RemoteApp (--rail): a desktop session claiming it
     // makes the server prepare a RemoteApp session with a black desktop.
-    if (rail_mode) {
-        mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd", "rail"};
-    } else {
-        mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
-    }
+    // "drdynvc" (the URBDRC dynamic-virtual-channel transport) is advertised
+    // only when USB redirection is requested (RTSC_REDIRECT_USB); advertising
+    // it unconditionally wastes a static channel and widens the attack surface
+    // for no benefit.
+    std::vector<std::string> channels = {"rdpdr", "cliprdr", "rdpsnd"};
+    if (rail_mode) channels.push_back("rail");
+    if (usb_redirect) channels.push_back("drdynvc");
+    mcfg.channel_names = std::move(channels);
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -300,9 +366,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // USB redirection gate (RTSC_REDIRECT_USB), read before the driver is
+    // built so the "drdynvc" static channel is only advertised when USB
+    // redirection is actually requested. Unset/empty = off; "ALL" = every
+    // device; "VID:PID,VID:PID" = a whitelist. Same opt-in policy as
+    // RTSC_REDIRECT_DRIVES.
+    char* usb_spec_storage = nullptr;
+    size_t usb_spec_len = 0;
+    const char* usb_spec = nullptr;
+    if (_dupenv_s(&usb_spec_storage, &usb_spec_len, "RTSC_REDIRECT_USB") == 0 &&
+        usb_spec_storage != nullptr) {
+        usb_spec = usb_spec_storage;
+    }
+
     rtsc::client::Client client(
-        MakeDriver(host, domain, user, password, standard_rdp, rail_mode), width,
-     height);
+        MakeDriver(host, domain, user, password, standard_rdp, rail_mode,
+                   usb_spec != nullptr),
+        width, height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
     // the rendering. The default is 1:1 lossless: zoom 100% and fit off, so the
@@ -477,6 +557,56 @@ int main(int argc, char** argv) {
         }
     }
 
+    // USB device redirection (URBDRC over the drdynvc static virtual channel)
+    // is opt-in: the RTSC_REDIRECT_USB gate was read above, and the drdynvc
+    // channel is only advertised when it is set. Here the URBDRC state machine
+    // is started for that same spec, and devices are announced once the
+    // channel finished its capability exchange.
+    bool usb_devices_added = false;
+    unsigned usb_devices_added_count = 0;
+    unsigned usb_devices_skipped = 0;
+#if defined(_WIN32)
+    std::unique_ptr<rtsc::channel::DrdynvcClient> drdynvc;
+    std::unique_ptr<rtsc::usb::UsbDeviceEnumerator> usb_enumerator;
+    std::unique_ptr<rtsc::channel::RdpUsbClient> rdpusb;
+    if (usb_spec != nullptr) {
+        const uint16_t drdynvc_id = client.driver().ChannelIdForName("drdynvc");
+        if (drdynvc_id == 0) {
+            std::printf(
+                "rdpusb: server did not assign a drdynvc static virtual "
+                "channel; USB redirection disabled\n");
+        } else {
+            usb_enumerator = rtsc::usb::CreateWin32Enumerator();
+            if (usb_enumerator == nullptr) {
+                std::printf("rdpusb: no WinUSB enumerator; USB redirection "
+                            "disabled\n");
+            } else {
+                // drdynvc lives before rdpusb in declaration order so the
+                // RdpUsbClient destructor (which removes its listener from the
+                // transport) sees a live DrdynvcClient.
+                const auto send_drdynvc = [&](const std::vector<uint8_t>& m) {
+                    send_channel(drdynvc_id, m);
+                };
+                drdynvc = std::make_unique<rtsc::channel::DrdynvcClient>(
+                    nullptr, send_drdynvc);
+                client.RegisterChannel(
+                    drdynvc_id,
+                    [&](const uint8_t* data, size_t size) {
+                        drdynvc->OnChannelData(data, size);
+                    });
+                drdynvc->Start();
+                rdpusb = std::make_unique<rtsc::channel::RdpUsbClient>(
+                    usb_enumerator.get(), drdynvc.get());
+                rdpusb->Start();
+                std::printf(
+                    "rdpusb: drdynvc channel id %u, waiting for the URBDRC "
+                    "channel before announcing devices\n",
+                    static_cast<unsigned>(drdynvc_id));
+            }
+        }
+    }
+#endif
+
     // Size the window and the surface to the desktop the server granted (the
     // Demand Active bitmap capability). This is what makes the default 1:1 view
     // lossless even when the requested window size differed from the negotiated
@@ -602,6 +732,28 @@ int main(int argc, char** argv) {
             break;
         }
         cliprdr.Poll(std::chrono::steady_clock::now());
+        // USB device redirection: announce the whitelisted devices once the
+        // URBDRC channel finished its capability exchange (it becomes ready
+        // after the server created the "URBDRC" dynamic channel).
+#if defined(_WIN32)
+        if (!usb_devices_added && rdpusb != nullptr && rdpusb->ready()) {
+            const auto usb_devices = usb_enumerator->Enumerate();
+            for (const auto& device : usb_devices) {
+                if (!UsbSpecAllows(usb_spec, device)) {
+                    ++usb_devices_skipped;
+                    continue;
+                }
+                if (rdpusb->AddDevice(device)) {
+                    ++usb_devices_added_count;
+                }
+            }
+            usb_devices_added = true;
+            std::printf("rdpusb: ready, %zu device(s) enumerated, %u redirected"
+                        ", %u skipped by the RTSC_REDIRECT_USB gate\n",
+                        usb_devices.size(), usb_devices_added_count,
+                        usb_devices_skipped);
+        }
+#endif
         if (!file_list_requested && cliprdr.remote_file_list_format_id() != 0) {
             cliprdr.RequestRemoteFileList();
             file_list_requested = true;
@@ -849,6 +1001,7 @@ int main(int argc, char** argv) {
             break;
         }
     }
+    std::free(usb_spec_storage);
 
     // Surface statistics: a real session renders a non-trivial image (the
     // desktop), not a blank surface. Report non-black pixels and the number of
@@ -907,6 +1060,15 @@ int main(int argc, char** argv) {
 
     std::printf("virtual channel chunks: rdpdr=%u cliprdr=%u rail=%u\n", vc_rdpdr,
                 vc_cliprdr, vc_rail);
+#if defined(_WIN32)
+    std::printf(
+        "rdpusb: %s, devices added=%u skipped=%u\n",
+        rdpusb != nullptr
+            ? (usb_devices_added ? (rdpusb->ready() ? "ready" : "not-ready")
+                                 : "not-started")
+            : "off",
+        usb_devices_added_count, usb_devices_skipped);
+#endif
     std::printf("application sends: input=%u channel=%u\n", input_sends,
                 channel_sends);
     std::printf(

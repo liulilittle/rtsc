@@ -22,6 +22,78 @@ uint32_t ReadU32Le(const uint8_t* p) {
            (static_cast<uint32_t>(p[3]) << 24);
 }
 
+// Parses one DVC PDU out of a bundled static channel message and advances
+// `offset` past it. A server that opens several dynamic channels quickly can
+// coalesce the control PDUs into a single MCS Send Data ([MS-RDPEDYC] 2.2); a
+// data-carrying PDU (DataFirst / Data / compressed variants) has no length
+// field and therefore always terminates the bundle. Returns false when the
+// remainder is not a complete, well-formed PDU.
+bool ConsumeBundlePdu(const std::vector<uint8_t>& message, size_t& offset,
+                      rtsc::proto::DynvcPdu& out) {
+    const uint8_t* data = message.data();
+    const size_t size = message.size();
+    const size_t remaining = size - offset;
+    if (remaining < rtsc::proto::DynvcHeader::kSize) return false;
+    rtsc::proto::DynvcHeader h;
+    if (rtsc::proto::DynvcHeader::parse(data + offset, remaining, h) !=
+        rtsc::proto::Status::Ok) {
+        return false;
+    }
+    if (!h.valid()) return false;
+    out.header = h;
+    out.channel_id = 0;
+    out.length = 0;
+
+    if (h.cmd == rtsc::proto::DynvcCmd::kCapability) {
+        // DYNVC_CAPS ([MS-RDPEDYC] 2.2.1): header + Pad + Version; VERSION1 is
+        // exactly 4 bytes. VERSION2/3 append PriorityCharge0..3 (2 bytes each),
+        // so those PDUs are 12 bytes. Size the PDU by the declared version
+        // (web-verified: learn.microsoft.com 2.2.1.1.2 / 2.2.1.2), otherwise
+        // the priority charges are mistaken for the next PDU in a bundle.
+        if (remaining < 4) return false;
+        const uint16_t version = ReadU16Le(data + offset + 2);
+        const size_t cap_size = version >= 2 ? 12u : 4u;
+        if (remaining < cap_size) return false;
+        out.data.assign(data + offset, data + offset + cap_size);
+        offset += cap_size;
+        return true;
+    }
+
+    const size_t id_size = h.channel_id_size();
+    if (remaining < rtsc::proto::DynvcHeader::kSize + id_size) return false;
+    if (rtsc::proto::ParseDynvcChannelId(
+            h, data + offset + rtsc::proto::DynvcHeader::kSize, id_size,
+            out.channel_id) != rtsc::proto::Status::Ok) {
+        return false;
+    }
+    size_t pdu_off = offset + rtsc::proto::DynvcHeader::kSize + id_size;
+
+    if (h.cmd == rtsc::proto::DynvcCmd::kDataFirst) {
+        // DYNVC_DATA_FIRST ([MS-RDPEDYC] 2.2.2.1): a 4-byte Length precedes the
+        // first data fragment.
+        if (remaining - (pdu_off - offset) < 4) return false;
+        out.length = ReadU32Le(data + pdu_off);
+        pdu_off += 4;
+    }
+    out.data.assign(data + pdu_off, data + size);
+
+    if (h.cmd == rtsc::proto::DynvcCmd::kCreate) {
+        // DYNVC_CREATE_RSP ([MS-RDPEDYC] 2.2.2.2): Command + ChannelId +
+        // CreationStatus(4). The response carries no channel name, so the PDU
+        // boundary inside a bundle is fixed - a NUL-scan over a status-only
+        // response would swallow the next PDU (the second byte of a failed
+        // status is 0x00).
+        if (remaining - (pdu_off - offset) < 4) return false;
+        out.data.assign(data + pdu_off, data + pdu_off + 4);
+        offset = pdu_off + 4;
+        return true;
+    }
+
+    // Data and every other command consumes the rest of the message.
+    offset = size;
+    return true;
+}
+
 }  // namespace
 
 DrdynvcClient::DrdynvcClient(IDrdynvcListener* listener, SendFn send)
@@ -60,39 +132,34 @@ void DrdynvcClient::OnChannelData(const uint8_t* data, size_t size) {
     }
     if (!complete) return;
 
-    rtsc::proto::DynvcHeader h;
-    if (rtsc::proto::DynvcHeader::parse(message.data(), message.size(), h) !=
-        rtsc::proto::Status::Ok) {
-        return;
-    }
-    if (h.cmd == rtsc::proto::DynvcCmd::kCapability) {
-        // header + Pad + Version ([MS-RDPEDYC] 2.2.1.1.1/2.2.1.2). VERSION2/3
-        // append optional PriorityCharge0..3; VERSION1 stops at Version.
-        if (message.size() < 4) return;
-        version_ = ReadU16Le(message.data() + 2);
-        caps_done_ = true;
-        if (listener_ != nullptr) listener_->OnCapsResponse(version_);
-        return;
-    }
-
-    rtsc::proto::DynvcPdu pdu;
-    if (rtsc::proto::DynvcPdu::parse(message.data(), message.size(), pdu) !=
-        rtsc::proto::Status::Ok) {
-        return;
-    }
-    switch (pdu.header.cmd) {
-        case rtsc::proto::DynvcCmd::kCreate:
-            OnCreateResponse(pdu);
-            break;
-        case rtsc::proto::DynvcCmd::kDataFirst:
-        case rtsc::proto::DynvcCmd::kData:
-            OnData(pdu);
-            break;
-        case rtsc::proto::DynvcCmd::kClose:
-            OnClose(pdu);
-            break;
-        default:
-            break;
+    // A single static channel message may bundle several DVC PDUs
+    // ([MS-RDPEDYC] 2.2); consume them all before returning.
+    size_t offset = 0;
+    while (offset < message.size()) {
+        rtsc::proto::DynvcPdu pdu;
+        if (!ConsumeBundlePdu(message, offset, pdu)) break;
+        if (pdu.header.cmd == rtsc::proto::DynvcCmd::kCapability) {
+            if (pdu.data.size() < 4) break;
+            version_ = ReadU16Le(pdu.data.data() + 2);
+            caps_done_ = true;
+            if (listener_ != nullptr) listener_->OnCapsResponse(version_);
+            continue;
+        }
+        switch (pdu.header.cmd) {
+            case rtsc::proto::DynvcCmd::kCreate:
+                OnCreateResponse(pdu);
+                break;
+            case rtsc::proto::DynvcCmd::kDataFirst:
+            case rtsc::proto::DynvcCmd::kData:
+                OnData(pdu);
+                break;
+            case rtsc::proto::DynvcCmd::kClose:
+                OnClose(pdu);
+                break;
+            default:
+                // Unknown command: stop consuming the bundle.
+                break;
+        }
     }
 }
 
@@ -102,10 +169,15 @@ void DrdynvcClient::OnCaps(const rtsc::proto::DynvcPdu& pdu) {
 
 void DrdynvcClient::OnCreateResponse(const rtsc::proto::DynvcPdu& pdu) {
     ++create_response_count_;
+    const uint32_t id = pdu.channel_id;
     if (pdu.data.size() < 4) return;
     const uint32_t status = ReadU32Le(pdu.data.data());
-    if (status != 0) return;
-    const uint32_t id = pdu.channel_id;
+    if (status != 0) {
+        // The server rejected the channel: it will never open, so the request
+        // must not stay pending forever.
+        pending_.erase(id);
+        return;
+    }
     pending_.erase(id);
     open_channels_.insert(id);
     if (listener_ != nullptr) listener_->OnChannelCreated(id);

@@ -87,9 +87,14 @@ class UsbDevice {
                                  UrbResult& result) = 0;
 
     // TS_URB_BULK_OR_INTERRUPT_TRANSFER ([MS-RDPEUSB] 2.2.9.7).
+    // `input` is the OUT payload (may be empty for an IN transfer);
+    // `max_read_size` caps the IN read buffer the backend allocates (the
+    // client's TS_URB output buffer size), so a request that wants a few bytes
+    // never allocates a 64 KiB staging buffer.
     virtual bool BulkOrInterruptTransfer(uint32_t pipe_handle,
                                          uint32_t transfer_flags,
                                          const std::vector<uint8_t>& input,
+                                         uint32_t max_read_size,
                                          UrbResult& result) = 0;
 
     // TS_URB_PIPE_REQUEST ([MS-RDPEUSB] 2.2.9.4): reset or cancel a pipe.

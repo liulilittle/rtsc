@@ -251,6 +251,11 @@ endif()
 add_executable(rtsc_rdpusb_tests tests/test_rdpusb.cpp)
 target_link_libraries(rtsc_rdpusb_tests PRIVATE rtsc_urbrdc rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpusb_tests PRIVATE tests)
+# The source-level regression guards (WinUSB control-transfer OUT copy and the
+# GUI drdynvc advertisement gate) read the source tree, like the rdpdr ActiveLoop
+# guard; RTSC_SOURCE_DIR comes from CMake in forward-slash form.
+target_compile_definitions(rtsc_rdpusb_tests PRIVATE
+                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
 add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp tests/test_rdpdr_client.cpp)
 target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
@@ -442,7 +447,7 @@ add_test(NAME server_security COMMAND rtsc_server_security_tests)
 add_executable(rtsc_gui_send_tests tests/test_gui_send.cpp)
 target_link_libraries(rtsc_gui_send_tests PRIVATE
                       rtsc_client rtsc_security rtsc_server rtsc_net
-                      rtsc_proto rtsc_crypto rtsc_ui rtsc_util)
+                      rtsc_proto rtsc_crypto rtsc_ui rtsc_util rtsc_urbrdc)
 target_include_directories(rtsc_gui_send_tests PRIVATE tests)
 add_test(NAME gui_send COMMAND rtsc_gui_send_tests)
 
@@ -566,9 +571,9 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp)
 target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_proto rtsc_util)
-target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr)
+target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc)
 if(WIN32)
-    target_link_libraries(rtsc_gui PRIVATE rtsc_audio)
+    target_link_libraries(rtsc_gui PRIVATE rtsc_audio rtsc_usb_win32)
 endif()
 
 # Crash-guard self test. Not registered with ctest: it intentionally terminates

@@ -215,7 +215,7 @@ void RdpUsbClient::OnDeviceMessage(uint32_t channel_id,
             if (rtsc::proto::RdpUsbTransferInRequest::parse(
                     msg.data(), msg.size(), req) == rtsc::proto::Status::Ok) {
                 ++transfer_in_count_;
-                HandleTransferIn(usb_device, req);
+                HandleTransferIn(channel_id, usb_device, req);
             }
             break;
         }
@@ -225,7 +225,7 @@ void RdpUsbClient::OnDeviceMessage(uint32_t channel_id,
             if (rtsc::proto::RdpUsbTransferOutRequest::parse(
                     msg.data(), msg.size(), req) == rtsc::proto::Status::Ok) {
                 ++transfer_out_count_;
-                HandleTransferOut(usb_device, req);
+                HandleTransferOut(channel_id, usb_device, req);
             }
             break;
         }
@@ -263,7 +263,12 @@ void RdpUsbClient::SendOnChannel(uint32_t channel_id,
 }
 
 bool RdpUsbClient::AddDevice(const usb::UsbDeviceInfo& info) {
-    if (!ready() || transport_ == nullptr) return false;
+    if (!ready() || transport_ == nullptr || enumerator_ == nullptr) return false;
+    // Open the device before announcing it: a device the backend cannot open
+    // is skipped and never announced to the server.
+    std::unique_ptr<usb::UsbDevice> device =
+        enumerator_->Open(info.instance_id);
+    if (device == nullptr) return false;
     SendControl(rtsc::proto::BuildRdpUsbAddVirtualChannel());
     ++add_virtual_channel_count_;
 
@@ -275,7 +280,7 @@ bool RdpUsbClient::AddDevice(const usb::UsbDeviceInfo& info) {
     d.usb_device = usb_device;
     d.channel_id = channel_id;
     d.instance_id = info.instance_id;
-    if (enumerator_ != nullptr) d.device = enumerator_->Open(info.instance_id);
+    d.device = std::move(device);
     devices_[usb_device] = std::move(d);
     channel_to_device_[channel_id] = usb_device;
     last_device_channel_ = channel_id;
@@ -299,15 +304,9 @@ RdpUsbClient::Device* RdpUsbClient::FindDevice(uint32_t usb_device) {
     return it == devices_.end() ? nullptr : &it->second;
 }
 
-uint32_t RdpUsbClient::MakeHeaderInterfaceId(uint32_t interface) const {
-    return rtsc::proto::RdpUsbHeader::MakeInterfaceId(
-        static_cast<rtsc::proto::RdpUsbInterface>(
-            interface & rtsc::proto::kRdpUsbInterfaceIdMask),
-        rtsc::proto::RdpUsbStreamId::kProxy);
-}
-
 void RdpUsbClient::HandleTransferIn(
-    uint32_t usb_device, const rtsc::proto::RdpUsbTransferInRequest& req) {
+    uint32_t channel_id, uint32_t usb_device,
+    const rtsc::proto::RdpUsbTransferInRequest& req) {
     Device* d = FindDevice(usb_device);
     std::vector<uint8_t> result;
     std::vector<uint8_t> output;
@@ -315,17 +314,25 @@ void RdpUsbClient::HandleTransferIn(
         rtsc::proto::RdpUsbUsbdStatus::kInvalidPipeHandle);
     if (d != nullptr && d->device != nullptr) {
         usb::UrbResult urb{};
-        ExecuteUrb(*d, req.ts_urb, req.output_buffer_size, urb, result);
+        ExecuteUrb(*d, req.ts_urb, req.output_buffer_size, {}, urb, result);
         usbd_status = urb.usbd_status;
         output = urb.output_buffer;
+    } else {
+        // Unknown or unopened device: the request can never be serviced, but
+        // the server must still get a completion or it waits forever.
+        result = BuildResultHeader(
+            8, static_cast<uint32_t>(
+                   rtsc::proto::RdpUsbUsbdStatus::kRequestFailed));
     }
-    CompleteUrb(usb_device, req.ts_urb.header.request_id,
+    CompleteUrb(channel_id, req.header.interface_id,
+                req.ts_urb.header.request_id,
                 static_cast<uint16_t>(req.ts_urb.header.urb_function),
                 usbd_status, result, output);
 }
 
 void RdpUsbClient::HandleTransferOut(
-    uint32_t usb_device, const rtsc::proto::RdpUsbTransferOutRequest& req) {
+    uint32_t channel_id, uint32_t usb_device,
+    const rtsc::proto::RdpUsbTransferOutRequest& req) {
     Device* d = FindDevice(usb_device);
     std::vector<uint8_t> result;
     std::vector<uint8_t> output;
@@ -333,21 +340,27 @@ void RdpUsbClient::HandleTransferOut(
         rtsc::proto::RdpUsbUsbdStatus::kInvalidPipeHandle);
     if (d != nullptr && d->device != nullptr) {
         usb::UrbResult urb{};
-        ExecuteUrb(*d, req.ts_urb, req.output_buffer_size, urb, result);
+        ExecuteUrb(*d, req.ts_urb, req.output_buffer_size, req.output_buffer,
+                   urb, result);
         usbd_status = urb.usbd_status;
         output = urb.output_buffer;
+    } else {
+        result = BuildResultHeader(
+            8, static_cast<uint32_t>(
+                   rtsc::proto::RdpUsbUsbdStatus::kRequestFailed));
     }
-    CompleteUrb(usb_device, req.ts_urb.header.request_id,
+    CompleteUrb(channel_id, req.header.interface_id,
+                req.ts_urb.header.request_id,
                 static_cast<uint16_t>(req.ts_urb.header.urb_function),
                 usbd_status, result, output);
 }
 
 void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
                               uint32_t output_buffer_size,
+                              const std::vector<uint8_t>& output,
                               usb::UrbResult& result,
                               std::vector<uint8_t>& result_body) {
     using rtsc::proto::RdpUsbUrbFunction;
-    (void)output_buffer_size;
     const auto fn = urb.header.urb_function;
     const std::vector<uint8_t>& body = urb.body;
     result.usbd_status = static_cast<uint32_t>(
@@ -475,9 +488,13 @@ void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
         const bool ok = d.device != nullptr &&
                         d.device->ControlTransfer(c.pipe_handle,
                                                   c.transfer_flags,
-                                                  c.setup_packet, {}, result);
+                                                  c.setup_packet, output,
+                                                  result);
         if (!ok) result.usbd_status = static_cast<uint32_t>(
                 rtsc::proto::RdpUsbUsbdStatus::kRequestFailed);
+        if (result.output_buffer.size() > output_buffer_size) {
+            result.output_buffer.resize(output_buffer_size);
+        }
         result_body = BuildResultHeader(8, result.usbd_status);
         return;
     }
@@ -492,9 +509,13 @@ void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
         const bool ok =
             d.device != nullptr &&
             d.device->BulkOrInterruptTransfer(b.pipe_handle,
-                                              b.transfer_flags, {}, result);
+                                              b.transfer_flags, output,
+                                              output_buffer_size, result);
         if (!ok) result.usbd_status = static_cast<uint32_t>(
                 rtsc::proto::RdpUsbUsbdStatus::kRequestFailed);
+        if (result.output_buffer.size() > output_buffer_size) {
+            result.output_buffer.resize(output_buffer_size);
+        }
         result_body = BuildResultHeader(8, result.usbd_status);
         return;
     }
@@ -506,18 +527,15 @@ void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
     result_body = BuildResultHeader(8, result.usbd_status);
 }
 
-void RdpUsbClient::CompleteUrb(uint32_t usb_device, uint32_t request_id,
-                               uint16_t urb_function,
+void RdpUsbClient::CompleteUrb(uint32_t channel_id, uint32_t interface_id,
+                               uint32_t request_id, uint16_t urb_function,
                                uint32_t usbd_status,
                                const std::vector<uint8_t>& result,
                                const std::vector<uint8_t>& output) {
     (void)urb_function;
     (void)usbd_status;
-    Device* d = FindDevice(usb_device);
-    if (d == nullptr) return;
-    const uint32_t interface_id =
-        MakeHeaderInterfaceId(request_completion_valid_ ? request_completion_
-                                                       : d->usb_device);
+    // The interface id echoes the request frame verbatim (stream bits
+    // included); it is never re-stamped here.
     if (!output.empty()) {
         rtsc::proto::RdpUsbUrbCompletion c;
         c.header.interface_id = interface_id;
@@ -527,7 +545,7 @@ void RdpUsbClient::CompleteUrb(uint32_t usb_device, uint32_t request_id,
         c.ts_urb_result = result;
         c.hresult = 0;
         c.output_buffer = output;
-        SendOnChannel(d->channel_id, c.encode());
+        SendOnChannel(channel_id, c.encode());
     } else {
         rtsc::proto::RdpUsbUrbCompletionNoData c;
         c.header.interface_id = interface_id;
@@ -536,7 +554,7 @@ void RdpUsbClient::CompleteUrb(uint32_t usb_device, uint32_t request_id,
         c.request_id = request_id;
         c.ts_urb_result = result;
         c.hresult = 0;
-        SendOnChannel(d->channel_id, c.encode());
+        SendOnChannel(channel_id, c.encode());
     }
     ++urb_completion_count_;
 }

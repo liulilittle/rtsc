@@ -8,8 +8,6 @@
 // PROTOCOL_RDP, and prove that both cross the wire (the server's input callback
 // observes the event; the recorded transport shows the MCS channel id).
 
-#include "rtsc/client/client.h"
-
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -18,11 +16,15 @@
 #include <thread>
 #include <vector>
 
+#include "rtsc/channel/drdynvc_client.h"
+#include "rtsc/channel/rdpusb_client.h"
+#include "rtsc/client/client.h"
 #include "rtsc/net/transport.h"
 #include "rtsc/proto/mcs.h"
 #include "rtsc/proto/rdp_neg.h"
 #include "rtsc/server/server.h"
 #include "rtsc/ui/window.h"
+#include "rtsc/usb/usb_device.h"
 #include "test_framework.h"
 #include "test_main.h"
 
@@ -33,7 +35,9 @@ namespace {
     mcfg.cookie = "Cookie: mstshash=rtsc";
     mcfg.requested_protocols = rtsc::proto::kProtocolRdp;
     mcfg.client_name = "RTSC";
-    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd"};
+    // Mirrors tools/rtsc_gui/main.cpp: the URBDRC extension rides on the
+    // drdynvc static virtual channel, so it is always advertised.
+    mcfg.channel_names = {"rdpdr", "cliprdr", "rdpsnd", "drdynvc"};
     mcfg.encryption_methods = 0x0000001B;
 
     rtsc::proto::ConnectMachine::Credentials creds;
@@ -78,6 +82,100 @@ class RecordingTransport final : public rtsc::net::Transport {
         }
         if (sd.channel_id != channel_id) continue;
         if (user_data != nullptr) *user_data = sd.user_data;
+        return true;
+    }
+    return false;
+}
+
+// USB device/enumerator stubs for the URBDRC wiring test: the hookup must
+// reach the rdpusb "ready" state and announce a device without any real
+// hardware.
+class StubUsbDevice final : public rtsc::usb::UsbDevice {
+ public:
+    bool Open() override { return true; }
+    void Close() override {}
+    const rtsc::usb::UsbDeviceInfo& info() const override { return info_; }
+    bool SelectConfiguration(
+        const std::vector<rtsc::usb::UsbInterfaceInfo>&,
+        uint32_t& configuration_handle) override {
+        configuration_handle = 0x10;
+        return true;
+    }
+    bool SelectInterface(uint32_t, const rtsc::usb::UsbInterfaceInfo&,
+                         uint32_t& interface_handle) override {
+        interface_handle = 0x20;
+        return true;
+    }
+    bool ControlTransfer(uint32_t, uint32_t,
+                         const std::vector<uint8_t>&,
+                         const std::vector<uint8_t>&,
+                         rtsc::usb::UrbResult& result) override {
+        result.usbd_status = 0;
+        return true;
+    }
+    bool BulkOrInterruptTransfer(uint32_t, uint32_t,
+                                 const std::vector<uint8_t>&, uint32_t,
+                                 rtsc::usb::UrbResult& result) override {
+        result.usbd_status = 0;
+        return true;
+    }
+    bool ResetPipe(uint32_t) override { return true; }
+    bool CancelRequest(uint32_t) override { return true; }
+
+    rtsc::usb::UsbDeviceInfo info_;
+};
+
+class StubEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
+ public:
+    std::vector<rtsc::usb::UsbDeviceInfo> Enumerate() override {
+        rtsc::usb::UsbDeviceInfo info;
+        info.instance_id = "USB\\VID_1234&PID_5678\\01";
+        info.hardware_ids = {"USB\\VID_1234&PID_5678"};
+        return {info};
+    }
+    std::unique_ptr<rtsc::usb::UsbDevice> Open(
+        const std::string& instance_id) override {
+        auto d = std::make_unique<StubUsbDevice>();
+        d->info_.instance_id = instance_id;
+        return d;
+    }
+};
+
+// Scans the DYNVC-framed channel messages DrdynvcClient handed to its send
+// callback for one whose URBDRC payload carries `want_function`. This proves
+// the DrdynvcClient -> RdpUsbClient plumbing produced the announcement.
+bool FindDynvcUrbdcFunction(const std::vector<std::vector<uint8_t>>& messages,
+                            uint32_t want_function,
+                            std::vector<uint8_t>* rdp_payload) {
+    for (const auto& message : messages) {
+        rtsc::proto::ChannelPduHeader cph;
+        if (rtsc::proto::ChannelPduHeader::parse(message.data(),
+                                                 message.size(), cph) !=
+            rtsc::proto::Status::Ok) {
+            continue;
+        }
+        rtsc::proto::DynvcPdu dvc;
+        if (rtsc::proto::DynvcPdu::parse(
+                message.data() + rtsc::proto::ChannelPduHeader::kSize,
+                message.size() - rtsc::proto::ChannelPduHeader::kSize,
+                dvc) != rtsc::proto::Status::Ok) {
+            continue;
+        }
+        rtsc::proto::RdpUsbHeader h;
+        if (rtsc::proto::RdpUsbHeader::parse(dvc.data.data(),
+                                             dvc.data.size(), h) !=
+            rtsc::proto::Status::Ok) {
+            continue;
+        }
+        // Function ids collide across interfaces (0x100 is CHANNEL_CREATED
+        // too); restrict ADD_VIRTUAL_CHANNEL to the device-sink interface.
+        if (h.function_id != want_function ||
+            h.interface_only() !=
+                static_cast<uint32_t>(
+                    rtsc::proto::RdpUsbInterface::kClientDeviceSink)) {
+            continue;
+        }
+        if (rdp_payload != nullptr) *rdp_payload = dvc.data;
         return true;
     }
     return false;
@@ -193,6 +291,96 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
             }
         }
         CHECK(got_move);
+
+        transport.Close();
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+// URBDRC wiring verification: the drdynvc static virtual channel is advertised
+// by the client, the server assigns it an id, and the GUI-style hookup
+// (ChannelIdForName -> RegisterChannel -> DrdynvcClient -> RdpUsbClient) drives
+// the state machine to ready and announces a device over the real wire. No
+// physical USB device is required - the enumerator and device are stubs.
+RTSC_TEST(gui_send_drdynvc_hookup_reaches_urbdrc_ready) {
+    rtsc::server::ServerConfig scfg;
+    scfg.port = 0;
+    scfg.desktop_width = 64;
+    scfg.desktop_height = 48;
+    auto source = rtsc::server::MakeTestPatternSource();
+    rtsc::server::RdpServer server(scfg);
+    server.SetDesktopSource(source.get());
+
+    std::string error;
+    CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
+    std::thread runner([&server]() { server.Run(); });
+
+    auto socket = rtsc::net::ConnectTcp("127.0.0.1", port, error);
+    CHECK(socket != nullptr);
+    if (socket != nullptr) {
+        RecordingTransport transport(std::move(socket));
+        rtsc::client::Client client(MakeGuiDriver(), 64, 48);
+        CHECK(client.Connect(transport, error));
+        CHECK(client.active());
+        CHECK(client.driver().standard_rdp());
+
+        const uint16_t drdynvc_id = client.driver().ChannelIdForName("drdynvc");
+        CHECK(drdynvc_id != 0);
+        if (drdynvc_id != 0) {
+            StubEnumerator enumerator;
+            // The GUI connects DrdynvcClient to the drdynvc static channel.
+            std::vector<std::vector<uint8_t>> drdynvc_sent;
+            const auto send_drdynvc = [&](const std::vector<uint8_t>& message) {
+                drdynvc_sent.push_back(message);
+                client.SendChannelPdu(transport, drdynvc_id, message, error);
+            };
+            rtsc::channel::DrdynvcClient drdynvc(nullptr, send_drdynvc);
+            client.RegisterChannel(drdynvc_id,
+                                   [&](const uint8_t* d, size_t sz) {
+                                       drdynvc.OnChannelData(d, sz);
+                                   });
+            rtsc::channel::RdpUsbClient rdpusb(&enumerator, &drdynvc);
+            drdynvc.Start();
+            rdpusb.Start();
+
+            // Server-side stub: the drdynvc capability response and the
+            // CREATE_RSP for the "URBDRC" dynamic channel are framed as static
+            // channel messages and fed through the registered handler.
+            const auto feed_dvc = [&](const std::vector<uint8_t>& dvc_pdu) {
+                for (const auto& chunk :
+                     rtsc::proto::FragmentChannelMessage(dvc_pdu)) {
+                    drdynvc.OnChannelData(chunk.data(), chunk.size());
+                }
+            };
+            feed_dvc({0x50, 0x00, 0x01, 0x00});  // DYNVC_CAPS_RSP VERSION1
+            const uint32_t control = rdpusb.control_channel();
+            CHECK(control != 0);
+            feed_dvc(rtsc::proto::BuildDynvcPdu(
+                rtsc::proto::DynvcCmd::kCreate, 0, control, {0, 0, 0, 0}));
+            CHECK(rdpusb.ready());
+            CHECK(drdynvc.ready());
+
+            // The GUI announces every whitelisted device once the URBDRC
+            // channel is ready.
+            rtsc::usb::UsbDeviceInfo info;
+            info.instance_id = "USB\\VID_1234&PID_5678\\01";
+            CHECK(rdpusb.AddDevice(info));
+
+            // The announcement left the drdynvc transport as a DYNVC_DATA and
+            // was written on the server-assigned static channel id.
+            std::vector<uint8_t> payload;
+            CHECK(FindDynvcUrbdcFunction(
+                drdynvc_sent,
+                static_cast<uint32_t>(
+                    rtsc::proto::RdpUsbFunction::kAddVirtualChannel),
+                &payload));
+            std::vector<uint8_t> user_data;
+            CHECK(FindChannelWrite(transport, drdynvc_id, &user_data));
+            CHECK(user_data.size() > payload.size());
+        }
 
         transport.Close();
     }

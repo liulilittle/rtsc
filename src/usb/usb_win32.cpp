@@ -12,6 +12,7 @@
 #include <usbiodef.h>
 #include <winusb.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -26,6 +27,19 @@ constexpr GUID kUsbDeviceClassGuid = {0xA5DCBF10,
                                       0x11D2,
                                       {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51,
                                        0xED}};
+
+// DEVPKEY_Device_ContainerId ({8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c}, pid 2).
+// Defined locally: devpkey.h only DECLARES the key (the DEFINE_DEVPROPKEY
+// expansion is extern unless INITGUID is set), which would otherwise fail the
+// link with an unresolved external for every executable that pulls this TU.
+constexpr DEVPROPKEY kDeviceContainerId = {{
+                                               0x8c7ed206,
+                                               0x3f8a,
+                                               0x4827,
+                                               {0xb3, 0xab, 0xae, 0x9e, 0x1f,
+                                                0xae, 0xfc, 0x6c},
+                                           },
+                                           /*DEVPKEY_Device_ContainerId.*/ 2};
 
 std::string WideToUtf8(const std::wstring& in) {
     if (in.empty()) return {};
@@ -127,7 +141,7 @@ UsbDeviceInfo ReadDeviceInfo(HDEVINFO devs, SP_DEVINFO_DATA& dev,
     DEVPROPTYPE type = 0;
     GUID container = {};
     ULONG size = sizeof(container);
-    if (SetupDiGetDevicePropertyW(devs, &dev, &DEVPKEY_Device_ContainerId, &type,
+    if (SetupDiGetDevicePropertyW(devs, &dev, &kDeviceContainerId, &type,
                                   reinterpret_cast<PBYTE>(&container), size,
                                   &size, 0)) {
         info.container_id = GuidToString(container);
@@ -220,6 +234,10 @@ class UsbDeviceWin32 final : public UsbDevice {
         const bool in = (transfer_flags & 0x1) != 0;
         std::vector<uint8_t> buffer(in ? static_cast<size_t>(pkt.Length)
                                        : input.size());
+        // OUT data stage: copy the payload into the transfer buffer (a
+        // zero-initialised allocation used to send N zero bytes); for an IN
+        // transfer the buffer is the receive staging area, sized by Length.
+        if (!in) buffer.assign(input.begin(), input.end());
         ULONG transferred = 0;
         if (!WinUsb_ControlTransfer(
                 winusb_, pkt, buffer.empty() ? nullptr : buffer.data(),
@@ -235,6 +253,7 @@ class UsbDeviceWin32 final : public UsbDevice {
 
     bool BulkOrInterruptTransfer(uint32_t pipe_handle, uint32_t transfer_flags,
                                  const std::vector<uint8_t>& input,
+                                 uint32_t max_read_size,
                                  UrbResult& result) override {
         if (winusb_ == nullptr) {
             result.usbd_status = 0xC0000000;
@@ -244,7 +263,14 @@ class UsbDeviceWin32 final : public UsbDevice {
         const bool in = (transfer_flags & 0x1) != 0;
         ULONG transferred = 0;
         if (in) {
-            std::vector<uint8_t> buffer(65536);
+            // Never allocate more than the client asked for (a 64 KiB staging
+            // buffer for an 8-byte request is wasteful); 0 means "any amount",
+            // which falls back to the historical conservative bound.
+            const size_t budget =
+                max_read_size == 0
+                    ? static_cast<size_t>(65536)
+                    : std::min<size_t>(max_read_size, 65536);
+            std::vector<uint8_t> buffer(budget);
             ULONG len = static_cast<ULONG>(buffer.size());
             if (!WinUsb_ReadPipe(winusb_, pipe, buffer.data(), len,
                                  &transferred, nullptr)) {

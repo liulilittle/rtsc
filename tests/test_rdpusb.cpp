@@ -2,6 +2,8 @@
 // drdynvc transport ([MS-RDPEDYC] 2.2).
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -600,6 +602,16 @@ struct CapturedSend {
     void Add(const std::vector<uint8_t>& c) { chunks.push_back(c); }
 };
 
+// Source-level regression helpers (W11 repair batch): a pure in-memory scan
+// that locates a source line by substring, mirroring the guard pattern in
+// test_server_rdpdr_e2e.cpp.
+size_t FindLineIn(const std::vector<std::string>& lines, const char* needle) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find(needle) != std::string::npos) return i;
+    }
+    return std::string::npos;
+}
+
 }  // namespace
 
 RTSC_TEST(drdynvc_start_sends_caps_request) {
@@ -635,8 +647,11 @@ RTSC_TEST(drdynvc_caps_response_version_read_at_offset_2) {
                                    [&](const std::vector<uint8_t>& c) {
                                        cap.Add(c);
                                    });
-    // DYNVC_CAPS_RSP ([MS-RDPEDYC] 2.2.1.2) VERSION1 = header + Pad + Version.
-    const std::vector<uint8_t> rsp = {0x50, 0x00, 0x02, 0x00};
+    // DYNVC_CAPS VERSION2 ([MS-RDPEDYC] 2.2.1.1.2): header + Pad + Version +
+    // PriorityCharge0..3; the Version field still lives at offset 2.
+    const std::vector<uint8_t> rsp = {0x50, 0x00, 0x02, 0x00,
+                                      0x01, 0x00, 0x02, 0x00,
+                                      0x03, 0x00, 0x04, 0x00};
     FeedDvc(t, rsp);
     CHECK_EQ(listener.version, static_cast<uint16_t>(2));
     CHECK(t.ready());
@@ -711,7 +726,7 @@ class FakeUsbDevice final : public rtsc::usb::UsbDevice {
         return true;
     }
     bool BulkOrInterruptTransfer(uint32_t, uint32_t,
-                                 const std::vector<uint8_t>&,
+                                 const std::vector<uint8_t>&, uint32_t,
                                  rtsc::usb::UrbResult& result) override {
         result.usbd_status = 0;
         result.output_buffer = {0xCC};
@@ -733,6 +748,93 @@ class FakeEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
         return d;
     }
 };
+
+// Captures every OUT payload the client forwards to the backend and lets the
+// test inject the IN response, so the OUT/IN transfer path can be asserted
+// byte-for-byte without a real USB device.
+class RecordingUsbDevice final : public rtsc::usb::UsbDevice {
+ public:
+    bool Open() override { return true; }
+    void Close() override {}
+    const rtsc::usb::UsbDeviceInfo& info() const override { return info_; }
+    bool SelectConfiguration(
+        const std::vector<rtsc::usb::UsbInterfaceInfo>&,
+        uint32_t& configuration_handle) override {
+        configuration_handle = 0x10;
+        return true;
+    }
+    bool SelectInterface(uint32_t, const rtsc::usb::UsbInterfaceInfo&,
+                         uint32_t& interface_handle) override {
+        interface_handle = 0x20;
+        return true;
+    }
+    bool ControlTransfer(uint32_t, uint32_t,
+                         const std::vector<uint8_t>& setup,
+                         const std::vector<uint8_t>& input,
+                         rtsc::usb::UrbResult& result) override {
+        control_setups_.push_back(setup);
+        control_inputs_.push_back(input);
+        result.usbd_status = 0;
+        result.output_buffer = control_output_;
+        return true;
+    }
+    bool BulkOrInterruptTransfer(uint32_t, uint32_t,
+                                 const std::vector<uint8_t>& input,
+                                 uint32_t max_read_size,
+                                 rtsc::usb::UrbResult& result) override {
+        bulk_inputs_.push_back(input);
+        last_max_read_ = max_read_size;
+        result.usbd_status = 0;
+        result.output_buffer = bulk_output_;
+        return true;
+    }
+    bool ResetPipe(uint32_t) override { return true; }
+    bool CancelRequest(uint32_t) override { return true; }
+
+    rtsc::usb::UsbDeviceInfo info_;
+    std::vector<std::vector<uint8_t>> control_setups_;
+    std::vector<std::vector<uint8_t>> control_inputs_;
+    std::vector<std::vector<uint8_t>> bulk_inputs_;
+    uint32_t last_max_read_ = 0;
+    std::vector<uint8_t> control_output_;
+    std::vector<uint8_t> bulk_output_;
+};
+
+class RecordingEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
+ public:
+    std::vector<rtsc::usb::UsbDeviceInfo> Enumerate() override { return {}; }
+    std::unique_ptr<rtsc::usb::UsbDevice> Open(
+        const std::string& instance_id) override {
+        auto d = std::make_unique<RecordingUsbDevice>();
+        d->info_.instance_id = instance_id;
+        last_device = d.get();
+        return d;
+    }
+
+    RecordingUsbDevice* last_device = nullptr;
+};
+
+// The backend cannot open anything: the device is not ready.
+class FailingEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
+ public:
+    std::vector<rtsc::usb::UsbDeviceInfo> Enumerate() override { return {}; }
+    std::unique_ptr<rtsc::usb::UsbDevice> Open(
+        const std::string& /*instance_id*/) override {
+        return nullptr;
+    }
+};
+
+// Puts a no-callback transport into the ready state: start the caps exchange
+// and open the URBDRC control channel.
+void MakeUsbClientReady(rtsc::channel::DrdynvcClient& transport,
+                        rtsc::channel::RdpUsbClient& client) {
+    client.Start();
+    const uint32_t control = client.control_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, control,
+                           {0, 0, 0, 0}));
+    CHECK(client.ready());
+}
 
 }  // namespace
 
@@ -930,8 +1032,8 @@ RTSC_TEST(rdpusb_client_provider_notified_on_add_and_remove) {
     client.Start();
     const uint32_t control = client.control_channel();
     FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
-                          rtsc::proto::DynvcCmd::kCreate, 0, control,
-                          {0, 0, 0, 0}));
+                           rtsc::proto::DynvcCmd::kCreate, 0, control,
+                           {0, 0, 0, 0}));
     rtsc::usb::UsbDeviceInfo info;
     info.instance_id = "USB\\VID_1&PID_1\\0A";
     CHECK(client.AddDevice(info));
@@ -940,6 +1042,466 @@ RTSC_TEST(rdpusb_client_provider_notified_on_add_and_remove) {
     client.RemoveDevice(1);
     CHECK_EQ(provider.removed, static_cast<unsigned>(1));
     CHECK_EQ(provider.last_removed, static_cast<uint32_t>(1));
+}
+
+RTSC_TEST(rdpusb_client_out_control_payload_reaches_backend) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1234&PID_5678\\01";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+
+    rtsc::proto::RdpUsbTsUrbControlTransfer ctrl;
+    ctrl.pipe_handle = 7;
+    ctrl.transfer_flags = 0;  // OUT: the data stage carries the payload
+    ctrl.setup_packet = {0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00};
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function = rtsc::proto::RdpUsbUrbFunction::kControlTransfer;
+    urb.body = ctrl.encode();
+    rtsc::proto::RdpUsbTransferOutRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferOutRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 4;
+    req.output_buffer = {0xDE, 0x0D, 0xBE, 0xEF};
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_out_count(), static_cast<unsigned>(1));
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device != nullptr) {
+        CHECK(!enumerator.last_device->control_inputs_.empty());
+        if (!enumerator.last_device->control_inputs_.empty()) {
+            CHECK_BYTES(enumerator.last_device->control_inputs_[0], 0xDE, 0x0D,
+                        0xBE, 0xEF);
+        }
+        CHECK(!enumerator.last_device->control_setups_.empty());
+        if (!enumerator.last_device->control_setups_.empty()) {
+            CHECK_BYTES(enumerator.last_device->control_setups_[0], 0x40, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x04, 0x00);
+        }
+    }
+}
+
+RTSC_TEST(rdpusb_client_out_bulk_payload_reaches_backend) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+
+    rtsc::proto::RdpUsbTsUrbBulkOrInterruptTransfer blk;
+    blk.pipe_handle = 9;
+    blk.transfer_flags = 0;  // OUT
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function =
+        rtsc::proto::RdpUsbUrbFunction::kBulkOrInterruptTransfer;
+    urb.body = blk.encode();
+    rtsc::proto::RdpUsbTransferOutRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferOutRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 4;
+    req.output_buffer = {0xAA, 0xBB, 0xCC, 0xDD};
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_out_count(), static_cast<unsigned>(1));
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device != nullptr) {
+        CHECK(!enumerator.last_device->bulk_inputs_.empty());
+        if (!enumerator.last_device->bulk_inputs_.empty()) {
+            CHECK_BYTES(enumerator.last_device->bulk_inputs_[0], 0xAA, 0xBB,
+                        0xCC, 0xDD);
+        }
+    }
+}
+
+RTSC_TEST(rdpusb_client_in_truncated_to_output_buffer_size) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device != nullptr) {
+        enumerator.last_device->bulk_output_ = {0x01, 0x02, 0x03, 0x04, 0x05};
+    }
+    const size_t before = cap.chunks.size();
+
+    rtsc::proto::RdpUsbTsUrbBulkOrInterruptTransfer blk;
+    blk.pipe_handle = 9;
+    blk.transfer_flags = rtsc::proto::kRdpUsbTransferDirection;  // IN
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function =
+        rtsc::proto::RdpUsbUrbFunction::kBulkOrInterruptTransfer;
+    urb.body = blk.encode();
+    rtsc::proto::RdpUsbTransferInRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferInRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 2;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_in_count(), static_cast<unsigned>(1));
+    CHECK(cap.chunks.size() == before + 1);
+    if (cap.chunks.size() != before + 1) return;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(payload.data(),
+                                                  payload.size(), done) ==
+          rtsc::proto::Status::Ok);
+    CHECK_BYTES(done.output_buffer, 0x01, 0x02);
+    // The backend read buffer is capped at the requested size.
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device != nullptr) {
+        CHECK_EQ(enumerator.last_device->last_max_read_,
+                 static_cast<uint32_t>(2));
+    }
+}
+
+RTSC_TEST(rdpusb_client_unknown_device_still_completes) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    FakeEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    CHECK_EQ(client.device_count(), static_cast<size_t>(0));
+    // A dynamic channel that was never announced carries the stray request.
+    const uint32_t stray_channel = transport.CreateChannel("URBDRC");
+    const size_t before = cap.chunks.size();
+
+    rtsc::proto::RdpUsbTsUrbPipeRequest pipe;
+    pipe.pipe_handle = 5;
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function = rtsc::proto::RdpUsbUrbFunction::kPipeRequest;
+    urb.body = pipe.encode();
+    rtsc::proto::RdpUsbTransferInRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kStub);  // raw, non-proxy stream id
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferInRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 0;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           stray_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_in_count(), static_cast<unsigned>(1));
+    // The unknown device must still receive a completion (never a silent drop).
+    CHECK(cap.chunks.size() == before + 1);
+    if (cap.chunks.size() != before + 1) return;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    rtsc::proto::RdpUsbUrbCompletionNoData done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletionNoData::parse(payload.data(),
+                                                        payload.size(),
+                                                        done) ==
+          rtsc::proto::Status::Ok);
+    // The interface id echoes the request verbatim, stream bits included.
+    CHECK_EQ(done.header.interface_id,
+             static_cast<uint32_t>(rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+                 rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+                 rtsc::proto::RdpUsbStreamId::kStub)));
+    // The result header reports the failure instead of a fabricated success.
+    rtsc::proto::RdpUsbTsUrbResultHeader rh;
+    CHECK(rtsc::proto::RdpUsbTsUrbResultHeader::parse(
+              done.ts_urb_result.data(), done.ts_urb_result.size(), rh) ==
+          rtsc::proto::Status::Ok);
+    CHECK_EQ(rh.usbd_status,
+             static_cast<uint32_t>(
+                 rtsc::proto::RdpUsbUsbdStatus::kRequestFailed));
+}
+
+RTSC_TEST(rdpusb_client_add_device_skips_unopenable_device) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    FailingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const size_t before = cap.chunks.size();
+
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(!client.AddDevice(info));
+    // The backend failed to open the device: it is not announced at all.
+    CHECK_EQ(client.device_count(), static_cast<size_t>(0));
+    CHECK_EQ(client.add_virtual_channel_count(), static_cast<unsigned>(0));
+    CHECK(cap.chunks.size() == before);
+}
+
+RTSC_TEST(rdpusb_client_completion_echoes_request_interface_id) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    FakeEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+    const size_t before = cap.chunks.size();
+
+    rtsc::proto::RdpUsbTsUrbPipeRequest pipe;
+    pipe.pipe_handle = 5;
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function = rtsc::proto::RdpUsbUrbFunction::kPipeRequest;
+    urb.body = pipe.encode();
+    rtsc::proto::RdpUsbTransferInRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kStub);  // 0x80000001, not kProxy
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferInRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 0;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK(cap.chunks.size() == before + 1);
+    if (cap.chunks.size() != before + 1) return;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    rtsc::proto::RdpUsbUrbCompletionNoData done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletionNoData::parse(payload.data(),
+                                                        payload.size(),
+                                                        done) ==
+          rtsc::proto::Status::Ok);
+    // The stub stream id must not be rewritten to kProxy.
+    CHECK_EQ(done.header.interface_id,
+             static_cast<uint32_t>(rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+                 rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+                 rtsc::proto::RdpUsbStreamId::kStub)));
+}
+
+RTSC_TEST(drdynvc_bundled_pdus_in_one_static_message_all_consumed) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    const uint32_t id1 = t.CreateChannel("URBDRC");
+    const uint32_t id2 = t.CreateChannel("URBDRC");
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(2));
+
+    // Two DYNVC_CREATE_RSP PDUs bundled into one static channel message
+    // ([MS-RDPEDYC] 2.2.2.2): a server that opened several dynamic channels
+    // quickly can coalesce them. Each response is exactly
+    // header + ChannelId + CreationStatus(4) - there is NO channel name in
+    // the response, so the PDU boundary is fixed and must not depend on a
+    // NUL terminator.
+    std::vector<uint8_t> bundle;
+    for (const uint32_t id : {id1, id2}) {
+        const auto pdu = rtsc::proto::BuildDynvcPdu(
+            rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0});
+        bundle.insert(bundle.end(), pdu.begin(), pdu.end());
+    }
+    FeedDvc(t, bundle);
+
+    CHECK_EQ(t.create_response_count(), static_cast<unsigned>(2));
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(drdynvc_bundled_caps_v1_then_create_response) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    const uint32_t id = t.CreateChannel("URBDRC");
+
+    // DYNVC_CAPS VERSION1 ([MS-RDPEDYC] 2.2.1.1.1) = header + Pad + Version
+    // (4 bytes), followed by a CREATE_RSP in the same static message.
+    std::vector<uint8_t> bundle = {0x50, 0x00, 0x01, 0x00};
+    const auto rsp = rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kCreate,
+                                                0, id, {0, 0, 0, 0});
+    bundle.insert(bundle.end(), rsp.begin(), rsp.end());
+    FeedDvc(t, bundle);
+
+    CHECK_EQ(t.version(), static_cast<uint16_t>(1));
+    CHECK(t.ready());
+    CHECK_EQ(t.create_response_count(), static_cast<unsigned>(1));
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(drdynvc_bundled_caps_v2_then_create_response) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    const uint32_t id = t.CreateChannel("URBDRC");
+
+    // DYNVC_CAPS VERSION2 ([MS-RDPEDYC] 2.2.1.1.2) = header + Pad + Version +
+    // PriorityCharge0..3 (8 bytes) = 12 bytes, followed by a CREATE_RSP. The
+    // bundling consumer must size the capability PDU by its version, not by a
+    // fixed 4 bytes, or the following CREATE_RSP is misparsed.
+    std::vector<uint8_t> bundle = {0x50, 0x00, 0x02, 0x00,
+                                   0x01, 0x00, 0x02, 0x00,
+                                   0x03, 0x00, 0x04, 0x00};
+    const auto rsp = rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kCreate,
+                                                0, id, {0, 0, 0, 0});
+    bundle.insert(bundle.end(), rsp.begin(), rsp.end());
+    FeedDvc(t, bundle);
+
+    CHECK_EQ(t.version(), static_cast<uint16_t>(2));
+    CHECK(t.ready());
+    CHECK_EQ(t.create_response_count(), static_cast<unsigned>(1));
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(rdpusb_win32_control_transfer_copies_out_input) {
+    // W11 repair batch: the WinUSB ControlTransfer used to allocate a
+    // zero-initialised buffer for the OUT data stage and never copy `input`
+    // into it, so every OUT control payload was sent as N zero bytes. The
+    // WinUSB call has no test seam, so this pins the wiring at the source
+    // level: the ControlTransfer body must copy `input`. Removing that copy
+    // is a red mutation. RTSC_SOURCE_DIR is provided by CMake.
+#ifdef RTSC_SOURCE_DIR
+    const std::filesystem::path src =
+        std::filesystem::path(RTSC_SOURCE_DIR) / "src" / "usb" / "usb_win32.cpp";
+    std::ifstream in(src, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) {
+        std::printf("  FAIL: cannot open %s\n", src.string().c_str());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+
+    const size_t ctrl = FindLineIn(lines, "bool ControlTransfer");
+    const size_t bulk = FindLineIn(lines, "bool BulkOrInterruptTransfer");
+    CHECK(ctrl != std::string::npos);
+    CHECK(bulk != std::string::npos);
+    if (ctrl != std::string::npos && bulk != std::string::npos) {
+        bool copied = false;
+        for (size_t i = ctrl + 1; i < bulk; ++i) {
+            if (lines[i].find("buffer.assign(input") != std::string::npos ||
+                lines[i].find("std::copy(input") != std::string::npos) {
+                copied = true;
+            }
+        }
+        CHECK(copied);
+    }
+#else
+    std::printf(
+        "  FAIL: RTSC_SOURCE_DIR not defined; cannot locate usb_win32.cpp\n");
+    CHECK(false);
+#endif
+}
+
+RTSC_TEST(gui_main_advertises_drdynvc_only_under_usb_gate) {
+    // W11 repair batch: the GUI must not advertise the "drdynvc" static
+    // virtual channel unless RTSC_REDIRECT_USB enables USB redirection (an
+    // unconditional advertisement wastes a channel and widens the attack
+    // surface for no benefit). The drdynvc name may only appear in a
+    // channel_names assignment that is gated behind the usb_redirect flag.
+#ifdef RTSC_SOURCE_DIR
+    const std::filesystem::path src =
+        std::filesystem::path(RTSC_SOURCE_DIR) / "tools" / "rtsc_gui" /
+        "main.cpp";
+    std::ifstream in(src, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) {
+        std::printf("  FAIL: cannot open %s\n", src.string().c_str());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+
+    bool assignment_has_drdynvc = false;
+    for (const std::string& l : lines) {
+        if (l.find("channel_names") != std::string::npos &&
+            l.find("\"drdynvc\"") != std::string::npos) {
+            assignment_has_drdynvc = true;
+        }
+    }
+    const size_t gate = FindLineIn(lines, "if (usb_redirect)");
+    const size_t push = FindLineIn(lines, "channels.push_back(\"drdynvc\");");
+    CHECK(!assignment_has_drdynvc);
+    CHECK(gate != std::string::npos);
+    CHECK(push != std::string::npos);
+    if (gate != std::string::npos && push != std::string::npos) {
+        // The push_back must sit at or after the gate line (a one-line
+        // `if (usb_redirect) channels.push_back("drdynvc");` satisfies this).
+        CHECK(push >= gate);
+    }
+#else
+    std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
+    CHECK(false);
+#endif
+}
+
+RTSC_TEST(drdynvc_create_response_failure_clears_pending) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    const uint32_t id = t.CreateChannel("URBDRC");
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(1));
+
+    // DYNVC_CREATE_RSP with a non-zero Status: the channel never opens, so the
+    // request must not stay pending forever.
+    const auto rsp = rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kCreate,
+                                                0, id, {1, 0, 0, 0});
+    FeedDvc(t, rsp);
+
+    CHECK_EQ(t.create_response_count(), static_cast<unsigned>(1));
+    CHECK_EQ(t.pending_channels(), static_cast<size_t>(0));
 }
 
 RTSC_TEST(drdynvc_caps_response_version2_with_charges) {

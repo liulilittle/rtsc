@@ -96,20 +96,22 @@ class RdpUsbClient : public IDrdynvcListener {
     void OnDeviceMessage(uint32_t channel_id, const std::vector<uint8_t>& msg);
     void SendControl(const std::vector<uint8_t>& msg);
     void SendOnChannel(uint32_t channel_id, const std::vector<uint8_t>& msg);
-    void HandleTransferIn(uint32_t usb_device,
+    void HandleTransferIn(uint32_t channel_id, uint32_t usb_device,
                           const rtsc::proto::RdpUsbTransferInRequest& req);
     void HandleTransferOut(
-        uint32_t usb_device,
+        uint32_t channel_id, uint32_t usb_device,
         const rtsc::proto::RdpUsbTransferOutRequest& req);
     void ExecuteUrb(Device& device, const rtsc::proto::RdpUsbTsUrb& urb,
-                    uint32_t output_buffer_size, usb::UrbResult& result,
+                    uint32_t output_buffer_size,
+                    const std::vector<uint8_t>& output,
+                    usb::UrbResult& result,
                     std::vector<uint8_t>& result_body);
-    void CompleteUrb(uint32_t usb_device, uint32_t request_id,
-                     uint16_t urb_function, uint32_t usbd_status,
+    void CompleteUrb(uint32_t channel_id, uint32_t interface_id,
+                     uint32_t request_id, uint16_t urb_function,
+                     uint32_t usbd_status,
                      const std::vector<uint8_t>& result,
                      const std::vector<uint8_t>& output);
     Device* FindDevice(uint32_t usb_device);
-    uint32_t MakeHeaderInterfaceId(uint32_t interface) const;
 
     usb::UsbDeviceEnumerator* enumerator_;
     DrdynvcClient* transport_;
