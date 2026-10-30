@@ -155,3 +155,71 @@ REA search_strings "chunked"
 REA search_strings "RDG-INCHANNEL-RETRYMODE"
 REA search_strings "AAState"
 ```
+
+## 8. 我方实现缺陷（运行期探针 RED，主代理独立实证）
+
+探针源码 `evidence/gateway-probe-main.cpp`，输出 `evidence/gateway-probe-runtime.txt`。
+方法：**链接真实 Release 库**（`rtsc_proto.lib`/`rtsc_crypto.lib`/`rtsc_util.lib`，无桩），
+直接打印 `BuildRdgChannelRequest` / `BuildHttpConnectRequest` 实际产出的字节并断言。
+
+[BASH: probe_gw.exe → SUMMARY failures=8]
+
+我方 `BuildRdgChannelRequest(RDG_IN_DATA)` 实产（318 B）：
+```
+RDG_IN_DATA /remoteDesktopGateway/ HTTP/1.1
+Host: /remoteDesktopGateway/          <-- FAIL: Host 必须是 authority
+User-Agent: rtsc
+Accept: */*
+Cache-Control: no-cache
+Connection: Keep-Alive
+Content-Length: 0                     <-- FAIL: 与流式 chunked 体互斥
+RDG-Connection-Id: ...
+RDG-Correlation-Id: ...               <-- FAIL: 应 OUT-only
+RDG-User-Id: ...                      <-- FAIL: 应 OUT-only
+```
+
+| 断言 | 结果 | 出厂对照 |
+|---|---|---|
+| Host 是 authority 而非路径 | **FAIL** | `/remoteDesktopGateway/` 在出厂仅作 URL 路径（`0x1806d0...` 系列 + `%s://%s:%hu%s` 格式串） |
+| 带 `Transfer-Encoding: chunked` | **FAIL** | `0x1806d0c80` `AddRequestHeaders transfer-encoding: chunked) for IN channel failed` |
+| 无 `Content-Length: 0` | **FAIL** | 流式请求体不能用 CL |
+| 带 `RDG-Diagnostics-Info` | **FAIL** | `0x1806d0e68` |
+| 带 `RDG-Client-AppBuild` | **FAIL** | `0x1806d13e0` |
+| 带 `RDG-Client-Generation` | **FAIL** | `0x1806d1410`（OUT-only） |
+| 带 `RDG-Auth-Scheme` | **FAIL** | `0x1806d02b0` |
+| 带 `RDG-INCHANNEL-RETRYMODE` | **FAIL** | `0x1806d0f60` + `IN_CHANNEL_RETRY_COUNT_%d` |
+| 带 `Connection: Keep-Alive` | PASS | `0x1806d0c00` |
+
+**代码位置**：`src/proto/gateway.cpp:263`（Host）、`:268`（CL:0）、`:270-273`（方向性）。
+`BuildHttpConnectRequest` 的 Host 正确（`Host: gw.example:443`，PASS）—— 缺陷只在 RDGSP 通道请求。
+
+## 9. 更正：101 升级的证据判定（主代理自我纠错）
+
+**我先前的错误论断**：以"出厂无 `Switching Protocols` 字面串"否定 101 升级存在。
+
+**为何错误**：HTTP 状态码在 WinHTTP 里是**数值**比较，不是字面串匹配。出厂用
+`WinHttpQueryHeaders`（`0x18078...`，3 处命中）读数值状态码，无需任何状态行文本。
+
+**纠正后结论（支持审计甲）**：
+- 出厂确实实现 WebSocket 升级：`WinHttpWebSocketCompleteUpgrade`（2 命中）、
+  `Upgrade to WebSocket succeeded.` / `Upgrade to WebSocket failed. Can't use websocket transport.`、
+  `CreateRdpWebSocketStreamWrapper`、`FreeRdpWebSocketStreamWrapper`、
+  `WebSocketStreamIn` / `WebSocketStreamOut`、`Sec-WebSocket-Protocol`。
+- 出厂同时保留 chunked 流式模式：`SendStreamModeRequestAsync`（5 命中）、
+  `SendStreamModeRequestAsync (Upgrade to Web Socket) failed`。
+- `CreateOutChannelOrWebSocketRequest`（2 命中）证明二者是**并列二选一**：
+  升级成功走 WebSocket，失败则退回 OUT channel（chunked）。
+
+**方法论教训**：`search_strings` 只能证明"某字面量存在"，**不能证明某种机制不存在**
+（数值常量、枚举、内联比较都不会留下字符串）。用字符串缺席否定机制 = 无效推理。
+
+## 10. 出厂 HTTP 语义补充证据（主代理实测）
+
+| 证据 | 说明 |
+|---|---|
+| `Content-Type: application/json`（6 命中，含 `application/json; charset=utf-8`） | 通道请求体是 **JSON**，不是 SOAP |
+| `application/soap+xml` / `text/xml` / `s:Envelope` / `SOAPAction` **全部 0 命中** | SOAP 无二进制证据（与审计甲一致，标 UNVERIFIED，**不作缺陷**） |
+| `TsProxyCreateTunnel` / `TsProxyMakeTunnelCall` / `TsProxyAuthorizeTunnel` / `RpcExceptionCode`（10 命中） | 存在 **RPC 式**隧道创建（`Rpc*Call_P`），与 HTTP 通道并存 |
+| `CAAHttpClientRawTransport::ProcessResponse401` / `ProcessResponse307` / `ProcessResponse401 CurrentRetryCount=%d is larger than MaxRetryCount=%d` | 401 有重试上限；307 有专门处理 |
+| `Received un-handled failure status code in server response` | 有兜底错误分支 |
+| `Win32#0.0=7` / `%s#%d.%d=%d` | `RDG-Client-Generation` 取值格式（实测确认） |
