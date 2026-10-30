@@ -871,3 +871,37 @@
 - 定案入库 `docs/spec/gateway-rdgsp-design.md`（24b69da）：14 缺陷（D1-D14，全部附红证）、路线 A、阶段 1/2 切分、验收判据。
 - 执行 AI 派出 `ses_e71e343deffeYMNPn43gPJY1qb`（阶段 1：A 头部修复 / B chunked 编解码 / C 状态映射 / D 多挑战 / E UDP 四项 / F 测试）。
 - 明确禁止 encode→decode 自证（对齐 discover 已记录的缺陷模式）。
+
+## 第744轮：阶段1 复核后裁定（两项需父定案）
+### 裁定 1（E2 偏离）—— 批准
+- 任务书 E2 原文"ACK 必须在数据被消费后"是我写的**方案指令**，不是出厂证据；其目的是根除 D8 丢帧。
+- 执行 AI 实测：ACK-on-consume 在"双侧同时 Write 无中间 Read"时必吊死（RED），这正是乙 R1 所指的 P1 回归。
+- 采纳"入队即 ACK + 有界 FIFO"：结构上不可能被覆盖丢失（D8 根治），且不引入死锁。
+- **但必须补强**：有界 FIFO 满时丢帧且不 ACK 会导致发送方在窗口内停滞；需断言"满队列时发送方重传可在消费后成功"，即"丢帧不 ACK"必须配合发送方重传逻辑，不能静默丢弃。
+- E2 契约改写为 enqueue-ACK，变异红测重做（回退→RED）——已由执行 AI 完成，需双审复核该新契约本身合理。
+
+### 裁定 2（R3 方向归属）—— 双方各对一半，按反汇编逐头裁定
+反汇编 `mstscax.dll!FUN_1801c3818`（sha256 d73c76d6…）实测：
+- `local_298 = param_3`（:59），`param_3 != 0` = IN 通道。
+- `:299 if (local_298 == 0)` = **OUT-only 分支**；`RDG-Client-AppBuild`（:312）与 `RDG-Client-Generation`（:383）**都在该分支内** → **OUT-only 成立**。
+- `RDG-Connection-Id`（:74）在分支前 → **双通道**。
+- `RDG-Correlation-Id`（:226）位于 `LAB_1801c3e24`，由 chunked 路径与 Keep-Alive 路径共同跳达 → **双通道**（乙正确）。
+- `RDG-Diagnostics-Info`（:248）仅判非空 → **双通道**。
+- `RDG-INCHANNEL-RETRYMODE`（:264-269）条件 `local_298 != 0 && *(int*)(param_1+0xd30) != 0` → **IN-only + 重试标志**（定案正确）。
+- `RDG-User-Id`（:544）位于 :444 起的 else 分支（即 `local_298 != 0`，IN 侧）→ **IN-only**，值经 base64（:568 "failed to base64-encode the user name"）。
+- `transfer-encoding: chunked`（:172）条件 `param_3 != 0 && param_4 == 0` → **IN-only**；否则 `Connection: Keep-Alive`（:188）。
+
+**结论（修正定案 D5）**：
+| 头 | 正确归属 |
+|---|---|
+| RDG-Connection-Id | 双通道 |
+| RDG-Diagnostics-Info | 双通道 |
+| RDG-Correlation-Id | **双通道**（原定案错） |
+| RDG-User-Id | **IN-only**，值 base64（原定案错，方向反了） |
+| RDG-Client-AppBuild | OUT-only |
+| RDG-Client-Generation | OUT-only |
+| Load Balancer Cookie | OUT-only |
+| RDG-INCHANNEL-RETRYMODE | IN-only + 重试标志 |
+| Transfer-Encoding: chunked | IN-only；OUT 用 Connection: Keep-Alive |
+
+证据文档 §2 的"报错文本推方向"推理**已被推翻**：错误串里的 "for OUT channel" 只是失败上报上下文，不是头部归属。
