@@ -677,3 +677,9 @@
 - proto 层齐备（Req parse + Rsp encode + DeviceAnnounce encode 全有），无需新增。
 - 定案落 docs/spec/rdpdr-server-io-design.md（d413ad3）：缺口 6 项 + 失败路径 + 验收。
 - 派双审计（甲 ses_e73d469e 侧重协议合法性/同步性/路径复用；乙 ses_e73d4590 侧重安全深挖/symlink 逃逸/并发/客户端兼容），已双向互告 ID。
+## 第720轮：用户裁定路线 A + 派执行
+- 用户 /goal resume + 裁定：路线 A（规范方向：客户端盘共享给服务器，需异步 completion 引擎）。
+- 双审裁决已核（web 实证 2.2.2.9 "The client announces..."）；其 S1/S2/S4/S5/S6 缺陷全部适用，作用于 A 腿加固。
+- 定案落 docs/spec/rdpdr-server-io-design.md §6/§7/§8（d48084c + a98b0c0）。
+- 旧审计组甲乙 delete 解散。
+- 执行 AI：ses_e735fda45ffeZAB4HMxl3drm30（4 步 TDD：path_guard 提取 → 服务器异步 I/O 引擎 → 客户端 S2/S4/S6 加固 → 测试）。
