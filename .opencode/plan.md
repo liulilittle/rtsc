@@ -431,3 +431,40 @@
 
 ### 其他功能缺口（全局盘点）
 - **Gateway**：当前是 HTTP CONNECT 代理，非 [MS-TSGU] 3.3.5.1 RDGSP，零接线（需完整实现）
+
+### 审计发现（乙第一轮，待甲交叉验证后定案）
+
+**P1**
+1. `gateway.cpp:263` Host 头写成路径 `/remoteDesktopGateway/`（应为 authority）。
+2. SOAP Body 缺 `<CreateTunnel>` 包装（`gateway.cpp:324-328`）。
+3. 头部方向性错误：`RDG-Correlation-Id`/`RDG-User-Id` 应 OUT-only，当前无条件写（`:270-273`）。
+4. `Content-Length: 0`（`:268`）与 OUT 通道 chunked 流式体矛盾。
+5. **chunked 解码完全缺失**（`gateway_transport.cpp:279-293` Read 原样泄流）→ 接真网关必坏。
+6. 证据头全集缺失（Diagnostics/AppBuild/Generation/ChannelBind/Auth-Scheme/LB cookie/remotappRetryMode）。
+
+**P2**
+7. `o.method` 无默认值（`gateway.h:143`）。
+8. `parse_www_authenticate`（`gateway.cpp:280-302`）不支持多挑战/多参数。
+9. UDP 序号 2^32 回绕误判（`gateway_transport.cpp:72-73,104`）。
+10. `UdpSyn::parse` SYNEX 探测 `remaining>=4` 尾部歧义（`gateway.cpp:448`）。
+
+**P3**
+11. 畸形 datagram → 立即断连（`gateway_transport.cpp:113-114/78`）。
+12. FEC 位帧/FIN 帧未处理。
+13. `MultitransportResponse` 字段序 UNVERIFIED。
+
+**安全**
+- S1/S2/S4 通过。
+- **S3（P1 接入安全）**：TLS 默认 `kTofu`（`tls.h:118`）；网关自签下首连 MITM 窗口；`kInsecure` 则 CredSSP step5 明文密码（`credssp.cpp:391`）。需网关专属策略（kStrict / pinned SPKI / 用户确认）。
+- S5：SOAP 无 XML 转义（`gateway.cpp:320-326`）→ 配置注入面。
+
+**UDP 正确性**
+- **C1（P1 丢帧，已核实）**：`gateway_transport.cpp:126-128` 单帧 stash 无条件覆盖 + `:111` 每帧立即 ACK → 未消费帧永久丢失。`receive_window_size=64` 与实现缓冲 1 不符。
+- C2：ACK 与超时同返 0（`:29-31`）语义失真。
+- C3：重发复用原字节正确。
+
+**实施风险（双通道包 ByteTransport）**
+- `Client::Connect/Pump/SendPdu` 吃单 `Transport&` → 需自定义 `RdgByteTransport`。
+- RDGSP 同连接上行/下行交错，需自定义复用（否则写等读排空死锁）。
+- `Client::Connect` 硬 30s（`client.cpp:136`）+ 握手在构造内 → 冻结 GUI 消息泵。
+- `ConnectionDriver` 状态机不可重入（`connection_driver.cpp:35-41`）→ 断线必须重建；`GatewayTunnel` 持 `inner_` 引用无所有权无重建路径。
