@@ -513,3 +513,7 @@
 ## 第678轮：proto 层阶段性独立验证
 - 工作树 3 文件（proto.h +47/proto.cpp +50/test +98）；主代理独立构建 rtsc_rdpsnd_tests 并跑：17 tests/118 checks 全绿（原 6 tests/30 checks → 新增 11 tests/88 checks）。
 - 执行 AI 继续推进音频源/RdpsndServer/接线/e2e。
+## 第679轮：执行 AI 进度（9 文件）
+- 新增：include/rtsc/audio/audio_source.h、include/rtsc/channel/rdpsnd_server.h、src/audio/sine_source.cpp、src/channel/rdpsnd_server.cpp、tests/test_audio_source.cpp；CMakeLists 已改。
+- 乙撤回 D5（proto 缺口已补，转为"执行新增待复核"）。
+- 剩余：server.cpp 接线、server.h enable_rdpsnd、test_rdpsnd_server.cpp、test_server_rdpsnd_e2e.cpp、main.cpp --audio、D12。
