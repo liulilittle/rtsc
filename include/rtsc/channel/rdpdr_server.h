@@ -92,6 +92,7 @@ class RdpdrServer {
     unsigned device_list_announce_count() const {
         return device_list_announce_count_;
     }
+    unsigned device_reply_count() const { return device_reply_count_; }
     unsigned device_io_request_count() const { return device_io_request_count_; }
     unsigned out_of_order_count() const { return out_of_order_count_; }
     unsigned malformed_pdu_count() const { return malformed_pdu_count_; }
@@ -128,6 +129,7 @@ class RdpdrServer {
     unsigned client_name_count_ = 0;
     unsigned client_capability_count_ = 0;
     unsigned device_list_announce_count_ = 0;
+    unsigned device_reply_count_ = 0;
     unsigned device_io_request_count_ = 0;
     unsigned out_of_order_count_ = 0;
     unsigned malformed_pdu_count_ = 0;

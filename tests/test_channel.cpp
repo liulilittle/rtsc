@@ -141,4 +141,93 @@ RTSC_TEST(channel_fragment_single_chunk_sets_both_flags) {
     CHECK(chunks[0].size() == ChannelPduHeader::kSize + 3);
 }
 
+// F1: a FIRST chunk whose declared total exceeds the reassembly cap is
+// rejected up front, before any payload is buffered. No LAST flag: without the
+// cap the length-mismatch check can never fire (the sequence simply stays
+// open), so this pins the FIRST-length guard specifically.
+RTSC_TEST(channel_first_declaring_over_limit_is_rejected) {
+    const std::vector<uint8_t> payload(16, 0x11);
+    const auto chunk =
+        Chunk(static_cast<uint32_t>(kMaxChannelMessageBytes + 1),
+              kChannelFirst | kChannelShowProtocol, payload);
+    ChannelPduHeader h;
+    CHECK(ChannelPduHeader::parse(chunk.data(), chunk.size(), h) == Status::Ok);
+    CHECK_EQ(h.length, static_cast<uint32_t>(kMaxChannelMessageBytes + 1));
+
+    ChannelReassembler r;
+    bool complete = false;
+    std::vector<uint8_t> msg;
+    CHECK(r.Feed(h, chunk.data() + ChannelPduHeader::kSize,
+                 chunk.size() - ChannelPduHeader::kSize, complete, msg) ==
+          Status::InvalidLength);
+    CHECK(!complete);
+    // The failed message must not leave data behind.
+    CHECK_EQ(r.buffered(), static_cast<size_t>(0));
+}
+
+// F1: chunk payloads that accumulate past the cap are rejected even when every
+// individual chunk declares a legal total. Reaching exactly the cap is fine;
+// the first chunk pushing beyond it fails and resets.
+RTSC_TEST(channel_accumulated_past_limit_is_rejected) {
+    const size_t cap = kMaxChannelMessageBytes;
+    ChannelReassembler r;
+    bool complete = false;
+    std::vector<uint8_t> msg;
+    ChannelPduHeader h;
+
+    // FIRST carries cap - 2000; two MIDDLE chunks take it to exactly cap; a
+    // third MIDDLE chunk would push it past the cap.
+    std::vector<uint8_t> head(cap - 2000, 0xAB);
+    auto c1 = Chunk(static_cast<uint32_t>(cap),
+                    kChannelFirst | kChannelShowProtocol, head);
+    CHECK(ChannelPduHeader::parse(c1.data(), c1.size(), h) == Status::Ok);
+    CHECK(r.Feed(h, c1.data() + ChannelPduHeader::kSize,
+                 c1.size() - ChannelPduHeader::kSize, complete, msg) == Status::Ok);
+    CHECK_EQ(r.buffered(), cap - 2000);
+
+    std::vector<uint8_t> mid(1000, 0xCD);
+    auto c2 = Chunk(static_cast<uint32_t>(cap), kChannelShowProtocol, mid);
+    CHECK(ChannelPduHeader::parse(c2.data(), c2.size(), h) == Status::Ok);
+    CHECK(r.Feed(h, c2.data() + ChannelPduHeader::kSize,
+                 c2.size() - ChannelPduHeader::kSize, complete, msg) == Status::Ok);
+    CHECK_EQ(r.buffered(), cap - 1000);
+
+    auto c3 = Chunk(static_cast<uint32_t>(cap), kChannelShowProtocol, mid);
+    CHECK(ChannelPduHeader::parse(c3.data(), c3.size(), h) == Status::Ok);
+    CHECK(r.Feed(h, c3.data() + ChannelPduHeader::kSize,
+                 c3.size() - ChannelPduHeader::kSize, complete, msg) == Status::Ok);
+    CHECK_EQ(r.buffered(), cap);
+
+    auto c4 = Chunk(static_cast<uint32_t>(cap), kChannelShowProtocol, mid);
+    CHECK(ChannelPduHeader::parse(c4.data(), c4.size(), h) == Status::Ok);
+    CHECK(r.Feed(h, c4.data() + ChannelPduHeader::kSize,
+                 c4.size() - ChannelPduHeader::kSize, complete, msg) ==
+          Status::InvalidLength);
+    CHECK(!complete);
+    CHECK_EQ(r.buffered(), static_cast<size_t>(0));
+}
+
+// F1: a complete message of exactly kMaxChannelMessageBytes passes the cap
+// checks and reassembles (boundary pass).
+RTSC_TEST(channel_exact_limit_message_completes) {
+    const size_t cap = kMaxChannelMessageBytes;
+    std::vector<uint8_t> payload(cap, 0x5A);
+
+    ChannelReassembler r;
+    bool complete = false;
+    std::vector<uint8_t> msg;
+
+    ChannelPduHeader h;
+    const auto chunk = Chunk(static_cast<uint32_t>(cap),
+                             kChannelFirst | kChannelLast | kChannelShowProtocol,
+                             payload);
+    CHECK(ChannelPduHeader::parse(chunk.data(), chunk.size(), h) == Status::Ok);
+    CHECK_EQ(h.length, static_cast<uint32_t>(cap));
+    CHECK(r.Feed(h, chunk.data() + ChannelPduHeader::kSize,
+                 chunk.size() - ChannelPduHeader::kSize, complete, msg) == Status::Ok);
+    CHECK(complete);
+    CHECK(msg == payload);
+    CHECK_EQ(r.buffered(), static_cast<size_t>(0));
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_channel_tests"); }

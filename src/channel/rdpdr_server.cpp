@@ -191,15 +191,24 @@ void RdpdrServer::OnDeviceListAnnounce(const std::vector<uint8_t>& message) {
         ++out_of_order_count_;
         return;
     }
-    // The client's redirected devices are received ([MS-RDPEFS] 2.2.2.9) but
-    // v1 does not consume them: the server issues no I/O. Parsing still
-    // validates the announced list.
+    // The client's redirected devices are received ([MS-RDPEFS] 2.2.2.9). v1
+    // issues no I/O against them, but each announced device is answered with a
+    // DR_CORE_DEVICE_ANNOUNCE_RSP (2.2.2.1, result_code 0 = SUCCESS) so a real
+    // mstsc server's device-ready expectation is satisfied. RdpdrDeviceReply's
+    // encoder emits the RDPDR_HEADER itself, so the reply is sent as-is.
     rtsc::proto::RdpdrDeviceListAnnounce list;
     if (rtsc::proto::RdpdrDeviceListAnnounce::parse(message, list) != Status::Ok) {
         ++malformed_pdu_count_;
         return;
     }
     ++device_list_announce_count_;
+    for (const auto& device : list.devices) {
+        rtsc::proto::RdpdrDeviceReply reply;
+        reply.device_id = device.device_id;
+        reply.result_code = 0;  // [MS-RDPEFS] 2.2.2.1 resultCode SUCCESS
+        SendRaw(reply.encode());
+        ++device_reply_count_;
+    }
 }
 
 void RdpdrServer::OnDeviceIoRequest(const std::vector<uint8_t>& body) {

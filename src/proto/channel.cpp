@@ -22,8 +22,15 @@ Status ChannelReassembler::Feed(const ChannelPduHeader& header,
     message.clear();
 
     if ((header.flags & kChannelFirst) != 0) {
-        // A new message begins; discard any half-assembled previous one.
+        // A new message begins; discard any half-assembled previous one. A
+        // declared total above the cap is rejected before a single byte is
+        // buffered: the sequence could otherwise stay open forever with a
+        // 4 GiB header while the sum of chunk payloads grows unbounded.
         buffer_.clear();
+        if (header.length > kMaxChannelMessageBytes) {
+            Reset();
+            return Status::InvalidLength;
+        }
         expected_length_ = header.length;
         started_ = true;
     } else if (!started_) {
@@ -32,6 +39,13 @@ Status ChannelReassembler::Feed(const ChannelPduHeader& header,
     }
 
     if (data != nullptr && size > 0) {
+        // The sum of buffered payloads must stay within the cap. Check with
+        // subtraction so size + buffered cannot wrap around size_t.
+        if (size > kMaxChannelMessageBytes ||
+            buffer_.size() > kMaxChannelMessageBytes - size) {
+            Reset();
+            return Status::InvalidLength;
+        }
         buffer_.insert(buffer_.end(), data, data + size);
     }
 

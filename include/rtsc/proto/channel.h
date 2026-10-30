@@ -35,6 +35,13 @@ enum ChannelFlag : uint32_t {
 // The default chunk size when VCChunkSize is not negotiated.
 inline constexpr size_t kDefaultChannelChunkSize = 1600;
 
+// Upper bound for one reassembled virtual channel message, 16 MiB. Aligned
+// with drdynvc's kMaxMessageLength (include/rtsc/proto/drdynvc.h): each static
+// virtual channel has the same unbounded sum of chunk payloads for
+// ChannelReassembler, so a hostile peer declaring a 4 GiB CHANNEL_PDU_HEADER
+// length must not be allowed to pin unbounded memory.
+inline constexpr size_t kMaxChannelMessageBytes = 16u * 1024u * 1024u;
+
 // CHANNEL_PDU_HEADER ([MS-RDPBCGR] 2.2.6.1.1), 8 bytes.
 struct ChannelPduHeader {
     static constexpr size_t kSize = 8;

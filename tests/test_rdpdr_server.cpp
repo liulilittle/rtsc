@@ -333,6 +333,90 @@ RTSC_TEST(rdpdr_server_never_sends_devices) {
     CHECK(!HasSent(sent, proto::kPakidCoreDeviceReply));
 }
 
+// D2: each device in the client's announce list is answered with a
+// DR_CORE_DEVICE_ANNOUNCE_RSP ([MS-RDPEFS] 2.2.2.1) carrying the same device
+// id and result code 0 (SUCCESS). One device.
+RTSC_TEST(rdpdr_server_answers_one_announced_device) {
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrServer server = MakeServer(sent);
+    server.Start();
+    FeedMessage(server, ClientAnnounceReply(server));
+    const size_t before = sent.size();  // announce + 3 response PDUs
+    CHECK_EQ(before, static_cast<size_t>(4));
+
+    proto::RdpdrDeviceListAnnounce list;
+    proto::RdpdrDeviceAnnounce device;
+    device.device_type = 2;  // RDPDR_DTYP_FILESYSTEM
+    device.device_id = 0x11;
+    device.device_data_length = 0;
+    list.devices.push_back(device);
+    list.device_count = static_cast<uint32_t>(list.devices.size());
+    FeedMessage(server, list.encode());
+
+    CHECK_EQ(server.device_list_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(server.device_reply_count(), static_cast<unsigned>(1));
+    CHECK_EQ(sent.size(), before + 1);
+
+    proto::RdpdrPdu pdu = DecodeSent(sent.back());
+    CHECK(pdu.header.packet_id == proto::kPakidCoreDeviceReply);
+    proto::RdpdrDeviceReply reply;
+    const std::vector<uint8_t> reply_body = StrictBody(sent.back());
+    CHECK(proto::RdpdrDeviceReply::parse(reply_body, reply) == proto::Status::Ok);
+    CHECK_EQ(reply.device_id, static_cast<uint32_t>(0x11));
+    CHECK_EQ(reply.result_code, static_cast<uint32_t>(0));  // SUCCESS
+}
+
+// D2: two announced devices get two replies, each carrying its own id.
+RTSC_TEST(rdpdr_server_answers_each_announced_device) {
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrServer server = MakeServer(sent);
+    server.Start();
+    FeedMessage(server, ClientAnnounceReply(server));
+    const size_t before = sent.size();
+    CHECK_EQ(before, static_cast<size_t>(4));
+
+    proto::RdpdrDeviceListAnnounce list;
+    proto::RdpdrDeviceAnnounce first;
+    first.device_type = 2;
+    first.device_id = 7;
+    first.device_data_length = 0;
+    first.preferred_dos_name[0] = 'C';
+    first.preferred_dos_name[1] = ':';
+    proto::RdpdrDeviceAnnounce second;
+    second.device_type = 2;
+    second.device_id = 42;
+    second.device_data_length = 0;
+    second.preferred_dos_name[0] = 'D';
+    second.preferred_dos_name[1] = ':';
+    list.devices.push_back(first);
+    list.devices.push_back(second);
+    list.device_count = static_cast<uint32_t>(list.devices.size());
+    FeedMessage(server, list.encode());
+
+    CHECK_EQ(server.device_list_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(server.device_reply_count(), static_cast<unsigned>(2));
+    CHECK_EQ(sent.size(), before + 2);
+
+    CHECK_EQ(DecodeSent(sent[before]).header.packet_id,
+             static_cast<uint16_t>(proto::kPakidCoreDeviceReply));
+    CHECK_EQ(DecodeSent(sent[before + 1]).header.packet_id,
+             static_cast<uint16_t>(proto::kPakidCoreDeviceReply));
+
+    proto::RdpdrDeviceReply reply_first;
+    const std::vector<uint8_t> reply_first_body = StrictBody(sent[before]);
+    CHECK(proto::RdpdrDeviceReply::parse(reply_first_body, reply_first) ==
+          proto::Status::Ok);
+    CHECK_EQ(reply_first.device_id, static_cast<uint32_t>(7));
+    CHECK_EQ(reply_first.result_code, static_cast<uint32_t>(0));
+
+    proto::RdpdrDeviceReply reply_second;
+    const std::vector<uint8_t> reply_second_body = StrictBody(sent[before + 1]);
+    CHECK(proto::RdpdrDeviceReply::parse(reply_second_body, reply_second) ==
+          proto::Status::Ok);
+    CHECK_EQ(reply_second.device_id, static_cast<uint32_t>(42));
+    CHECK_EQ(reply_second.result_code, static_cast<uint32_t>(0));
+}
+
 // S6: a stray DR_DEVICE_IOREQUEST (the server announced no device, so none
 // should come) is ignored and counted; no completion is fabricated.
 RTSC_TEST(rdpdr_server_stray_device_io_request_ignored_and_counted) {
