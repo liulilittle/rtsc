@@ -712,3 +712,12 @@
 - 报称：rdpusb 57/259；3 项变异红证；2 条源码守卫测试；build 0err/0warn。
 - 主代理已逐条核实四处源码（240 / 80-90 / 47-60 / 234）均正确。
 - 双审二次验证已派：甲侧重"新引入风险"（pkt.Length vs input.size 语义、守卫测试脆弱性、无符号下溢、既有用例修正是否改测试迁就实现）；乙侧重重跑 probe_bundle 探针红转绿 + 独立 web 核验 CAPS V2/3 + 守卫 RTSC_SOURCE_DIR 配置覆盖 + env 内存泄漏 + 安全提示缺失。
+
+## 第731轮：USB 批次双章定稿 + 提交 7e5f13b + C0 62/62
+- 双章定稿（甲 11/11 PASS，乙 10/10 PASS + 探针红转绿）：FAIL-1/FAIL-2/CAPS/门控全部通过。
+- 乙探针证据：probe_bundle count=2/pending=0（此前 1/1）；usbrepro 4/4 全绿。
+- 甲关键判定：`WinUsb_ControlTransfer` 写方向强制 BufferLength==Setup.Length，长度不一致 fail-closed，不是新缺陷。
+- 乙关键判定：无符号下溢全部排除（:63 前置检查保护）；RTSC_SOURCE_DIR 在 CMakeLists:254-256 定义，缺失走 CHECK(false) 不假绿。
+- 提交 7e5f13b（9 文件，USB 接线 + P0/P1 + CAPS + 门控，双章）。
+- **C0 全量 ctest 62/62 全绿**（含 gateway 单测 1.41s，非 34GB 套件）。
+- 三项遗留（P2 空串 env / P2 ALL 隐私提示 / P3 early-exit 泄漏）派执行 AI 收尾小修。
