@@ -610,3 +610,7 @@
 - 协议裁决：Device Reply 对初始列表非必需（[MS-RDPEFS] 1.3.2 optional）→ 我们服务器不回不违规（推翻甲初稿担忧）。
 - 服务器 I/O 引擎（350-600 行、须异步防死锁）**不并入本批**，单列；批内只补 ANNOUNCE_RSP。
 - 定案落 docs/spec/rdpdr-client-wiring-design.md：GUI 接线 + F1/F2/F3 修复 + SUPERSEDE/file_id/写上限 + 服务器 ANNOUNCE_RSP。
+## 第704轮：双审收敛定案修订 2afa863
+- 主代理核实并修正：F4 撤回（rdpdr_client.cpp:410 已含 kFileSupersede，乙误读）；F2 升级确定性触发（悬空 symlink 枚举抛 filesystem_error）；F5 确认（OnRead:448 返 UNSUCCESSFUL 而非 INVALID_HANDLE）；F6 确认（OnWrite 无上限）。
+- 收敛后批内：GUI 接线 + F2 + F3 + F5 + F6；批外：F1（16MiB 重组上限，P 项）+ F7/F8 + 服务器 ANNOUNCE_RSP 独立小批 + 服务器 I/O 引擎 P 项。
+- 等甲终版报告后派执行 TDD。
