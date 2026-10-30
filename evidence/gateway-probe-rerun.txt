@@ -1,0 +1,35 @@
+---- BuildRdgChannelRequest(RDG_IN_DATA) (318 bytes) ----
+RDG_IN_DATA /remoteDesktopGateway/ HTTP/1.1\r\n
+Host: /remoteDesktopGateway/\r\n
+User-Agent: rtsc\r\n
+Accept: */*\r\n
+Cache-Control: no-cache\r\n
+Connection: Keep-Alive\r\n
+Content-Length: 0\r\n
+RDG-Connection-Id: 11111111-2222-3333-4444-555555555555\r\n
+RDG-Correlation-Id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\r\n
+RDG-User-Id: user@example\r\n
+\r\n
+
+== assertions on the RDGSP channel request ==
+[FAIL] host header is an authority, not the URL path
+[FAIL] request carries Transfer-Encoding: chunked
+[FAIL] request has no Content-Length: 0 on a streaming body
+[FAIL] request carries RDG-Diagnostics-Info
+[FAIL] request carries RDG-Client-AppBuild
+[FAIL] request carries RDG-Client-Generation
+[FAIL] request carries RDG-Auth-Scheme
+[FAIL] request carries RDG-INCHANNEL-RETRYMODE
+[PASS] request carries Connection: Keep-Alive
+---- BuildHttpConnectRequest (117 bytes) ----
+CONNECT rdphost:3389 HTTP/1.1\r\n
+Host: gw.example:443\r\n
+User-Agent: rtsc\r\n
+X-Transport: 0x00000001\r\n
+Content-Length: 0\r\n
+\r\n
+
+== assertions on the CONNECT request ==
+[PASS] CONNECT host header is the gateway authority
+
+SUMMARY failures=8

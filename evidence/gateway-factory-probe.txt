@@ -1,0 +1,73 @@
+﻿# PROBE-EVIDENCE  dll=C:\Windows\System32\mstscax.dll  bytes=9166848  strings=40423
+# SHA256-BOUND: d73c76d65721043cc96484e3483bdd1aab4357a8bfa924465adc572ced0eda05
+
+== A. FACTORY (mstscax) PRESENT ==
+[PASS] factory 'RDG_IN_DATA' hits=1
+       :: RDG_IN_DATA
+[PASS] factory 'RDG_OUT_DATA' hits=1
+       :: RDG_OUT_DATA
+[PASS] factory 'RDG-Connection-Id' hits=1
+       :: RDG-Connection-Id
+[PASS] factory 'RDG-User-Id' hits=1
+       :: RDG-User-Id
+[PASS] factory 'RDG-Correlation-Id' hits=1
+       :: RDG-Correlation-Id
+[PASS] factory 'RDG-Diagnostics-Info' hits=1
+       :: RDG-Diagnostics-Info
+[PASS] factory 'RDG-Client-AppBuild' hits=2
+       :: RDG-Client-AppBuild
+       :: AddRequestHeader (RDG-Client-AppBuild) failed
+[PASS] factory 'RDG-Client-Generation' hits=4
+       :: AddRequestHeader (RDG-Client-Generation) for OUT channel failed
+       :: RDG-Client-Generation
+[PASS] factory 'RDG-ChannelBind-Info' hits=1
+       :: RDG-ChannelBind-Info
+[PASS] factory 'RDG-Auth-Scheme' hits=1
+       :: RDG-Auth-Scheme
+[PASS] factory 'RDG-INCHANNEL-RETRYMODE' hits=1
+       :: RDG-INCHANNEL-RETRYMODE
+[PASS] factory 'IN_CHANNEL_RETRY_COUNT_%d' hits=1
+       :: IN_CHANNEL_RETRY_COUNT_%d
+[PASS] factory 'Win32#0.0=7' hits=1
+       :: Win32#0.0=7
+[PASS] factory '%s#%d.%d=%d' hits=1
+       :: %s#%d.%d=%d
+[PASS] factory 'chunked' hits=3
+       :: chunked
+       :: AddRequestHeaders transfer-encoding: chunked) for IN channel failed
+[PASS] factory 'transfer-encoding' hits=3
+       :: AddRequestHeaders transfer-encoding: chunked) for IN channel failed
+       :: transfer-encoding
+[PASS] factory 'SendStreamModeRequestAsync' hits=5
+       :: pRequest->SendStreamModeRequestAsync for OUT channel failed
+       :: SendStreamModeRequestAsync - WebSockets not supported on this platform
+[PASS] factory 'Sec-WebSocket-Protocol' hits=2
+       :: dSec-WebSocket-Protocol
+       :: AddRequestHeader (Sec-WebSocket-Protocol) failed
+[PASS] factory 'WebSocket' hits=40
+       :: CreateOutChannelOrWebSocketRequest failed
+       :: CAAHttpClientRawTransport::CreateOutChannelOrWebSocketRequest
+[PASS] factory 'WinHttpWebSocketCompleteUpgrade' hits=2
+       :: WinHttpWebSocketCompleteUpgrade failed
+       :: WinHttpWebSocketCompleteUpgrade
+[PASS] factory 'application/json; charset=utf-8' hits=1
+       :: application/json; charset=utf-8
+[PASS] factory '/remoteDesktopGateway/' hits=1
+       :: /remoteDesktopGateway/
+[PASS] factory 'TsProxyCreateTunnel' hits=1
+       :: TsProxyCreateTunnel failed. RpcExceptionCode is %d
+
+== B. FACTORY ABSENT (proves SOAP/101-literal/verb assumptions wrong) ==
+[ABSENT-CONFIRMED] 'application/soap+xml' hits=0
+[ABSENT-CONFIRMED] 'text/xml' hits=0
+[ABSENT-CONFIRMED] 'SOAPAction' hits=0
+[ABSENT-CONFIRMED] 's:Envelope' hits=0
+[ABSENT-CONFIRMED] 'Switching Protocols' hits=0
+[ABSENT-CONFIRMED] 'Connection: Upgrade' hits=0
+[ABSENT-CONFIRMED] 'Upgrade:' hits=0
+[ABSENT-CONFIRMED] 'POST ' hits=0
+[ABSENT-CONFIRMED] 'GET ' hits=0
+[ABSENT-CONFIRMED] 'RDG_GET' hits=0
+[ABSENT-CONFIRMED] 'CreateTunnelRequest' hits=0
+
+WROTE C:\Users\liulilte\AppData\Local\Temp\opencode\gateway_probe_evidence.txt
