@@ -717,3 +717,12 @@
   - 审计驳回 5 项：F1 头值 CRLF 注入、F2 chunked 文法宽松、F3 证据过期、F4 D8 合同漂移、F5 交付未冻结。
   - 主代理已改：D8 改为入队即 ACK（add8a96）；验收新增第 7/8 条；evidence §2 加作废标注。
 - 待执行：F1/F2 代码修复 + 三个证据文件按 ruling 重生成 + 冻结声明（附 SHA）。
+
+## 第748轮：交付已冻结（SHA 核实一致）+ 独立复跑三探针全绿 + 双审终验派出
+- 执行 AI 声明冻结，8 个 SHA。主代理复算**逐字一致**，4 秒后复测不变 → 冻结成立。
+- 主代理自行重建复跑 4 探针（真实 Release 库）：
+  - `probe_defects` failures=0（7 PASS，`0x10` 现 failed=1）
+  - `indep_verify` failures=0
+  - 方向探针 failures=0
+  - 原始未改探针 failures=6（仅未设新字段，预期）
+- 双审终验已派（甲 ses_e71b053e / 乙 ses_e71b00e0），各 9 项 + 各自关注点（甲：F1 全路径覆盖/ParseSizeLine 非靠调用方过滤；乙：11+5 字段覆盖/empty method/空 vector 误发风险/base64 前预检）。
