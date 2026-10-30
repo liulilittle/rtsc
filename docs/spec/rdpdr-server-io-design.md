@@ -1,0 +1,51 @@
+﻿# 服务器侧 rdpdr 设备 I/O 设计（docs/spec/rdpdr-server-io-design.md）
+
+> 取证于 2026-10-28。W11 双审计批次前置门。
+
+## 1. 方向澄清（第一性原理）
+
+rdpdr 有两个相反方向，此前双审把两者混为一谈：
+
+| 方向 | 语义 | 同步性 | 当前状态 |
+|---|---|---|---|
+| **A. 客户端盘给服务器用** | 客户端公告 `C:` → 服务器发 IOREQUEST 读写客户端盘 | **必须异步**（服务器要在等 IOCMPLETION 时继续跑 ActiveLoop，否则死锁） | 未实现（P 项，350-600 行） |
+| **B. 服务器盘给客户端用** | 服务器公告自己的目录 → 客户端发 IOREQUEST → 服务器读写本地盘 → 回 IOCMPLETION | **天然同步**（请求到达时立即处理完并回包，无等待） | 未实现（**本批**） |
+
+**B 方向才是"服务器模式"的核心价值**：Windows 家庭版不能做 RDP 宿主，我们用自研服务器；客户端连上来应能看到服务器上的文件夹（mstsc 的"驱动器"在服务器侧的表现）。
+
+**B 不需要异步**：`OnDeviceIoRequest` 在 ActiveLoop 线程内同步处理完（本地 fstream 操作），立即 `SendRaw(completion)`。不存在"等对端回复"的挂起。风险是**慢磁盘阻塞 ActiveLoop**（与 cliprdr/rdpsnd 的 send 阻塞同级别），可接受并文档化。
+
+## 2. proto 层现状（齐备，无需新增）
+
+- 请求解析：`RdpdrCreateReq/ReadReq/WriteReq/CloseReq/QueryDirectoryReq/ControlReq::parse` 全有。
+- 响应编码：`RdpdrCreateRsp/ReadRsp/WriteRsp/CloseRsp::encode` + `RdpdrDeviceIoCompletion::encode` 全有。
+- 设备公告：`RdpdrDeviceAnnounce::encode` + `RdpdrDeviceListAnnounce::encode` 全有。
+- 文件系统：`rtsc::rdpdr::IFileSystem`/`HostFileSystem` 完整（客户端已用，含 `kMaxReadLength` 1 MiB、路径安全由调用方负责）。
+
+## 3. 缺口（本批要补）
+
+1. **服务器公告设备**：`RdpdrServer` 需在 ClientId Confirm 后（或 User LoggedOn 后）发 `DR_CORE_DEVICELIST_ANNOUNCE_REQ`（服务器→客户端方向，[MS-RDPEFS] 2.2.2.9 同样用于服务器公告）。当前 `RdpdrServer` 只收不发。
+2. **能力集声明 I/O**：`BuildServerCapabilities` 的 `io_code1 = 0` → 需置 `kRdpdrIrpMjCreate|Read|Write|Close|DirectoryControl` 位（[MS-RDPEFS] 2.2.2.7 GENERAL_CAPS_SET.ioCode1）。
+3. **I/O 分发**：`OnDeviceIoRequest` 当前只 `++device_io_request_count_` → 需按 `major_function` 分发到 create/read/write/close/querydir，调 `IFileSystem`，回 `DR_DEVICE_IOCOMPLETION` 派生响应。
+4. **路径安全**：服务器公告的目录 root 由配置指定；客户端路径必须经 `ResolvePathUnderRoot`（已在 `rdpdr_client.cpp`，需提取为共享工具或复制）。
+5. **file_id 表**：服务器侧独立 `open_files_`（与客户端同构），Create 分配、Close 释放、Read/Write/QueryDirectory 校验。
+6. **配置**：`ServerConfig.enable_rdpdr_io`（默认 false）+ `rdpdr_share_root`（目录路径）；`rtsc_server --share-dir <path>`。
+
+## 4. 失败路径（优先分析）
+
+- 共享目录不存在/无权限 → 不公告设备，日志警告，会话照常。
+- 路径穿越（`..`/绝对/UNC/保留名）→ `ResolvePathUnderRoot` 拒绝 → `STATUS_ACCESS_DENIED`。
+- 读超 1 MiB → `STATUS_INVALID_PARAMETER`。
+- 写超 1 MiB → `STATUS_INVALID_PARAMETER`。
+- 未知 file_id → `STATUS_INVALID_FILE_ID`（0xC0000008）。
+- 未知 major_function → `STATUS_NOT_SUPPORTED`（0xC00000BB）。
+- 磁盘满/文件被占用 → `STATUS_UNSUCCESSFUL`（v1 不细分）。
+- 客户端中途断开 → 会话析构释放 file 表（fstream 自动关闭）。
+- 慢磁盘阻塞 ActiveLoop → 文档化（与 cliprdr send 同级）。
+
+## 5. 验收
+
+- 新套件 `test_rdpdr_server_io.cpp`：Create/Read/Write/Close/QueryDirectory 全往返（FakeFileSystem 注入）、路径穿越拒绝、超限拒绝、未知句柄、未知 major_function、设备公告字节。
+- e2e：自研 server（带 share-dir）+ 自研 client（RdpdrClient + HostFileSystem 访问临时目录）→ 客户端能列出并读取服务器共享的文件。
+- 变异：①删路径校验 → 穿越用例红；②删读上限 → 超限用例红；③删设备公告 → e2e 客户端看不到盘。
+- C0：build 0err/0warn；影响面 rdpdr/rdpdr_server/server/server_rdpdr_e2e/server_rdpsnd_e2e 全绿。
