@@ -810,3 +810,19 @@
 
 ### 执行已派 `ses_e715ef629ffeVtq4ItCnidsCDU`
 分块交付：先 A+B（缺陷+RFC6455），再 C+D+E（RdgspTransport+GUI+session_info），F 测试贯穿。
+
+## 第756轮：阶段2 缺陷红证补齐（甲）+ 主代理独立复现 + 验收判据同步
+- 甲报 D-A1/D-A4 运行级红证，主代理**独立复现**（自写 `probe_stage2.cpp`，链接真实 Release 库）：
+  ```
+  [PASS] D-A4: builder returns empty vector on CRLF injection
+  [FAIL] D-A4: caller can distinguish reject from empty-but-valid
+  [PASS] D-A4: CONNECT builder returns empty on CRLF injection
+  [FAIL] D-A1: empty request is not detected before Write
+  SUMMARY failures=2
+  ```
+  归档 `evidence/gateway-stage2-probe.cpp/.txt`（604b5c1）。
+- 甲对缺陷定性做了修正，主代理采纳：
+  - **D-A2 降级**：单连接模型已被双连接证据排除，不再作为缺陷，不必给 WinsockTransport 加 SO_SNDTIMEO
+  - **D-A8 标 UNVERIFIED**：MaxRetryCount 是外部字段 +0xd3c，无代码立即数 → 可配默认 3
+  - **D-A7 非缺陷**：Claims/Negotiate 是功能范围决策
+- 已 relay 执行 AI 三项增量：D-A4 须给调用方可区分信号（推荐在调用点检查 empty + 错误串含 CRLF/reject）；D-A1 验收须断言错误串含 "CRLF"/"reject" 且不得出现 "too many reads"/"timed out"；D-A2 仅注释说明不改代码。
