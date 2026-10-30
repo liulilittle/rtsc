@@ -742,3 +742,8 @@
 - 乙另指出关键（甲漏）：**守卫 `gui_main_usb_privacy_notice_before_add_device` 断言 `notice < add_device`，把缺陷方向固化成了正确** —— 与 FAIL-1（单测用错误布局假绿）同型，是"测试固化缺陷"。
 - 修复派执行 AI：后置打印 + 用 `usb_devices_added_count` + 三分支文案（added>0 / matched>0但added==0 / matched==0）+ 反转守卫方向 + 用例改名。
 - 已 relay 双方，要求修复后按四点复验。
+
+## 第735轮：批次3 在途，甲诚实上报"未落地"
+- 甲复验报：工作树仍 3 项，FAIL-3 原状未变（提示仍在 AddDevice 前、仍用 usb_matched、守卫仍 notice<add_device）—— 甲如实上报而非虚构验证，符合 W5。
+- get_goal 核实：执行 AI `ses_e72be6839ffePSyv` status=busy pending=true（批次3 处理中）；乙 busy；甲 idle。
+- 调度决定：不重复派发（执行 AI 在途），等其交付。
