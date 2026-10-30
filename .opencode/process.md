@@ -627,3 +627,7 @@
 - 设计符合路线 B：纯过滤可单测，平台 API 收一处。
 ## 第708轮：步骤1 主代理独立验证
 - rtsc_drive_enum_tests 重建 + 跑：5 tests/18 checks 全绿，build 0 err。
+## 第709轮：步骤2 完成 + 主代理独立验证
+- F3 门控（rdpdr_client.cpp:365）、F5 句柄校验（:445 OnRead / :525 OnQueryDirectory）、F6 写上限（:475 对称 kMaxReadLength）、F2 error_code 重载（file_system.cpp EncodeDirectoryEntry）。
+- RED 5 失败测试/13 检查 → GREEN rtsc_rdpdr_tests **57 tests/351 checks 全绿**；主代理重建复跑确认。
+- 执行 AI 进入步骤3 GUI 接线。
