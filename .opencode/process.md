@@ -728,3 +728,10 @@
 - 主代理核实：`usb_gate.h` 语义正确；`:396-404` RAII；`:596` 门控同步；`:763-797` 顺序为 Enumerate→统计→打印→AddDevice；`UsbSpecIsAll`(:183-198) 与 `UsbSpecAllows`(:130-144) 的 ALL 归一一致（同 trim+toupper）。
 - **主代理自查发现（待双审确认）**：隐私提示用 `usb_matched`（候选数）声称 "remote peer can access"，但随后 `AddDevice` 可能因 WinUSB Open 失败返回 false（P1-9 行为）→ 文案可能虚假；且 `:794` 日志用 `usb_devices_added_count`（实际数）与提示口径不一致。建议改为先 AddDevice 再用实际成功数打印。
 - 双审快审已派：甲（RAII/边界/测试/构建），乙（隐私文案真实性/USB 安全/skipped 累加/归一一致性）。
+
+## 第733轮：收尾小修快审（甲 8/8 PASS，3 条 P3 文案注）
+- 甲：8 项全 PASS；独立变异 2/2 真红（恢复 nullptr 判定 → 空串用例红；删隐私提示 → 守卫红）。
+- 甲确认主代理自查项为 **P3 文案偏差**：`:776-781` 用 `usb_matched`（候选数）承诺 "remote peer can access"，若 AddDevice 全失败则共享为 0；`:794` 日志又用 `usb_devices_added_count`（实际数）→ 两处口径不一致。
+- 甲另报：skipped=门未匹配、added_count=AddDevice 成功，"匹配但 Open 失败"两计数器皆不体现（第三隐形类）。
+- 判定：3 条均 P3 非阻塞（不影响功能；隐私文案偏保守方向 vs 偏乐观方向需区分——"声称共享但实际 0" 是偏乐观，属安全文案缺陷）。
+- 等乙判定（乙侧重隐私文案真实性）。
