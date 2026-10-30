@@ -905,3 +905,15 @@
 | Transfer-Encoding: chunked | IN-only；OUT 用 Connection: Keep-Alive |
 
 证据文档 §2 的"报错文本推方向"推理**已被推翻**：错误串里的 "for OUT channel" 只是失败上报上下文，不是头部归属。
+
+## 第745轮：裁定下发 + 证据文档纠正要求
+- 裁定1（E2 偏离）**批准**：E2"ACK 在消费后"是父方案指令非出厂证据，目的是根治 D8；执行 AI 实测 ACK-on-consume 在双写场景吊死（乙 R1 的 P1）。
+  补强要求：队列满丢帧不 ACK 必须配合发送方重传（新增单测：满→丢→腾空间→重传→成功消费）；无法满足则标 UNVERIFIED，禁止声称"已根治"。
+- 裁定2（R3）**双方各对一半**，按 FUN_1801c3818 逐头定性（已入 process.md 表格）：
+  - correlation：双通道（乙对，定案错）
+  - user-id：**IN-only + base64**（定案方向完全反了，双方均未发现）
+  - AppBuild / Client-Generation：OUT-only（甲对，乙过宽）
+  - Connection-Id / Diagnostics：双通道（定案对）
+  - retry-mode：IN-only+重试标志；chunked：IN-only，OUT 用 Keep-Alive
+- 要求：证据文档 §2 增加纠正段并标注"按报错文本推方向"作废；探针方向断言按新表重写。
+- 已 relay 乙（旧 Gateway 审计）要求其下轮复核这四条落地与 IN/OUT 双侧反断言覆盖。
