@@ -696,3 +696,7 @@
 - K1 Poll 两遍式（rdpdr_server.cpp:319-339）+ 析构同修 + 重入用例；K3 Read 补 20B Padding + 五 API 帧长断言；K2 联合匹配 (completion_id, device_id)。
 - 主代理独立验证：rdpdr_server_io 13/379 全绿，build 0err/0warn。
 - 派甲乙最终复验（甲：K1/K3 正确性 + 独立变异；乙：析构重入副作用 + 五 API 规范核对 + 联合匹配误拒风险）。
+## 第724轮：甲章放行
+- K1（Poll 两遍式+析构）/K3（Read 20B Padding，五 API 帧长核对）/K2（联合匹配）全部 PASS。
+- 甲独立变异复现（恢复旧 remove_if → R9 异常中止）；ctest 5/5 PASS；C0 5 目标 0err/0warn。
+- 等乙章后提交。
