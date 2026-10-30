@@ -718,111 +718,14 @@
   - 主代理已改：D8 改为入队即 ACK（add8a96）；验收新增第 7/8 条；evidence §2 加作废标注。
 - 待执行：F1/F2 代码修复 + 三个证据文件按 ruling 重生成 + 冻结声明（附 SHA）。
 
-## 第748轮：交付已冻结（SHA 核实一致）+ 独立复跑三探针全绿 + 双审终验派出
-- 执行 AI 声明冻结，8 个 SHA。主代理复算**逐字一致**，4 秒后复测不变 → 冻结成立。
-- 主代理自行重建复跑 4 探针（真实 Release 库）：
-  - `probe_defects` failures=0（7 PASS，`0x10` 现 failed=1）
-  - `indep_verify` failures=0
-  - 方向探针 failures=0
-  - 原始未改探针 failures=6（仅未设新字段，预期）
-- 双审终验已派（甲 ses_e71b053e / 乙 ses_e71b00e0），各 9 项 + 各自关注点（甲：F1 全路径覆盖/ParseSizeLine 非靠调用方过滤；乙：11+5 字段覆盖/empty method/空 vector 误发风险/base64 前预检）。
-
-## 第749轮：甲 9 项全 PASS 出章 + 1 项非阻断建议
-- 甲独立复核（8/8 SHA 逐字一致、3 次观测稳定）：
-  1. 构建 0err/0warn PASS；2. ctest gateway 71/331/0 PASS（与执行 AI 逐字一致）；3. F2 chunked PASS（`ParseSizeLine` 首字符必须 hex，`:512-548`，实测 0x10/4+2/4xy 全拒）；4. F1 CRLF/NUL PASS（11 字段 + user_id **在 base64 之前**预检 `:387`，`BuildHttpConnectRequest` 5 字段 `:343-350`）；5. D8 合同 PASS（文档+实现+三条 UDP 用例齐）；6. R3 方向 PASS（OUT 无 user-id `test:404`、IN 有 base64 `:418`）；7. MUTATION 7 文件零命中 + 独立反向变异承重证明；8. evidence §2 作废标注 PASS；9. 三个证据 txt 与冻结 lib 重编输出**逐字节 IDENTICAL**。
-- **甲的非阻断建议（主代理判定为真缺陷，需修）**：`o.method` 显式设为空串时产出 `" /remoteDesktopGateway/ HTTP/1.1"`（前导空格，非法请求行）。虽非注入面（无 CRLF），但属错误路径未覆盖（C1-C3 要求正常/边界/错误全路径）。修复成本一行，**决定修**，但等乙报告后统一处理，避免二次冻结打断乙的复核。
-
-## 第750轮：双章 9/9 PASS + 三注记并入最后小修
-- 双章成立：甲（上轮 9 项全 PASS）+ 乙（本轮 9 项全 PASS），均在冻结 SHA 上独立复算。
-- 乙独立复验要点：8/8 SHA 逐字一致；构建 0err/0warn；71 tests/331 checks 0 FAIL；ctest 1/1 Passed；三探针输出与 txt **逐字节 0 diff**；变异抽验 3 项全红（D1 Host/total 预检/CRLF 闸）。
-- 三注记（N1 空 method/N2 陈旧注释/N3 method 缺注入用例）——主代理判定均需修（N1/N3 属错误路径与测试覆盖缺口，非纯外观），已并入最后小修：
-  - 修 1：`method.empty()` → 返回空 vector + `rdg_channel_request_rejects_empty_method` 用例
-  - 修 2：`udp_transport_two_sides_write_concurrently_progresses` 注释改为入队 ACK 描述
-  - 修 3：`method` 字段 CRLF 注入用例（已守未测 → 补测）
-- 预期：73 tests，重冻结后报新 SHA。
-
-## 第751轮：三项注记修复完成 + 重新冻结 + 主代理独立核实
-- 执行 AI 交付：仅改 2 文件（gateway.cpp / test_gateway.cpp），其余零改动。
-- 主代理核实：8 个 SHA 逐字一致且 3 秒稳定（BB7B7BEEF1DA429A / B341DFCAF42CFDED，其余未变）。
-- 三项源码落地核实：
-  1. `gateway.cpp:386` `if (o.method.empty() || ContainsCrlfOrNul(o.method) || ...)`
-  2. `test_gateway.cpp:1346-1350` 注释改为入队 ACK 语义
-  3. `test_gateway.cpp:341` 新用例 `rdg_channel_request_rejects_empty_method`；`:470` 注入用例含 method
-- 主代理自行重建 0err/0warn + 定向 8 套件 8/8 Passed + 三探针 failures=0。
-- 已派双审轻量确认（甲 ses_e71b053e / 乙 ses_e71b00e0），要求只核 SHA/守卫全路径/断言强度/数字吻合（71→72 应 +1 test +2 checks）。
-
-## 第752轮：Gateway RDGSP 阶段1 入库 5a361e0 + 子代理全解散
-- 双章最终成立（甲 ses_e71b053e + 乙 ses_e71b00e0，各自独立 SHA 复算 + 72/333 直跑一致）。
-- **C0 全量 ctest 62/62 全绿**（主代理自跑，67.34s）。
-- 提交 `5a361e0`：9 文件（gateway.cpp/h + gateway_transport.cpp/h + test_gateway.cpp + 4 evidence 文件），+1639/-94。
-- 5 个子代理全部 delete 解散（child_subagents=0）。
-
-### 阶段1 交付内容（双章）
-- **A 头部**：Host=authority；IN 流式 TE:chunked 无 CL；OUT Keep-Alive+CL:0（UNVERIFIED，全库 0 命中由 WinHTTP 隐式生成）；方向按 ruling（connection-id/diagnostics/correlation 双通道；user-id IN-only+base64；app-build/generation/LB OUT-only；retry IN-only）
-- **B chunked**：增量解码 + 单块 16MiB/总 64MiB 上限（分配前检查）；严格文法（拒前导空白/0x/+ 号/尾随垃圾/裸 LF，仅 `;` 允扩展）；编码器 + IsChunkedBody plain 回退
-- **C 状态映射**：401/407/502/504/PasswordExpired（出厂 FUN_1801bdd8c）
-- **D 多挑战**：多挑战/引号逗号/token68
-- **E UDP**：有界 FIFO；**入队即 ACK**（消费后 ACK 在双写场景死锁）；ACK/超时/错误三值区分；序号 wrap；脏包计数不致命
-- **F1 安全**：11 字段 + CONNECT 5 字段 CR/LF/NUL → 空 vector（含空 method 与 base64 前原始用户名；实测曾可注入完整额外头）
-- **F2 文法**：`0x10` 曾被判为终止块并静默截断 body（finished=1/failed=0）
-
-### 阶段2 前置注记（双审归档）
-1. RdgspTransport 接线必须校验 builder 返回空 vector（勿把空请求当合法发出）
-2. `direction` 必须显式传入
-3. OUT CL:0 维持 UNVERIFIED 标注
-4. D14 FEC/FIN 帧处理未做
-
-## 第753轮：Gateway 阶段2 前置证据入库 + 双审派出
-- 反编译 5 个出厂函数（REA/Ghidra），落 `docs/spec/gateway-stage2-evidence.md`（a18219c）：
-  - `FUN_1801bc14c`：IN 通道方法**硬编码 `RDG_IN_DATA`**，无分支；端口 `+0x6a6`、host `+0x28c`、URL 缓冲 `+0xe14`、HTTPS 开关 `+0x6a8`
-  - `FUN_1801bc3c4`：OUT 方法由 `*(param_1+0x1440)` 选 —— **0/其它→GET、1→RDG_OUT_DATA、2→POST**；端口 `+0x6a4`
-  - `FUN_1801bd574`：URL = `%s://%s:%hu%s`，默认 `/remoteDesktopGateway/`，`0x6a8==0` 降为 `http`（**明文模式内建，可作桩测试**）
-  - `FUN_1801bfd60`（779 行）：`:158 if (local_4a8 == 0x65)` → **101 只允许 OUT**；IN 收 101 报 `Server returned switch protocols for IN channel` 并失败；OUT 成功后 `0xd20=4`、`0xd24=1`(Upgraded)、`0xd1c=0xb`、`0xd38=0`(重试清零)；`:192 == 200` 为正常路径；状态码**数值比较**
-- 关键设计约束：升级后走裸字节流不经 chunked；401 有 `MaxRetryCount` 上限（数值 UNVERIFIED）；认证状态机 `0xd20` 1→2→4，8/0x10/0x40/0x80 = 原生/SMARTCARD/claims/CONNID
-- 双审已派：甲 ses_e716dd16（证据补全 + 架构路线 + 握手状态机 + 失败路径 + 测试策略），乙 ses_e716db85（接缝可行性 + **单 socket 双通道死锁分析** + 安全（TLS/SSRF/凭据）+ 回归），已双向互告 ID。
-
-## 第754轮：拓扑裁定——双连接（乙质疑成立，设计稿 §2 推翻）
-- 乙（ses_e716db85）质疑"单连接双请求"假设，主代理用反汇编裁决：**乙正确**。
-- 三条独立证据（入库 `docs/spec/gateway-stage2-evidence.md` §10，f1a75bf）：
-  1. IN/OUT 各自调用 `CreateConnection`（vtable +0x30），**端口字段不同**（IN=`+0x6a6`，OUT=`+0x6a4`），结果存不同槽（local_res8 vs `+0xde8`），错误串分开
-  2. 两套槽：`+0xde8`（OUT 连接）、`+0xdf0`（OUT 升级流）
-  3. 101 只对 OUT，IN 收 101 报错；HTTP/1.1 不允许响应体进行中 pipeline，IN 响应体是持续 chunked 流 → 同连接再发 OUT 请求协议上不可能
-- **定案**：OUT=下行（网关→客户端，200 chunked 解码 / 101 裸双工）；IN=上行（客户端→网关，chunked 持续写）；两条独立连接/TLS/重试。原"单连接多路复用 P1"**不存在**。
-- 乙的死锁发现仍成立（`winsock_transport.cpp:52-62` 无 SO_SNDTIMEO，全库 grep 空）但双连接下可缓解（读写分离/分块穿插）；单连接下必然死锁。
-- 已核实并接受乙另三项：`main.cpp:265` kInsecure 硬编码（须改 gateway 外层 kStrict）；`gateway_transport.cpp:268-272` 空请求静默 Write(0)（须显式报错，同阶段1前置要求1）；307 零跟随维持。
-
-## 第755轮：阶段2 定案入库 e1f2d79 + 派执行
-### 双审双章（甲 ses_e716dd16 / 乙 ses_e716db85）一致：路线 A'
-- **A'**：`RdgspTransport : net::Transport` 单外观，**内部双连接**（OUT=下行 / IN=上行），上层 `Client/Pump/SendPdu` 零改动。
-- 排除纯 A（单连接，HTTP/1.1 冲突 + 写等读死锁 + 与出厂结构不符）与 B（上层双 transport，改 Client 签名/破坏复用）。
-
-### 主代理独立复核甲的关键取证（全部命中）
-- `FUN_1801c235c:60-70`：`+0xd40` 计数 +1，`if (*(uint*)(param_1+0xd3c) < uVar2)` → 错误 0x12；上限是**外部配置字段无立即数**（UNVERIFIED，故实现用可配默认 3）
-- `FUN_1801c235c:165`：`wcsncmp(_Str1,L"Claims:",7)` —— 只特判 Claims，非 Claims 走原生认证（WinHTTP/SSPI，无 NTLM-vs-Negotiate 优先级逻辑）
-- `FUN_1801c6b44:21,24,26,28,30`：超时表 **120000/60000/30000/90000/30000 ms**
-- UA 串 `0x1806ce4b0 = MS-RDGateway/1.0`
-
-### 定案要点（`docs/spec/gateway-stage2-design.md`）
-- 握手 H0–H8；NTLM 三腿复用 `ntlm.h`（**禁复用 CredsspClient 状态机**）；Negotiate/Claims 显式失败 0x80004001
-- 数据面 `mode=kChunked/kUpgraded`；`upgrade_steals_write` 默认 true（出厂 IN 侧管理流 UNVERIFIED）
-- **6 项既有缺陷**：D-A1 空请求静默 / D-A2 Write 无界 / **D-A3 TLS 默认 kInsecure（P0）** / D-A5 不可重建 / D-A6 UI 冻结 / D-A8 MaxRetryCount 无立即数
-- TLS 双层各默认严格；桩测试用 http 明文
-
-### 执行已派 `ses_e715ef629ffeVtq4ItCnidsCDU`
-分块交付：先 A+B（缺陷+RFC6455），再 C+D+E（RdgspTransport+GUI+session_info），F 测试贯穿。
-
-## 第756轮：阶段2 缺陷红证补齐（甲）+ 主代理独立复现 + 验收判据同步
-- 甲报 D-A1/D-A4 运行级红证，主代理**独立复现**（自写 `probe_stage2.cpp`，链接真实 Release 库）：
-  ```
-  [PASS] D-A4: builder returns empty vector on CRLF injection
-  [FAIL] D-A4: caller can distinguish reject from empty-but-valid
-  [PASS] D-A4: CONNECT builder returns empty on CRLF injection
-  [FAIL] D-A1: empty request is not detected before Write
-  SUMMARY failures=2
-  ```
-  归档 `evidence/gateway-stage2-probe.cpp/.txt`（604b5c1）。
-- 甲对缺陷定性做了修正，主代理采纳：
-  - **D-A2 降级**：单连接模型已被双连接证据排除，不再作为缺陷，不必给 WinsockTransport 加 SO_SNDTIMEO
-  - **D-A8 标 UNVERIFIED**：MaxRetryCount 是外部字段 +0xd3c，无代码立即数 → 可配默认 3
-  - **D-A7 非缺陷**：Claims/Negotiate 是功能范围决策
-- 已 relay 执行 AI 三项增量：D-A4 须给调用方可区分信号（推荐在调用点检查 empty + 错误串含 CRLF/reject）；D-A1 验收须断言错误串含 "CRLF"/"reject" 且不得出现 "too many reads"/"timed out"；D-A2 仅注释说明不改代码。
+## 第748-756轮（Gateway 阶段1 收尾 + 阶段2 定案，归档摘要）
+- 748-751 阶段1 双审终验：执行 AI 交付并冻结（8 SHA 主代理逐字核对 + 4 秒稳定）；三探针全绿；甲乙各 9 项全 PASS；3 项注记（空 method / 陈旧注释 / method 缺注入用例）修完并重庆冻结（72 tests/333 checks）。
+- 752 入库 `5a361e0`（阶段1 协议层）；**C0 ctest 62/62**；5 个子代理全解散。
+- 753-755 阶段2（双连接 RdgspTransport）：
+  - 取证入库 `gateway-stage2-evidence.md`（a18219c）：IN 方法硬编码 `RDG_IN_DATA`（FUN_1801bc14c）；OUT 方法由 `+0x1440` 选 GET/RDG_OUT_DATA/POST（FUN_1801bc3c4）；URL `%s://%s:%hu%s`（FUN_1801bd574）；**101 只对 OUT**（FUN_1801bfd60:158-170）。
+  - **乙质疑单连接模型 → 主代理反汇编裁定：乙正确**（f1a75bf §10）：IN/OUT 各自 `CreateConnection`，端口字段不同（`+0x6a6` / `+0x6a4`），两套槽，HTTP/1.1 不允许 pipeline → **双连接**。原“单连接多路复用 P1”不存在。
+  - 定案 `gateway-stage2-design.md`（e1f2d79）：路线 **A'（单 Transport 外观 + 内部双连接）**、握手 H0-H8、NTLM 三腿复用 ntlm.h（禁复用 CredsspClient）、`mode=kChunked/kUpgraded` + `upgrade_steals_write`、TLS 双层默认严格。
+  - 主代理独立复核甲取证：`FUN_1801c235c:60-70`（`+0xd40` 计数 / `+0xd3c` 上限字段无立即数）、`:165` `Claims:` 特判、`FUN_1801c6b44` 超时表 120/60/30/90/30s、UA `MS-RDGateway/1.0`。
+  - 缺陷定性最终：**A1（空请求静默）+A3（TLS kInsecure, P0）** 为实证缺陷；A4 并入 A1；**A2 被双连接证据推翻→排除**；A5/A6 降级为注意项；A7/A8 标 UNVERIFIED。
+  - 604b5c1：缺陷探针红证入库（主代理独立复现 2/2 FAIL）。
+- 待：执行 AI（ses_e715ef62）交付 A/B/C/D/E/F → 双审复核 → 双章 → C0 → 提交。
