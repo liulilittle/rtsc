@@ -86,3 +86,33 @@
 
 ### PASS 项（甲逐条核实）
 P0-1 OUT 载荷（后端按 `transfer_flags&1` 分 IN/OUT，`usb_win32.cpp:234-247`，Bulk OUT 走 `WinUsb_WritePipe`）、P0-2、P0-3、P1-4、P1-6、P1-9、P1-10、GUI 接线（`main.cpp:224-228,557,731-747`）、CMake（`:568-572`）、测试质量、偏离 1/2（`kInvalidHandle` 不存在；devpkey GUID+pid 2 与 SDK 26100/18362 一致）。
+
+## 5. 第⑤步验证：P0-1 判定更正（甲更正，乙同证）
+
+### FAIL-2（P0-1 残留，阻断）：WinUSB 后端控制 OUT 载荷被清零
+
+**症状**：控制传输 OUT 方向发出的是 N 个零字节，而非 `req.output_buffer` 的真实载荷。
+
+**证据**
+- `src/usb/usb_win32.cpp:235-236`：`std::vector<uint8_t> buffer(in ? pkt.Length : input.size());` —— 只按长度零初始化。
+- `:238-240`：`WinUsb_ControlTransfer(..., buffer.data(), buffer.size(), ...)` 直接发送。
+- **`input` 参数从未拷入 `buffer`**（`std::copy(input.begin(), input.end(), buffer.begin())` 缺失）。
+- 对照 `:278-287` Bulk OUT 分支正确：`std::vector<uint8_t> copy = input;` → `WinUsb_WritePipe`。
+- 为何此前后端层被掩盖：修复前客户端传 `{}`（空），`input.size()==0`，buffer 为空，看起来"无数据可发"；客户端修好后传真实载荷，`input.size()>0`，buffer 被分配但全零 → 缺陷显形。
+
+**修复指令**
+1. `src/usb/usb_win32.cpp` ControlTransfer：OUT 分支 `buffer` 分配后立即 `buffer.assign(input.begin(), input.end())`；IN 分支不变（长度取 `pkt.Length` 后由 `transferred` 重设）。
+2. 补测：这是纯 WinUSB 后端实现，无 seam 可注入 → **代码审层门**（静态断言测试难以覆盖）；或将 SetupApi/WinUsb 抽象为 seam 以支持单测（较大改动，记为 P 项）。至少加一条注释与 CI 静态检查（grep `WinUsb_ControlTransfer` 前必须有 `buffer.assign`）。
+3. 一并修复：P1-5 kCreate 定长消费、CAPS 版本相关消费（P2）、env 门控 channel_names（P2）。
+
+### 更正后的 P0-1 状态
+| 层 | 状态 |
+|---|---|
+| 客户端传递层（`req.output_buffer` → `ControlTransfer` 的 input 参数） | PASS |
+| **WinUSB 后端落地（input → buffer → WinUsb_ControlTransfer）** | **FAIL** |
+| Bulk OUT（客户端 + 后端） | PASS |
+
+### 补测缺口（甲补充）
+- 后端级控制 OUT 数据断言（需 WinUSB seam；当前无）
+- V2 caps + 捆绑
+- `UsbSpecAllows` 白名单单测
