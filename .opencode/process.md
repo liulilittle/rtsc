@@ -688,3 +688,7 @@
 - 主代理独立验证三项套件全绿。
 - **独立核查发现真缺陷**：src/server/server.cpp ActiveLoop 只有 cliprdr_->Poll(:735) 和 rdpsnd_->Poll(:1420)，**无 rdpdr_->Poll** → IRP 超时清理永不触发，outstanding_ 无限滞留。已派执行 AI 修复（接线 + e2e 证明生产路径）。
 - 双审复核已派出（甲侧重异步正确性/Poll接线；乙侧重状态机/并发/重入/协议细节），已互告 ID。
+## 第722轮：双审复核结论（甲乙一致）
+- 8 要点：异步正确性/匹配/生命周期/客户端加固/path_guard/变异/测试真实性 全 PASS；超时清理曾死缺陷已修（server.cpp:1438-1439 gate+Poll，源码级守卫测试 7/147）。
+- 新缺陷：K1（Poll 在 remove_if 谓词内回调 → 重入 push_back → 迭代器失效 UB；析构同根）P1 必修；K3（ReadFile 缺 20B Padding，WriteFile 有 Read 漏）P2 必修；K2（completion_id 不校 device_id）P3 建议。
+- 已派执行 AI 修 K1/K3/K2 + 补重入/帧长/device_id 错配/F3 单测。
