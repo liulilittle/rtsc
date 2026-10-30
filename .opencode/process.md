@@ -510,3 +510,6 @@
 ## 第677轮：执行 AI 开始落盘（proto 层）
 - 工作树：include/rtsc/proto/rdpsnd.h、src/proto/rdpsnd.cpp、tests/test_rdpsnd.cpp 已改（步骤 1 proto 补齐）。
 - 乙 D12 缺陷档案已入 discover.md（186564b）；审计侧断言证据齐备，静默待命。
+## 第678轮：proto 层阶段性独立验证
+- 工作树 3 文件（proto.h +47/proto.cpp +50/test +98）；主代理独立构建 rtsc_rdpsnd_tests 并跑：17 tests/118 checks 全绿（原 6 tests/30 checks → 新增 11 tests/88 checks）。
+- 执行 AI 继续推进音频源/RdpsndServer/接线/e2e。
