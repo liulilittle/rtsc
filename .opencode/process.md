@@ -672,3 +672,8 @@
 - 双审非阻塞记录：O1 clipboard 通用格式 >16MiB 被拒（既定权衡）；O2 未来服务器 I/O 需 result_code 语义；O3 cap-1 边界未显式测（守卫严格 > 隐式安全）。
 - ctest 全量：view bench 偶发超预算（0.4x 4K 32.43ms vs 35ms，单跑绿）——环境时序抖动，非回归。
 - 全部子代理 delete 解散。
+## 第719轮：新批次 — 服务器 rdpdr 设备 I/O（方向 B）
+- 关键澄清（第一性原理）：rdpdr 两方向。A=客户端盘给服务器用（需异步，350-600 行 P 项）；B=服务器盘给客户端用（天然同步，本批）。B 才是"服务器模式"核心价值（家庭版做宿主时客户端能看到服务器文件夹）。
+- proto 层齐备（Req parse + Rsp encode + DeviceAnnounce encode 全有），无需新增。
+- 定案落 docs/spec/rdpdr-server-io-design.md（d413ad3）：缺口 6 项 + 失败路径 + 验收。
+- 派双审计（甲 ses_e73d469e 侧重协议合法性/同步性/路径复用；乙 ses_e73d4590 侧重安全深挖/symlink 逃逸/并发/客户端兼容），已双向互告 ID。
