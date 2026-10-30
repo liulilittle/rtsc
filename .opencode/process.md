@@ -596,3 +596,8 @@
 - 新增 tests/test_rdpsnd_server.cpp::rdpsnd_server_invalid_format_silent：三组（空列表/8bit/非广告格式）断言 format_valid()==false + kReady + FakeSource::running()==false + wave2==0 + close_sent==0。
 - rtsc_rdpsnd_server_tests **14 tests/401 checks 全绿**；build 0err/0warn；12/12 受影响套件绿。
 - 已请甲乙终章确认。
+## 第701轮：rdpsnd 服务器侧入库 9b1ecbf（双章闭环）
+- 提交：feat(server): server-side rdpsnd audio channel (sine source, v1)；工作树干净。
+- 全部子代理 delete 解散（甲乙审计组 + 已熔断执行子）。
+- 验证：build 全量 0err/0warn；ctest 58/59（view bench 因 vmmemWSL 100% CPU 争用超预算 51.59ms>35ms，非代码回归，历史同类）。
+- 服务器模式能力矩阵更新：桌面✓ 剪贴板✓ 多会话✓ rdpdr✓ rdpsnd✓（v1 正弦源，WASAPI 二期）。
