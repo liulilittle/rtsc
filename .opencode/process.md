@@ -502,3 +502,8 @@
 - 主代理核实（audio_win32.cpp:100-101 精确读取）：谓词 stopping_||reopen_||!queue_.empty()；失败路径 queue_.clear()+reopen_=false+continue → 三支全假 → cv 正常阻塞，甲"忙等"理由不成立。
 - 甲方案真实风险：detach 后 Worker 返回时解锁 this->mu_，析构因 joinable()==false 跳过 join → UAF（audio_win32.cpp:43）。
 - 决定：回①要求甲乙直连磋商输出唯一方案；执行 AI 已收「D12 暂缓，先做步骤1-5」。
+## 第676轮：D12 双章闭合（4d2f4fd）
+- 甲乙终报一致：常驻 worker + next_retry_ 1s 退避 + have_format_/reopen_=false + continue，零 detach。
+- 乙红探针实证 joinable std::thread 重赋 → terminate（EXITCODE=-1073740791）。
+- 执行 AI 已收最终字段名定稿，busy 中；工作树尚无改动（步骤 1-5 进行中）。
+- 甲乙待命，审查点①-⑥已固化。
