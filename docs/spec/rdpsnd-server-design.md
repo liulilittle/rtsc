@@ -91,3 +91,13 @@ D1 名表缺 rdpsnd；D2 ActiveLoop 无分支；D3 无 rdpsnd_server + CMake 未
 
 仅复位 `started_=false` 会导致下次 Submit 时 `thread_ = std::thread(...)` 对仍 joinable 的旧 thread 移动赋值 → `std::terminate`（`src/audio/audio_win32.cpp:55-76,104-111`）。
 采纳方案 B：**Worker 常驻不退出**——OpenDeviceLocked 失败时清 queue_、置 ok_=false、started_ 保持 true、回到 cv_.wait；下次 Submit 因 reopen_ 再试；加失败退避防忙循环。析构 `joinable()` 检查（:43）不变。
+
+## 9. D12 最终方案（甲乙一致，2026-10-28）
+
+**常驻 worker + 重试门**（弃用 detach）：
+1. 新增 `retry_after_`（steady_clock）+ `kOpenRetryBackoff = 1s`，mu_ 保护。
+2. OpenDeviceLocked 失败分支：`queue_.clear(); have_format_=false; reopen_=false; retry_after_=now+1s; continue;`（不 return）。
+3. 退避门：`if (now < retry_after_) { queue_.clear(); have_format_=false; reopen_=false; continue; }`。
+4. Submit 既有 `!have_format_` 分支自动重新置 reopen_。
+5. worker 仅 stopping_ 时 return → 析构 joinable 恒真并 join；thread_ 只赋一次 → 无 terminate/detach/UAF。
+6. 可测性：本批编译+现有套件+审查；真机路径未验证（标注）。
