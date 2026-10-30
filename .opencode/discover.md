@@ -1390,3 +1390,10 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 - [错误] 该方案会触发 `std::thread` 对 joinable 对象移动赋值 → `std::terminate`（红探针 EXITCODE=-1073740791，输出止于 "before reassign (worker joinable)"）。根因：`src/audio/audio_win32.cpp:104-111` 失败路径 return 不复位 started_（:69-74 判启）→ 永久静默 wedge；若复位则 :74 重赋 joinable thread_ → terminate。
 - [下一步] 已定案常驻 worker + next_retry_ 1s 退避 + have_format_/reopen_=false + continue，零 detach，thread_ 仅首启赋一次。行为探针：BUGGY_PLAYS=0 → FIXED_PLAYS=4（RED=>GREEN OK）。
 - 教训：修复"线程已退出"类缺陷必须先证伪重赋/重入路径；不变量=thread_ 只能对非 joinable 对象赋值。
+
+## 熔断记录（2026-10-28，第10条）
+
+- 子代理：ses_e755e22c6ffectQ5JL0PI32kzA（执行服务器rdpsnd）
+- 熔断原因：连续 6 次真投递派发零 relay 回复；wrote 时间戳长时间停滞于 1793328483225；`src/channel/rdpsnd_server.cpp` 保持 12 行占位、`tests/test_rdpsnd_server.cpp` 从未创建，CMake configure 持续失败。
+- 处置：manage_subagent abort 中止；任务转派新执行子；该会话待 delete 解散。
+- 恢复：须用户决定，禁止 AI 自行恢复。
