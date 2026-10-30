@@ -707,3 +707,7 @@
 - 全部子代理 delete 解散。
 - 服务器模式 rdpdr：路线 A 异步引擎完成（服务器可发 IRP 访问客户端共享盘）；客户端 S2/S4/S6 加固。
 - 非阻塞后续：teardown 回调重入 phase_=kIdle 一行加固；未知 completion 计数不撕通道（有意）。
+## 第726轮：功能盘点 + 启动 USB 重定向批次
+- 盘点（df6477b 入 plan.md）：剪贴板✅ 音频✅ 驱动器✅ 多显示器✅ 已接线 RAIL✅ 已接线；**USB ❌ 完全未接线**；Gateway ⚠️ 是 HTTP CONNECT 代理非 RDGSP。
+- USB 已知 6 项缺陷（N8-EXEC-1 S2 阻断项）。
+- 派双审计（甲 ses_e72e0868 侧重协议链路/接线点/后端/失败路径/测试；乙 ses_e72e0840 侧重 drdynvc 串包根因/URB 丢数据/QI-IFACE/CompleteUrb/安全策略），已双向互告 ID。
