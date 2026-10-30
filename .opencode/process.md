@@ -706,3 +706,9 @@
 - 727: 双章确认六项缺陷仍存在；乙 4 探针红证；定案 41f0c84（P0x3 + P1x7 + 路线 A）；派执行 ses_e72be683。
 - 728: 执行交付 9 文件 +964/-86，P0/P1 全项 + GUI 接线 + RTSC_REDIRECT_USB 门控；报称 build 0err/0warn、各套件绿；双审进第5步。
 - 729: 第5步验证抓到 2 FAIL：**FAIL-1** `drdynvc_client.cpp:74-90` CREATE_RSP 按不存在的 ChannelName 定界（[MS-RDPEDYC] 2.2.2.2 web 核验无 name；捆绑丢包，单测用错误布局假绿）；**FAIL-2** `usb_win32.cpp:235-236` Control OUT 只零初始化、`input` 未拷入 -> 发全零（对照 `:279` Bulk OUT 正确）。另有 P2：CAPS 定界按版本、env 门控 channel_names。修复批次已派。
+
+## 第730轮：修复批次 2 完成 + 双审二次验证派出
+- 执行 AI 修完 4 项必修：FAIL-2 `usb_win32.cpp:240` `if (!in) buffer.assign(...)`；FAIL-1 `drdynvc_client.cpp:80-90` 定长 `pdu_off+4`；CAPS `:47-60` 按 version（V1=4B，V2/3=12B，web 已核验）；env 门控 `main.cpp:234` `if (usb_redirect) channels.push_back("drdynvc")`。
+- 报称：rdpusb 57/259；3 项变异红证；2 条源码守卫测试；build 0err/0warn。
+- 主代理已逐条核实四处源码（240 / 80-90 / 47-60 / 234）均正确。
+- 双审二次验证已派：甲侧重"新引入风险"（pkt.Length vs input.size 语义、守卫测试脆弱性、无符号下溢、既有用例修正是否改测试迁就实现）；乙侧重重跑 probe_bundle 探针红转绿 + 独立 web 核验 CAPS V2/3 + 守卫 RTSC_SOURCE_DIR 配置覆盖 + env 内存泄漏 + 安全提示缺失。
