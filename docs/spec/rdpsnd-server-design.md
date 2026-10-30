@@ -86,3 +86,8 @@ D1 名表缺 rdpsnd；D2 ActiveLoop 无分支；D3 无 rdpsnd_server + CMake 未
 - 新 `rtsc_rdpsnd_server_tests`（字节契约/窗口/cBlockNo/协商超时/畸形/ALIVE=0）+ 新 `test_server_rdpsnd_e2e`（正弦源+树内 RdpsndClient+MockPlayer：wave_confirm==wave2、多会话双客户端同收）。
 - 四变异红证：①S2 提前发 Wave2；②删 cBlockNo 初值规则；③改 formats 字节；④删协商超时。
 - 影响面：server/multisession/cliprdr_e2e/rdpdr_e2e/gui_send/rdpsnd/rdpsnd_client/server_security/rdp_standard_security；禁跑 gateway 完整套件；C0 零错零警告。
+
+## 8. 审计补充（乙，D12 修复方案修正）
+
+仅复位 `started_=false` 会导致下次 Submit 时 `thread_ = std::thread(...)` 对仍 joinable 的旧 thread 移动赋值 → `std::terminate`（`src/audio/audio_win32.cpp:55-76,104-111`）。
+采纳方案 B：**Worker 常驻不退出**——OpenDeviceLocked 失败时清 queue_、置 ok_=false、started_ 保持 true、回到 cv_.wait；下次 Submit 因 reopen_ 再试；加失败退避防忙循环。析构 `joinable()` 检查（:43）不变。
