@@ -638,3 +638,8 @@
 - test_server_rdpdr_e2e.cpp InitPair 加可选 fs+devices 形参（存量调用不变）；新用例 handler_pair_announces_one_device + loopback_with_device_ready。
 - rtsc_server_rdpdr_e2e_tests **6 tests/137 checks 全绿**；rtsc_gui 构建 0err/0warn；主代理独立重建复跑确认。
 - 执行 AI 进入变异红证（①②③）。
+## 第712轮：rdpdr 接线执行交付 + 派双审复核
+- 执行 AI（ses_e74625ad4f）交付：4 步全部完成（drive_enum / F2F3F5F6 / GUI 接线 / e2e），变异①②③实跑红证。
+- 主代理独立验证：drive_enum 5/18、rdpdr 57/351、e2e 6/137、rtsc_gui 0err/0warn。
+- 派甲乙复核（甲侧重 F3/F5/F6/F2/drive_enum/GUI 接线；乙侧重 F2 语义深挖/F5 表一致性/F3 规范码/drive_enum 边界/Linux 门禁/隐私默认）。
+- 执行 AI 三条偏离已核（F6 复用 kMaxReadLength、drive_enum_win32 无条件加源、_dupenv_s）均在许可内。
