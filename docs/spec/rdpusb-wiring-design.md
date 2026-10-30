@@ -57,3 +57,32 @@
 - 变异：①删 OUT 传参 → R1/R2 红；②恢复 `kProxy` 改写 → R4 红；③删未知设备补全 → R3 红；④恢复单 PDU 解析 → 多 PDU 红。
 - C0：build 0err/0warn；影响面 rdpusb/drdynvc/channel/gui_send/server_* 全绿。
 - 真机（W5 未验证）：Windows RDS + USB 设备插拔验证双向 I/O。
+
+## 4. 第⑤步验证发现（甲，2026-10-28）
+
+### FAIL-1（P1-5 回归，阻断）：`ConsumeBundlePdu` 的 kCreate 定界错误
+
+**症状**：同一静态通道消息内捆绑两条 `DYNVC_CREATE_RSP` 时，第二条永不交付 → 该设备通道永久 pending、永不宣布。
+
+**证据**
+- 实现 `src/channel/drdynvc_client.cpp:74-90` 按 "Status(4) + NUL-terminated ChannelName" 定界（NUL 扫描）。
+- 规范 `[MS-RDPEDYC] 2.2.2.2`（已 web 核验，https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/8f284ea3-54f3-4c24-8168-8a001c63b581）：
+  `DYNVC_CREATE_RSP` = `cbId|Sp|Cmd` + `ChannelId (variable)` + `CreationStatus (4 bytes)`。
+  **无 ChannelName 字段**；ChannelName 仅存在于 `DYNVC_CREATE_REQ`（2.2.2.1）。
+- 我方自家模型亦只读 4 字节 Status：`src/channel/drdynvc_client.cpp:173-174`。
+- 轨迹（两 status-only bundle `{0x10,0x01,0,0,0,0, 0x10,0x02,0,0,0,0}`）：NUL 扫描在字节 8 误终止 → 首条消费吞掉第 2 条头 → 余 3 字节解析成垃圾 → 第 2 条丢失。
+- 新增单测 `drdynvc_bundled_pdus_in_one_static_message_all_consumed` 用错误布局构造，故假绿（负向漏网）。
+
+**修复指令**
+1. `src/channel/drdynvc_client.cpp:74-90` kCreate 分支改为定长消费：`offset = pdu_off + 4`（header + id 已在 `pdu_off` 前扣除，实际 `offset = pdu_off + 4`），删除 NUL 扫描。
+2. 重写该单测：两条 status-only `CREATE_RSP` 捆绑，断言 `create_response_count == 2` 且 `pending_.empty()`。
+3. 补测：CAPS + CREATE 混合捆绑（Caps 定长 4 字节需同法核对：`DYNVC_CAPS_RSP` = header + Version(2) + PriorityCharge0..3(2 each)，VERSION1 时仅 Version → 按版本定长）。
+4. 复核 kData/kDataFirst 的"消费剩余"在多 PDU 场景是否安全（规范：Data PDU 是捆绑中最后一条）。
+
+### 补测盲区（甲）
+- `RTSC_REDIRECT_USB` 的 `UsbSpecAllows` 白名单解析无单测。
+- `Open()` 成功但 `CreateChannel` 失败路径无用例。
+- 跨静态块边界的 DVC 大帧无用例。
+
+### PASS 项（甲逐条核实）
+P0-1 OUT 载荷（后端按 `transfer_flags&1` 分 IN/OUT，`usb_win32.cpp:234-247`，Bulk OUT 走 `WinUsb_WritePipe`）、P0-2、P0-3、P1-4、P1-6、P1-9、P1-10、GUI 接线（`main.cpp:224-228,557,731-747`）、CMake（`:568-572`）、测试质量、偏离 1/2（`kInvalidHandle` 不存在；devpkey GUID+pid 2 与 SDK 26100/18362 一致）。
