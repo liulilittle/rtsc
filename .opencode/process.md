@@ -601,3 +601,7 @@
 - 全部子代理 delete 解散（甲乙审计组 + 已熔断执行子）。
 - 验证：build 全量 0err/0warn；ctest 58/59（view bench 因 vmmemWSL 100% CPU 争用超预算 51.59ms>35ms，非代码回归，历史同类）。
 - 服务器模式能力矩阵更新：桌面✓ 剪贴板✓ 多会话✓ rdpdr✓ rdpsnd✓（v1 正弦源，WASAPI 二期）。
+## 第702轮：新批次 — 客户端 rdpdr 驱动器重定向接线
+- 取证：rdpdr 客户端实现完整（RdpdrClient + HostFileSystem + ResolvePathUnderRoot 防穿越 + kMaxReadLength 1MiB）；缺口=tools/rtsc_gui/main.cpp:390-391 仅计数未接真实 handler（N8-1 S3 剩余项）。
+- 服务器侧缺口：src/channel/rdpdr_server.cpp:189-218 收 Device List 不回 Device Reply、I/O 请求只计数（v1）。
+- 本轮动作：W11 派双审计（甲 ses_e74bf690 侧重方案/接线/驱动器枚举；乙 ses_e74bf57a 侧重安全/协议契约/服务器缺口），已双向互告 ID。
