@@ -468,3 +468,34 @@
 - RDGSP 同连接上行/下行交错，需自定义复用（否则写等读排空死锁）。
 - `Client::Connect` 硬 30s（`client.cpp:136`）+ 握手在构造内 → 冻结 GUI 消息泵。
 - `ConnectionDriver` 状态机不可重入（`connection_driver.cpp:35-41`）→ 断线必须重建；`GatewayTunnel` 持 `inner_` 引用无所有权无重建路径。
+
+---
+
+## 阶段 2 进展与旧结论作废（2026-10-31）
+
+### 已作废的旧结论（上方审计章节内）
+- ~~"RDGSP 同连接上行/下行交错，需自定义复用（否则写等读排空死锁）"~~ → **作废**。
+  反汇编 `FUN_1801bc14c`/`FUN_1801bc3c4` 证明是**双连接**（IN/OUT 各自 `CreateConnection`、
+  端口字段 `+0x6a6`/`+0x6a4` 分离）。见 `docs/spec/gateway-stage2-evidence.md` §10。
+- ~~"需自定义 `RdgByteTransport`"~~ → 改为路线 A'：`RdgspTransport` 单外观 + 内部双连接。
+- ~~"S3：TLS 默认 kTofu"~~ → 实际默认 kTofu **在 Windows 上等于零校验**（见下方 P0）。
+
+### 阶段 2 已交付（未提交，待 F1 后一起提交）
+- 12 文件：`gateway_transport.h/.cpp`（RdgspTransport + TlsByteTransport + H0-H8）、
+  `gateway.h/.cpp`（RFC6455 + ChunkedEncodeChunk + EncodeBase64）、`byte_order.h/.cpp`（u64be）、
+  `main.cpp`（--gateway/RTSC_GATEWAY/--gateway-trust/默认 kStrict）、
+  `session_info.h/.cpp`、`test_gateway.cpp`（109 tests/1125 checks）、`test_session_info.cpp`、CMakeLists。
+- 双审复核：乙 7 项全 PASS；主代理独立探针 16/16 PASS（`evidence/gateway-stage2-verify.txt`）。
+
+### 阻塞项（P0，签署前置）
+- **SChannel TLS 零证书校验**：`tls_schannel.cpp:143-155` 三策略全 MANUAL；
+  Windows 唯一后端（`tls_factory.cpp:36-42`）→ 本机所有 TLS（含 CredSSP step5 明文密码）无校验。
+  详见 `docs/spec/tls-schannel-p0-verification.md`（7dd6e34）。F1 修复中。
+
+### 待办队列
+1. F1（P0）：SChannel kStrict/kTofu 真实校验 + test_tls 4 用例（进行中，ses_e70fdf49）
+2. F2（P0，独立提交）：`tools/rtsc_connect/main.cpp:109` 默认 kStrict + `--tls-insecure`
+3. 阶段 2 签章 + 提交 12 文件
+4. F3（P3）：StubGateway 写线程 deadline
+5. USB：P2 AddDevice 异步反馈；P3 完整性（复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck）；W5 真机
+6. 真机验证：网关（200 vs 101）、USB 设备、驱动器、音频
