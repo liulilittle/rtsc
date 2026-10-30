@@ -567,3 +567,6 @@
 - server.cpp 已有 rdpsnd_channel_id_ != 0 的 Start 门控（D-C ✓）。
 - rdpsnd_server.cpp 仍 327 行、quality_mode_sent_count_ 在、quality_mode_timeout 未出现（D-A/D-B 待落地）。
 - tests 已新增 rdpsnd_server_quality_timeout_advances_to_training 用例（红阶段）。
+## 第693轮：等待 D-A/D-B 落地
+- rdpsnd_server.cpp 最后写入 11:49:46，仍 327 行，quality_mode_sent_count_ 未删、quality_mode_timeout 未出现。
+- 执行子 busy 且 wrote 时间戳已推进（说明在别处活动，可能先改测试/server）。
