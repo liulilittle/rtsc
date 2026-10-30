@@ -622,3 +622,6 @@
 - 甲本机探针直接红证（F3 pre-handshake CREATE phase=0 成功；F5 io_status=0xC0000001 应为 0xC0000008；F2 悬空 symlink 抛 filesystem_error；F6 2MiB 写被接受）；F4 撤销红证（SUPERSEDE 正常创建）。
 - 已落 docs/spec/rdpdr-client-wiring-design.md §8 证据表。
 - 执行 AI ses_e74625ad4f busy，工作树尚无改动（TDD 红阶段）。
+## 第707轮：执行 AI 步骤1 落盘（drive_enum helper）
+- 新增 include/rtsc/rdpdr/drive_enum.h（SelectDrives 纯函数 + EnumerateLocalDrives 薄包装，DriveType 镜像枚举）、src/rdpdr/drive_enum_win32.cpp、tests/test_drive_enum.cpp；CMakeLists 已改。
+- 设计符合路线 B：纯过滤可单测，平台 API 收一处。
