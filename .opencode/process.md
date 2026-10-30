@@ -507,3 +507,6 @@
 - 乙红探针实证 joinable std::thread 重赋 → terminate（EXITCODE=-1073740791）。
 - 执行 AI 已收最终字段名定稿，busy 中；工作树尚无改动（步骤 1-5 进行中）。
 - 甲乙待命，审查点①-⑥已固化。
+## 第677轮：执行 AI 开始落盘（proto 层）
+- 工作树：include/rtsc/proto/rdpsnd.h、src/proto/rdpsnd.cpp、tests/test_rdpsnd.cpp 已改（步骤 1 proto 补齐）。
+- 乙 D12 缺陷档案已入 discover.md（186564b）；审计侧断言证据齐备，静默待命。
