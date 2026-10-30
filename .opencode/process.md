@@ -487,3 +487,8 @@
 ## 第672轮：rdpsnd 双审分歧裁定取证 69918d9
 - 独立核实三点：①客户端 OnWave2 无 phase 门（rdpsnd_client.cpp:159-166）→ Training 顺序非客户端硬门，但规范保真需遵守；②D12 wedge 成立（audio_win32.cpp:110 return 后 started_ 仍 true）；③proto 缺 Wave2 write/server formats builder。
 - 已 relay 甲乙要求按此收敛。
+## 第673轮：rdpsnd 定案 + 派执行
+- 甲乙三轮互审收敛联署，主代理定案落 docs/spec/rdpsnd-server-design.md §7（39edbee）；甲方联署终稿细化项已转执行 AI。
+- 执行 AI：ses_e755e22c6ffectQ5JL0PI32kzA（TDD，含 D12 修复）。
+- 审计组甲 ses_e7577b947ffe0u079GJhkmmY3y / 乙 ses_e7577858cffeF4E1KTM6NePgY0 保持待命，交付后复核。
+- 关键裁决：Phase 六态（含 kAwaitQualityMode）；超时分档（formats/train-confirm 致命、quality 放行）；v1 每会话独立源实例（工厂 seam），广播总线=二期；enable_rdpsnd=true 默认但无源不建 handler；Training 按规范先发但客户端无 phase 门（双用例覆盖）。
