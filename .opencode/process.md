@@ -717,3 +717,9 @@
 - 定案落 docs/spec/rdpusb-wiring-design.md（41f0c84）：P0 三项 + P1 七项 + 路线 A 接线；不修项记录。
 - 执行 AI：ses_e72be6839ffePSyvwAm5HRocxw（4 步 TDD）。
 - 审计组保留待命（交付后复核）。
+## 第728轮：USB 执行交付，双审进入第⑤步验证
+- 执行 AI 交付：9 文件改动（+964/-86），P0/P1 全项 + GUI 接线 + 安全门控 + 2 处偏离（kInvalidHandle→kRequestFailed；无 ready() 用 Open()==nullptr）。
+- 报称：build 0err/0warn；rdpusb 53/242、drdynvc 16/192、channel 10/71、gui_send 2/35、server_rdpdr_e2e 7/147、server_cliprdr_e2e 3/29；4 项变异红证。
+- 额外修复：devpkey DEVPKEY_Device_ContainerId LNK2019 → 本地 constexpr。
+- 未提交（dirty=9）。
+- 双审已派第⑤步验证：甲侧重代码逐条审查（OUT 方向语义/多 PDU 定界/门控健壮性/渲染循环开销），乙侧重重跑 usbrepro 探针证明红转绿 + 独立变异抽验。
