@@ -481,3 +481,6 @@
 - 缺口：服务器模式无法把本机声音送到客户端（目标 G/C 项 RDPSND 音频）。
 - 本轮动作：W11 派双审计（甲 ses_e7577b947ffe0u079GJhkmmY3y / 乙 ses_e7577858cffeF4E1KTM6NePgY0），独立产出方案+缺陷清单，已双向互告 ID。
 - 审计要求：协议字段契约（对照客户端解析）、音频源路线对比（WASAPI loopback vs 注入式 AudioSource）、失败路径优先、多会话并发、接线点、测试策略（B1 模拟边界）。
+## 第671轮：rdpsnd 服务器证据骨架入库 4876542
+- 建 docs/spec/rdpsnd-server-design.md：客户端契约表（13 项，全部路径:行证据）+ proto 层缺口（BuildServerFormatsBody / SndWave2::write 缺失）+ 服务器状态机 + 待裁决 5 项。
+- 甲仍在审计（busy），乙待命中。
