@@ -261,6 +261,14 @@ add_executable(rtsc_rdpdr_server_tests tests/test_rdpdr_server.cpp)
 target_link_libraries(rtsc_rdpdr_server_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpdr_server_tests PRIVATE tests)
 
+# Route-A async I/O engine: the server issues DR_DEVICE_IOREQUEST toward the
+# client's shared drive and matches DR_DEVICE_IOCOMPLETION back through the
+# outstanding table. Driven against the in-tree RdpdrClient over real wire
+# encoding (design docs/spec/rdpdr-server-io-design.md section 8).
+add_executable(rtsc_rdpdr_server_io_tests tests/test_rdpdr_server_io.cpp)
+target_link_libraries(rtsc_rdpdr_server_io_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_rdpdr_server_io_tests PRIVATE tests)
+
 # Drive-enumeration policy: default fixed drives / whitelist / ALL / invalid
 # spec over an injected candidate list, so no case touches a real drive.
 add_executable(rtsc_drive_enum_tests tests/test_drive_enum.cpp)
@@ -615,6 +623,10 @@ add_executable(rtsc_server_rdpdr_e2e_tests tests/test_server_rdpdr_e2e.cpp)
 target_link_libraries(rtsc_server_rdpdr_e2e_tests PRIVATE
                       rtsc_client rtsc_server rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_server_rdpdr_e2e_tests PRIVATE tests)
+# The W11 route-A ActiveLoop wiring guard reads src/server/server.cpp at
+# runtime, so the test needs the source root.
+target_compile_definitions(rtsc_server_rdpdr_e2e_tests PRIVATE
+                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
 # Server-side RDPSND over real loopback sockets: one server session running the
 # RdpsndServer audio handler on its rdpsnd static virtual channel with the
@@ -704,6 +716,7 @@ add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
 add_test(NAME rdpdr_server COMMAND rtsc_rdpdr_server_tests)
+add_test(NAME rdpdr_server_io COMMAND rtsc_rdpdr_server_io_tests)
 add_test(NAME drive_enum COMMAND rtsc_drive_enum_tests)
 add_test(NAME rdpsnd COMMAND rtsc_rdpsnd_tests)
 add_test(NAME rdpsnd_client COMMAND rtsc_rdpsnd_client_tests)
@@ -773,6 +786,7 @@ if(MSVC)
     endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr_server_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_rdpdr_server_io_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drive_enum_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpsnd_tests PRIVATE /W4 /WX)

@@ -1419,6 +1419,17 @@ class RdpSession {
             if (rdpsnd_ != nullptr && rdpsnd_channel_id_ != 0) {
                 rdpsnd_->Poll(std::chrono::steady_clock::now());
             }
+            // Reap route-A rdpdr IRPs whose completion never came back
+            // (docs/spec/rdpdr-server-io-design.md section 8): the async I/O
+            // engine keeps its outstanding table, and Poll is the only place
+            // that ages the entries out (default 30 s deadline). The gate makes
+            // it a no-op while no IRP is in flight; Poll is O(n) with
+            // n <= kMaxOutstanding. Kept on every iteration (like the rdpsnd
+            // pump) so a client that never lets ReadFrame time out cannot leak
+            // table slots indefinitely.
+            if (rdpdr_ != nullptr && rdpdr_->outstanding_count() != 0) {
+                rdpdr_->Poll(std::chrono::steady_clock::now());
+            }
             if (!ReadFrame(frame, &next_refresh)) break;
             proto::McsSendData sd;
             if (proto::McsSendData::parse(frame.data(), frame.size(), sd) != Status::Ok) {

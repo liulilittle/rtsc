@@ -21,18 +21,14 @@
 #include "rtsc/proto/channel.h"
 #include "rtsc/proto/rdpdr.h"
 #include "rtsc/rdpdr/file_system.h"
+#include "rtsc/rdpdr/path_guard.h"
 
 namespace rtsc::channel {
 
-// Resolves the part of a server-supplied path that follows the redirected
-// drive root (`remote_relative`) into a local path that stays inside `root`.
-// Leading separators are ignored; '.' components are dropped. Rejects parent
-// traversal (".."), absolute paths, drive letters, UNC/device prefixes,
-// reserved device names (CON, NUL, ...) and components Windows would rewrite
-// (trailing dot or space). Returns false when the path is rejected.
-bool ResolvePathUnderRoot(const std::string& root,
-                          const std::string& remote_relative,
-                          std::string& out);
+// The path containment guard shared with every redirected-side handler; see
+// rtsc/rdpdr/path_guard.h. Kept as an alias so existing call sites that spell
+// the fully qualified rtsc::channel::ResolvePathUnderRoot keep working.
+using rtsc::rdpdr::ResolvePathUnderRoot;
 
 class RdpdrClient {
  public:
@@ -94,6 +90,11 @@ class RdpdrClient {
     unsigned control_count() const { return control_count_; }
     const std::string& last_remote_path() const { return last_remote_path_; }
     const std::string& last_local_path() const { return last_local_path_; }
+    // Devices whose configured local_root does not exist / is not a directory.
+    // Such devices are recorded here and never served an I/O request.
+    unsigned device_root_invalid_count() const {
+        return device_root_invalid_count_;
+    }
 
  private:
     void OnMessage(const std::vector<uint8_t>& message);
@@ -139,6 +140,7 @@ class RdpdrClient {
 
     std::string last_remote_path_;
     std::string last_local_path_;
+    unsigned device_root_invalid_count_ = 0;
 
     unsigned server_announce_count_ = 0;
     unsigned server_capability_count_ = 0;

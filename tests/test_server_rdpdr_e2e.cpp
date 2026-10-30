@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -556,6 +557,85 @@ RTSC_TEST(rdpdr_e2e_client_disconnect_releases_session) {
     CHECK_EQ(server.session_count(), static_cast<size_t>(0));
     CHECK_EQ(server.total_session_count(), static_cast<size_t>(1));
     CHECK(!send_failed.load());
+}
+
+// W11 route-A: the ActiveLoop must reap expired IRPs on every session, or the
+// outstanding table of the async I/O engine leaks until the session dies. No
+// IRP issuer exists in production code yet (the design leaves the consumer for
+// later), so no loopback session can exercise a real timeout; instead this case
+// pins the wiring at the source level: src/server/server.cpp's ActiveLoop must
+// call rdpdr_->Poll(...) on the per-iteration pump path (after the "no IRP in
+// flight" early exit, alongside the rdpsnd pump). Deleting that call is a
+// red mutation. RTSC_SOURCE_DIR is provided by CMake.
+static size_t FindLine(const std::vector<std::string>& lines,
+                       const char* needle) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find(needle) != std::string::npos) return i;
+    }
+    return std::string::npos;
+}
+
+RTSC_TEST(rdpdr_e2e_active_loop_raps_rdpdr_timeouts) {
+#ifdef RTSC_SOURCE_DIR
+    const std::filesystem::path server_src =
+        std::filesystem::path(RTSC_SOURCE_DIR) / "src" / "server" / "server.cpp";
+    std::ifstream in(server_src, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) {
+        std::printf("  FAIL: cannot open %s\n", server_src.string().c_str());
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) lines.push_back(line);
+
+    // Locate the ActiveLoop per-iteration pump block. The rdpdr Poll must sit
+    // inside the same per-iteration loop that pumps rdpsnd.
+    const size_t active_loop = FindLine(lines, "void ActiveLoop() {");
+    const size_t pump_loop = FindLine(lines, "while (!stop_requested_.load");
+    const size_t rdpsnd_poll = FindLine(lines,
+        "rdpsnd_->Poll(std::chrono::steady_clock::now());");
+    const size_t rdpdr_gate = FindLine(lines,
+        "rdpdr_->outstanding_count() != 0");
+    const size_t rdpdr_poll = FindLine(lines,
+        "rdpdr_->Poll(std::chrono::steady_clock::now());");
+
+    if (active_loop == std::string::npos) {
+        std::printf("  FAIL: ActiveLoop not found in server.cpp\n");
+    }
+    if (pump_loop == std::string::npos) {
+        std::printf("  FAIL: ActiveLoop pump loop not found in server.cpp\n");
+    }
+    if (rdpsnd_poll == std::string::npos) {
+        std::printf("  FAIL: rdpsnd pump not found in server.cpp\n");
+    }
+    if (rdpdr_gate == std::string::npos) {
+        std::printf("  FAIL: rdpdr outstanding gate not found in server.cpp\n");
+    }
+    if (rdpdr_poll == std::string::npos) {
+        std::printf("  FAIL: rdpdr_->Poll(...) not found in server.cpp\n");
+    }
+
+    // The rdpdr reap must live in the ActiveLoop iteration pump, after the
+    // per-iteration loop starts (next to the rdpsnd pump), not somewhere else.
+    // This is what blocks "move the call to a function that never runs".
+    CHECK(active_loop != std::string::npos);
+    CHECK(pump_loop != std::string::npos);
+    CHECK(rdpsnd_poll != std::string::npos);
+    CHECK(rdpdr_gate != std::string::npos);
+    CHECK(rdpdr_poll != std::string::npos);
+    if (active_loop != std::string::npos && pump_loop != std::string::npos &&
+        rdpsnd_poll != std::string::npos && rdpdr_poll != std::string::npos &&
+        rdpdr_gate != std::string::npos) {
+        CHECK(rdpdr_poll > active_loop);
+        CHECK(rdpdr_poll > pump_loop);
+        CHECK(rdpdr_poll > rdpsnd_poll);
+        CHECK(rdpdr_gate < rdpdr_poll);
+    }
+#else
+    std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate server.cpp\n");
+    CHECK(false);
+#endif
 }
 
 int main() { return rtsc::test::run_all("rtsc_server_rdpdr_e2e_tests"); }

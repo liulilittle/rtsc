@@ -1926,4 +1926,163 @@ RTSC_TEST(rdpdr_filesystem_stat) {
     std::filesystem::remove_all(dir, ec);
 }
 
+// ---- W11 route-A hardening (S6 / S2 / S4) --------------------------------
+
+// S6: a file id handed out by device A must not be serviced when an IRP names
+// device B. Every operation that dereferences the handle table re-checks that
+// the handle's owning device matches the request.
+RTSC_TEST(rdpdr_client_io_checks_device_id_on_existing_handle) {
+    MockFs fs;
+    fs.read_data = {0xAA, 0xBB};
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 90, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\x.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    CHECK(crsp != nullptr);
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    const uint32_t other = kDeviceId + 100;
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(other, file_id, 91, 4, 0));
+    CHECK_EQ(fs.read_calls, static_cast<unsigned>(0));
+    {
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+        }
+    }
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(other, file_id, 92, 0, {1, 2, 3}));
+    CHECK_EQ(fs.write_calls, static_cast<unsigned>(0));
+    {
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+        }
+    }
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryDirBody(other, file_id, 93, 0x0C, true, "*.txt"));
+    CHECK_EQ(fs.query_calls, static_cast<unsigned>(0));
+    {
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+        }
+    }
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(other, file_id, 94, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(0));
+    {
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp != nullptr) {
+            CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+        }
+    }
+    sent.clear();
+
+    // The handle still works on its own device after all the rejects.
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, file_id, 95, 4, 0));
+    CHECK_EQ(fs.read_calls, static_cast<unsigned>(1));
+    CHECK_EQ(client.read_count(), static_cast<unsigned>(1));
+}
+
+// S2: the open handle table is capped at 256; the 257th create is refused with
+// STATUS_TOO_MANY_OPENED_FILES and already-open handles stay usable.
+RTSC_TEST(rdpdr_client_open_handle_limit_rejects_extra) {
+    constexpr uint32_t kTooManyOpenedFiles = 0xC0000041;
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    MakeReady(client);
+
+    uint32_t first_file_id = 0;
+    for (unsigned i = 0; i < 257; ++i) {
+        sent.clear();
+        FeedBody(client, proto::kPakidCoreDeviceIorequest,
+                 CreateBody(kDeviceId, 100 + i, 0x00000001 /* FILE_OPEN */,
+                            "\\tsclient\\C\\h.bin"));
+        const std::vector<uint8_t>* rsp =
+            FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+        CHECK(rsp != nullptr);
+        if (rsp == nullptr) continue;
+        if (i < 256) {
+            CHECK_EQ(U32At(*rsp, 20),
+                     static_cast<uint32_t>(proto::kStatusSuccess));
+            if (i == 0) first_file_id = U32At(*rsp, 24);
+        } else {
+            if (U32At(*rsp, 20) != kTooManyOpenedFiles) {
+                std::printf("  257th create returned 0x%08X\n", U32At(*rsp, 20));
+            }
+            CHECK_EQ(U32At(*rsp, 20), kTooManyOpenedFiles);
+        }
+    }
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(256));
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(256));
+    CHECK(first_file_id != 0);
+
+    // One of the handles opened before the cap is still serviceable.
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(kDeviceId, first_file_id, 400, 4, 0));
+    CHECK_EQ(fs.read_calls, static_cast<unsigned>(1));
+    CHECK_EQ(client.read_count(), static_cast<unsigned>(1));
+}
+
+// S4: a device whose local_root does not exist (or is not a directory) is
+// rejected up front and recorded, so ResolvePathUnderRoot can never fabricate a
+// lexical path underneath it.
+RTSC_TEST(rdpdr_client_create_rejects_missing_local_root) {
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    const std::filesystem::path missing =
+        std::filesystem::temp_directory_path() / "rtsc_missing_root_w11";
+    std::error_code ec;
+    std::filesystem::remove_all(missing, ec);
+    RdpdrClient client(&fs,
+                       {{kDeviceId, "C:", missing.string()}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    CHECK(client.device_root_invalid_count() >= static_cast<unsigned>(1));
+    MakeReady(client);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\x.txt"));
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(0));
+    CHECK_EQ(client.create_count(), static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+}
+
 }  // namespace

@@ -2,7 +2,9 @@
 
 #include "rtsc/channel/rdpdr_server.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <utility>
 
 namespace rtsc::channel {
@@ -34,7 +36,20 @@ const char* RdpdrServer::to_string(Phase p) {
 RdpdrServer::RdpdrServer(SendFn send)
     : send_(std::move(send)), client_id_(NextClientId()) {}
 
-RdpdrServer::~RdpdrServer() = default;
+RdpdrServer::~RdpdrServer() {
+    // The session is going away: every IRP the client never completed is
+    // failed with STATUS_UNSUCCESSFUL so no caller is left waiting forever.
+    // The table is moved to a local vector first, so a callback that re-enters
+    // the channel (a retry) cannot invalidate the container while it is being
+    // walked.
+    std::vector<PendingIrp> pending = std::move(outstanding_);
+    outstanding_.clear();
+    for (auto& entry : pending) {
+        if (entry.callback) {
+            entry.callback(rtsc::proto::kStatusUnsuccessful, {});
+        }
+    }
+}
 
 void RdpdrServer::Start() {
     if (started_) return;
@@ -104,6 +119,12 @@ void RdpdrServer::OnMessage(const std::vector<uint8_t>& message) {
             // RDPDR_HEADER must be stripped first -- exactly like the client
             // does (rdpdr_client.cpp OnMessage passes pdu.data).
             OnDeviceIoRequest(pdu.data);
+            break;
+        case rtsc::proto::kPakidCoreDeviceIocompletion:
+            // The client's answer to an IRP the server issued (route A). The
+            // completion is matched against the outstanding table and dispatched
+            // to the registered callback.
+            OnDeviceIoCompletion(pdu.data);
             break;
         default:
             // A client-originated message the server does not expect (e.g. a
@@ -224,6 +245,211 @@ void RdpdrServer::OnDeviceIoRequest(const std::vector<uint8_t>& body) {
         return;
     }
     ++device_io_request_count_;
+}
+
+void RdpdrServer::OnDeviceIoCompletion(const std::vector<uint8_t>& body) {
+    if (!started_) {
+        ++out_of_order_count_;
+        return;
+    }
+    rtsc::proto::RdpdrDeviceIoCompletion completion;
+    rtsc::proto::ByteReader r(body.data(), body.size());
+    if (body.size() < 12 ||
+        !r.u32le(completion.device_id) || !r.u32le(completion.completion_id) ||
+        !r.u32le(completion.io_status)) {
+        ++malformed_pdu_count_;
+        return;
+    }
+
+    auto it = std::find_if(outstanding_.begin(), outstanding_.end(),
+                           [&](const PendingIrp& pending) {
+                               return pending.completion_id ==
+                                          completion.completion_id &&
+                                      pending.device_id ==
+                                          completion.device_id;
+                           });
+    if (it == outstanding_.end()) {
+        // An unknown or replayed completion id. The spec wants the channel torn
+        // down; we deliberately choose to record and drop it, so a single stray
+        // frame cannot take a live session down.
+        ++unknown_completion_count_;
+        return;
+    }
+    PendingIrp pending = std::move(*it);
+    outstanding_.erase(it);
+
+    std::vector<uint8_t> data;
+    if (completion.io_status == rtsc::proto::kStatusSuccess) {
+        switch (pending.major_function) {
+            case rtsc::proto::kIrpMjCreate: {
+                uint32_t file_id = 0;
+                uint8_t information = 0;
+                if (r.remaining() >= 5 && r.u32le(file_id) && r.u8(information)) {
+                    data.resize(4);
+                    data[0] = static_cast<uint8_t>(file_id & 0xFF);
+                    data[1] = static_cast<uint8_t>((file_id >> 8) & 0xFF);
+                    data[2] = static_cast<uint8_t>((file_id >> 16) & 0xFF);
+                    data[3] = static_cast<uint8_t>((file_id >> 24) & 0xFF);
+                }
+                (void)information;
+                break;
+            }
+            case rtsc::proto::kIrpMjRead:
+            case rtsc::proto::kIrpMjDirectoryControl: {
+                uint32_t length = 0;
+                if (r.u32le(length) && r.remaining() >= length) {
+                    data.assign(r.cursor(), r.cursor() + length);
+                }
+                break;
+            }
+            case rtsc::proto::kIrpMjWrite:
+            case rtsc::proto::kIrpMjClose:
+            default:
+                // Write / Close carry no payload that the callback consumes.
+                break;
+        }
+    }
+    pending.deadline = {};
+    ++device_io_completion_count_;
+    if (pending.callback) {
+        pending.callback(completion.io_status, data);
+    }
+}
+
+void RdpdrServer::Poll(const std::chrono::steady_clock::time_point& now) {
+    // Two passes: collect and erase the expired IRPs first, then fire their
+    // callbacks. Firing inside the removal scan would let a callback that
+    // re-enters SubmitIrp (a natural retry pattern) mutate the table while it
+    // is being iterated -- reallocating the vector and invalidating the scan.
+    std::vector<PendingIrp> expired;
+    for (auto it = outstanding_.begin(); it != outstanding_.end();) {
+        if (now < it->deadline) {
+            ++it;
+            continue;
+        }
+        ++device_io_timeout_count_;
+        expired.push_back(std::move(*it));
+        it = outstanding_.erase(it);
+    }
+    for (auto& entry : expired) {
+        if (entry.callback) {
+            entry.callback(0xC00000B5 /* STATUS_IO_TIMEOUT */, {});
+        }
+    }
+}
+
+uint32_t RdpdrServer::SubmitIrp(uint32_t device_id, uint32_t file_id,
+                                uint32_t major_function, uint32_t minor_function,
+                                const std::vector<uint8_t>& tail,
+                                IrpCallback cb) {
+    if (phase_ != Phase::kReady) return 0;
+    if (outstanding_.size() >= kMaxOutstanding) return 0;
+
+    uint32_t completion_id = next_completion_id_++;
+    if (completion_id == 0) {
+        // 0 is reserved for "rejected"; wrap past it.
+        completion_id = next_completion_id_++;
+    }
+
+    rtsc::proto::RdpdrDeviceIoRequest request;
+    request.device_id = device_id;
+    request.file_id = file_id;
+    request.completion_id = completion_id;
+    request.major_function = major_function;
+    request.minor_function = minor_function;
+    const std::vector<uint8_t> prefix = request.encode();
+
+    rtsc::proto::ByteWriter w;
+    w.bytes(prefix.data(), prefix.size());
+    w.bytes(tail.data(), tail.size());
+    SendRaw(rtsc::proto::BuildRdpdrPdu(rtsc::proto::kPakidCoreDeviceIorequest,
+                                       w.take()));
+
+    PendingIrp pending;
+    pending.device_id = device_id;
+    pending.file_id = file_id;
+    pending.completion_id = completion_id;
+    pending.major_function = major_function;
+    pending.deadline = std::chrono::steady_clock::now() + kIrpTimeout;
+    pending.callback = std::move(cb);
+    outstanding_.push_back(std::move(pending));
+    return completion_id;
+}
+
+uint32_t RdpdrServer::CreateFile(uint32_t device_id, const std::string& path,
+                                 uint32_t desired_access, uint32_t disposition,
+                                 IrpCallback cb) {
+    // DR_CREATE_REQ: DeviceIoRequest(20) + DesiredAccess(4) + AllocationSize(8)
+    // + FileAttributes(4) + SharedAccess(4) + CreateDisposition(4) +
+    // CreateOptions(4) + PathLength(4) + Path (UTF-16LE, NUL-terminated).
+    const std::vector<uint8_t> path_bytes =
+        rtsc::proto::RdpdrEncodeUtf16(path);
+    rtsc::proto::ByteWriter w;
+    w.u32le(desired_access);
+    w.u32le(0);  // AllocationSize (low)
+    w.u32le(0);  // AllocationSize (high)
+    w.u32le(0x80);  // FileAttributes: FILE_ATTRIBUTE_NORMAL
+    w.u32le(0);  // SharedAccess
+    w.u32le(disposition);
+    w.u32le(0);  // CreateOptions
+    w.u32le(static_cast<uint32_t>(path_bytes.size()));
+    w.bytes(path_bytes.data(), path_bytes.size());
+    return SubmitIrp(device_id, 0, rtsc::proto::kIrpMjCreate, 0, w.take(),
+                     std::move(cb));
+}
+
+uint32_t RdpdrServer::ReadFile(uint32_t device_id, uint32_t file_id,
+                               uint64_t offset, uint32_t length,
+                               IrpCallback cb) {
+    // DR_READ_REQ ([MS-RDPEFS] 2.2.1.4.3): DeviceIoRequest(20) + Length(4) +
+    // Offset(8) + Padding(20). A real peer enforces the 52-byte body; omitting
+    // the padding desynchronises the redirector's field reads.
+    rtsc::proto::ByteWriter w;
+    w.u32le(length);
+    w.u32le(static_cast<uint32_t>(offset & 0xFFFFFFFFu));
+    w.u32le(static_cast<uint32_t>(offset >> 32));
+    for (int i = 0; i < 20; ++i) w.u8(0);
+    return SubmitIrp(device_id, file_id, rtsc::proto::kIrpMjRead, 0, w.take(),
+                     std::move(cb));
+}
+
+uint32_t RdpdrServer::WriteFile(uint32_t device_id, uint32_t file_id,
+                                uint64_t offset, const std::vector<uint8_t>& data,
+                                IrpCallback cb) {
+    // DR_WRITE_REQ: DeviceIoRequest(20) + Length(4) + Offset(8) + Padding(20)
+    // + Data.
+    rtsc::proto::ByteWriter w;
+    w.u32le(static_cast<uint32_t>(data.size()));
+    w.u32le(static_cast<uint32_t>(offset & 0xFFFFFFFFu));
+    w.u32le(static_cast<uint32_t>(offset >> 32));
+    for (int i = 0; i < 20; ++i) w.u8(0);
+    w.bytes(data.data(), data.size());
+    return SubmitIrp(device_id, file_id, rtsc::proto::kIrpMjWrite, 0, w.take(),
+                     std::move(cb));
+}
+
+uint32_t RdpdrServer::CloseFile(uint32_t device_id, uint32_t file_id,
+                                IrpCallback cb) {
+    // DR_CLOSE_REQ is the bare 20-byte DeviceIoRequest.
+    return SubmitIrp(device_id, file_id, rtsc::proto::kIrpMjClose, 0, {},
+                     std::move(cb));
+}
+
+uint32_t RdpdrServer::QueryDirectory(uint32_t device_id, uint32_t file_id,
+                                     uint32_t info_class, bool initial,
+                                     IrpCallback cb) {
+    // DR_DRIVE_QUERY_DIRECTORY_REQ: DeviceIoRequest(20) + FsInformationClass(4)
+    // + InitialQuery(1) + PathLength(4) + Padding(23) + Path (UTF-16LE).
+    const std::vector<uint8_t> pattern = rtsc::proto::RdpdrEncodeUtf16("*");
+    rtsc::proto::ByteWriter w;
+    w.u32le(info_class);
+    w.u8(initial ? 1 : 0);
+    w.u32le(static_cast<uint32_t>(pattern.size()));
+    for (int i = 0; i < 23; ++i) w.u8(0);
+    w.bytes(pattern.data(), pattern.size());
+    return SubmitIrp(device_id, file_id, rtsc::proto::kIrpMjDirectoryControl,
+                     rtsc::proto::kIrpMnQueryDirectory, w.take(),
+                     std::move(cb));
 }
 
 std::vector<uint8_t> RdpdrServer::BuildServerCapabilities() const {
