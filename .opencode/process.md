@@ -731,3 +731,12 @@
 - 甲独立复核（8/8 SHA 逐字一致、3 次观测稳定）：
   1. 构建 0err/0warn PASS；2. ctest gateway 71/331/0 PASS（与执行 AI 逐字一致）；3. F2 chunked PASS（`ParseSizeLine` 首字符必须 hex，`:512-548`，实测 0x10/4+2/4xy 全拒）；4. F1 CRLF/NUL PASS（11 字段 + user_id **在 base64 之前**预检 `:387`，`BuildHttpConnectRequest` 5 字段 `:343-350`）；5. D8 合同 PASS（文档+实现+三条 UDP 用例齐）；6. R3 方向 PASS（OUT 无 user-id `test:404`、IN 有 base64 `:418`）；7. MUTATION 7 文件零命中 + 独立反向变异承重证明；8. evidence §2 作废标注 PASS；9. 三个证据 txt 与冻结 lib 重编输出**逐字节 IDENTICAL**。
 - **甲的非阻断建议（主代理判定为真缺陷，需修）**：`o.method` 显式设为空串时产出 `" /remoteDesktopGateway/ HTTP/1.1"`（前导空格，非法请求行）。虽非注入面（无 CRLF），但属错误路径未覆盖（C1-C3 要求正常/边界/错误全路径）。修复成本一行，**决定修**，但等乙报告后统一处理，避免二次冻结打断乙的复核。
+
+## 第750轮：双章 9/9 PASS + 三注记并入最后小修
+- 双章成立：甲（上轮 9 项全 PASS）+ 乙（本轮 9 项全 PASS），均在冻结 SHA 上独立复算。
+- 乙独立复验要点：8/8 SHA 逐字一致；构建 0err/0warn；71 tests/331 checks 0 FAIL；ctest 1/1 Passed；三探针输出与 txt **逐字节 0 diff**；变异抽验 3 项全红（D1 Host/total 预检/CRLF 闸）。
+- 三注记（N1 空 method/N2 陈旧注释/N3 method 缺注入用例）——主代理判定均需修（N1/N3 属错误路径与测试覆盖缺口，非纯外观），已并入最后小修：
+  - 修 1：`method.empty()` → 返回空 vector + `rdg_channel_request_rejects_empty_method` 用例
+  - 修 2：`udp_transport_two_sides_write_concurrently_progresses` 注释改为入队 ACK 描述
+  - 修 3：`method` 字段 CRLF 注入用例（已守未测 → 补测）
+- 预期：73 tests，重冻结后报新 SHA。
