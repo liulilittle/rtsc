@@ -790,3 +790,23 @@
 - **定案**：OUT=下行（网关→客户端，200 chunked 解码 / 101 裸双工）；IN=上行（客户端→网关，chunked 持续写）；两条独立连接/TLS/重试。原"单连接多路复用 P1"**不存在**。
 - 乙的死锁发现仍成立（`winsock_transport.cpp:52-62` 无 SO_SNDTIMEO，全库 grep 空）但双连接下可缓解（读写分离/分块穿插）；单连接下必然死锁。
 - 已核实并接受乙另三项：`main.cpp:265` kInsecure 硬编码（须改 gateway 外层 kStrict）；`gateway_transport.cpp:268-272` 空请求静默 Write(0)（须显式报错，同阶段1前置要求1）；307 零跟随维持。
+
+## 第755轮：阶段2 定案入库 e1f2d79 + 派执行
+### 双审双章（甲 ses_e716dd16 / 乙 ses_e716db85）一致：路线 A'
+- **A'**：`RdgspTransport : net::Transport` 单外观，**内部双连接**（OUT=下行 / IN=上行），上层 `Client/Pump/SendPdu` 零改动。
+- 排除纯 A（单连接，HTTP/1.1 冲突 + 写等读死锁 + 与出厂结构不符）与 B（上层双 transport，改 Client 签名/破坏复用）。
+
+### 主代理独立复核甲的关键取证（全部命中）
+- `FUN_1801c235c:60-70`：`+0xd40` 计数 +1，`if (*(uint*)(param_1+0xd3c) < uVar2)` → 错误 0x12；上限是**外部配置字段无立即数**（UNVERIFIED，故实现用可配默认 3）
+- `FUN_1801c235c:165`：`wcsncmp(_Str1,L"Claims:",7)` —— 只特判 Claims，非 Claims 走原生认证（WinHTTP/SSPI，无 NTLM-vs-Negotiate 优先级逻辑）
+- `FUN_1801c6b44:21,24,26,28,30`：超时表 **120000/60000/30000/90000/30000 ms**
+- UA 串 `0x1806ce4b0 = MS-RDGateway/1.0`
+
+### 定案要点（`docs/spec/gateway-stage2-design.md`）
+- 握手 H0–H8；NTLM 三腿复用 `ntlm.h`（**禁复用 CredsspClient 状态机**）；Negotiate/Claims 显式失败 0x80004001
+- 数据面 `mode=kChunked/kUpgraded`；`upgrade_steals_write` 默认 true（出厂 IN 侧管理流 UNVERIFIED）
+- **6 项既有缺陷**：D-A1 空请求静默 / D-A2 Write 无界 / **D-A3 TLS 默认 kInsecure（P0）** / D-A5 不可重建 / D-A6 UI 冻结 / D-A8 MaxRetryCount 无立即数
+- TLS 双层各默认严格；桩测试用 http 明文
+
+### 执行已派 `ses_e715ef629ffeVtq4ItCnidsCDU`
+分块交付：先 A+B（缺陷+RFC6455），再 C+D+E（RdgspTransport+GUI+session_info），F 测试贯穿。
