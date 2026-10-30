@@ -534,3 +534,6 @@
 ## 第684轮：新执行子 TDD 红阶段
 - test_rdpsnd_server.cpp 487 行已建；rdpsnd_server.cpp / sine_source.cpp 仍占位（符合先红顺序）。
 - 执行子 busy，wrote=null（尚未写入新文件）；等待其实现步骤。
+## 第685轮：新执行子测试设计已核
+- test_rdpsnd_server.cpp 12 用例：S1 首帧字节 / S2 收 formats+ALIVE / S3 training 门 / S4 cBlockNo 回绕 / S5 窗口满丢新 / S6 train-confirm 超时 CLOSE / S7 ALIVE=0 静默 / S8 畸形忽略 / S9 formats 超时 CLOSE / S10 计数 / version7 不发 Wave2 / version5 跳过 QualityMode。FakeSource 可脚本化。
+- rdpsnd_server.cpp、sine_source.cpp 仍占位（红阶段），执行子 busy。
