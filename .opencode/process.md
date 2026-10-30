@@ -917,3 +917,17 @@
   - retry-mode：IN-only+重试标志；chunked：IN-only，OUT 用 Keep-Alive
 - 要求：证据文档 §2 增加纠正段并标注"按报错文本推方向"作废；探针方向断言按新表重写。
 - 已 relay 乙（旧 Gateway 审计）要求其下轮复核这四条落地与 IN/OUT 双侧反断言覆盖。
+
+## 第746轮：6 项实证缺陷（主代理独立探针）+ 开单修复
+- 乙（阶段1复核）报 3 类缺陷，主代理独立复证 6/6 RED（`evidence/gateway-probe-defects.txt`，f6ce6ba）：
+  1. `0x10` 被当终止 0-chunk（实测 finished=1/failed=0 → **静默截断数据**）
+  2. 前导空格被接受
+  3. 尾随垃圾被接受
+  4. 裸 LF 行尾被接受
+  5. `connection_id` CRLF 注入成功（报文出现独立 X-Injected 头）
+  6. `gateway_host` CRLF 注入成功
+- 源码核实：`ParseSizeLine`（gateway.cpp:477-511）`:480-483` 跳过前导空白、`:496` 非 hex 即 break → 缺陷根因；`write_header` 无任何 CRLF/NUL 校验。
+- 乙另报：执行 AI **删除了** `udp_transport_acks_only_after_the_data_is_read` 且未更新设计文档 D8/验收4 → 合同撕裂（源码核实该测试确已消失）。
+- 判定采纳：CRLF 注入**现实存在**（阶段1低暴露/阶段2高危，接线前必修）；chunked 语法**非走私**但 `0x` 是数据完整性缺陷；D8 合同撕裂成立。
+- 开单给执行 AI 四项：A 文法严格化 + B CRLF 中心化校验 + C 文档/测试对齐 + D 证据重生成。
+- 已 relay 乙确认。
