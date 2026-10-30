@@ -89,3 +89,17 @@ C0：`cmake --build build --target rtsc_gui rtsc_rdpdr_tests rtsc_rdpdr_server_t
 ctest：rdpdr + rdpdr_server + server_rdpdr_e2e 全绿 + 新增用例全绿。
 变异反证：移除 lambda 内 `rdpdr.OnChannelData` 只留 `++vc_rdpdr` → e2e 握手永不就绪 → 测试失败。
 真机（人工，W5 标注）：`rtsc_gui 192.168.1.7` → 服务器资源管理器 `\\tsclient\C` 可见可读写，`device_reply_count == 盘数`。
+
+## 8. 审计红证附录（甲本机探针，2026-10-28）
+
+探针编译链接 Release 库（/MD /O2），temp 目录，无 rtsc* 残留。
+
+| 缺陷 | 红证输出 | 根因（路径:行） |
+|---|---|---|
+| F3 | `pre-handshake CREATE: phase=0 file_created=yes io_status=0x00000000` | OnDeviceIoRequest/OnCreate 无 phase==kReady 门控（rdpdr_client.cpp:264-376） |
+| F5 | `unknown-handle READ io_status=0xC0000001`（期望 0xC0000008） | OnRead(435-459)/OnQueryDirectory(507-528) 跳过 open_files_ 检查；与头注释 :46-47 自声明矛盾 |
+| F2 | `QueryDirectory over dangling symlink threw=YES what=directory_entry::file_size: The system cannot find the file specified` | file_system.cpp:77 entry.file_size() / :79 fs::last_write_time() 无 error_code 重载，异常冒泡 |
+| F6 | `write 2MiB accepted=YES (no write cap) on_disk=2097152` | OnWrite(461-489) 无长度上限，与 OnRead 的 kMaxReadLength 不对称 |
+| F4(撤销) | `missing-file SUPERSEDE created io_status=0x00000000` | rdpdr_client.cpp:410 create 名单已含 kFileSupersede，无缺陷 |
+
+修复方案合计约 19 行 + 6 个新测试，已并入 §7 批内范围。
