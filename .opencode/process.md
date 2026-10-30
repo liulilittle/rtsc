@@ -711,3 +711,9 @@
 - 盘点（df6477b 入 plan.md）：剪贴板✅ 音频✅ 驱动器✅ 多显示器✅ 已接线 RAIL✅ 已接线；**USB ❌ 完全未接线**；Gateway ⚠️ 是 HTTP CONNECT 代理非 RDGSP。
 - USB 已知 6 项缺陷（N8-EXEC-1 S2 阻断项）。
 - 派双审计（甲 ses_e72e0868 侧重协议链路/接线点/后端/失败路径/测试；乙 ses_e72e0840 侧重 drdynvc 串包根因/URB 丢数据/QI-IFACE/CompleteUrb/安全策略），已双向互告 ID。
+## 第727轮：USB 双审定案 + 派执行
+- 双章终稿（甲 ses_e72e0868 / 乙 ses_e72e0840）：六项已知缺陷全部复核仍存在；乙 4 项探针红证（OUT 载荷 0/8B 丢失、未知设备无 completion、接口号 0x40000001≠0x80000001）。
+- 主代理逐条核实 P0：OUT 传 {}（:475-478,:492-495）、未知设备 return（:516-517）、接口号 kProxy 改写（:302-307,:518-520）。
+- 定案落 docs/spec/rdpusb-wiring-design.md（41f0c84）：P0 三项 + P1 七项 + 路线 A 接线；不修项记录。
+- 执行 AI：ses_e72be6839ffePSyvwAm5HRocxw（4 步 TDD）。
+- 审计组保留待命（交付后复核）。
