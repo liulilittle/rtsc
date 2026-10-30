@@ -527,3 +527,7 @@
 ## 第682轮：执行 AI 停滞询问
 - 执行 AI wrote 时间戳连续多轮未变（1793328483225），rdpsnd_server.cpp 仍 12 行占位，test_rdpsnd_server.cpp 缺失 → CMake configure 失败。
 - 已发进度询问，要求小步落地（先骨架测试 → 最小实现 → S2-S10 逐个 → 接线/e2e/D12），每步可编译。
+## 第683轮：熔断旧执行子，新执行子开工
+- 熔断 ses_e755e22c（零输出×6，wrote 停滞），已 abort+delete 解散；discover 记录 c8e02d3。
+- 新执行子 ses_e75442500ffeT4eCFXqR2YxuNV 已派（复用 proto/audio_source/CMake 半成品，要求每步 relay 进度）。
+- 新执行子已创建 tests/test_rdpsnd_server.cpp（487 行）。
