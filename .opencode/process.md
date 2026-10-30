@@ -570,3 +570,7 @@
 ## 第693轮：等待 D-A/D-B 落地
 - rdpsnd_server.cpp 最后写入 11:49:46，仍 327 行，quality_mode_sent_count_ 未删、quality_mode_timeout 未出现。
 - 执行子 busy 且 wrote 时间戳已推进（说明在别处活动，可能先改测试/server）。
+## 第694轮：ActiveLoop 现状核查
+- server.cpp ActiveLoop：rdpsnd_->Start() 仍无条件（D-C 未落地，此前 grep 误判）；泵仍在 read-timeout 分支（D-D 未落地）。
+- rdpsnd_server.cpp 未变（327 行，D-A/D-B 未落地）。
+- 结论：执行子尚未开始实际改码（可能仍在规划/读文件）。持续观察 wrote 时间戳。
