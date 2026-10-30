@@ -59,3 +59,33 @@
 - **F7**（可选）、**F8**（残余 TOCTOU，记录）。
 - **服务器 ANNOUNCE_RSP**：独立小批次（约 15 行）。
 - **服务器 I/O 引擎**：P 项（350-600 行，须异步防死锁）。
+
+## 7. 终版定案（甲乙双章，2026-10-28）— 主代理采纳
+
+### 路线
+**路线 B**：`rtsc_rdpdr` 库内新增 `include/rtsc/rdpdr/drive_enum.h` + `src/rdpdr/drive_enum_win32.cpp`（`if(WIN32)`），纯过滤函数跨平台可测；`main.cpp` 只调 `EnumerateLocalDrives()`。理由：满足"枚举过滤可单测"验收、与 `rtsc_usb_win32` 先例一致（CMakeLists:244-248）。
+
+### 枚举设计
+`GetLogicalDrives()` 位掩码 + `GetDriveTypeW` 过滤 + 空格校验；`Device{dos_name="C:", local_root="C:\\"}`，按盘符升序 `device_id=1..n`（0 不用）。
+默认仅 `DRIVE_FIXED`（排除 REMOTE=双重跳/环路、CDROM=媒体未就绪阻塞、REMOVABLE=拔出即失败+隐私）。
+配置：env `RTSC_REDIRECT_DRIVES`（`"C,E"` 白名单或 `"ALL"`，空=默认固定盘），与 `RTSC_DUMP_SURFACE` 同风格（main.cpp:768）。
+
+### 接线（main.cpp:390-391 替换）
+include `rdpdr_client.h`/`file_system.h`/`drive_enum.h`；`std::unique_ptr<HostFileSystem>` 长于 render loop；`devices=EnumerateLocalDrives(getenv(...))`；`send_rdpdr = [&](msg){ send_channel(kChannelRdpdr, msg); }`（与 cliprdr 同构，main.cpp:380-382）；`RdpdrClient rdpdr(fs.get(), move(devices), "RTSC", send_rdpdr)`；`RegisterChannel(kChannelRdpdr, [&](d,s){ ++vc_rdpdr; rdpdr.OnChannelData(d,s); })`。
+**对象序红线**：`rdpdr` 必须先于 `RegisterChannel` 声明（lambda 捕获 `&rdpdr`）。
+CMake：`rtsc_gui += rtsc_rdpdr`；`rtsc_rdpdr` 源加 `drive_enum_win32.cpp`；测试加 `test_drive_enum.cpp`。
+
+### 批内缺陷修复
+- **F3**：`OnDeviceIoRequest` 入口 `phase_ != kReady` → `SendIoCompletion(kStatusUnsuccessful)`（约 3 行 + 1 测试）。
+- **F2**：`file_system.cpp` 的 `file_size()`(:77) 与 `last_write_time()`(:79) 改 `error_code` 重载或 try/catch；悬空 symlink 跳过不崩（约 5 行 + 悬空链接红用例）。
+- **F5**：`OnRead`/`OnQueryDirectory` 查 `open_files_`，未知 `file_id` → `kStatusInvalidHandle`（现有 test_rdpdr_client.cpp:679 用未建句柄 0x100 需改为先建句柄，红→绿）。
+- **F6**：`OnWrite` 加 `kMaxWriteLength = 1 MiB` 对称上限 → 超限 `kStatusInvalidParameter`。
+
+### 批外（P 项，本批不碰）
+D2 服务器 ANNOUNCE_RSP（独立小批 15-30 行）；服务器 I/O 引擎（350-600 行，须异步 completion 表，因 server.cpp:1452 内联喂数同步等待必死锁）；F1 重组上限 16MiB（对齐 drdynvc.h:106）；D3 DeviceReply 门控；F7 Remove；D4 拔盘通知；磁盘满映射。F8 junction TOCTOU 记录不修。
+
+### 验收
+C0：`cmake --build build --target rtsc_gui rtsc_rdpdr_tests rtsc_rdpdr_server_tests rtsc_server_rdpdr_e2e_tests --config Release` 零错零警（/W4 /WX）。
+ctest：rdpdr + rdpdr_server + server_rdpdr_e2e 全绿 + 新增用例全绿。
+变异反证：移除 lambda 内 `rdpdr.OnChannelData` 只留 `++vc_rdpdr` → e2e 握手永不就绪 → 测试失败。
+真机（人工，W5 标注）：`rtsc_gui 192.168.1.7` → 服务器资源管理器 `\\tsclient\C` 可见可读写，`device_reply_count == 盘数`。
