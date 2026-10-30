@@ -1,0 +1,18 @@
+[PASS] RDGSP builder refuses CRLF in connection_id
+[PASS] RDGSP builder refuses CRLF in gateway_host
+[PASS] CONNECT builder refuses CRLF in target
+[PASS] clean IN request builds
+[PASS] clean IN uses RDG_IN_DATA
+[PASS] clean IN streams chunked
+[PASS] clean IN has no Content-Length
+  [INFO] frame bytes=9
+[PASS] ws frame is non-empty
+[PASS] ws FIN+opcode=2 (binary)
+[PASS] ws MASK bit set
+[PASS] ws length=3 in 7-bit field
+[PASS] ws mask key bytes are 44 33 22 11
+[PASS] ws payload is masked with the key
+[PASS] ws decoder accepts external unmasked frame
+[PASS] ws decoded payload = xyz
+
+SUMMARY failures=0
