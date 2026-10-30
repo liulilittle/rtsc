@@ -754,3 +754,15 @@
   - 自写探针 `evidence/gateway-stage2-verify.cpp`：**16/16 PASS**（commit 0f8ad36）—— builder 拒 CRLF×3、clean IN = RDG_IN_DATA+chunked+无CL、RFC6455 FIN/opcode/MASK/长度/mask key 线上字节 44 33 22 11/payload 掩码、解码器接受外部未掩码帧
   - **主代理首版探针的 mask 期望写错**（误以为小端），实为 RFC 大端 → 实现正确，已修正探针
 - 乙复核 7 项 + 重点（pinned SPKI 正确性 / ChunkedEncodeChunk 无界 / UNVERIFIED 合理性 / 独立变异 2 项 / rtsc_connect 仍 kInsecure 是否同批修）。
+
+## 第760轮：P0 裁定入档 + 派 F1 修复
+- **乙的 P0 全部经主代理独立核实**（`docs/spec/tls-schannel-p0-verification.md`，7dd6e34）：
+  - `tls_schannel.cpp:143-155` 三策略全 MANUAL；`:148-149` 注释说明该写法会使 kStrict≡kInsecure，**代码与注释自相矛盾**
+  - `:663-677` 握手完成只查 STREAM_SIZES；`:437-473` 有 PeerSubjectPublicKeyInfo 但从不与 pinned_spki_sha256 比较
+  - `tls_factory.cpp:36-42` **Windows 唯一后端 = SChannel** → 本机全部 TLS 零校验（含 CredSSP step5 明文密码面）
+  - 对照 `tls_openssl.cpp:118-126`（kTofu 与 kStrict 都 VERIFY_PEER，仅 kStrict 加 set1_host）、`:427-445`（真 memcmp）
+  - `test_tls.cpp:246-251` 全部用例用 InsecureConfig → **零 kStrict/kTofu 覆盖**（缺陷长期未被发现的原因）
+- **裁定：阶段 2 不予盖章**。D-A3 在 Windows 上"改了默认值未改行为"，验收第 7 条仅字面满足。
+- F1 执行已派 `ses_e70fdf498ffeYs1dPwL4nS6qr3`：kStrict/kTofu 改 DEFERRED + 链/主机名/SAN 通配校验 + pin memcmp；4 个新用例（kStrict 拒自签 / pin mismatch / pin match / kInsecure 回归）；2 项变异红证；server 角色需先判 role 避免误伤。
+- F2（rtsc_connect）与 F3（写线程 deadline）按乙建议排序，F1 双章后执行。
+- **教训（同型家族第 5 例）**：改了默认值 ≠ 改了行为；默认值变更必须配套"该策略确实会拒绝"的测试。
