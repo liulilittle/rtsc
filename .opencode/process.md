@@ -537,3 +537,7 @@
 ## 第685轮：新执行子测试设计已核
 - test_rdpsnd_server.cpp 12 用例：S1 首帧字节 / S2 收 formats+ALIVE / S3 training 门 / S4 cBlockNo 回绕 / S5 窗口满丢新 / S6 train-confirm 超时 CLOSE / S7 ALIVE=0 静默 / S8 畸形忽略 / S9 formats 超时 CLOSE / S10 计数 / version7 不发 Wave2 / version5 跳过 QualityMode。FakeSource 可脚本化。
 - rdpsnd_server.cpp、sine_source.cpp 仍占位（红阶段），执行子 busy。
+## 第686轮：rdpsnd_server 实现完成，主代理独立验证
+- sine_source.cpp 59 行（真实 44100/16/2 正弦）、rdpsnd_server.cpp 297 行（六态状态机）。
+- 主代理独立重建并跑：rtsc_rdpsnd_server_tests **12 tests/368 checks 全绿**；rtsc_audio_source_tests **2 tests/24 checks 全绿**；build 0 error/0 warning。
+- 执行子下一步：server 接线 + main.cpp --audio → e2e → D12。
