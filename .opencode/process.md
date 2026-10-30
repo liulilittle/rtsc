@@ -592,3 +592,7 @@
 - 修正执行子遗留的编译断点：.h 的 SendTrainingPduAndWait 声明补 now 参数；tests 中 quality_mode_sent_count 全部移除（S3 线序改 {Formats,Training,Wave2}；version7 断言改 phase==kAwaitQualityMode）。
 - 验证：rtsc_rdpsnd_server_tests **13 tests/377 checks 全绿**（新增 quality_timeout_advances_to_training）；12/12 受影响套件全绿（rdpsnd/rdpsnd_client/rdpsnd_server/audio_source/server/server_multisession/server_cliprdr_e2e/server_rdpdr_e2e/server_rdpsnd_e2e/gui_send/server_security/rdp_standard_security）；build 0 error。
 - 已通知甲乙复审 D-A~D-E。
+## 第700轮：D-E 专属用例补齐（终章条件满足）
+- 新增 tests/test_rdpsnd_server.cpp::rdpsnd_server_invalid_format_silent：三组（空列表/8bit/非广告格式）断言 format_valid()==false + kReady + FakeSource::running()==false + wave2==0 + close_sent==0。
+- rtsc_rdpsnd_server_tests **14 tests/401 checks 全绿**；build 0err/0warn；12/12 受影响套件绿。
+- 已请甲乙终章确认。
