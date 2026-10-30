@@ -476,3 +476,8 @@
 - 包含新增套件：server_rdpdr_e2e、rdpdr_server、cliprdr_server、server_cliprdr_e2e、clipboard。
 - 环境：CPU 37%、无构建进程争用（此前 view/ui bench 超预算均为 il2cpp 争用，非代码回归，本轮消除后全绿）。
 - 至此基线：build 0err/0warn + ctest 56/56。
+## 第670轮：新批次启动 — 服务器侧 rdpsnd（音频）
+- 现状取证：src/server/server.cpp:1002-1009 只识别 cliprdr/rdpdr 通道名；无 rdpsnd_server.cpp/rdpsnd_server.h；客户端侧 rdpsnd_client + audio_win32(waveOut sink) + audio_sink.h 完整。
+- 缺口：服务器模式无法把本机声音送到客户端（目标 G/C 项 RDPSND 音频）。
+- 本轮动作：W11 派双审计（甲 ses_e7577b947ffe0u079GJhkmmY3y / 乙 ses_e7577858cffeF4E1KTM6NePgY0），独立产出方案+缺陷清单，已双向互告 ID。
+- 审计要求：协议字段契约（对照客户端解析）、音频源路线对比（WASAPI loopback vs 注入式 AudioSource）、失败路径优先、多会话并发、接线点、测试策略（B1 模拟边界）。
