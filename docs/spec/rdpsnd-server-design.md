@@ -101,3 +101,14 @@ D1 名表缺 rdpsnd；D2 ActiveLoop 无分支；D3 无 rdpsnd_server + CMake 未
 4. Submit 既有 `!have_format_` 分支自动重新置 reopen_。
 5. worker 仅 stopping_ 时 return → 析构 joinable 恒真并 join；thread_ 只赋一次 → 无 terminate/detach/UAF。
 6. 可测性：本批编译+现有套件+审查；真机路径未验证（标注）。
+
+## 10. D12 定稿字段名（甲乙最终，取代 §9 中的等价表述）
+
+- `std::optional<std::chrono::steady_clock::time_point> next_retry_;` + `kDeviceRetryInterval = 1000ms`（mu_ 保护）。
+- reopen 分支入口采样一次 now：`if (next_retry_ && now < *next_retry_) { queue_.clear(); have_format_=false; reopen_=false; continue; }`
+- 否则持 device_mu_ 执行 CloseDeviceLocked + OpenDeviceLocked：
+  - 失败 → `queue_.clear(); have_format_=false; next_retry_ = now + kDeviceRetryInterval; reopen_=false; continue;`
+  - 成功 → `next_retry_.reset(); reopen_=false;`
+- 无 detach；`started_` 不需复位；thread_ 仅 Submit 首启赋一次。
+- 乙实证红探针：joinable 态 std::thread 重赋 → std::terminate（EXITCODE=-1073740791），证明必须避免该路径。
+- 可测性：编译+冒烟+审查；mock waveOut 纯单测留二期（W5 未验证项）。
