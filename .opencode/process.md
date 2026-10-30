@@ -634,3 +634,7 @@
 ## 第710轮：步骤3 GUI 接线完成
 - main.cpp:398 host_fs unique_ptr、:409 EnumerateLocalDrives(spec)、:415 send_rdpdr、:418 RdpdrClient（先于 RegisterChannel）、:420 RegisterChannel 内 ++vc_rdpdr + OnChannelData。
 - _dupenv_s 适配 /WX C4996；CMake rtsc_gui 链 rtsc_rdpdr；build 0err/0warn。
+## 第711轮：步骤4 e2e 完成 + 主代理独立验证
+- test_server_rdpdr_e2e.cpp InitPair 加可选 fs+devices 形参（存量调用不变）；新用例 handler_pair_announces_one_device + loopback_with_device_ready。
+- rtsc_server_rdpdr_e2e_tests **6 tests/137 checks 全绿**；rtsc_gui 构建 0err/0warn；主代理独立重建复跑确认。
+- 执行 AI 进入变异红证（①②③）。
