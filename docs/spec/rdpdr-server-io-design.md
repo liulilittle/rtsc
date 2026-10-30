@@ -49,3 +49,23 @@ rdpdr 有两个相反方向，此前双审把两者混为一谈：
 - e2e：自研 server（带 share-dir）+ 自研 client（RdpdrClient + HostFileSystem 访问临时目录）→ 客户端能列出并读取服务器共享的文件。
 - 变异：①删路径校验 → 穿越用例红；②删读上限 → 超限用例红；③删设备公告 → e2e 客户端看不到盘。
 - C0：build 0err/0warn；影响面 rdpdr/rdpdr_server/server/server_rdpdr_e2e/server_rdpsnd_e2e 全绿。
+
+## 6. 【重要修正】双审裁定：方向 B 违反规范（2026-10-28）
+
+主代理独立 web 核实确认：
+- [MS-RDPEFS] 2.2.2.9 原文："**The client** announces the list of devices to redirect **on the server**"——**只有客户端→服务器方向**。
+- [MS-RDPEFS] 2.2.1.4：I/O 请求（IOREQUEST）是**服务器→客户端**，IOCOMPLETION 是**客户端→服务器**。
+- 2.2.2.1 Server Device Announce Response 是"server responds to a Client Device List Announce Request"。
+
+→ **本文件 §1-§5 的"方向 B"不是 RDPEFS 规范内的用法**，而是角色反转的私有扩展：我们的服务器扮演协议上的 RDPEFS-client（公告设备、收 IOREQUEST、发 completion），我们的客户端扮演 RDPEFS-server（发 IOREQUEST、收 completion、回 DeviceReply）。
+
+**后果**：
+1. 对 mstsc 开启 B = 服务器发出乱序 DeviceListAnnounce，规范允许 mstsc 直接终止 rdpdr 通道 → 必须 `enable_rdpdr_io` 默认 false 门控 + 文档声明"仅自研闭合对"。
+2. 本批需要**两端都补腿**：服务器腿（公告/分发/IO） + 客户端腿（识别服务器公告、发 IOREQUEST、收 completion）——设计 §3 只列服务器腿是作用域缺口。
+3. 规范内的方向是 A（客户端盘给服务器用），需要异步 completion 表（服务器发 IREQUEST 后不能阻塞等回复）——350-600 行，风险高。
+
+## 7. 待用户裁定（G1）
+
+两条路线的产品价值与成本差异大，必须与用户对齐：
+- **路线 B**（双审推荐 R1）：自研 client⇄server 闭合对可见服务器文件；违反规范、需门控默认关、两端补腿、mstsc 不可用。
+- **路线 A**（规范方向）：mstsc 可把自己的盘共享给我们的服务器；需异步引擎 350-600 行，死锁风险需仔细设计。
