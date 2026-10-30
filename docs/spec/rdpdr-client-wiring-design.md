@@ -42,3 +42,20 @@
 - 新套件/扩展：`rdpdr_client` 加 F1/F2/F3/SUPERSEDE/file_id/写上限用例；GUI 接线用 e2e（自研 server 对打，验证 Device List Announce 到达服务器 + ANNOUNCE_RSP 回包）。
 - 变异红证：F3 删门控→红；F1 删上限→红；F2 还原无 error_code→红。
 - C0：build 0err/0warn；影响面 rdpdr/rdpdr_client/rdpdr_server/gui_send/server 全绿。
+
+## 6. 定案修订（双审收敛，2026-10-28，取代 §4）
+
+主代理核实：**F4 撤回**（`src/channel/rdpdr_client.cpp:410` 的 `create` 已含 `kFileSupersede`，乙误读）；**F2 升级为确定性触发**（目录含悬空 symlink 枚举即抛未捕获 `filesystem_error`，乙 V2 探针实证）；**F5/F6 确认**（`OnRead:448` 失败返 UNSUCCESSFUL 而非 INVALID_HANDLE；`OnQueryDirectory:517` 同；`OnWrite` 无长度上限）。
+
+### 本批范围（收敛后）
+1. **GUI 接线**：`RdpdrClient` + `HostFileSystem` + 驱动器枚举（`GetLogicalDriveStringsW` + `GetDriveTypeW`，默认 DRIVE_FIXED；`--rdpdr=off|local|all`）。
+2. **F2**：`QueryDirectory` 的 `last_write_time` 改 `error_code` 重载；整个枚举循环包 try/catch 或逐条 error_code，悬空 symlink 跳过不崩。
+3. **F3**：`OnDeviceIoRequest` 加 `phase_ != kReady` 门控 → `SendIoCompletion(kStatusUnsuccessful)`。
+4. **F5**：`OnRead`/`OnQueryDirectory` 先校验 `file_id` 存在（用 `file_writable_`/或独立 handle 集合）→ 不存在返 `kStatusInvalidHandle`。
+5. **F6**：`OnWrite` 加 `kMaxWriteLength = 1 MiB`（对称 `kMaxReadLength`），超限 `kStatusInvalidParameter`。
+
+### 批外（单列）
+- **F1**：`ChannelReassembler` 消息上限 16 MiB（P 项，对齐 drdynvc 口径）。
+- **F7**（可选）、**F8**（残余 TOCTOU，记录）。
+- **服务器 ANNOUNCE_RSP**：独立小批次（约 15 行）。
+- **服务器 I/O 引擎**：P 项（350-600 行，须异步防死锁）。
