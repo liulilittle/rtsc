@@ -484,3 +484,6 @@
 ## 第671轮：rdpsnd 服务器证据骨架入库 4876542
 - 建 docs/spec/rdpsnd-server-design.md：客户端契约表（13 项，全部路径:行证据）+ proto 层缺口（BuildServerFormatsBody / SndWave2::write 缺失）+ 服务器状态机 + 待裁决 5 项。
 - 甲仍在审计（busy），乙待命中。
+## 第672轮：rdpsnd 双审分歧裁定取证 69918d9
+- 独立核实三点：①客户端 OnWave2 无 phase 门（rdpsnd_client.cpp:159-166）→ Training 顺序非客户端硬门，但规范保真需遵守；②D12 wedge 成立（audio_win32.cpp:110 return 后 started_ 仍 true）；③proto 缺 Wave2 write/server formats builder。
+- 已 relay 甲乙要求按此收敛。
