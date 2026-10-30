@@ -700,3 +700,10 @@
 - K1（Poll 两遍式+析构）/K3（Read 20B Padding，五 API 帧长核对）/K2（联合匹配）全部 PASS。
 - 甲独立变异复现（恢复旧 remove_if → R9 异常中止）；ctest 5/5 PASS；C0 5 目标 0err/0warn。
 - 等乙章后提交。
+## 第725轮：rdpdr 路线A 入库 3290402（双章）+ 全量 61/61
+- 双章放行（甲乙独立复验 K1/K3/K2，各自独立变异红证）。
+- 提交 feat(rdpdr): server-side async IRP engine (route A, spec direction)；工作树干净。
+- 验证：build 全量 0err/0warn；ctest 61/61 全绿。
+- 全部子代理 delete 解散。
+- 服务器模式 rdpdr：路线 A 异步引擎完成（服务器可发 IRP 访问客户端共享盘）；客户端 S2/S4/S6 加固。
+- 非阻塞后续：teardown 回调重入 phase_=kIdle 一行加固；未知 completion 计数不撕通道（有意）。
