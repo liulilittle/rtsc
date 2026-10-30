@@ -667,3 +667,8 @@
 - 执行报告：F1（channel.h 常量 + Feed 双守卫 + 3 用例）、D2（device_reply_count + 每设备回复 + 2 用例）；变异①②实跑红后恢复；11 套件全绿；C0 0err/0warn。
 - 清理 build/Release/crashes 历史 minidump（约 10MB，含 10-24/10-27/10-28 历史红证残留）。
 - 甲乙复核在途。
+## 第718轮：F1+D2 入库 df7236d（双章）+ 子代理全解散
+- F1 重组上限 16MiB（channel 10/71）、D2 服务器 Device Reply（rdpdr_server 9/114）；变异双红证；13 套件绿；C0 build 0err/0warn。
+- 双审非阻塞记录：O1 clipboard 通用格式 >16MiB 被拒（既定权衡）；O2 未来服务器 I/O 需 result_code 语义；O3 cap-1 边界未显式测（守卫严格 > 隐式安全）。
+- ctest 全量：view bench 偶发超预算（0.4x 4K 32.43ms vs 35ms，单跑绿）——环境时序抖动，非回归。
+- 全部子代理 delete 解散。
