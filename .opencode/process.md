@@ -517,3 +517,7 @@
 - 新增：include/rtsc/audio/audio_source.h、include/rtsc/channel/rdpsnd_server.h、src/audio/sine_source.cpp、src/channel/rdpsnd_server.cpp、tests/test_audio_source.cpp；CMakeLists 已改。
 - 乙撤回 D5（proto 缺口已补，转为"执行新增待复核"）。
 - 剩余：server.cpp 接线、server.h enable_rdpsnd、test_rdpsnd_server.cpp、test_server_rdpsnd_e2e.cpp、main.cpp --audio、D12。
+## 第680轮：执行 AI 中途态核查
+- 工作树 9 文件；rdpsnd_server.cpp 仍 12 行占位，test_audio_source.cpp 77 行、sine_source.cpp 21 行。
+- CMakeLists 已引用 rtsc_rdpsnd_server_tests 但源文件未创建 → configure 失败（中途态，非缺陷；执行 AI 仍在写）。
+- 已与定案对齐项：AudioCaptureSource 接口（Start/Stop/Poll/format/ok）、每会话源工厂 seam、正弦源 44100/16/2 20ms 块。
