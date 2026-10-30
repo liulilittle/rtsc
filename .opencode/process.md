@@ -788,3 +788,18 @@
 **遗留 P2（架构级，后续）**：AddDevice 异步反馈缺失 —— 服务器拒绝设备级 DVC create/ADD_DEVICE 时本地计数不回滚，隐私文案可能虚高（fails-closed，无授权后果；需 create 失败回调）。
 **遗留 P3**：复合设备（WinUsb_GetAssociatedInterface）、kIoControl/kInternalIoControl、控制类 URB 合成 setup packet、热插拔 RemoveDevice、同步 WinUSB 阻塞消息泵、Isoch、hresult 精确映射、NoAck 抑制。
 **W5 未验证**：真机 Windows RDS + USB 实体设备双向 I/O。
+
+## 第741轮：Gateway 批次启动（证据先行）
+- USB 批次已完结（290d557 + b3a4ef4，C0 62/62，子代理全解散）。
+- 按纪律前置门（"没有证据文档的批次不得进入实现"），先做 mstscax.dll 逆向取证：
+  - REA `open_binary C:\Windows\System32\mstscax.dll`（sha256 d73c76d65721...）
+  - `search_strings` 采集 RDGSP 证据（19 条 evidence records 已导出 snapshot）
+  - 落 `docs/spec/gateway-evidence.md`（1adf59a）
+- **关键发现（出厂证据，非规范推断）**：
+  1. 出厂是**双通道**（RDG_IN_DATA `0x1806ce858` / RDG_OUT_DATA `0x1806ce708`，独立状态机 `in channel state(%d), out channel state(%d)` `0x1806cea80`）→ 我方单条 CONNECT（`gateway_transport.cpp:197`）模型不同。
+  2. 头部比规范多：RDG-Diagnostics-Info / Client-AppBuild / Client-Generation / ChannelBind-Info / Auth-Scheme / Load Balancer Cookie / transfer-encoding: chunked / Connection: remotappRetryMode。
+  3. 头部方向性：user-id/correlation-id/Client-Generation/LB cookie 仅 OUT（错误文本只提 OUT channel）。
+  4. IN 通道专用重试 `RDG-INCHANNEL-RETRYMODE`（`0x1806d0f60`，带 `%dth retry`）。
+  5. 错误区分 proxy denied(`0x1806cf630`) / server denied(`0x1806cf4b0`) / switch protocols(`0x1806cf530`)。
+  6. 隧道认证状态机 Initializing→Authenticating→Authorizing（`0x1807939a8`…）；UDP 有独立认证（`0x1807940b0`…）。
+- 双审计已派（甲：证据补全+架构路线对比+接线点；乙：现有代码规范审计+安全+UDP 正确性+测试盲区），双向互告 ID。
