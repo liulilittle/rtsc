@@ -700,52 +700,25 @@
 - K1（Poll 两遍式+析构）/K3（Read 20B Padding，五 API 帧长核对）/K2（联合匹配）全部 PASS。
 - 甲独立变异复现（恢复旧 remove_if → R9 异常中止）；ctest 5/5 PASS；C0 5 目标 0err/0warn。
 - 等乙章后提交。
-## 第725-729轮（USB 重定向批次，归档摘要）
-- 725: rdpdr 路线A 入库 3290402（双章）；全量 61/61；子代理全解散。
-- 726: 功能盘点 df6477b —— 剪贴板/音频/驱动器/多显示器/RAIL 已就位；USB 完全未接线；Gateway 是 HTTP CONNECT 非 RDGSP。派双审（甲 ses_e72e0868 / 乙 ses_e72e0840）。
-- 727: 双章确认六项缺陷仍存在；乙 4 探针红证；定案 41f0c84（P0x3 + P1x7 + 路线 A）；派执行 ses_e72be683。
-- 728: 执行交付 9 文件 +964/-86，P0/P1 全项 + GUI 接线 + RTSC_REDIRECT_USB 门控；报称 build 0err/0warn、各套件绿；双审进第5步。
-- 729: 第5步验证抓到 2 FAIL：**FAIL-1** `drdynvc_client.cpp:74-90` CREATE_RSP 按不存在的 ChannelName 定界（[MS-RDPEDYC] 2.2.2.2 web 核验无 name；捆绑丢包，单测用错误布局假绿）；**FAIL-2** `usb_win32.cpp:235-236` Control OUT 只零初始化、`input` 未拷入 -> 发全零（对照 `:279` Bulk OUT 正确）。另有 P2：CAPS 定界按版本、env 门控 channel_names。修复批次已派。
+## 【历史归档】USB 批次 + Gateway 阶段1 + 阶段2定案（第725-761轮）
 
-## 第730-747轮（USB 收尾 + Gateway 阶段1，归档摘要）
-- 730-739 USB 批次收尾：FAIL-3 隐私文案与守卫固化缺陷修复；`7e5f13b`（接线+P0/P1）、`290d557`（门控助手+诚实隐私告示+RAII）；C0 ctest 62/62；子代理全解散。
-- 740-747 Gateway RDGSP 阶段1：
-  - 前置门：mstscax.dll（sha256 d73c76d6…）REA 取证 → `docs/spec/gateway-evidence.md`（1adf59a）。
-  - 定案 `docs/spec/gateway-rdgsp-design.md`（24b69da）：14 缺陷 D1-D14 + 路线 A `RdgspTransport`。
-  - 行为级红证：`evidence/gateway-probe-rerun.txt`（8/9 FAIL）、`gateway-probe-defects.txt`（6 项：0x 截断/前导空格/尾随垃圾/裸 LF/CRLF 注入×2）。
-  - 双审分歧：定案层面后得出 `docs/spec/gateway-header-direction-ruling.md`（c1f2408）—— 按 `FUN_1801c3818` 支配关系逐头定性：correlation/diagnostics/connection-id 双通道；**user-id 仅 IN + base64**；app-build/generation/LB cookie 仅 OUT；retry-mode/chunked 仅 IN。旧“按报错文本推方向”作废。
-  - 审计驳回 5 项：F1 头值 CRLF 注入、F2 chunked 文法宽松、F3 证据过期、F4 D8 合同漂移、F5 交付未冻结。
-  - 主代理已改：D8 改为入队即 ACK（add8a96）；验收新增第 7/8 条；evidence §2 加作废标注。
-- 待执行：F1/F2 代码修复 + 三个证据文件按 ruling 重生成 + 冻结声明（附 SHA）。
+### USB 重定向（725-740，入库 7e5f13b / 290d557）
+- 从完全未接线 → drdynvc + DrdynvcClient + RdpUsbClient + WinUSB 后端全链路；opt-in 门控 `RTSC_REDIRECT_USB`。
+- 修复 12 项缺陷：OUT 载荷三层丢失（客户端传递/Control 后端零填/Bulk 正确）、接口号 kProxy 改写、未知设备不补全、IN 超发、CREATE_RSP 绑定定界、CAPS 版本定界、Open 失败仍宣布幻影设备、空串 env、early-exit 泄漏、隐私文案虚报、守卫测试固化缺陷方向。
+- C0 ctest 62/62。遗留：P2 AddDevice 异步反馈、P3 完整性清单、W5 真机。
 
-## 第748-756轮（Gateway 阶段1 收尾 + 阶段2 定案，归档摘要）
-- 748-751 阶段1 双审终验：执行 AI 交付并冻结（8 SHA 主代理逐字核对 + 4 秒稳定）；三探针全绿；甲乙各 9 项全 PASS；3 项注记（空 method / 陈旧注释 / method 缺注入用例）修完并重庆冻结（72 tests/333 checks）。
-- 752 入库 `5a361e0`（阶段1 协议层）；**C0 ctest 62/62**；5 个子代理全解散。
-- 753-755 阶段2（双连接 RdgspTransport）：
-  - 取证入库 `gateway-stage2-evidence.md`（a18219c）：IN 方法硬编码 `RDG_IN_DATA`（FUN_1801bc14c）；OUT 方法由 `+0x1440` 选 GET/RDG_OUT_DATA/POST（FUN_1801bc3c4）；URL `%s://%s:%hu%s`（FUN_1801bd574）；**101 只对 OUT**（FUN_1801bfd60:158-170）。
-  - **乙质疑单连接模型 → 主代理反汇编裁定：乙正确**（f1a75bf §10）：IN/OUT 各自 `CreateConnection`，端口字段不同（`+0x6a6` / `+0x6a4`），两套槽，HTTP/1.1 不允许 pipeline → **双连接**。原“单连接多路复用 P1”不存在。
-  - 定案 `gateway-stage2-design.md`（e1f2d79）：路线 **A'（单 Transport 外观 + 内部双连接）**、握手 H0-H8、NTLM 三腿复用 ntlm.h（禁复用 CredsspClient）、`mode=kChunked/kUpgraded` + `upgrade_steals_write`、TLS 双层默认严格。
-  - 主代理独立复核甲取证：`FUN_1801c235c:60-70`（`+0xd40` 计数 / `+0xd3c` 上限字段无立即数）、`:165` `Claims:` 特判、`FUN_1801c6b44` 超时表 120/60/30/90/30s、UA `MS-RDGateway/1.0`。
-  - 缺陷定性最终：**A1（空请求静默）+A3（TLS kInsecure, P0）** 为实证缺陷；A4 并入 A1；**A2 被双连接证据推翻→排除**；A5/A6 降级为注意项；A7/A8 标 UNVERIFIED。
-  - 604b5c1：缺陷探针红证入库（主代理独立复现 2/2 FAIL）。
-- 待：执行 AI（ses_e715ef62）交付 A/B/C/D/E/F → 双审复核 → 双章 → C0 → 提交。
+### Gateway 阶段1（741-752，入库 5a361e0）
+- 出厂取证 `gateway-evidence.md`（1adf59a）；定案 `gateway-rdgsp-design.md`（24b69da）。
+- 双审分歧裁定 `gateway-header-direction-ruling.md`（c1f2408，FUN_1801c3818 支配关系）：correlation/connection-id/diagnostics 双通道；**user-id 仅 IN + base64**；app-build/generation/LB cookie 仅 OUT。
+- 交付：头部修正、chunked 严格化（`0x10` 曾被当终止块静默截断）、状态映射、多挑战、UDP 入队即 ACK（消费后 ACK 会双写死锁）、CRLF 注入防护。
+- C0 ctest 62/62；gateway 72 tests/333 checks。
 
-## 第757-761轮（阶段2 交付验证 + P0，归档摘要）
-- 757-759 阶段2 交付（12 文件 +2949/-47：RdgspTransport 双连接、RFC6455、空请求拒绝、IN 101 硬错、重试上限、--gateway 接线）。
-  - 主代理独立核实：SHA 稳定、BUILD_RC=0、**9/9 套件 Passed**、自写探针 **16/16 PASS**（`evidence/gateway-stage2-verify.txt`，0f8ad36）。
-  - 主代理探针首版把 WS mask 期望写成小端；实现按 RFC 大端写 key（`gateway.cpp:803-806`）——**实现对，探针错**，已修正。
-  - 乙复核 7 项全 PASS，但发现 **P0**。
-- 760 **P0：SChannel 零证书校验**。`tls_schannel.cpp:143-155` 三策略全 `ISC_REQ_MANUAL_CRED_VALIDATION`；
-  `:148-149` 注释明说 MANUAL 会使 kStrict≡kInsecure，代码却仍写 MANUAL；`:663-677` 握手完成只查 STREAM_SIZES；
-  `:437-473` 有 PeerSubjectPublicKeyInfo 但从不与 pinned_spki_sha256 比较；`tls_factory.cpp:36-42` **Windows 唯一后端 = SChannel**。
-  影响：本机全部 TLS（含 CredSSP step5 明文密码面）无校验。记录 `docs/spec/tls-schannel-p0-verification.md`（7dd6e34）。
-  **裁定：阶段2 不予签章**（D-A3 只改了默认值未改行为）。
-- 761 主代理审查新代码 `TlsByteTransport`，抓到 **2 项 P1 数据丢失**：
-  - D-T1 `Write` 忽略 `consumed`（`gateway_transport.cpp:531-545` vs `tls_openssl.cpp:207-220` 部分消费仍返 kOk）
-  - D-T2 `Read` 丢弃超出缓冲的明文（`:502-506/521-524` vs `tls.h:167-175` 软阈值契约）
-  - 探针 **2/2 RED**（`evidence/gateway-tlsadapt-probe.txt`，b6ed7f0）。已 relay 给 F1 执行同批修。
-- P3 记录（`plan.md`，b14b15b）：D-T3 升级路径 WS mask 单次 Write 内复用（RFC 6455 5.3，实际影响小）；D-T4 Sec-WebSocket-Accept 未校验（UNVERIFIED）。
-- 待：F1（SChannel 校验 + TLS 适配丢包，ses_e70fdf49）→ 双审 → F2（rtsc_connect）→ 阶段2 签章提交。
+### 阶段2定案（753-761）
+- 取证 `gateway-stage2-evidence.md`（a18219c）：IN 方法硬编码 RDG_IN_DATA；OUT 方法由 +0x1440 选；**101 只对 OUT**。
+- **乙质疑单连接 → 反汇编裁定为双连接**（f1a75bf §10）：IN/OUT 各自 CreateConnection，端口字段 +0x6a6/+0x6a4 分离。
+- 定案 `gateway-stage2-design.md`（e1f2d79）：路线 A'（单 Transport 外观 + 内部双连接）、H0-H8、NTLM 三腿（禁用 CredsspClient）、mode kChunked/kUpgraded。
+- 主代理独立探针：D-A1/A4 2/2 RED（604b5c1）、方向与协议 16/16 PASS（0f8ad36）、**TlsByteTransport 2 项 P1 丢数据 2/2 RED**（b6ed7f0）。
+- P0 入档 `tls-schannel-p0-verification.md`（7dd6e34）：SChannel 三策略全 MANUAL 零校验；§8 纠正父代理两处 API 错误（356da3d）。
 
 ## 第762轮：F1+P1 双章（乙盖章 + 主代理独立验证）+ 追加 kTofu 语义缺口与 F2
 ### F1+P1 已验证通过
