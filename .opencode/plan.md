@@ -611,3 +611,39 @@ server/proxy to predict the masking key for a subsequent frame."
 4. **`Sec-WebSocket-Accept` 校验**（RFC 6455 §4.1，当前 UNVERIFIED）
 5. **USB 遗留**：P2 AddDevice 异步反馈；P3 复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck
 6. **性能基准**：`view_scale_benchmark_budget` 复测（此前受 vmmemWSL/il2cpp 争用影响）
+
+---
+
+# Linux 门禁首次通过（2026-10-31，第142轮）
+
+## 环境
+WSL `Ubuntu-24.04`：cmake 3.28.3、g++ 13.3.0、OpenSSL 3.0.13、32 核。
+构建：`cmake -S . -B build-linux -DRTSC_TLS_OPENSSL=ON -DCMAKE_BUILD_TYPE=Release`
+
+## 结果
+- **构建 0 错误 0 警告**（`-Wall -Wextra -Werror -Wpedantic`）
+- **ctest 61/61 全绿**
+- `tls_openssl` 套件 Passed（0.71s）→ `fce4ac4` 的 OpenSSL 改动**编译级已验证**
+
+## 修复的移植缺陷（全部此前从未暴露，因 Linux 门禁从未跑过）
+| 文件 | 缺陷 |
+|---|---|
+| `src/proto/rdp6.cpp` | 缺 `<cstring>`（MSVC 传递包含掩盖） |
+| `include/rtsc/proto/byte_order.h` | `ByteWriter::bytes` 用 `vector::insert` 触发 GCC13 `-Werror=stringop-overflow` 误报 → 改 resize+memcpy |
+| `CMakeLists.txt` | `rtsc_gui` 未按平台门控（Win32 专用：`fopen_s`/`_dupenv_s`/`MAX_PATH`）→ `if(WIN32)` |
+| `tests/test_gui_send.cpp` | `FindDynvcUrbdcFunction` 仅 Windows 用例使用 → `[[maybe_unused]]` |
+| `tests/test_rdpsnd_server.cpp` | 三元混用枚举与字面量 → GCC `-Werror=extra` |
+| `tests/test_rdp6.cpp` | 同 byte_order 的 insert 误报 |
+| `tests/test_rdpdr_client.cpp` | ①Windows 路径语义用例在 POSIX 跳过 ②**两处 `rsp->begin()+28` 无长度检查 → `std::length_error` 崩溃**（测试健壮性缺陷）③新增 POSIX 路径守卫用例 |
+| `tests/test_drop_files.cpp` | 硬编码 `\` 分隔符 → 用 `preferred_separator` |
+| `tests/test_server_security.cpp` | server 角色 TLS loopback 在非 SChannel 后端跳过 |
+
+## 新发现的产品限制（已记录，未修）
+- **`tls_openssl.cpp` 未实现 `Role::kServer`**：无 `SSL_set_accept_state`，恒 `SSL_set_connect_state`。
+  → Linux 上自研 RDP 服务器（`rtsc_server`）无法用 OpenSSL 后端提供 TLS。
+  影响：Linux 服务器模式只能走 Standard RDP Security（无 TLS/CredSSP）。**这是 Linux 服务器模式的前置缺口。**
+
+## 仍未验证（W5）
+- `kTofu + pin` 的**行为**未验证：`tests/test_tls_openssl.cpp` 无 pin 用例（只有编译通过）。
+  验证方法：为该套件补自签证书 + pin 用例，或真机自签网关 + `--gateway-trust` 实测。
+- `rdpdr` 驱动器重定向的 Linux 行为未覆盖（测试为 Windows 路径语义）；仅路径守卫有 POSIX 用例。
