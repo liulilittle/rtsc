@@ -582,3 +582,32 @@ server/proxy to predict the masking key for a subsequent frame."
 `schannel_*` 对应用例（需为 OpenSSL 后端补同名用例）或手工用自签网关 + `--gateway-trust` 复测。
 
 **状态**：待丙终审完成后应用（避免工作树在审计期间变动）。P2，不阻塞 Windows 主路径签章。
+
+**状态更新（2026-10-31，第767轮）：已修复并入库 `fce4ac4`**
+- `src/net/tls_openssl.cpp:122-136` 现为 `kTofu: SSL_CTX_set_verify(ctx_, config_.pin_is_set ? SSL_VERIFY_NONE : SSL_VERIFY_PEER, nullptr)`
+- `include/rtsc/net/tls.h:93-100` 补跨后端一致语义注释
+- **仍未验证**（本机 Windows 不编译该 TU）：需 Linux 下 `-DRTSC_TLS_OPENSSL=ON` 构建 + 自签网关 `--gateway-trust` 实测。
+
+---
+
+# 阶段 2 完成总结（2026-10-31）
+
+## 已入库
+| 提交 | 内容 |
+|---|---|
+| `5a361e0` | Gateway RDGSP 阶段 1（协议层：头部/chunked/状态映射/多挑战/UDP） |
+| `fce4ac4` | TLS 证书策略真正生效（SChannel DEFERRED + 链/主机名/pin；OpenSSL kTofu+pin 对齐；rtsc_connect/bench 默认 kStrict） |
+| `ae3f08a` | Gateway RDGSP 阶段 2（双连接 RdgspTransport + RFC6455 + TlsByteTransport 修复 + GUI 接线） |
+
+## 验收
+- C0 全量 `ctest` **62/62**；build 0err/0warn（/W4 /WX）
+- gateway 112 tests/1139 checks；tls 42/193；server 27/239；security 19/145；client 14/63；credssp 23/69 —— 全 0 fail
+- 双审：乙盖章 + 丙 13 项终审"可签章"，各自独立复现变异红证
+
+## 剩余待办（按优先级）
+1. **Linux 门禁**：`-DRTSC_TLS_OPENSSL=ON` 构建 + OpenSSL 后端测试（覆盖 `fce4ac4` 的 UNVERIFIED 部分）
+2. **真机验证**（W5）：真 RD Gateway 的 200 vs 101 互通；USB 实体设备双向 I/O；驱动器；音频
+3. **主机名硬化（P3）**：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
+4. **`Sec-WebSocket-Accept` 校验**（RFC 6455 §4.1，当前 UNVERIFIED）
+5. **USB 遗留**：P2 AddDevice 异步反馈；P3 复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck
+6. **性能基准**：`view_scale_benchmark_budget` 复测（此前受 vmmemWSL/il2cpp 争用影响）
