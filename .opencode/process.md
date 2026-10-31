@@ -239,3 +239,32 @@ accept   = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 ### 后续核验点
 执行 AI 交付后，必须确认它实现的 `ComputeWebSocketAccept` 对同一输入产出**同一字节串**，
 且该断言写进了测试（否则测试可能只是"实现自证"）。
+
+## 第786轮：主机名硬化 + WebSocket Accept 入库 `407d03e`，子代理全解散
+### 双章（甲 ses_e6f64e81 + 乙 ses_e6f64d71，各自独立复验）
+- 甲认错：把 `X509_check_host` 的 0 读成 1
+- 乙认错并给根因：用了**多 SAN 证书**（`DNS:example.com,DNS:*.example.com`），字面 SAN 先命中
+- **主代理独立验证乙的根因**（`evidence/openssl-multi-san-rootcause.txt`）：
+  ```
+  multi-SAN      host=example.com   => 1   ← 字面 SAN 命中（不是通配）
+  wildcard-only  host=example.com   => 0   ← 纯通配拒绝裸域
+  ```
+  根因解释完全成立。
+- 两审六项复核全 PASS：ccSLD 447 条 + 编译期排序守卫 + 大小写归一 + 误伤验证
+  （`*.foo.co.uk` / `*.uk.com` 通过）+ Connection token 多行逗号语义 + key 401 刷新 +
+  变异 M1/M2 红证 + 双平台 -R 全绿。
+- 主代理另行纠正甲的"Windows ctest 注册为空"误报（实测 **62 tests**）。
+
+### 本批修复
+- 主机名：尾点归一 + 结构拒 `*.com` + ccSLD 表拒 `*.co.uk`（纯规则法不可能区分
+  `*.co.uk` 与 `*.example.com`，甲证明）
+- WebSocket：key 生命周期打通 + `ComputeWebSocketAccept`（RFC 官方样例锁定）+
+  101 三条件校验（accept/upgrade/connection token）+ 失败硬错 + 401 刷新 key +
+  重复 Connection 头收敛
+- 两后端验证名统一（`peer_host ?: sni`）；两处单侧差异（ccSLD、尾点）双端注释
+
+### 验证
+- 主机名探针 **9/9 PASS**（原 4 FAIL 全转绿）
+- Windows：build 0 err/0 warn；`ctest -R` **6/6**
+- Linux：build 0 err（-Werror）；`ctest -R` **5/5**
+- 3 个子代理全部 delete 解散
