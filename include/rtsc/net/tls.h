@@ -131,6 +131,13 @@ struct Config {
     uint16_t max_version = 0x0304;  // TLS1.3
 
     size_t max_chunk = 0;  // 0 = backend max_plaintext; otherwise the smaller wins
+
+    // Server-role identity (used by backends that can present a certificate).
+    // Both empty = the backend's ephemeral default (OpenSSL A2: a process-level
+    // self-signed certificate, cached as raw DER bytes). When both are
+    // non-empty they replace it; an encrypted private key is rejected at Start.
+    std::string server_certificate_pem;  // PEM-encoded leaf certificate
+    std::string server_private_key_pem;  // PEM-encoded private key (unencrypted)
 };
 
 struct NegotiatedInfo {
@@ -180,13 +187,20 @@ class TlsTransport {
                           std::vector<uint8_t>& plaintext, size_t max_out) = 0;
 
     // ---- local (server-role) identity ---------------------------------------
-    // The server's own leaf certificate, used by the CredSSP server for the
-    // pubKeyAuth echo and the NTLM channel binding. These are only valid after
-    // a server-role handshake; a client-role transport returns kUnsupported.
+    // The server's own leaf certificate and SubjectPublicKey (BIT STRING
+    // content). No production caller consumes either today: CredSSP pubKeyAuth
+    // is a binding hash of the PEER's SubjectPublicKey plus the nonce, never a
+    // local-key signature, and the channel-binding hash likewise comes from the
+    // peer certificate. They are kept for future certificate-based identity
+    // use (e.g. a configured server identity reported to management tooling).
+    // Available from the moment a server-role transport is created; a
+    // client-role transport returns kProtocolError ("handshake not complete")
+    // on every call, mirroring the SChannel backend's NotHandshaken.
     virtual Error LocalCertificateDer(std::vector<uint8_t>& out) const = 0;
-    // Local SubjectPublicKey (BIT STRING content), the same 270-byte value
-    // CredSSP hashes into the binding hash. Never slice it from the SPKI at a
-    // fixed offset (the offset differs between key sizes).
+    // Local SubjectPublicKey (BIT STRING content), the same shape PeerSubjectPublicKey
+    // reports for the peer (for an RSA-2048 key that is 270 bytes, starting with
+    // 0x30 0x82). Never slice it from the SPKI at a fixed offset (the offset
+    // differs between key sizes).
     virtual Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const = 0;
 
     // ---- peer public key ----------------------------------------------------

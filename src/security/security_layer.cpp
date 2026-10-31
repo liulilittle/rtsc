@@ -231,15 +231,23 @@ StepResult SecurityLayer::DriveCredssp() {
             err.status != tls::Status::kNeedMoreInput) {
             return Fail("TLS receive failed: " + err.message);
         }
-        // Drain any records the backend still holds.
-        while (tls_->buffered_input() > 0) {
-            const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
-            if (!d.ok() && d.status != tls::Status::kClosed &&
-                d.status != tls::Status::kNeedMoreInput) {
-                return Fail("TLS drain failed: " + d.message);
-            }
-            if (d.status == tls::Status::kNeedMoreInput) break;
+    }
+    // Drain any records the backend still holds. This runs even when
+    // pending_cipher_ is empty: a peer that coalesced its final handshake
+    // flight with an application record puts that record into the backend
+    // inside Handshake, and the stream backends then report the whole buffer as
+    // consumed (consumed == in_size), so the record never reaches
+    // pending_cipher_. Skipping the drain strands it and both ends wait
+    // forever. (tls.h: the caller must keep receiving until buffered_input()
+    // == 0.) The server half is the critical path; this client mirror keeps the
+    // two symmetric.
+    while (tls_->buffered_input() > 0) {
+        const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
+        if (!d.ok() && d.status != tls::Status::kClosed &&
+            d.status != tls::Status::kNeedMoreInput) {
+            return Fail("TLS drain failed: " + d.message);
         }
+        if (d.status == tls::Status::kNeedMoreInput) break;
     }
     plain_buf_.insert(plain_buf_.end(), plaintext.begin(), plaintext.end());
 

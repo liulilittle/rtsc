@@ -15,13 +15,16 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -88,6 +91,97 @@ std::vector<uint8_t> ExtractSpkiBitString(const std::vector<uint8_t>& spki) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// A2: the server's default identity is a process-level ephemeral RSA-2048
+// self-signed certificate (CN=rtsc-rdp-server), mirroring the SChannel backend
+// which mints one with CertCreateSelfSignCertificate per process start. The
+// certificate AND the private key are cached as raw DER only; no X509* /
+// EVP_PKEY* lives past the generation scope, so static destruction order can
+// never touch a freed key. Each Start reparses the DER with d2i_X509 /
+// d2i_AutoPrivateKey and releases the fresh objects right after installing
+// them, which sidesteps CONFIG destructor-order hazards entirely.
+//
+// The STABLE SPKI is the point of A2: for a kTofu + pin client the pin IS the
+// identity, and a per-process stable key means a pin learned from the first
+// connection keeps matching every later one.
+// ---------------------------------------------------------------------------
+
+struct EphemeralIdentity {
+    std::vector<uint8_t> cert_der;
+    std::vector<uint8_t> key_der;
+};
+
+std::once_flag g_ephemeral_once;
+std::mutex g_ephemeral_mutex;
+EphemeralIdentity g_ephemeral;
+
+void BuildEphemeralIdentity(EphemeralIdentity& out) {
+    EVP_PKEY* key = EVP_RSA_gen(2048);
+    X509* cert = X509_new();
+    if (key == nullptr || cert == nullptr) {
+        if (cert) X509_free(cert);
+        if (key) EVP_PKEY_free(key);
+        return;
+    }
+    X509_set_version(cert, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+    X509_gmtime_adj(X509_getm_notBefore(cert), 0);
+    X509_gmtime_adj(X509_getm_notAfter(cert), 10 * 365 * 24 * 3600);
+    X509_set_pubkey(cert, key);
+    X509_NAME* name = X509_get_subject_name(cert);
+    X509_NAME_add_entry_by_txt(
+        name, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("rtsc-rdp-server"), -1, -1, 0);
+    X509_set_issuer_name(cert, name);
+    if (X509_sign(cert, key, EVP_sha256()) == 0) {
+        X509_free(cert);
+        EVP_PKEY_free(key);
+        return;
+    }
+    const int cert_len = i2d_X509(cert, nullptr);
+    if (cert_len > 0) {
+        out.cert_der.resize(static_cast<size_t>(cert_len));
+        unsigned char* p = out.cert_der.data();
+        i2d_X509(cert, &p);
+    }
+    const int key_len = i2d_PrivateKey(key, nullptr);
+    if (key_len > 0) {
+        out.key_der.resize(static_cast<size_t>(key_len));
+        unsigned char* p = out.key_der.data();
+        i2d_PrivateKey(key, &p);
+    }
+    X509_free(cert);
+    EVP_PKEY_free(key);
+}
+
+const EphemeralIdentity& GetEphemeralIdentity() {
+    // The mutex also guards concurrent Start calls while the once-flag's single
+    // generation pass swaps the static buffers in.
+    std::lock_guard<std::mutex> lock(g_ephemeral_mutex);
+    std::call_once(g_ephemeral_once, [] { BuildEphemeralIdentity(g_ephemeral); });
+    return g_ephemeral;
+}
+
+X509* ParsePemCertificate(const std::string& pem) {
+    if (pem.size() > static_cast<size_t>(INT_MAX)) return nullptr;
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (bio == nullptr) return nullptr;
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return cert;
+}
+
+EVP_PKEY* ParsePemPrivateKey(const std::string& pem) {
+    if (pem.size() > static_cast<size_t>(INT_MAX)) return nullptr;
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (bio == nullptr) return nullptr;
+    // A cipher-armed PEM needs a callback; passing nullptr rejects it, which is
+    // what the Config documents ("encrypted keys are rejected at Start").
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return key;
+}
+
 class OpensslTransport final : public TlsTransport {
  public:
     explicit OpensslTransport(const Config& config) : config_(config) {}
@@ -98,7 +192,8 @@ class OpensslTransport final : public TlsTransport {
 
     bool Start(std::string& why) {
         OPENSSL_init_ssl(0, nullptr);
-        ctx_ = SSL_CTX_new(TLS_client_method());
+        const bool server = config_.role == Role::kServer;
+        ctx_ = SSL_CTX_new(server ? TLS_server_method() : TLS_client_method());
         if (ctx_ == nullptr) {
             why = "SSL_CTX_new failed: " + OpensslError();
             return false;
@@ -115,28 +210,30 @@ class OpensslTransport final : public TlsTransport {
             SSL_CTX_set_max_proto_version(ctx_, TLS1_3_VERSION);
         }
 
-        switch (config_.cert_policy) {
-            case CertPolicy::kInsecure:
-                SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
-                break;
-            case CertPolicy::kTofu:
-                // kTofu + pin: the pin IS the identity (SChannel parity); a
-                // chain check here would reject a self-signed gateway before
-                // the pin comparison at PostHandshakeChecks can run. Without a
-                // pin, kTofu keeps verifying the chain (no hostname check).
-                //
-                // UNVERIFIED on Windows hosts: tls_openssl.cpp is not built
-                // here. Verify on Linux with -DRTSC_TLS_OPENSSL=ON by running
-                // the tls_openssl suite, and against a self-signed gateway
-                // using --gateway-trust=<spki>.
-                SSL_CTX_set_verify(ctx_,
-                                   config_.pin_is_set ? SSL_VERIFY_NONE
-                                                      : SSL_VERIFY_PEER,
-                                   nullptr);
-                break;
-            case CertPolicy::kStrict:
-                SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
-                break;
+        if (server) {
+            if (!InstallServerIdentity(why)) return false;
+            // The server never requests a client certificate (RDP does not use
+            // mutual TLS), so the peer half is not validated here.
+            SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
+        } else {
+            switch (config_.cert_policy) {
+                case CertPolicy::kInsecure:
+                    SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
+                    break;
+                case CertPolicy::kTofu:
+                    // kTofu + pin: the pin IS the identity (SChannel parity); a
+                    // chain check here would reject a self-signed gateway before
+                    // the pin comparison at PostHandshakeChecks can run. Without
+                    // a pin, kTofu keeps verifying the chain (no hostname check).
+                    SSL_CTX_set_verify(ctx_,
+                                       config_.pin_is_set ? SSL_VERIFY_NONE
+                                                          : SSL_VERIFY_PEER,
+                                       nullptr);
+                    break;
+                case CertPolicy::kStrict:
+                    SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+                    break;
+            }
         }
 
         ssl_ = SSL_new(ctx_);
@@ -155,15 +252,19 @@ class OpensslTransport final : public TlsTransport {
         SSL_set_bio(ssl_, rbio, wbio);
         rbio_ = SSL_get_rbio(ssl_);
         wbio_ = SSL_get_wbio(ssl_);
-        SSL_set_connect_state(ssl_);
 
-        const std::string sni =
-            config_.sni.empty() ? config_.peer_host : config_.sni;
-        if (config_.send_sni && !sni.empty()) {
-            SSL_set_tlsext_host_name(ssl_, sni.c_str());
-        }
-        if (config_.cert_policy == CertPolicy::kStrict && !sni.empty()) {
-            SSL_set1_host(ssl_, sni.c_str());
+        if (server) {
+            SSL_set_accept_state(ssl_);
+        } else {
+            SSL_set_connect_state(ssl_);
+            const std::string sni =
+                config_.sni.empty() ? config_.peer_host : config_.sni;
+            if (config_.send_sni && !sni.empty()) {
+                SSL_set_tlsext_host_name(ssl_, sni.c_str());
+            }
+            if (config_.cert_policy == CertPolicy::kStrict && !sni.empty()) {
+                SSL_set1_host(ssl_, sni.c_str());
+            }
         }
         return true;
     }
@@ -177,7 +278,6 @@ class OpensslTransport final : public TlsTransport {
         if (closed_) return MakeError(Status::kClosed, 0, "already closed");
         if (handshake_complete_) return MakeError(Status::kOk, 0, "");
 
-        const size_t pending_before = BIO_ctrl_pending(rbio_);
         if (in != nullptr && in_size > 0) {
             if (BIO_write(rbio_, in, static_cast<int>(in_size)) !=
                 static_cast<int>(in_size)) {
@@ -211,11 +311,18 @@ class OpensslTransport final : public TlsTransport {
             }
         }
 
-        const size_t pending_after = BIO_ctrl_pending(rbio_);
-        const size_t left = pending_after > pending_before
-                                ? pending_after - pending_before
-                                : 0;
-        consumed = in_size > left ? in_size - left : 0;
+        // D1: the whole input is owned by OpenSSL once BIO_write staged it in
+        // rbio_. SSL_do_handshake consumes a TLS record byte-for-byte or leaves
+        // the entire record to the record layer; it never reports partial
+        // record consumption (EXTRA is always 0). Reporting less than in_size
+        // would make the caller keep the tail in its pending buffer AND then
+        // feed those bytes into Receive, replaying the same record into the BIO
+        // twice: identical sequence number -> AES-GCM nonce reuse ->
+        // SSL_ERROR_SSL fatal. This mirrors the SChannel backend, whose stream
+        // handshake likewise reports consumed = in_size (tls_schannel.cpp).
+        // Any residual record is safe: the caller drains it through the
+        // existing while (buffered_input() > 0) Receive(nullptr, 0, ...) loop.
+        consumed = in_size;
         return MakeError(Status::kOk, 0, "");
     }
 
@@ -331,17 +438,45 @@ class OpensslTransport final : public TlsTransport {
         return MakeError(Status::kOk, 0, "");
     }
 
-    // The OpenSSL backend has no server-role certificate wiring yet (the
-    // in-tree RDP server uses the SChannel backend). These return kUnsupported
-    // instead of fabricating an identity the handshake never produced.
+    // The OpenSSL backend now wires the server-role certificate (A2 ephemeral
+    // default, or a Config-injected PEM pair): local_cert_ is installed during
+    // Start, so the identity is available immediately after creation (SChannel
+    // parity: its Local* also serve once the server credentials exist, before
+    // any handshake). A client-role transport never installs one and reports
+    // the same kProtocolError SChannel's NotHandshaken returns.
     Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
         out.clear();
-        return MakeError(Status::kUnsupported, 0, "server role is not wired");
+        if (local_cert_ == nullptr) {
+            return MakeError(Status::kProtocolError, 0, "handshake not complete");
+        }
+        const int len = i2d_X509(local_cert_, nullptr);
+        if (len <= 0) {
+            return MakeError(Status::kInternal, 0, "cannot encode the local certificate");
+        }
+        out.resize(static_cast<size_t>(len));
+        unsigned char* p = out.data();
+        i2d_X509(local_cert_, &p);
+        return MakeError(Status::kOk, 0, "");
     }
 
     Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
         out.clear();
-        return MakeError(Status::kUnsupported, 0, "server role is not wired");
+        if (local_cert_ == nullptr) {
+            return MakeError(Status::kProtocolError, 0, "handshake not complete");
+        }
+        // Read the BIT STRING content through the X509_PUBKEY API. Never slice
+        // the SPKI at a fixed offset: the offset differs between key sizes
+        // (measured offset 22 for RSA-1024, 24 for RSA-2048).
+        X509_PUBKEY* pub = X509_get_X509_PUBKEY(local_cert_);
+        const unsigned char* pk = nullptr;
+        int pklen = 0;
+        if (pub == nullptr ||
+            X509_PUBKEY_get0_param(nullptr, &pk, &pklen, nullptr, pub) != 1 ||
+            pk == nullptr || pklen <= 0) {
+            return MakeError(Status::kInternal, 0, "cannot read the local key");
+        }
+        out.assign(pk, pk + pklen);
+        return MakeError(Status::kOk, 0, "");
     }
 
     // ------------------------------------------------------------ parameters
@@ -437,11 +572,79 @@ class OpensslTransport final : public TlsTransport {
         }
     }
 
+// Installs the server-role certificate and private key into ctx_. Source A2
+    // (default) is the process-level ephemeral identity; source B (optional)
+    // is the Config-injected PEM pair, which must be complete and unencrypted
+    // or Start fails. local_cert_ is the ctx-owned leaf certificate (valid as
+    // long as ctx_ is alive) that the Local* accessors serve.
+    bool InstallServerIdentity(std::string& why) {
+        X509* cert = nullptr;
+        EVP_PKEY* key = nullptr;
+        const bool have_cert = !config_.server_certificate_pem.empty();
+        const bool have_key = !config_.server_private_key_pem.empty();
+        if (have_cert || have_key) {
+            if (!have_cert || !have_key) {
+                why = "both server_certificate_pem and server_private_key_pem are required";
+                return false;
+            }
+            cert = ParsePemCertificate(config_.server_certificate_pem);
+            if (cert == nullptr) {
+                why = "cannot parse server_certificate_pem";
+                return false;
+            }
+            key = ParsePemPrivateKey(config_.server_private_key_pem);
+            if (key == nullptr) {
+                X509_free(cert);
+                why = "cannot parse server_private_key_pem (encrypted keys are rejected)";
+                return false;
+            }
+        } else {
+            const EphemeralIdentity& id = GetEphemeralIdentity();
+            {
+                const unsigned char* p = id.cert_der.data();
+                cert = d2i_X509(nullptr, &p,
+                                static_cast<long>(id.cert_der.size()));
+            }
+            {
+                const unsigned char* p = id.key_der.data();
+                key = d2i_AutoPrivateKey(nullptr, &p,
+                                         static_cast<long>(id.key_der.size()));
+            }
+            if (cert == nullptr || key == nullptr) {
+                if (cert) X509_free(cert);
+                if (key) EVP_PKEY_free(key);
+                why = "cannot reparse the ephemeral server identity";
+                return false;
+            }
+        }
+
+        const bool cert_ok = SSL_CTX_use_certificate(ctx_, cert) == 1;
+        const bool key_ok = SSL_CTX_use_PrivateKey(ctx_, key) == 1;
+        const bool pair_ok = cert_ok && key_ok &&
+                             SSL_CTX_check_private_key(ctx_) == 1;
+        X509_free(cert);
+        EVP_PKEY_free(key);
+        if (!cert_ok) {
+            why = "SSL_CTX_use_certificate failed: " + OpensslError();
+            return false;
+        }
+        if (!key_ok) {
+            why = "SSL_CTX_use_PrivateKey failed: " + OpensslError();
+            return false;
+        }
+        if (!pair_ok) {
+            why = "private key does not match the certificate";
+            return false;
+        }
+        local_cert_ = SSL_CTX_get0_certificate(ctx_);
+        return true;
+    }
+
     // After a successful handshake: record the version, apply the TOFU pin.
     bool PostHandshakeChecks() {
         const char* v = SSL_get_version(ssl_);
         tls_version_ = (v != nullptr && std::strcmp(v, "TLSv1.3") == 0) ? 0x0304
-                                                                      : 0x0303;
+                                                                        : 0x0303;
         if (config_.min_version != 0 && tls_version_ < config_.min_version) {
             Fail(Status::kProtocolError, "negotiated version below the minimum");
             return false;
@@ -450,7 +653,12 @@ class OpensslTransport final : public TlsTransport {
             Fail(Status::kProtocolError, "negotiated version above the maximum");
             return false;
         }
-        if (config_.cert_policy == CertPolicy::kTofu && config_.pin_is_set) {
+        // The pin / chain / hostname checks evaluate the PEER certificate, so
+        // they only exist on the client role. A server-role transport never
+        // requests or validates a client certificate (SSL_VERIFY_NONE), so
+        // running these here would be meaningless.
+        if (config_.role != Role::kServer && config_.cert_policy == CertPolicy::kTofu &&
+            config_.pin_is_set) {
             std::vector<uint8_t> spki;
             if (!PeerSubjectPublicKeyInfo(spki).ok()) {
                 Fail(Status::kCertRejected, "cannot read the peer SPKI");
@@ -477,6 +685,10 @@ class OpensslTransport final : public TlsTransport {
     SSL* ssl_ = nullptr;
     BIO* rbio_ = nullptr;
     BIO* wbio_ = nullptr;
+    // Server-role leaf certificate, owned by ctx_ (SSL_CTX_use_certificate
+    // bumped the reference); nullptr on the client role, where the Local*
+    // accessors report "handshake not complete".
+    X509* local_cert_ = nullptr;
     bool handshake_complete_ = false;
     bool closed_ = false;
     mutable bool terminal_ = false;

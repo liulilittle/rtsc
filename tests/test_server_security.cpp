@@ -28,6 +28,16 @@
 #include "test_framework.h"
 #include "test_main.h"
 
+#if !defined(_WIN32)
+// The coalesced-handshake deadlock regression drives a bare OpenSSL client so
+// the same process can build a REAL "[client Finished][first app record]"
+// segment. test_tls_openssl.cpp does not link rtsc_security, so the deadlock
+// (which lives in ServerSecurityLayer::DriveCredssp) cannot be exercised there;
+// this target links BOTH rtsc_security and (transitively on Linux) OpenSSL.
+// On Windows the OpenSSL headers/libs are absent, hence the compile guard.
+#include <openssl/ssl.h>
+#endif
+
 using namespace rtsc::credssp;
 using rtsc::security::SecurityLayer;
 using rtsc::security::ServerConfig;
@@ -208,17 +218,6 @@ RTSC_TEST(tls_server_loopback_to_done) {
         std::printf("  skipped: no platform TLS backend (need SChannel or RTSC_TLS_OPENSSL)\n");
         return;
     }
-    // The OpenSSL backend implements the client role only (it always calls
-    // SSL_set_connect_state and has no SSL_set_accept_state path), so a server
-    // role loopback can only run on SChannel. Tracked as a known limitation.
-    bool server_role_supported = false;
-    for (const auto& b : rtsc::tls::EnumerateTlsBackends()) {
-        if (std::string(b.name) == "schannel") server_role_supported = true;
-    }
-    if (!server_role_supported) {
-        std::printf("  skipped: the active TLS backend has no server role\n");
-        return;
-    }
 
     std::string error;
     CHECK(RunLoopback(*client, *server, error));
@@ -287,12 +286,15 @@ RTSC_TEST(server_security_layer_hybrid_without_ex_omits_euar) {
             sr.to_wire[3] == 0x00));
 }
 
-#if defined(_WIN32)
 RTSC_TEST(server_enhanced_security_loopback_to_active) {
     // The full loopback: the project's own client (ConnectionDriver + graphics)
     // connects to the in-tree server over PROTOCOL_HYBRID (TLS + CredSSP) and
     // reaches the active session, receiving a test-pattern frame. This is the
     // same leg mstsc needs before it will send MCS.
+    if (rtsc::tls::EnumerateTlsBackends().empty()) {
+        std::printf("  skipped: no platform TLS backend (need SChannel or RTSC_TLS_OPENSSL)\n");
+        return;
+    }
     rtsc::server::ServerConfig scfg;
     scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
@@ -372,6 +374,10 @@ RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
     // (0x0B). The server must answer with PROTOCOL_HYBRID_EX (0x8) and send
     // the EUAR; selecting plain HYBRID (0x2) while still sending the EUAR makes
     // mstsc treat those 4 bytes as a protocol error (0x1204) and reset.
+    if (rtsc::tls::EnumerateTlsBackends().empty()) {
+        std::printf("  skipped: no platform TLS backend (need SChannel or RTSC_TLS_OPENSSL)\n");
+        return;
+    }
     rtsc::server::ServerConfig scfg;
     scfg.port = 0;  // ephemeral: the kernel picks a free port
     scfg.desktop_width = 64;
@@ -430,6 +436,160 @@ RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
     server.Stop();
     runner.join();
 }
-#endif  // _WIN32
+
+#if !defined(_WIN32)
+// ---------------------------------------------------------------------------
+// Coalesced-handshake deadlock regression (P0, D1 dependency).
+//
+// A real peer (mstsc / FreeRDP) sends its FINAL handshake flight AND the first
+// application record (the CredSSP NEGOTIATE) in one TCP segment. D1 makes the
+// OpenSSL backend report that whole buffer as consumed (consumed == in_size),
+// so pending_cipher_ is empty after the handshake AND the record sits in the
+// backend's read BIO. ServerSecurityLayer::DriveCredssp must still run the
+// buffered_input() drain with no pending ciphertext, otherwise the NEGOTIATE is
+// stranded and both ends wait forever (the client for a CHALLENGE that the
+// server can never produce).
+// ---------------------------------------------------------------------------
+
+struct RawOpenSslClient {
+    SSL_CTX* ctx = nullptr;
+    SSL* ssl = nullptr;
+    BIO* rbio = nullptr;
+    BIO* wbio = nullptr;
+
+    ~RawOpenSslClient() {
+        if (ssl) SSL_free(ssl);
+        if (ctx) SSL_CTX_free(ctx);
+    }
+
+    bool Start() {
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (!ctx) return false;
+        SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+        ssl = SSL_new(ctx);
+        if (!ssl) return false;
+        rbio = BIO_new(BIO_s_mem());
+        wbio = BIO_new(BIO_s_mem());
+        if (!rbio || !wbio) return false;
+        SSL_set_bio(ssl, rbio, wbio);
+        SSL_set_connect_state(ssl);
+        return true;
+    }
+
+    void Feed(const uint8_t* data, size_t size) {
+        if (size > 0) BIO_write(rbio, data, static_cast<int>(size));
+    }
+
+    std::vector<uint8_t> Drain() {
+        std::vector<uint8_t> out;
+        for (;;) {
+            const size_t pending = BIO_ctrl_pending(wbio);
+            if (pending == 0) break;
+            const size_t old = out.size();
+            out.resize(old + pending);
+            const int n =
+                BIO_read(wbio, out.data() + old, static_cast<int>(pending));
+            if (n <= 0) { out.resize(old); break; }
+            out.resize(old + static_cast<size_t>(n));
+        }
+        return out;
+    }
+
+    // Any application plaintext currently decryptable (empty on WANT_READ).
+    std::vector<uint8_t> ReadAvailable() {
+        std::vector<uint8_t> out;
+        for (;;) {
+            uint8_t buf[4096];
+            const int n = SSL_read(ssl, buf, sizeof(buf));
+            if (n <= 0) break;
+            out.insert(out.end(), buf, buf + n);
+        }
+        return out;
+    }
+};
+
+RTSC_TEST(tls_server_regression_coalesced_first_record_no_stall) {
+    if (rtsc::tls::EnumerateTlsBackends().empty()) {
+        std::printf("  skipped: no platform TLS backend\n");
+        return;
+    }
+
+    ServerConfig scfg;
+    scfg.tls_config.role = rtsc::tls::Role::kServer;
+    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    scfg.credssp_version = 6;
+    scfg.credential_lookup = Lookup;
+    std::string swhy;
+    auto server = ServerSecurityLayer::Create(scfg, swhy);
+    CHECK(server != nullptr);
+    if (!server) return;
+
+    // A valid CredSSP NEGOTIATE TSRequest: the application record that would be
+    // stranded in the TLS backend if the drain did not run.
+    NegotiateMessage neg;
+    neg.flags = 0xE20882B7;
+    Bytes negb;
+    CHECK(neg.Encode(negb).ok());
+    TsRequest req;
+    req.version = 6;
+    req.nego_token = negb;
+    Bytes payload;
+    CHECK(req.Encode(payload).ok());
+
+    RawOpenSslClient client;
+    CHECK(client.Start());
+
+    // Pump the handshake until the bare client's side is complete. Its FINAL
+    // flight (Finished) is held, then coalesced with the app record below.
+    std::vector<uint8_t> coalesced;
+    for (int i = 0; i < 40; ++i) {
+        const int rc = SSL_do_handshake(client.ssl);
+        auto c_out = client.Drain();
+        if (rc == 1) {
+            // Finished is the last drain; append the FIRST application record.
+            if (SSL_write(client.ssl, payload.data(),
+                          static_cast<int>(payload.size())) !=
+                static_cast<int>(payload.size())) {
+                CHECK(false);
+                break;
+            }
+            auto extra = client.Drain();
+            for (const uint8_t b : extra) c_out.push_back(b);
+            coalesced = std::move(c_out);
+            break;
+        }
+        const StepResult sr = server->Step(c_out.data(), c_out.size());
+        CHECK(sr.want != Want::kFailed);
+        if (sr.want == Want::kFailed) break;
+        if (sr.want == Want::kWrite && !sr.to_wire.empty()) {
+            client.Feed(sr.to_wire.data(), sr.to_wire.size());
+        }
+    }
+    CHECK(!coalesced.empty());
+    if (coalesced.empty()) return;
+
+    // Present [Finished][NEGOTIATE] once, then give the layer NO further input.
+    // The NEGOTIATE must still surface as a CHALLENGE solely via the drain.
+    StepResult sr = server->Step(coalesced.data(), coalesced.size());
+    bool got_challenge = false;
+    for (int i = 0; i < 6 && !got_challenge; ++i) {
+        if (sr.want == Want::kFailed) break;
+        if (sr.want == Want::kWrite && !sr.to_wire.empty()) {
+            client.Feed(sr.to_wire.data(), sr.to_wire.size());
+            const std::vector<uint8_t> der = client.ReadAvailable();
+            // A CredSSP server response begins with DER SEQUENCE (0x30).
+            if (!der.empty() && der[0] == 0x30) {
+                got_challenge = true;
+                break;
+            }
+        }
+        sr = server->Step(nullptr, 0);
+    }
+    // RED before the DriveCredssp drain hoist: the record stays in the backend,
+    // no kWrite ever materialises, and Step(nullptr, 0) keeps returning kRead.
+    CHECK(got_challenge);
+}
+#endif  // !_WIN32
 
 int main() { return rtsc::test::run_all("rtsc_server_security_tests"); }

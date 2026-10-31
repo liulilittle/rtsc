@@ -183,14 +183,21 @@ StepResult ServerSecurityLayer::DriveCredssp() {
             err.status != tls::Status::kNeedMoreInput) {
             return Fail("TLS receive failed: " + err.message);
         }
-        while (tls_->buffered_input() > 0) {
-            const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
-            if (!d.ok() && d.status != tls::Status::kClosed &&
-                d.status != tls::Status::kNeedMoreInput) {
-                return Fail("TLS drain failed: " + d.message);
-            }
-            if (d.status == tls::Status::kNeedMoreInput) break;
+    }
+    // Drain obligation (tls.h): application records may already be staged in the
+    // backend, notably the ones a peer coalesced with its final handshake flight
+    // (mstsc / FreeRDP send Finished + the CredSSP NEGOTIATE in one segment). On
+    // the stream backends a coalesced handshake reports consumed == in_size, so
+    // those bytes never land in pending_cipher_ and only this drain can lift the
+    // record out. Gating it on pending_cipher_ strands the first CredSSP message
+    // and both ends wait forever for bytes the peer already sent.
+    while (tls_->buffered_input() > 0) {
+        const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
+        if (!d.ok() && d.status != tls::Status::kClosed &&
+            d.status != tls::Status::kNeedMoreInput) {
+            return Fail("TLS drain failed: " + d.message);
         }
+        if (d.status == tls::Status::kNeedMoreInput) break;
     }
     plain_buf_.insert(plain_buf_.end(), plaintext.begin(), plaintext.end());
 

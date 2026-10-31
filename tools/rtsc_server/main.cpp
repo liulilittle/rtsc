@@ -40,6 +40,11 @@
 //                     refused)
 //   --height H        default desktop height (default 1024; same range)
 //   --once            serve a single accepted connection, then exit
+//   --tls-cert FILE   PEM leaf certificate for the TLS server identity
+//                     (default: an ephemeral per-process self-signed cert)
+//   --tls-key FILE    PEM private key matching --tls-cert; --tls-cert and
+//                     --tls-key must be given together, and the key must be
+//                     unencrypted
 //   --audio MODE      server-side audio capture for the rdpsnd virtual
 //                     channel: "off" (default; no capture) or "sine" (a
 //                     deterministic 440 Hz test tone through the same source
@@ -56,6 +61,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -91,6 +97,9 @@ struct Options {
     bool once = false;
     long seconds = 0;  // 0 = run until stopped
     std::string log_path;
+    // Optional server identity (B layer). Empty = the ephemeral A2 certificate.
+    std::string tls_cert_path;
+    std::string tls_key_path;
     // Server-side audio capture for the rdpsnd virtual channel.
     enum class AudioSource { kOff, kSine };
     AudioSource audio = AudioSource::kOff;  // default: no capture (privacy)
@@ -104,6 +113,7 @@ void usage() {
         "                       [--allow-any-credentials] [--test-pattern]\n"
         "                       [--monitor N] [--width W] [--height H]\n"
         "                       [--once] [--seconds N] [--audio off|sine]\n"
+        "                       [--tls-cert FILE] [--tls-key FILE]\n"
         "                       [--log FILE]\n",
         kVersion);
 }
@@ -218,10 +228,35 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
             opt.seconds = std::atol(v.c_str());
         } else if (arg == "--log") {
             if (!need(opt.log_path)) return false;
+        } else if (arg == "--tls-cert") {
+            if (!need(opt.tls_cert_path)) return false;
+        } else if (arg == "--tls-key") {
+            if (!need(opt.tls_key_path)) return false;
         } else {
             std::printf("unknown option: %s\n", arg.c_str());
             return false;
         }
+    }
+    if (opt.tls_cert_path.empty() != opt.tls_key_path.empty()) {
+        std::printf("--tls-cert and --tls-key must be given together\n");
+        return false;
+    }
+    return true;
+}
+
+// Reads a whole file (the TLS PEM identity) into a string. Returns false and
+// prints the reason when the file cannot be opened or is empty.
+bool ReadFile(const std::string& path, std::string& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::printf("cannot open %s\n", path.c_str());
+        return false;
+    }
+    out.assign(std::istreambuf_iterator<char>(in),
+               std::istreambuf_iterator<char>());
+    if (out.empty()) {
+        std::printf("empty file: %s\n", path.c_str());
+        return false;
     }
     return true;
 }
@@ -275,6 +310,16 @@ int main(int argc, char** argv) {
     cfg.tls_config.role = rtsc::tls::Role::kServer;
     cfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
     cfg.credssp_version = 6;
+
+    // Optional server identity (B layer): a PEM leaf certificate + key.
+    // Mismatched or unreadable identities surface at server.Start() below; the
+    // default remains the ephemeral A2 certificate.
+    if (!opt.tls_cert_path.empty()) {
+        if (!ReadFile(opt.tls_cert_path, cfg.tls_config.server_certificate_pem) ||
+            !ReadFile(opt.tls_key_path, cfg.tls_config.server_private_key_pem)) {
+            return 2;
+        }
+    }
 
     // The CredSSP/NTLM path cannot derive the session key without the account
     // password, so the lookup is mandatory when enhanced security is on. A null
