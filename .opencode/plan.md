@@ -471,202 +471,53 @@
 
 ---
 
-## 阶段 2 进展与旧结论作废（2026-10-31）
+# 当前状态（2026-10-31）
 
-### 已作废的旧结论（上方审计章节内）
-- ~~"RDGSP 同连接上行/下行交错，需自定义复用（否则写等读排空死锁）"~~ → **作废**。
-  反汇编 `FUN_1801bc14c`/`FUN_1801bc3c4` 证明是**双连接**（IN/OUT 各自 `CreateConnection`、
-  端口字段 `+0x6a6`/`+0x6a4` 分离）。见 `docs/spec/gateway-stage2-evidence.md` §10。
-- ~~"需自定义 `RdgByteTransport`"~~ → 改为路线 A'：`RdgspTransport` 单外观 + 内部双连接。
-- ~~"S3：TLS 默认 kTofu"~~ → 实际默认 kTofu **在 Windows 上等于零校验**（见下方 P0）。
-
-### 阶段 2 已交付（未提交，待 F1 后一起提交）
-- 12 文件：`gateway_transport.h/.cpp`（RdgspTransport + TlsByteTransport + H0-H8）、
-  `gateway.h/.cpp`（RFC6455 + ChunkedEncodeChunk + EncodeBase64）、`byte_order.h/.cpp`（u64be）、
-  `main.cpp`（--gateway/RTSC_GATEWAY/--gateway-trust/默认 kStrict）、
-  `session_info.h/.cpp`、`test_gateway.cpp`（109 tests/1125 checks）、`test_session_info.cpp`、CMakeLists。
-- 双审复核：乙 7 项全 PASS；主代理独立探针 16/16 PASS（`evidence/gateway-stage2-verify.txt`）。
-
-### 阻塞项（P0，签署前置）
-- **SChannel TLS 零证书校验**：`tls_schannel.cpp:143-155` 三策略全 MANUAL；
-  Windows 唯一后端（`tls_factory.cpp:36-42`）→ 本机所有 TLS（含 CredSSP step5 明文密码）无校验。
-  详见 `docs/spec/tls-schannel-p0-verification.md`（7dd6e34）。F1 修复中。
-
-### 待办队列
-1. F1（P0）：SChannel kStrict/kTofu 真实校验 + test_tls 4 用例（进行中，ses_e70fdf49）
-2. F2（P0，独立提交）：`tools/rtsc_connect/main.cpp:109` 默认 kStrict + `--tls-insecure`
-3. 阶段 2 签章 + 提交 12 文件
-4. F3（P3）：StubGateway 写线程 deadline
-5. USB：P2 AddDevice 异步反馈；P3 完整性（复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck）；W5 真机
-6. 真机验证：网关（200 vs 101）、USB 设备、驱动器、音频
-
-## 阶段 2 遗留（P3，主代理审查发现，不阻塞签章）
-
-### D-T3：升级路径 WebSocket mask 在单次 Write 内复用
-`src/net/gateway_transport.cpp:1234-1249`：`RandomBytes` 在 `while (off < size)` **之前**只调用一次，
-循环内所有帧共用同一个 `mask`。
-RFC 6455 §5.3："the masking key for a given frame MUST NOT make it simple for a
-server/proxy to predict the masking key for a subsequent frame."
-**实际影响有限**：`size` 通常远小于 `kMaxWebSocketPayloadBytes`(16MiB)，一个 Write 只产生一帧；
-仅 >16MiB 的单次写才会出现多帧同 mask。
-**修复**：把 mask 生成移入循环体（每帧一次）。属 P3，后续批次处理。
-
-### D-T4：`Sec-WebSocket-Accept` 未校验（执行 AI 已标 UNVERIFIED）
-101 升级后未验证服务端回显的 `Sec-WebSocket-Accept`（RFC 6455 §4.1 要求客户端校验）。
-外层 TLS 已保护信道，风险有限；真机联调时补。
-
-## 同型排查：CertPolicy::kInsecure 全仓使用点（2026-10-31，C9 要求）
-
-缺陷修复后必须排查全部同型实现点。全仓 `grep CertPolicy::kInsecure` 结果：
-
-| 位置 | 角色 | 判定 |
-|---|---|---|
-| `src/net/tls_openssl.cpp:119` | 后端实现 | 正常（策略分发） |
-| `src/net/tls_schannel.cpp:687,828,1087` | 后端实现 | 正常（策略分发） |
-| `tools/rtsc_gui/main.cpp:279` | 客户端 | **已修**（阶段 2：仅 `--tls-insecure` 显式时才 kInsecure） |
-| `tools/rtsc_connect/main.cpp:109` | 客户端 | **F2 修复中**（默认改 kStrict + `--tls-insecure`） |
-| `tools/rtsc_bench/main.cpp:400` | 客户端 | **待修（P3）**：`MakeSecurityConfig()` 写死 kInsecure，连 127.0.0.1。凭据是假值（Domain/User/Password），无真实秘密泄露；但若有人指向真实服务器并填真凭据，即为同类 MITM 面。 |
-| `tools/rtsc_server/main.cpp:276` | **服务端** | **无需修**：`role = Role::kServer`（`:275`），而 `tls_schannel.cpp:818` 的 `VerifyPeerCertificate` 只在 `Role::kClient` 调用 —— 服务端不校验对端证书是正常语义（服务端只出示自己的自签证书）。已核实角色门存在。 |
-
-**结论**：客户端侧共 3 处硬编码 kInsecure（gui 已修 / connect 修中 / bench 待修）；服务端 1 处属正常语义。
-
-**新增待办**：`tools/rtsc_bench/main.cpp:400` → 与 rtsc_connect 同款修复（默认 kStrict + `--tls-insecure`），P3（bench 工具，非交付主路径）。
-
-## 验收状态（2026-10-31 第141轮）
-- 执行 AI `ses_e70fdf49` 正在修 A（kTofu 无 pin 时链校验）与 F2（rtsc_connect）。
-- **当前工作树处于变异中途**：`tls_schannel.cpp:835` 留有 `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A` —— 这是为证明新用例转红而临时插入的变异，**不可验收、不可提交**。
-- 已在 `:831-833` 看到新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明修 A 的意图已写入，仅 `:835` 的实现行还是变异态。
-- 待执行 AI 交付并清除 MUTATION 标记后再复核。
-
-## 主机名校验逻辑审查（2026-10-31，主代理独立审查，P3 硬化项）
-
-审查 `src/net/tls_schannel.cpp:93-102 DnsNameMatches` 与 `:142 CertificateMatchesHost`：
-
-**正确项（已确认）**：
-- `*.example.com` 匹配 `a.example.com`（`:94-99`：suffix=`.example.com`，label=`a` 无点）
-- `*.example.com` **不**匹配 `example.com`（`:96 host.size() <= suffix.size()`）
-- `*.example.com` **不**匹配 `a.b.example.com`（`:99 label.find('.')` 有值）
-- 大小写不敏感（`EndsWithIgnoreCase`/`EqualsIgnoreCase`）
-- SAN 存在时忽略 CN（符合 RFC 6125 §6.4.4）
-
-**P3 硬化项（未修，记录）**：
-1. **`*.com` 会被接受**：`DnsNameMatches("*.com","a.com")` → suffix=`.com`，label=`a` 无点 → true。
-   RFC 6125 §6.4.3 要求通配符不得位于"最左标签之外"（即禁止 `*.com`/`*.co.uk` 这类公有后缀通配）。
-   实际风险低（公有 CA 不会签发 `*.com`，且 kStrict 下仍需链校验通过），但应拒绝。
-2. **无 IDN/punycode 归一**：证书 SAN 为 `xn--...` 而用户输入 Unicode 主机名时不匹配（假阴性，安全方向，不误放行）。
-3. **尾点未归一**：`example.com.` 与 `example.com` 不匹配（假阴性）。
-
-判定：三项均为**假阴性或低风险**（不会导致错误放行真实攻击面，第 1 项除外但需公有后缀才可利用），
-不阻塞阶段 2 签章；记入后续硬化批次。
-
-## 跨后端 kTofu+pin 语义分歧（P2，功能缺陷，非仅文档）
-
-**事实**（主代理独立核实）：
-- `src/net/tls_openssl.cpp:122-125`：`kTofu` 与 `kStrict` **都** `SSL_CTX_set_verify(SSL_VERIFY_PEER)` → 握手阶段即强制链校验
-- `src/net/tls_openssl.cpp:427-445`：pin 校验在握手**之后**才做
-- `src/net/tls_schannel.cpp:834`：`kTofu + pin_is_set → VerifySpkiPin()`（**只验 pin，不查链**）
-
-**后果**：用自签证书 + `--gateway-trust=<spki>` 的网关：
-- Windows/SChannel：**可用**（pin 即身份）
-- Linux/OpenSSL：**在链校验阶段就失败**，pin 根本没机会生效
-
-即 `--gateway-trust` 这个逃生门在 OpenSSL 后端上**完全失效**。这是功能缺陷，不只是"语义差异"。
-
-**修复方案**：OpenSSL 的 `kTofu + pin_is_set` 改为 `SSL_VERIFY_NONE`（跳过链，由 pin 把关），
-与 SChannel 对齐，也与 `tls.h:95` 的注释"kTofu = trust on first use + SPKI SHA-256 pin"一致
-（pin 就是身份，不需要 CA 链）。
-
-**验证限制（W5）**：本机为 Windows，`tls_openssl.cpp` 仅在 `RTSC_TLS_OPENSSL`/非 WIN32 下编译，
-**本机无法编译或运行该后端** → 此修复**未验证**。
-验证方法：在 Linux 上 `cmake -DRTSC_TLS_OPENSSL=ON` 构建，跑 `rtsc_tls_tests` 的
-`schannel_*` 对应用例（需为 OpenSSL 后端补同名用例）或手工用自签网关 + `--gateway-trust` 复测。
-
-**状态**：待丙终审完成后应用（避免工作树在审计期间变动）。P2，不阻塞 Windows 主路径签章。
-
-**状态更新（2026-10-31，第767轮）：已修复并入库 `fce4ac4`**
-- `src/net/tls_openssl.cpp:122-136` 现为 `kTofu: SSL_CTX_set_verify(ctx_, config_.pin_is_set ? SSL_VERIFY_NONE : SSL_VERIFY_PEER, nullptr)`
-- `include/rtsc/net/tls.h:93-100` 补跨后端一致语义注释
-- **仍未验证**（本机 Windows 不编译该 TU）：需 Linux 下 `-DRTSC_TLS_OPENSSL=ON` 构建 + 自签网关 `--gateway-trust` 实测。
-
----
-
-# 阶段 2 完成总结（2026-10-31）
-
-## 已入库
+## 已入库（Gateway + TLS 安全）
 | 提交 | 内容 |
 |---|---|
 | `5a361e0` | Gateway RDGSP 阶段 1（协议层：头部/chunked/状态映射/多挑战/UDP） |
 | `fce4ac4` | TLS 证书策略真正生效（SChannel DEFERRED + 链/主机名/pin；OpenSSL kTofu+pin 对齐；rtsc_connect/bench 默认 kStrict） |
 | `ae3f08a` | Gateway RDGSP 阶段 2（双连接 RdgspTransport + RFC6455 + TlsByteTransport 修复 + GUI 接线） |
+| `f213457` | Linux 门禁首次通过的 9 处移植修复 |
+| `a2cfebe` | OpenSSL kTofu+pin 行为验证 + `kCertRejected` 映射修复 |
+| `9791fc4` | UDP 测试数据竞争 + 基准预算余量修正 |
 
-## 验收
-- C0 全量 `ctest` **62/62**；build 0err/0warn（/W4 /WX）
-- gateway 112 tests/1139 checks；tls 42/193；server 27/239；security 19/145；client 14/63；credssp 23/69 —— 全 0 fail
-- 双审：乙盖章 + 丙 13 项终审"可签章"，各自独立复现变异红证
+## 验收现状
+- **Windows**：构建 0 err/0 warn（/W4 /WX）；`ctest` **62/62**
+- **Linux**（WSL Ubuntu 24.04，g++ 13.3，OpenSSL 3.0.13）：构建 0 err（-Werror）；`ctest` **61/61**
+- 性能（1920x1080）：解码 109-200 fps；端到端 **193.5 fps**（5.168 ms）；CPU 100%（单核饱和）
+- 服务器模式：**8 会话并发压力测试通过**（`server_multisession` 7 tests/184 checks）
 
-## 剩余待办（按优先级）
-1. **Linux 门禁**：`-DRTSC_TLS_OPENSSL=ON` 构建 + OpenSSL 后端测试（覆盖 `fce4ac4` 的 UNVERIFIED 部分）
-2. **真机验证**（W5）：真 RD Gateway 的 200 vs 101 互通；USB 实体设备双向 I/O；驱动器；音频
-3. **主机名硬化（P3）**：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
-4. **`Sec-WebSocket-Accept` 校验**（RFC 6455 §4.1，当前 UNVERIFIED）
-5. **USB 遗留**：P2 AddDevice 异步反馈；P3 复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck
-6. **性能基准**：`view_scale_benchmark_budget` 复测（此前受 vmmemWSL/il2cpp 争用影响）
+## 进行中：OpenSSL 后端 server 角色（待双审复核）
+- 已落地：D1（`consumed = in_size`，`tls_openssl.cpp:325`）、server 角色分支（`:196/:257`）、
+  A2 进程级临时 RSA-2048 自签（`:161 call_once`）、B 可选 PEM 层（`:583-592`）、
+  `Local*` 实现、`tls.h` 注释修正、Linux server-role 测试放开、`--tls-cert/--tls-key`
+- 新增：`tls_openssl` 15 tests/123 checks、`server_security` 7 tests/60 checks；变异红证 3/3
 
----
+## 待处理
 
-# Linux 门禁首次通过（2026-10-31，第142轮）
+### P2 —— D1 的耦合问题（主代理发现，待双审判定）
+`server_security_layer.cpp:186-193` 的 `while (buffered_input() > 0) Receive(nullptr,0,...)` **被包在
+`if (!pending_cipher_.empty())`（`:178`）里**。D1 修好后握手完成时 `pending_cipher_` 已清空
+→ 合段的 CredSSP 记录滞留在 OpenSSL rbio 无人取出 → 多一个往返。
+`security_layer.cpp:224-229` 同形。修法：把 drain 移到 `if` 外面（两端）。
 
-## 环境
-WSL `Ubuntu-24.04`：cmake 3.28.3、g++ 13.3.0、OpenSSL 3.0.13、32 核。
-构建：`cmake -S . -B build-linux -DRTSC_TLS_OPENSSL=ON -DCMAKE_BUILD_TYPE=Release`
+### P3（记录）
+- 主机名硬化：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
+  （`tls_schannel.cpp:93-102`；均为假阴性或需公有后缀才可利用）
+- `Sec-WebSocket-Accept` 未校验（RFC 6455 §4.1，UNVERIFIED）
+- `0x6a4`/`0x6a6` 异值场景 UNVERIFIED
+- USB：P2 AddDevice 异步反馈；P3 复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck
 
-## 结果
-- **构建 0 错误 0 警告**（`-Wall -Wextra -Werror -Wpedantic`）
-- **ctest 61/61 全绿**
-- `tls_openssl` 套件 Passed（0.71s）→ `fce4ac4` 的 OpenSSL 改动**编译级已验证**
+### W5（需真机）
+- 真 RD Gateway：200 vs 101 互通、会话超时表
+- USB 实体设备双向 I/O；驱动器重定向；音频
+- SChannel 自签证书位数（439B DER 推断 RSA-1024，未直接探测）
+- `kTofu` 无 pin 的主机名行为（SChannel deferred 可能附带自身 SPN 校验，方向保守）
 
-## 修复的移植缺陷（全部此前从未暴露，因 Linux 门禁从未跑过）
-| 文件 | 缺陷 |
-|---|---|
-| `src/proto/rdp6.cpp` | 缺 `<cstring>`（MSVC 传递包含掩盖） |
-| `include/rtsc/proto/byte_order.h` | `ByteWriter::bytes` 用 `vector::insert` 触发 GCC13 `-Werror=stringop-overflow` 误报 → 改 resize+memcpy |
-| `CMakeLists.txt` | `rtsc_gui` 未按平台门控（Win32 专用：`fopen_s`/`_dupenv_s`/`MAX_PATH`）→ `if(WIN32)` |
-| `tests/test_gui_send.cpp` | `FindDynvcUrbdcFunction` 仅 Windows 用例使用 → `[[maybe_unused]]` |
-| `tests/test_rdpsnd_server.cpp` | 三元混用枚举与字面量 → GCC `-Werror=extra` |
-| `tests/test_rdp6.cpp` | 同 byte_order 的 insert 误报 |
-| `tests/test_rdpdr_client.cpp` | ①Windows 路径语义用例在 POSIX 跳过 ②**两处 `rsp->begin()+28` 无长度检查 → `std::length_error` 崩溃**（测试健壮性缺陷）③新增 POSIX 路径守卫用例 |
-| `tests/test_drop_files.cpp` | 硬编码 `\` 分隔符 → 用 `preferred_separator` |
-| `tests/test_server_security.cpp` | server 角色 TLS loopback 在非 SChannel 后端跳过 |
-
-## 新发现的产品限制（已记录，未修）
-- **`tls_openssl.cpp` 未实现 `Role::kServer`**：无 `SSL_set_accept_state`，恒 `SSL_set_connect_state`。
-  → Linux 上自研 RDP 服务器（`rtsc_server`）无法用 OpenSSL 后端提供 TLS。
-  影响：Linux 服务器模式只能走 Standard RDP Security（无 TLS/CredSSP）。**这是 Linux 服务器模式的前置缺口。**
-
-## 仍未验证（W5）
-- ~~`kTofu + pin` 行为未验证~~ → **已验证**（第769轮，`a2cfebe`）：`tests/test_tls_openssl.cpp` 补齐 5 条策略用例（pin 匹配接受自签 / pin 不匹配拒绝 / kStrict 与 kTofu 无 pin 拒绝），Linux 实跑全绿；顺带修复 OpenSSL 不查 `SSL_get_verify_result` 导致链校验失败误报 `kProtocolError` 的缺陷。
-- `rdpdr` 驱动器重定向的 Linux 行为未覆盖（测试为 Windows 路径语义）；仅路径守卫有 POSIX 用例。
-
-## 性能基准（2026-10-31，Windows Release，MSVC 1944）
-
-`rtsc_bench.exe` 实测（1920x1080，8.29 MB RGBA8888）：
-
-| codec | 输入 | median | min | max | stddev | 输出 MB/s | fps |
-|---|---|---|---|---|---|---|---|
-| raw-32bpp | 8.29 MB | 4.994 ms | 4.479 | 6.425 | 0.485 | 1660.8 | 200.2 |
-| rle-16bpp | 2.17 MB | 9.115 ms | 8.459 | 11.471 | 0.642 | 910.0 | 109.7 |
-| rdp6-argb | 8.29 MB | 6.034 ms | 5.582 | 7.555 | 0.523 | 1374.6 | 165.7 |
-| rdp6-aycocg | 6.22 MB | 7.332 ms | 6.890 | 8.693 | 0.426 | 1131.3 | 136.4 |
-| nsc-aycocg-cs | 5.18 MB | 6.479 ms | 5.856 | 8.896 | 0.602 | 1280.1 | 154.3 |
-
-端到端 loopback（脚本化 TLS，300 个 tile PDU）：
-- 往返（加解密）median **0.800 ms**（min 0.779 / max 0.882 / stddev 0.033）
-- 有效吞吐 **10373.2 MB/s**
-- 端到端帧（transport+parse+decode）**5.168 ms = 193.5 fps**
-
-CPU 占用（rdp6-argb 解码，2.0 s 墙钟，322 帧 = 160.4 fps）：CPU 2.007 s / 墙钟 2.007 s = **100.0%**（= 一个完整核心，单线程解码符合预期，无多核空转）。
-
-**结论**：1080p 全帧解码最慢的 codec 是 rle-16bpp（9.1 ms → 109.7 fps），端到端 193.5 fps，均远超 30/60 fps 的交互需求；CPU 为单核饱和而非"炸"（无忙等、无多核空转）。
-
-`view_scale_benchmark_budget`（7 种缩放形状）通过：1:1 ≤1.0 ms、letterbox ≤0.6、2x ≤8.0、0.8x ≤22、0.5x 4K ≤25、1.33x ≤10、0.4x 4K ≤35。
-（注：该测试在 WSL `-j16` 编译争用 CPU 时会偶发红，单跑即绿；本轮已复现并确认非代码回归。）
+## 已作废的旧结论
+- ~~单连接多路复用~~ → 双连接（`gateway-stage2-evidence.md` §10）
+- ~~需自定义 `RdgByteTransport`~~ → 路线 A'（单 Transport 外观 + 内部双连接）
+- ~~TLS 默认 kTofu 安全~~ → SChannel 三策略全零校验（已修，`fce4ac4`）
+- ~~按报错文本推头部方向~~ → `gateway-header-direction-ruling.md`

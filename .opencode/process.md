@@ -720,211 +720,40 @@
 - 主代理独立探针：D-A1/A4 2/2 RED（604b5c1）、方向与协议 16/16 PASS（0f8ad36）、**TlsByteTransport 2 项 P1 丢数据 2/2 RED**（b6ed7f0）。
 - P0 入档 `tls-schannel-p0-verification.md`（7dd6e34）：SChannel 三策略全 MANUAL 零校验；§8 纠正父代理两处 API 错误（356da3d）。
 
-## 第762轮：F1+P1 双章（乙盖章 + 主代理独立验证）+ 追加 kTofu 语义缺口与 F2
-### F1+P1 已验证通过
-- 乙盖章（独立复现两组变异红证、全量 build RC=0、tls 41/191/0、gateway 111/1132/0）。
-- 主代理独立验证：修正后的探针 → `Write 100/100 PASS`、`repeated reads delivered 516 PASS`、SUMMARY failures=0；`ctest -R tls|credssp|client|security|server|gateway` **6/6 passed**；tls 套件 **41 tests/191 checks/0 failing**；六个新用例在 `test_tls.cpp:455/462/474/483/490/547`。
-- 执行 AI 用探针推翻我的两处 API 错误（已入 `tls-schannel-p0-verification.md` §8，356da3d）：
-  1. `ISC_REQ_DEFERRED_CRED_VALIDATION`=0x0000000200000000 是 64 位，`fContextReq` 是 32 位 → 截断为 0；正解是凭据级 `SCH_CRED_DEFERRED_CRED_VALIDATION`=0x04000000（schannel.h:678）
-  2. `SECPKG_ATTR_CERT_CHECK_RESULT` 结构是 `{DWORD dwChainErrorStatus; HRESULT hrVerifyChainStatus;}`（我写的字段名不存在）
-- **教训（同型家族第 6 例）**：没有实测的修复指令本身就是缺陷来源。
+## 第762-773轮（阶段2 收尾 + TLS 安全 + Linux 门禁，归档摘要）
 
-### 新发现（乙非阻塞建议 1，主代理判为真缺口 → 必修）
-- `tls_schannel.cpp:830-832`：`kTofu` 且 `!pin_is_set` → **直接放行**；
-  而 `tls_openssl.cpp:122-125`：`kTofu` 与 `kStrict` 都 `SSL_VERIFY_PEER`。
-- 即**同一枚举值在 Windows 上零校验、在 OpenSSL 上做链校验**。而 `tls.h:118` 的**库默认就是 kTofu 无 pin**。
-- 这与刚修掉的 P0 同类 → 修 A：kTofu 无 pin 时做链校验但不做主机名（对齐 OpenSSL `SSL_VERIFY_PEER` 无 `set1_host`）。
-- 已核实：`pin_is_set` 仅 `main.cpp:382`（`--gateway-trust`）置位，无 TOFU 持久化存储。
+### TLS 安全闭环（`fce4ac4` / `a2cfebe`）
+- **P0 SChannel 零证书校验**：三策略全 `ISC_REQ_MANUAL_CRED_VALIDATION` 且无后续校验；
+  Windows 唯一后端 → 本机全部 TLS（含 CredSSP step5 明文密码面）无校验。
+  修：凭据级 `SCH_CRED_DEFERRED_CRED_VALIDATION`（不是 `ISC_REQ_*`，那是 64 位会被 32 位 `fContextReq` 截断为 0）
+  + 链/主机名/SAN/pin 校验；`rtsc_connect`/`rtsc_bench` 默认 kStrict。
+- **P2 跨后端 kTofu+pin**：OpenSSL 链校验先于 pin → `--gateway-trust` 逃生门失效。
+  修：`kTofu + pin_is_set` → `SSL_VERIFY_NONE`（pin 即身份）。
+- **P1 OpenSSL 不查 `SSL_get_verify_result`**：链失败误报 `kProtocolError`。修 + 5 条策略用例。
+- 我的两处 API 错误被执行 AI 探针推翻（`tls-schannel-p0-verification.md` §8）：见 discover 家族第 6 例。
 
-### F2（P0）已核实
-- `tools/rtsc_connect/main.cpp:109` `cert_policy = kInsecure`，且该工具**只有 `--rdp`**（`:56`），无逃生门 → 默认改 kStrict + 新增 `--tls-insecure`。
+### 阶段2 收尾（`ae3f08a`）
+- 交付 12 文件 +2949/-47；主代理独立探针 16/16 PASS。
+- **P1 TlsByteTransport 丢数据（我抓到）**：`Write` 忽略 `consumed`（OpenSSL 部分消费仍返 kOk）、
+  `Read` 丢弃超缓冲明文（`tls.h:167-175` 软阈值契约）。探针 2/2 RED → 修复 → 独立复验 PASS。
+- 遗留 P3：WS mask 单次 Write 内复用（丙发现，已修入 `ae3f08a`）、`Sec-WebSocket-Accept` 未校验。
 
-两项已派执行 `ses_e70fdf49`，要求 A/B 分开报告以便分两次提交。
-另：执行 AI 三次投递 `ses_e715ef629ffeVtq4ItCnidsCDU` 失败 —— 该会话是已解散的阶段2执行者，无需转投。
+### Linux 门禁首次通过（`f213457`）
+WSL Ubuntu 24.04 上 9 处移植缺陷：`<cstring>` 缺失、`vector::insert` 触发 GCC13
+`-Werror=stringop-overflow` 误报、`rtsc_gui` 未按平台门控、`rdpdr` 测试 `rsp->begin()+28` 无长度检查
+导致 `std::length_error` 崩溃、硬编码 `\` 分隔符等。结果 **61/61**。
 
-## 第763轮：同型排查（C9）+ 抓到变异中途态 + 补单
-- **同型排查（`grep CertPolicy::kInsecure` 全仓）**，结果入库 `plan.md`（e86b9bc）：
-  - `tools/rtsc_gui/main.cpp:279` 已修（阶段2，仅 --tls-insecure 降级）
-  - `tools/rtsc_connect/main.cpp:109` F2 修复中
-  - **`tools/rtsc_bench/main.cpp:400` 新发现，待修（P3）**：`MakeSecurityConfig()` 写死 kInsecure 连 127.0.0.1，假凭据；若指向真实服务器+真凭据即同类 MITM 面
-  - `tools/rtsc_server/main.cpp:276` **无需修**：`role=Role::kServer`（`:275`），而 `tls_schannel.cpp:818` 的 `VerifyPeerCertificate` 只在 `Role::kClient` 调用 → 服务端不校验对端证书是正常语义（已核实角色门存在）
-- **抓到执行 AI 变异中途态**：`tls_schannel.cpp:835` `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A`
-  —— 为证明新用例转红而临时插入，**不可验收不可提交**。已在 `:831-833` 看到修 A 的新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明意图已写入，仅实现行仍是变异态。
-- 已补单给执行 AI：补1 清除变异并附 grep 空输出证据（USB 批次曾因残留 `// MUTATION 2` 被退回）；补2 修 `rtsc_bench:400`（同款 kStrict + --tls-insecure），但若 bench 默认会跑不通须先报告不改。
+### 性能基准（`de8f66b`）
+1080p 解码 109-200 fps；端到端 193.5 fps；CPU 100%（单核饱和，无多核空转）。
 
-## 第764轮：修A/F2/bench 交付 + 主代理独立核实 + 派第二审计丙
-- 执行 AI 交付四项，主代理逐项独立核实：
-  1. **修 A**：`tls_schannel.cpp:830-836` kTofu 分支 = `if (pin_is_set) return VerifySpkiPin(); return VerifyChainOnly();` ✅；`:868-889` VerifyChainOnly 判据 `dwChainErrorStatus==0 && SUCCEEDED(hrVerifyChainStatus)`；`:860-866` VerifyStrictPeer = VerifyChainOnly + VerifyHostname
-  2. **F2**：`tools/rtsc_connect/main.cpp:118-120` 默认 kStrict、仅 `tls_insecure` 时 kInsecure ✅；`:56-69` 解析 `--tls-insecure`；usage 同步
-  3. **补1**：MUTATION 全仓 **0 处**（主代理 grep 复核）✅；`:835` 现为 `return VerifyChainOnly();`
-  4. **补2**：`tools/rtsc_bench/main.cpp:398-405` 默认 kStrict、`:590/595` 透传、`:756-759` 解析开关 ✅
-- **主代理自建自跑**：`BUILD_RC=0`；`ctest -R tls|credssp|client|security|gateway|server` **6/6 passed**；tls 套件 **42 tests/193 checks/0 failing**（+1 新用例 `schannel_ktofu_without_pin_rejects_untrusted_chain`）。
-- 执行 AI 关键说明（已接受）：bench 的 TLS 全程脚本化（`main.cpp:600 SetTlsTransportForTest(ScriptedTls)`），证书策略不参与基准行为 → 改 kStrict 后 bench 默认仍 EXIT=0，CI 不受影响。
-- **审计甲已解散 → 新建第二审计丙 `ses_e708a4114ffeGnULsV7hJaB0Wu`** 做独立终审（13 项：TLS 安全 8 项 + 数据完整性 4 项 + 阶段2 行为 5 项 + 构建测试 3 项 + 文档一致性），要求变异抽验 2 项。
+### 测试健壮性（`9791fc4`）
+- UDP 两个测试用普通 `bool` 跨线程 + `Write` 后立即断言 → **D8 入队即 ACK 后变成赛跑**
+  （全量 ctest 约每两次失败一次）。改 `std::atomic<bool>` + 有界等待。
+- `view_scale_benchmark_budget` 余量只有 1.15-1.74x（注释却称 "a few times"），
+  外部负载（WSL 里 rabbitmq + mssql 占满 CPU）下 0.4x 4K 实测 46.5ms vs 预算 35ms。提到 ~3x。
 
-## 第765轮：乙最终盖章 + 跨后端 pin 缺陷定性为真实功能缺陷
-- 乙（ses_e716db85）对最终批（修A/修B/补1/补2）**独立复现并盖章**：tls 42/193/0、gateway 111/1132/0、server 27/239/0、security 19/145/0、client 14/63/0、credssp 23/69/0；全量 build RC=0。
-- **主代理核实乙的"非阻塞录案"实为真功能缺陷**（`plan.md` 1aa61bd）：
-  - OpenSSL `:122-125` kTofu 与 kStrict 都 `SSL_VERIFY_PEER`（链校验），pin 在 `:427-445` 之后才验
-  - SChannel `:834` kTofu+pin 只验 pin 不查链
-  - → 自签网关 + `--gateway-trust=<spki>` 在 Windows 可用、**Linux/OpenSSL 上链阶段即失败**，逃生门失效
-  - 修复方案：OpenSSL 的 `kTofu+pin` 改 `SSL_VERIFY_NONE`（pin 即身份）；`tls.h` 补跨后端语义注释；**必须标 UNVERIFIED**（本机不编译 OpenSSL 后端）
-- 已 relay 执行 AI **先静默**，等丙审完当前已签版本再动手（避免审计期间工作树变动 → F5 类问题）。
-- 当前子代理：乙 ses_e716db85（idle，已盖章）、执行 ses_e70fdf49（idle，待命）、丙 ses_e708a4114（busy，终审中）。
-
-## 第766轮：冻结基线 SHA 记录（供丙审计比对）
-执行 AI 已确认静默待命（不动代码）。当前工作树为已签版本，SHA-256 前 16 位：
-```
-7559EBD2F49525DD  src/net/gateway_transport.cpp
-955E2407BCDB170C  include/rtsc/net/gateway_transport.h
-F376539AD59066D4  src/proto/gateway.cpp
-CF619F433DE9F541  include/rtsc/proto/gateway.h
-47F0515370573FC2  src/net/tls_schannel.cpp
-D8BAA71FC8DFAA32  tests/test_tls.cpp
-3649019D5826C220  tests/test_gateway.cpp
-A668FAA9588074F6  tools/rtsc_gui/main.cpp
-D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
-63D055BB865DE90D  tools/rtsc_bench/main.cpp
-419E001DCF00888E  src/client/session_info.cpp
-2B18EE010F212707  CMakeLists.txt
-```
-（注意：头文件路径为 `include/rtsc/...`，我第一次误写 `src/net/gateway_transport.h` 得到的是陈旧值，已纠正。）
-
-自此至丙审计结束，任何人不得写这些文件；若有变动，丙的复核作废。
-- 主代理已 pause 下一轮修复（OpenSSL kTofu+pin），避免破坏冻结。
-- 待丙盖章后：①应用 OpenSSL pin 修复（标 UNVERIFIED）②分两次提交 ③解散全部子代理。
-
-## 第767轮：阶段 2 + TLS 安全修复全部入库（两次提交）+ 子代理全解散
-### 提交
-- `fce4ac4` **fix(tls): make certificate policy actually enforce on the Windows backend**
-  （tls_schannel.cpp、tls_openssl.cpp、tls.h、rtsc_connect、rtsc_bench、test_tls.cpp、CMakeLists）
-- `ae3f08a` **feat(gateway): RDGSP stage 2 - dual-connection transport wiring**
-  （gateway_transport.{h,cpp}、gateway.{h,cpp}、byte_order.{h,cpp}、session_info.{h,cpp}、main.cpp、test_gateway.cpp、test_session_info.cpp）
-- 工作树干净（`git status` 空）。
-
-### 双审闭环
-- 乙（ses_e716db85）对最终三项独立复核并盖章：gateway 112/1139、tls 42/193、server 27/239、security 19/145、client 14/63、credssp 23/69 全绿；MUTATION 0。
-- 丙（ses_e708a4114）13 项终审"可签章"，独立复现两组变异红证，冻结基线 12 文件 SHA 全程未变。
-- 3 个子代理全部 delete 解散（child_subagents=0）。
-
-### 本批最终验收
-- C0 全量 `ctest` **62/62**；全量 build 0err/0warn（/W4 /WX）。
-- 本批修复的缺陷（全部有探针红证）：
-  - **P0** SChannel 零证书校验（三策略全 MANUAL；Windows 唯一后端）→ kStrict 链+主机名、kTofu pin/链
-  - **P0** rtsc_connect 默认 kInsecure → kStrict + --tls-insecure
-  - **P1** TlsByteTransport Write 忽略 consumed / Read 丢尾部（2/2 探针 RED）
-  - **P1** 空请求静默发送（D-A1/D-A4）
-  - **P2** 跨后端 kTofu+pin 逃生门失效（OpenSSL 链校验先于 pin）
-  - **P3** RFC6455 单次 Write 内 mask 复用
-- 遗留（已入 plan.md）：`*.com` 通配/IDN/尾点三项主机名硬化、Sec-WebSocket-Accept 未校验、`0x6a4/0x6a6` 异值场景、真机网关 101 互通、USB P2/P3、W5 真机。
-
-## 第768轮：Linux 门禁首次通过（61/61）+ 修 9 处移植缺陷
-- 环境：WSL Ubuntu-24.04（cmake 3.28.3 / g++ 13.3 / OpenSSL 3.0.13 / 32 核）。
-- 结果：**构建 0err/0warn（-Wall -Wextra -Werror -Wpedantic）、ctest 61/61 全绿**；`tls_openssl` 套件 Passed。
-- 修复（全部为 Linux 门禁首次运行暴露，Windows 行为不变）：
-  - `rdp6.cpp` 缺 `<cstring>`；`byte_order.h` 与 `test_rdp6.cpp` 的 `vector::insert` 触发 GCC13 `-Werror=stringop-overflow` 误报 → resize+memcpy
-  - `CMakeLists.txt` `rtsc_gui` 加 `if(WIN32)` 门控（Win32 专用）
-  - `test_gui_send.cpp` `[[maybe_unused]]`；`test_rdpsnd_server.cpp` 枚举转 uint32_t
-  - `test_rdpdr_client.cpp`：Windows 路径用例 POSIX 跳过 + **两处 `rsp->begin()+28` 无长度检查导致 `std::length_error` 崩溃** + 新增 POSIX 路径守卫用例
-  - `test_drop_files.cpp` 用 `preferred_separator`；`test_server_security.cpp` 非 SChannel 跳过 server 角色 loopback
-- **新发现产品限制**：`tls_openssl.cpp` 无 `Role::kServer`（恒 `SSL_set_connect_state`）→ Linux 服务器模式无法用 OpenSSL 提供 TLS，只能走 Standard RDP Security。已记录为 Linux 服务器模式前置缺口。
-- Windows 回归：build 0err/0warn、ctest **62/62**。
-- 提交：`f213457`（Linux 移植修复）、`8e7d59e`（移除误提交的 build-linux 产物 + .gitignore）。
-
-## 第769轮：消除 OpenSSL kTofu+pin UNVERIFIED + 发现并修复新缺陷
-### 新缺陷（P1，主代理写测试时暴露）
-- `src/net/tls_openssl.cpp` **从不调用 `SSL_get_verify_result`** → 链校验失败被报成 `kProtocolError`
-  （`:197 "handshake failed: ..."`），违反 `tls.h:96` 的 kStrict "failure reason must be reportable"，
-  且调用方无法区分"证书被拒"与"对端协议错误"。SChannel 侧一直正确报 `kCertRejected`。
-- 修复：握手失败分支先查 `SSL_get_verify_result`，非 `X509_V_OK` → `kCertRejected` + `X509_verify_cert_error_string`。
-
-### 补齐 OpenSSL 策略测试（此前 `fce4ac4` 仅编译级验证）
-新增 5 用例（`tests/test_tls_openssl.cpp`）：
-- `openssl_kinsecure_accepts_self_signed`
-- `openssl_kstrict_rejects_self_signed_peer` → `kCertRejected`
-- `openssl_ktofu_without_pin_rejects_untrusted_chain` → `kCertRejected`
-- `openssl_ktofu_pin_match_accepts_self_signed`（**验证 fce4ac4 的 pin 逃生门确实可用**）
-- `openssl_ktofu_pin_mismatch_is_rejected` → `kCertRejected`
-- 测试基建修正：`Server::Start()` 增加可选共享证书参数——`MakeSelfSigned` 每次生成新密钥，
-  原先"用 A 服务器的 SPKI 算 pin 去连 B 服务器"必然不匹配（我第一版测试即因此误报）。
-
-### 变异红证（实跑，已还原）
-1. kTofu+pin 改回恒 `SSL_VERIFY_PEER` → `openssl_ktofu_pin_match_accepts_self_signed` 红
-2. 删 `SSL_get_verify_result` 映射 → `kstrict` 与 `ktofu_without_pin` 两条 `kCertRejected` 断言红
-
-### 结果
-- Linux：`tls_openssl` **9 tests / 43 checks / 0 failing**；ctest **61/61**
-- Windows：build 0err/0warn；ctest **62/62**
-  （注：首次全量跑时 `view` 失败，单跑即过 —— 系 WSL `-j16` 编译争用 CPU 导致的已知基准抖动，非回归）
-- 提交 `a2cfebe`。
-
-## 第770轮：性能基准记录 + 派 W11 审计 OpenSSL server 角色
-### 性能基准（已入库 `de8f66b`）
-`rtsc_bench.exe` 实测 1920x1080：
-- 解码：raw-32bpp 4.994ms(200.2fps) / rle-16bpp 9.115ms(109.7fps) / rdp6-argb 6.034ms(165.7fps) / rdp6-aycocg 7.332ms(136.4fps) / nsc 6.479ms(154.3fps)
-- 端到端 loopback：往返 0.800ms，**5.168ms = 193.5 fps**，10373 MB/s
-- CPU：2.0s 墙钟 / 2.007s CPU = **100.0%**（单核饱和，无多核空转，符合单线程解码预期）
-- `view_scale_benchmark_budget` 7 种缩放形状全通过
-
-### 服务器模式现状核实
-- **多用户已实现**：`rtsc_server_multisession_tests` 7 tests/184 checks 全绿，含 **8 会话并发压力测试**（2480ms，251 本地变更/88 远程请求/163 剪贴板写/109 读）。
-- `include/rtsc/server/server.h`：每会话独立线程（one thread per session）、会话隔离 D1（各自 X.224/MCS 状态）、`SessionThreadLauncher` 可注入。
-- **家庭版解禁**：`src/server/` 零 termsrv/WTS 依赖（既有结论）。
-
-### 新缺口（主代理取证）
-- `src/net/tls_openssl.cpp:158` **无条件** `SSL_set_connect_state` → 无 `Role::kServer` 分支。
-- `:334-345` `LocalCertificateDer`/`LocalSubjectPublicKey` 恒返回 `kUnsupported "server role is not wired"`。
-- 对照 SChannel 已实现（临时自签 `CertCreateSelfSignCertificate` CN=rtsc-rdp-server + `SECPKG_CRED_INBOUND`）。
-- 后果：**Linux 上 `rtsc_server` 无法提供 TLS/CredSSP**，只能 Standard RDP Security；且 `test_server_security.cpp` 的 server-role loopback 在非 SChannel 后端被跳过 → **Linux 上该路径零测试覆盖**。
-- 已派双审计（甲 ses_e70232b5 / 乙 ses_e7023156），已互告 ID。
-- 特别要求两审判定：**临时自签证书的稳定性**——若每次握手换证书，客户端 `kTofu`+pin 每次都不匹配，TOFU 失效（可能是阻断项）。
-
-## 第771轮：双审终稿（OpenSSL server 角色）+ D1 阻断项入库 + 派执行
-### 双审双章终稿要点（甲 ses_e70232b5 + 乙 ses_e7023156）
-- **路线定案**：**A2 默认**（进程级临时自签，`call_once` 缓存 DER 纯字节，规避静态对象析构序；进程内 SPK 稳定 → `kTofu`+pin 开箱可用）+ **B 可选层**（`Config.server_certificate_pem/server_private_key_pem`，跨重启稳定身份）；A1（每连接生成）为保守回退。
-- **关键纠偏**：pubKeyAuth 是**绑定哈希** `HashWithMagic(magic, nonce, SPK)`（`credssp.cpp:63-69`），**不是私钥签名** → TLS 私钥与 CredSSP 无关，接口无缺口。
-- `LocalSubjectPublicKey` 正确取法：`X509_get_X509_PUBKEY` → `X509_PUBKEY_get0_param(&alg,&pk,&pklen,...)`，RSA-2048 pklen=**270**、首字节 `30 82`、SPKI 整体 294B（甲实测）。
-- `LocalCertificateDer` 生产路径**零消费**（主代理核实：全仓仅两后端实现自身出现）→ `tls.h:182-190` 注释失真需修。
-- SChannel 每次连接都重新生成自签（`tls_schannel.cpp:703-706` 注释已言明）→ **TOFU pin 跨连接不稳定是既有平台属性**，非本批引入。
-- OpenSSL 须用 RSA-2048（SChannel 439B DER 尺寸推断为 RSA-1024，W5 未直接探测位数）。
-
-### D1（P0 阻断，乙 WSL 探针红证）已入库 `discover.md`（41feebb）
-- `tls_openssl.cpp:214-218` 用 `BIO_ctrl_pending` 增量模拟 SSPI 的 EXTRA 语义 → 合段时误报 `consumed < in_size` → `SecurityLayer` 重放 → **同记录双写 → AES-GCM nonce 重用 → SSL_ERROR_SSL**。
-- 对照 SChannel `:315` 就是 `consumed = in_size;`。
-- 修法：`consumed = in_size;`；残留由 `while (buffered_input() > 0) Receive(nullptr,0)` 收敛。
-- **教训（同型家族第 7 例）**：接口契约的"如何计算"可能绑定特定后端语义——`tls.h:146-150` 写的是 SSPI 算法，照搬到 BIO 模型就是错的。
-
-### 执行已派 `ses_e700314b9ffe7mcBUFJd0KIxti`
-修 1（D1 consumed）/ 修 2（server 角色 + A2 + B 可选 + Local* + tls.h 注释）/ 修 3（放开 Linux server-role 测试）/ 6 条新测试 / 3 项变异红证 / 双平台验证。
-
-## 第772轮：执行进度核实（D1 + server 角色已落地，等全量验证）
-- 执行 AI `ses_e700314b9ffe` 报告：修1/修2/修3/测试在 Linux 全部完成并绿；变异 3/3 已还原。
-- 主代理独立核实：
-  - **D1 已修**：`tls_openssl.cpp:325 consumed = in_size;`，且 `:314-324` 有 11 行注释完整解释"EXTRA 恒 0 / 重放→nonce 重用→SSL_ERROR_SSL / 镜像 SChannel / 残留由 drain 收敛"——注释质量高，正是我在 discover 里要求的"写明后端语义差异"。
-  - **server 角色已落地**：`:161 call_once` 进程级身份、`:196 TLS_server_method() : TLS_client_method()` 按角色分支、`:257 SSL_set_accept_state`、`:583-592` B 层 PEM 校验（成对要求 + 解析失败报错）。
-- 变异红证 3/3（执行 AI 报告）：①回退旧 consumed 算法 → 合段用例 RED（**且复现了真实的 GCM nonce 重用失败态**，非仅断言不符）；②connect_state → 反转型 loopback RED；③LocalSPK 回 kUnsupported → 一致性 RED。
-- 新增测试：tls_openssl **15 tests/123 checks**、server_security **7 tests/60 checks**；`tls_server_loopback_to_done` **不再 skip**。
-- 工作树 5 文件（+选做 `tools/rtsc_server/main.cpp`），全部在预期范围内。
-- 待：Linux 全量（禁 gateway）+ Windows 62/62 的最终验证报告。
-
-## 第774轮：主代理独立发现 D1 的耦合问题（server 侧 drain 被 if 包住）
-### 事实（`src/security/server_security_layer.cpp`）
-- drain 存在两处：`:186-193`（`DriveCredssp` 内）、`:285-292`（`ReceivePdu` 内）。
-- **但 `:186-193` 被包在 `if (!pending_cipher_.empty())`（`:178`）内**。
-- D1 修好后握手完成时 `pending_cipher_` 被 `erase(consumed == in_size)` 清空
-  → 握手后首次进 `DriveCredssp` 时 `pending_cipher_.empty()` → **整段跳过，包括 drain**
-  → 合段的 CredSSP 记录滞留在 OpenSSL rbio（`buffered_input() > 0`）无人取出
-  → `plain_buf_` 空 → 返回 `Want::kRead`，等客户端再发。
-- `client` 侧 `security_layer.cpp:224-229` 是同一形状（同型）。
-
-### 主代理判定
-**不是数据丢失，是"残留滞留到下一次输入"**：CredSSP 必有多轮，下一次 `Step()` 带数据进来时
-`pending_cipher_` 非空，`Receive` 会按顺序先解出滞留记录 → 功能正确，但**多一个往返**。
-严重度待双审判定（P3 行为不精确 / P2 特定时序卡住）。
-修法候选：把 `while (buffered_input() > 0) Receive(nullptr, 0, ...)` **移到 `if` 外面**（两端都改）。
-
-### 覆盖缺口
-执行 AI 的合段用例 `openssl_coalesced_final_flight_plus_first_record`（`test_tls_openssl.cpp:583-660`）
-**只覆盖 client 角色**（产品 client + 裸 OpenSSL server），未覆盖 server 角色产物。
-
-已 relay 乙要求判定严重度 + 确认修法 + 补 server 角色合段用例。
+## 第774轮：主代理发现 D1 的耦合问题
+`server_security_layer.cpp:186-193` 的 drain 被包在 `if (!pending_cipher_.empty())`（`:178`）里。
+D1 修好后握手完成时 `pending_cipher_` 已清空 → 合段的 CredSSP 记录滞留在 OpenSSL rbio 无人取出
+→ 多一个往返（非数据丢失）。`security_layer.cpp:224-229` 同形。待双审判定严重度。
+执行 AI 的合段用例只覆盖 client 角色，未覆盖 server 角色产物。
