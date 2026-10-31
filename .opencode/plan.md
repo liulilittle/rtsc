@@ -499,3 +499,18 @@
 4. F3（P3）：StubGateway 写线程 deadline
 5. USB：P2 AddDevice 异步反馈；P3 完整性（复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck）；W5 真机
 6. 真机验证：网关（200 vs 101）、USB 设备、驱动器、音频
+
+## 阶段 2 遗留（P3，主代理审查发现，不阻塞签章）
+
+### D-T3：升级路径 WebSocket mask 在单次 Write 内复用
+`src/net/gateway_transport.cpp:1234-1249`：`RandomBytes` 在 `while (off < size)` **之前**只调用一次，
+循环内所有帧共用同一个 `mask`。
+RFC 6455 §5.3："the masking key for a given frame MUST NOT make it simple for a
+server/proxy to predict the masking key for a subsequent frame."
+**实际影响有限**：`size` 通常远小于 `kMaxWebSocketPayloadBytes`(16MiB)，一个 Write 只产生一帧；
+仅 >16MiB 的单次写才会出现多帧同 mask。
+**修复**：把 mask 生成移入循环体（每帧一次）。属 P3，后续批次处理。
+
+### D-T4：`Sec-WebSocket-Accept` 未校验（执行 AI 已标 UNVERIFIED）
+101 升级后未验证服务端回显的 `Sec-WebSocket-Accept`（RFC 6455 §4.1 要求客户端校验）。
+外层 TLS 已保护信道，风险有限；真机联调时补。
