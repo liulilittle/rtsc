@@ -730,46 +730,19 @@
   - 604b5c1：缺陷探针红证入库（主代理独立复现 2/2 FAIL）。
 - 待：执行 AI（ses_e715ef62）交付 A/B/C/D/E/F → 双审复核 → 双章 → C0 → 提交。
 
-## 第757轮：阶段2 审计四步闭合确认（甲终局）+ W8 裁剪
-- 甲四次确认实证纪律闭合：缺陷清单最终形态 = **A1（空请求静默，P1）+ A3（TLS kInsecure，P0）为实证缺陷**；A4 并入 A1；**A2 被双连接证据推翻→排除项**；A5/A6 降级设计项；A7/A8 标 UNVERIFIED。
-- 探针红证：`probe_stage2.exe` → `[RED] D-A4` + `[RED] D-A1`，failures=2（主代理已独立复现，604b5c1）。
-- W8 裁剪：process.md 720→654 行（748-756 轮归档，27f83f0）。
-- 执行 AI ses_e715ef62 仍在途（busy/pending），工作树尚未写入。
-- 审计甲任务已完成但**保留席位**（后续负责阶段2交付复核）。
-
-## 第758轮：审计甲回收（反复空转）+ 执行 AI 已开始写入
-- 甲（ses_e716dd16）连续 5 轮重复同一确认，任务早已完成 → 按第 9 条 **delete 解散**（dissolved）。
-- 剩余子代理：乙 ses_e716db85（idle，保留待复核）、执行 ses_e715ef62（busy/pending，工作中）。
-- 执行进度：`tests/test_gateway.cpp` 已修改（TDD 红测先行），源码尚未动 → 符合"先红后绿"。
-- 乙的复核时机：待执行交付 + 主代理核实 SHA 稳定后。
-
-## 第759轮：阶段2 执行交付 + 主代理独立验证 + 派乙复核
-- 执行 AI（ses_e715ef62）一次交付全部 A-F：12 文件 +2949/-47（gateway_transport.cpp +816、test_gateway.cpp +1294、main.cpp +226、gateway.cpp +284）。
-- 报称：gateway 72→109 tests / 333→1125 checks 全绿；9 影响面套件全绿；C0 0err/0warn；4 项变异红证。
-- **主代理独立核实**：
-  - SHA 稳定（4 秒复测一致）
-  - 自建 Release `BUILD_RC=0`、0 err/0 warn
-  - 自跑 9 套件 **9/9 Passed**
-  - 关键实现就位：`:703` RDGSP 空请求拒绝、`:927` IN 101 硬错、`:886/:940` 重试上限、`:280` GatewayTunnel 同款拒绝
-  - 自写探针 `evidence/gateway-stage2-verify.cpp`：**16/16 PASS**（commit 0f8ad36）—— builder 拒 CRLF×3、clean IN = RDG_IN_DATA+chunked+无CL、RFC6455 FIN/opcode/MASK/长度/mask key 线上字节 44 33 22 11/payload 掩码、解码器接受外部未掩码帧
-  - **主代理首版探针的 mask 期望写错**（误以为小端），实为 RFC 大端 → 实现正确，已修正探针
-- 乙复核 7 项 + 重点（pinned SPKI 正确性 / ChunkedEncodeChunk 无界 / UNVERIFIED 合理性 / 独立变异 2 项 / rtsc_connect 仍 kInsecure 是否同批修）。
-
-## 第760轮：P0 裁定入档 + 派 F1 修复
-- **乙的 P0 全部经主代理独立核实**（`docs/spec/tls-schannel-p0-verification.md`，7dd6e34）：
-  - `tls_schannel.cpp:143-155` 三策略全 MANUAL；`:148-149` 注释说明该写法会使 kStrict≡kInsecure，**代码与注释自相矛盾**
-  - `:663-677` 握手完成只查 STREAM_SIZES；`:437-473` 有 PeerSubjectPublicKeyInfo 但从不与 pinned_spki_sha256 比较
-  - `tls_factory.cpp:36-42` **Windows 唯一后端 = SChannel** → 本机全部 TLS 零校验（含 CredSSP step5 明文密码面）
-  - 对照 `tls_openssl.cpp:118-126`（kTofu 与 kStrict 都 VERIFY_PEER，仅 kStrict 加 set1_host）、`:427-445`（真 memcmp）
-  - `test_tls.cpp:246-251` 全部用例用 InsecureConfig → **零 kStrict/kTofu 覆盖**（缺陷长期未被发现的原因）
-- **裁定：阶段 2 不予盖章**。D-A3 在 Windows 上"改了默认值未改行为"，验收第 7 条仅字面满足。
-- F1 执行已派 `ses_e70fdf498ffeYs1dPwL4nS6qr3`：kStrict/kTofu 改 DEFERRED + 链/主机名/SAN 通配校验 + pin memcmp；4 个新用例（kStrict 拒自签 / pin mismatch / pin match / kInsecure 回归）；2 项变异红证；server 角色需先判 role 避免误伤。
-- F2（rtsc_connect）与 F3（写线程 deadline）按乙建议排序，F1 双章后执行。
-- **教训（同型家族第 5 例）**：改了默认值 ≠ 改了行为；默认值变更必须配套"该策略确实会拒绝"的测试。
-
-## 第761轮：主代理独立审查新增 TlsByteTransport，抓到 2 项 P1 数据丢失
-- 审查 `src/net/gateway_transport.cpp:531-545`（Write）与 `:489-529`（Read），对照 `include/rtsc/net/tls.h:151-177` 的契约。
-- **D-T1（P1）Write 忽略 `consumed`**：`tls_openssl.cpp:207-220` 在 SSL_write WANT_READ/WANT_WRITE 时 `break` 并 `consumed = written`（< size）**仍返回 kOk**；适配器不检查 `consumed==size` 就 `return true` → 尾部永久丢失，违反 `net::Transport::Write` 契约（"Sends all size bytes"）。
-- **D-T2（P1）Read 丢弃超出缓冲的明文**：`gateway_transport.cpp:502-506/521-524` 用 `min(size, plaintext.size())` 拷贝后把局部 `plaintext` 丢弃；而 `tls.h:167-175` 明确 `max_out` 是软阈值、"may exceed it by up to one record"、"may append from several records"，调用方必须保留剩余。
-- **探针实证 2/2 RED**（`evidence/gateway-tlsadapt-probe.txt`，b6ed7f0）：Write 返回 true 但只写出 40/100 字节；两次 Read 共取回 16 字节而后端已解密 516 字节。
-- 判为**阶段 2 新代码引入**（非既有缺陷）→ 属本批范围，已 relay 给 F1 执行 AI 同批修复，含 2 个新用例与 2 项变异红证。
+## 第757-761轮（阶段2 交付验证 + P0，归档摘要）
+- 757-759 阶段2 交付（12 文件 +2949/-47：RdgspTransport 双连接、RFC6455、空请求拒绝、IN 101 硬错、重试上限、--gateway 接线）。
+  - 主代理独立核实：SHA 稳定、BUILD_RC=0、**9/9 套件 Passed**、自写探针 **16/16 PASS**（`evidence/gateway-stage2-verify.txt`，0f8ad36）。
+  - 主代理探针首版把 WS mask 期望写成小端；实现按 RFC 大端写 key（`gateway.cpp:803-806`）——**实现对，探针错**，已修正。
+  - 乙复核 7 项全 PASS，但发现 **P0**。
+- 760 **P0：SChannel 零证书校验**。`tls_schannel.cpp:143-155` 三策略全 `ISC_REQ_MANUAL_CRED_VALIDATION`；
+  `:148-149` 注释明说 MANUAL 会使 kStrict≡kInsecure，代码却仍写 MANUAL；`:663-677` 握手完成只查 STREAM_SIZES；
+  `:437-473` 有 PeerSubjectPublicKeyInfo 但从不与 pinned_spki_sha256 比较；`tls_factory.cpp:36-42` **Windows 唯一后端 = SChannel**。
+  影响：本机全部 TLS（含 CredSSP step5 明文密码面）无校验。记录 `docs/spec/tls-schannel-p0-verification.md`（7dd6e34）。
+  **裁定：阶段2 不予签章**（D-A3 只改了默认值未改行为）。
+- 761 主代理审查新代码 `TlsByteTransport`，抓到 **2 项 P1 数据丢失**：
+  - D-T1 `Write` 忽略 `consumed`（`gateway_transport.cpp:531-545` vs `tls_openssl.cpp:207-220` 部分消费仍返 kOk）
+  - D-T2 `Read` 丢弃超出缓冲的明文（`:502-506/521-524` vs `tls.h:167-175` 软阈值契约）
+  - 探针 **2/2 RED**（`evidence/gateway-tlsadapt-probe.txt`，b6ed7f0）。已 relay 给 F1 执行同批修。
+- P3 记录（`plan.md`，b14b15b）：D-T3 升级路径 WS mask 单次 Write 内复用（RFC 6455 5.3，实际影响小）；D-T4 Sec-WebSocket-Accept 未校验（UNVERIFIED）。
+- 待：F1（SChannel 校验 + TLS 适配丢包，ses_e70fdf49）→ 双审 → F2（rtsc_connect）→ 阶段2 签章提交。
