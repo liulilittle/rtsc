@@ -295,3 +295,33 @@ accept   = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
   + 多会话共享桌面抢鼠标判定 + UIPI 限制
 - 乙 `ses_e6ebaa3e`：协议层是否丢字段（**横向滚轮 PTRFLAGS_HWHEEL、相对移动 PTRFLAGS_MOVE**）
   + 接缝设计 + 安全（默认开/关、输入回显、多会话互相干扰）+ 测试盲区
+
+## 第790轮：修正乙的滚轮边界例子（单位是格数），但其溢出担忧成立且更严重
+### 乙说"9 位 ±255 装不下 3 格(360)" —— 例子不成立
+`include/rtsc/ui/window.h:174-177` `wheel_delta` 单位是**格数**（positive = up / right）；
+`src/ui/window_win32.cpp:505-513` Win32 后端**已除以 WHEEL_DELTA(120)**：`steps = accum / 120`。
+→ 3 格 = `delta 3`，不是 360。
+
+### 但溢出确实可达（探针 `evidence/input-wheel-range-probe.txt`，e748950）
+```
+raw=  120 ->   1 notch -> flags=0x0201 ->    1  ok
+raw= -120 ->  -1 notch -> flags=0x03FF ->   -1  ok   ← 修正后正确编码
+raw=  360 ->   3 notch -> flags=0x0203 ->    3  ok
+raw= 1200 ->  10 notch -> flags=0x020A ->   10  ok
+raw=32767 -> 273 notch -> flags=0x0311 -> -239  ← 回绕，方向反转
+clamped 255 -> 255 (sign preserved)
+```
+**可达路径**：单个 `WM_MOUSEWHEEL` 的 raw delta 是 int16，最大 32767 → 273 格 > 255 → 回绕成 -239。
+极端但真实，且是**方向反转**而非精度损失。
+
+### 修复清单（新增第 5 条）
+1. encoder（`client.cpp:231-238`）改 9 位二补码
+2. decoder（`server.cpp:1573-1578`）改 `sign_extend_9(f) = (f & 0x100) ? f - 0x200 : f`（不再二次取负）
+3. 规范锚断言：`encode(-1)==0x03FF`、`encode(-120)==0x0388`、`decode(0x03FF)==-1`、`decode(0x0388)==-120`
+4. **`tests/test_client.cpp:149-159` 必须改**（现锁 0x0301 是错的，乙指出）
+5. **新增**：`|delta| > 255` 时 clamp 到 ±255（保符号）或拆多事件——实现期选一种并说明理由
+6. HWHEEL 同 9 位字段 + `if (kPtrWheel) 纵 else if (kPtrHwheel) 横`（WHEEL 优先）
+
+### 待甲
+甲仍未交付 Win32 注入取证（termsrv/rdpdd/win32kfull + SendInput 语义 + 多会话 + UIPI），
+那是本批定案的另一半（输入注入实现方案）。已两次催。
