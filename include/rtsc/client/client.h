@@ -152,6 +152,16 @@ class Client {
         return dropped_hwheel_count_;
     }
 
+    // Number of wheel rotation UNITS (WHEEL_DELTA = 120 units per notch, NOT
+    // notches) dropped because one UI event exceeded
+    // kMaxWheelChunksPerEvent chunks. The chunk cap bounds the PDU a garbage
+    // or hostile wheel_delta can amplify into, but the excess rotation never
+    // reaches the server, so it is accounted here instead of vanishing
+    // silently. Monotonic and never reset.
+    size_t dropped_wheel_units_count() const noexcept {
+        return dropped_wheel_units_count_;
+    }
+
  private:
     // Applies one inbound post-session PDU (Fast-Path or slow-path).
     void OnSessionPdu(const std::vector<uint8_t>& pdu);
@@ -175,9 +185,11 @@ class Client {
     bool has_rtt_ = false;
     double rtt_ms_ = 0.0;
     std::string activity_id_;
-    // EncodeInput() is const but must record gated horizontal-wheel drops, so
-    // this diagnostic counter is mutable. It is monotonic and never reset.
+    // EncodeInput() is const but must record gated horizontal-wheel drops and
+    // chunk-cap wheel losses, so these diagnostic counters are mutable. They
+    // are monotonic and never reset.
     mutable size_t dropped_hwheel_count_ = 0;
+    mutable size_t dropped_wheel_units_count_ = 0;
 };
 
 }  // namespace rtsc::client

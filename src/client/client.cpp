@@ -31,9 +31,12 @@ constexpr int kWheelUnitsPerNotch = 120;
 constexpr int kWheelStep = 255;
 
 // A single UI wheel event is expanded to at most this many wire events
-// (8 * 255 units = 17 notches). The cap bounds what a garbage or hostile
-// wheel_delta can amplify into; a real wheel cannot scroll 17 notches in one
-// event, so the excess is dropped rather than growing the PDU without limit.
+// (8 * 255 units = 2,040 units = 17 notches). The cap bounds what a garbage or
+// hostile wheel_delta can amplify into; a real wheel cannot scroll 17 notches
+// in one event. The excess rotation is DROPPED -- not folded or clamped into a
+// remaining chunk -- and the lost amount is accumulated (in UNITS) in
+// dropped_wheel_units_count_ so that the truncation is observable rather than
+// silent.
 constexpr int kMaxWheelChunksPerEvent = 8;
 
 // The statistics window: a frame rate and a bandwidth over the last second.
@@ -265,9 +268,13 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             // -256..+255), so it is split into chunks of at most 255 units in
             // the SAME Fast-Path PDU. All chunks carry the sign of the original
             // delta and are emitted largest magnitude first (a fixed order, so
-            // the byte stream is deterministic); their sum is the source
-            // rotation, with nothing silently clamped away. A hostile delta is
-            // capped at kMaxWheelChunksPerEvent chunks.
+            // the byte stream is deterministic). Up to the cap below, the sum
+            // of the chunks is the source rotation. The cap is 8 chunks =
+            // 2,040 units = 17 notches; any rotation beyond it is DROPPED (no
+            // partial remainder is folded into the last chunk, so every wire
+            // value stays an exact 255-unit step) and the discarded UNITS are
+            // added to dropped_wheel_units_count_. This is a deliberate bound
+            // on a hostile delta, but the loss is counted, not silent.
             const int64_t units =
                 static_cast<int64_t>(ev.wheel_delta) * kWheelUnitsPerNotch;
             const int64_t magnitude = units < 0 ? -units : units;
@@ -290,6 +297,12 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
                 flags |= static_cast<uint16_t>(
                     rotation & proto::kPtrWheelRotationMask);
                 events.push_back(EncodeMouseEvent(flags, ev.x, ev.y));
+            }
+            // `remaining` is the part of |units| that did not fit in the cap:
+            // count the rotation UNITS that never reach the server. Zero when
+            // the delta fits (including the exact 17-notch boundary).
+            if (remaining > 0) {
+                dropped_wheel_units_count_ += static_cast<size_t>(remaining);
             }
             return EncodeFastPathInputPdu(events);
         }

@@ -288,6 +288,76 @@ RTSC_TEST(client_caps_wheel_chunks_for_large_delta) {
     }
 }
 
+// GAP-1: the 8-chunk cap drops rotation instead of emitting it, so the loss
+// must be observable. Below the cap nothing is dropped (3 notches = 360 units
+// fit in 2 chunks). Expected values are derived from "total units - units
+// actually on the wire", never from the implementation's own counter.
+RTSC_TEST(client_counts_no_dropped_wheel_units_below_cap) {
+    Client c(MakeDriver(), 16, 16);
+    CHECK_EQ(c.dropped_wheel_units_count(), static_cast<size_t>(0));
+
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 3;  // 3 * 120 = 360 units = 2 chunks (255 + 105)
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(2));
+    CHECK_EQ(c.dropped_wheel_units_count(), static_cast<size_t>(0));
+}
+
+// Boundary: the cap is 8 chunks * 255 units = 2,040 units = exactly 17
+// notches, so 17 notches must still fit with nothing dropped.
+RTSC_TEST(client_counts_no_dropped_wheel_units_at_cap) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 17;  // total = 17 * 120 = 2,040 units, every unit sent
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(8));
+    CHECK_EQ(c.dropped_wheel_units_count(), static_cast<size_t>(0));
+}
+
+// One notch past the boundary: total = 18 * 120 = 2,160 units, the wire keeps
+// the 8-chunk cap (2,040 units), so 2,160 - 2,040 = 120 units are dropped.
+RTSC_TEST(client_counts_one_dropped_wheel_units_above_cap) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 18;
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(8));
+    const int64_t total_units = 18 * 120;   // 2,160
+    const int64_t sent_units = 8 * 255;     // 2,040 (8 chunks, each 255)
+    CHECK_EQ(c.dropped_wheel_units_count(),
+             static_cast<size_t>(total_units - sent_units));  // 120
+}
+
+// Large delta: total = 120 * 120 = 14,400 units, the wire carries the cap of
+// 8 * 255 = 2,040 units, so 14,400 - 2,040 = 12,360 units are dropped. The
+// count is monotonic and accumulates across events.
+RTSC_TEST(client_counts_dropped_wheel_units_for_large_delta) {
+    Client c(MakeDriver(), 16, 16);
+    CHECK_EQ(c.dropped_wheel_units_count(), static_cast<size_t>(0));
+
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 120;
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(8));
+    const int64_t total_units = 120 * 120;  // 14,400
+    const int64_t sent_units = 8 * 255;     // 2,040
+    CHECK_EQ(c.dropped_wheel_units_count(),
+             static_cast<size_t>(total_units - sent_units));  // 12,360
+
+    // A second event with no overflow must not perturb the counter.
+    InputEvent tiny;
+    tiny.kind = InputEvent::Kind::kMouseWheel;
+    tiny.wheel_delta = 1;
+    CHECK_EQ(DecodeWheelPdu(c.EncodeInput(tiny)).events,
+             static_cast<size_t>(1));
+    CHECK_EQ(c.dropped_wheel_units_count(),
+             static_cast<size_t>(total_units - sent_units));
+}
+
 // N6: INT16_MIN notches = -32768 * 120 = -3,932,160 units. The product must be
 // computed without signed overflow (notch count widened to 64 bits), and the
 // chunk cap keeps the PDU at 8 events instead of 15,420.
