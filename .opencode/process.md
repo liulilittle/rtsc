@@ -401,3 +401,93 @@ N1（3 格 clamp 丢 0.875 格）/N2（-256 码位）/N3（gating 静默）/N6�
 .NET/PowerShell 混用时的经典陷阱：`Set-Location` 只改 PowerShell 的 provider 位置，
 **进程 CWD 不变**，`[IO.File]` 系列按进程 CWD 解析。沙箱化必须全程用**绝对路径**。
 本仓已出现两次同类事故（这次甲；round 793 我自己也差点用 `Copy-Item` 相对路径污染）。
+## 第796轮：批 1 返工交付并盖章 `e0bee4b`
+### 执行 AI 返工（A/B/C/D 全修）
+- A：`server.cpp:1650` 相对分支不再置 `is_move`（注释写明契约）；B：删 PTRXFLAGS 回退（`:1644-1647` 注释）；
+  C：wheel 分支独立且不调 `DecodePointerButtons`；D：wheel 分支 `ev.x=ev.y=0`（`:1621-1622`）
+- 红证：A → `FAIL :834 !got[0].is_move`、`FAIL :844 !got[1].is_move`；C/D → `FAIL :1179/:1180` + 12 条坐标红
+- 3 变异体全红、恢复哈希回基线 `27CF4F3E…846A`
+
+### 主代理独立复验（不采信子代理的绿）
+- `[BASH: cmake --build]` exit=0 warn=0 err=0
+- `[BASH: ctest -R "server|client|gui"]` **15/15**；`[BASH: ctest 全量]` **62/62 全绿**（61.26 s）
+- 主代理自做 A 变异：`FAIL :834 !got[0].is_move`、`FAIL :844 !got[1].is_move`、`1 failing tests, 2 failed checks`；
+  恢复后哈希精确回 `27CF4F3E…846A`、`34 tests, 350 checks, 0 failing`
+- 变异标记扫描：仅 `tests/test_view.cpp:418` 既有英文注释词（非标记）
+- 提交 `e0bee4b`；批 1 执行 AI 已 `delete` 解散
+
+### 仍未覆盖（转入批 2）
+N1 客户端 3 格滚轮被 clamp 成 2.125 格（静默丢 0.875 格）、N2 `-256` 码位、
+N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-10（慢路径 0x1C）
+## 第797轮：批 2 / 批 3 并行派发
+### 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK`（客户端，N1/N2/N3/N6）
+- N1：一次 UI 滚轮事件按 ±255 单位切块、装进**同一个** fast-path PDU（总量守恒），
+  新增 `kMaxWheelChunksPerEvent = 8` 上限防恶意放大
+- N2：`kMaxWheelRotation` 注释纠正（9 位二补码实为 -256..+255）
+- N3：HWHEEL gating 命中时计数（`dropped_hwheel_count()`），不再静默
+- N6：补负向 HWHEEL(0x0588)、-256、INT16_MIN、3 格拆包用例
+- 只改 `src/client/*` + `tests/test_client.cpp`（与批 3 文件不相交）
+
+### 批 3 `ses_e6cf5670effebndYyJL16mR0Gp`（服务器，P-9/P-10）
+- P-9：核实 `[MS-RDPBCGR] 2.2.7.1.6` 能力位（重点 `0x0008 FASTPATH_INPUT` / `0x0020 FASTPATH_INPUT2` /
+  仓库 `0x0002` 是否为自造），补齐广告
+- P-10：`HandleSlowPathPdu` 增加 `pduType2=0x1C` 分支，解析 `TS_INPUT_PDU`
+  （numberEvents + TS_INPUT_EVENT[eventTime/messageType/body]，SCANCODE/UNICODE 4B、MOUSE/MOUSEX 6B），
+  复用 fast-path 同一套 `InputEvent` 填充（含 wheel 9 位符号扩展）与回调；畸形包不崩、未知 messageType 计数
+- 只改 `src/server/*`、`proto/capabilities.h`、`proto/share.h`、`tests/test_server.cpp`
+
+两批文件集不相交，可并行。甲继续沙箱复核。
+## 第797轮：主代理裁决 B 被规范推翻 → 撤回 + 新开修复
+### 独立核验（webfetch 原文，非采信审计）
+- 2.2.8.1.1.3.1.1.7 `TS_RELPOINTER_EVENT` 的 pointerFlags 表**明确列出**
+  `PTRXFLAGS_BUTTON1 0x0001`(button 4)、`PTRXFLAGS_BUTTON2 0x0002`(button 5)
+- 2.2.8.1.2.2.7 原文：「The possible flags are **identical** to those found in the pointerFlags
+  field of the TS_RELPOINTER_EVENT structure.」
+→ 相对事件可携带 X1/X2；**我的裁决 B（删除回退）错误**，`e0bee4b` 因此把"相对模式侧键静默失效"提交入库，
+且 `tests/test_server.cpp:820-823` 把错误期望固化成断言（第 5 次"测试固化"，固化源是我的裁决）。
+
+### 处置
+- 撤回 B；A/C/D 维持（甲已用沙箱反向变异证实 A/C/D 各自承重：
+  A→`:834/:844` 红；C→`:1179/:1180` 红；D→承重行实为 wheel 分支的早退 `break;`，清零为纵深防御）
+- 新开执行 `ses_e6ceb8651ffexH0CPo2uymccLt`：恢复 `kMouseRel` 的 X1/X2 回退 +
+  测试改 `0x0001→4 / 0x0002→5 / 0x8002→5&&down / 0x8001→4&&down`，保留 `!is_move`、`x==y==0`
+- 甲的 4 次 relay 失败已由主代理代转（含正确会话 ID；我中途误写过一个 ID，已当轮更正）
+
+### 在途三路
+- 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK`（客户端 N1/N2/N3/N6）
+- 批 3 `ses_e6cf5670effebndYyJL16mR0Gp`（P-9/P-10，已提醒避免与 X 按钮修复同区域冲突）
+- 修复 `ses_e6ceb8651ffexH0CPo2uymccLt`（相对事件 X 按钮）
+## 第798轮：会话重启后现状测绘与三路唤醒
+### 实测现状（主代理，不采信记忆）
+- 工作树改动：`include/rtsc/client/client.h`、`src/client/client.cpp`、`src/server/server.cpp`、
+  `tests/test_client.cpp`、`tests/test_gui_send.cpp`、`tests/test_server.cpp`、`docs/spec/input-wheel-review-A.md`
+- **批 2（客户端 N1）已落地**：`client.cpp:37 kMaxWheelChunksPerEvent=8`、`:253 ++dropped_hwheel_count_`、
+  `:270-278` 切块上限 → `client` **21 tests / 127 checks / 0 failing**
+- **X 修复已落地**：`server.cpp:1669-1670` 的 `kPtrXButton2→5 / kPtrXButton1→4`，`net` 构建 0 err/0 warn
+- **批 3（P-9/P-10）只落了红测试**：`tests/test_server.cpp:642-644`（能力位）、`:1552/:1612/:1667/:1721`
+  （慢路径 SCANCODE/MOUSE/MOUSEX/UNICODE）、`:1813`（未知 messageType 计数）→
+  `40 tests, 401 checks, 6 failing tests, 8 failed checks`（红相，符合 TDD）
+- 四个子代理全部 idle/pending=false/wrote=null（会话重启后状态丢失），已按"同事件续做"
+  用 `manage_subagent prompt` 直发唤醒（禁止用 task 新建替代）：
+  - 批 3 `ses_e6cf5670effebndYyJL16mR0Gp` → 完成 P-9/P-10 实现
+  - 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK` → 补 3 变异 + 报告
+  - X 修复 `ses_e6ceb8651ffexH0CPo2uymccLt` → 补 1 变异 + 报告（只跑 `server_input_relative` 用例，
+    因批 3 在途会让整套 server 红）### X 按钮修复完成（`ses_e6ceb8651ffexH0CPo2uymccLt` 已 delete 解散）
+- `[READ:src/server/server.cpp]` kMouseRel 分支在 `DecodePointerButtons` 后恢复 X1/X2 回退
+  （注释引用 2.2.8.1.2.2.7 与 2.2.8.1.1.3.1.1.7）
+- 测试 4 条断言：`0x0001→4&&!down`、`0x0002→5&&!down`、`0x8002→5&&down`、`0x8001→4&&down`
+- 执行方证据：TDD 红（`FAIL :842/847/855/863 got 0 want 4/5/5/4`）；变异（%TEMP% 副本删回退）
+  → `4 failed checks` 红，恢复后绿；构建 0 err/0 warn；`// M<n>` 0 命中；无 git 回退操作
+- **主代理独立复跑**：`RTSC_TEST_FILTER=server_input_relative` → `2 tests, 42 checks, 0 failing`（绿证）
+- 过程中出现 MSB6003 文件锁（并发代理占用 build 目录）与 server.cpp hash 漂移（他人编辑），
+  已按最新工作树重建复跑 —— 说明**并行改同一文件时必须串行化构建**### 批 2 完成（N1/N2/N3/N6；`ses_e6cf58127ffeL6TB6MNtPmxgeK` 已 delete 解散）
+- `client.cpp:23-37`：`kWheelStep=255`（注释明确 9 位二补码 -256..+255，-256 码位不使用）、
+  `kMaxWheelChunksPerEvent=8`（上限 8×255=17 格，防敌意 delta 放大）
+- `client.cpp:248-294`：HWHEEL 门控 `++dropped_hwheel_count_`；units 用 `int64_t`；
+  按 ±255 切块、**每块上限 255**（`part = remaining < 255 ? remaining : 255`，故不会溢出字段）、
+  同符号、绝对值从大到小、装同一 PDU；`remaining` 递减后多余部分因上限被丢弃（注释说明）
+- 6 个新/改测试；期望来自规范（-3 格 = -255-105 = -360 守恒）
+- 执行方证据：TDD 红 `4 failing / 12 failed checks`；3 变异（%TEMP% 副本：①只发一块 ②删上限 ③删计数）
+  各自转红并恢复绿；构建 0/0；`// M<n>` 0 命中
+- **主代理独立复核**：`client_tests` → `21 tests, 127 checks, 0 failing`；
+  逐行读切块循环确认 `part` 有 255 上限（无字段溢出），上限丢弃有注释

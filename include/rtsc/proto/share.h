@@ -169,6 +169,26 @@ enum class FastPathInputEventCode : uint8_t {
     kQoeTimestamp = 0x6,
 };
 
+// messageType of a slow-path TS_INPUT_EVENT ([MS-RDPBCGR] 2.2.8.1.1.3.1.1).
+// These are NOT the fast-path event codes above and are not a 0..4 sequence:
+// the specification assigns 0x0000/0x0002/0x0004/0x0005/0x8001/0x8002/0x8004.
+enum class SlowPathInputEventType : uint16_t {
+    kSync = 0x0000,
+    kUnused = 0x0002,
+    kScancode = 0x0004,
+    kUnicode = 0x0005,
+    kMouse = 0x8001,
+    kMouseX = 0x8002,
+    kMouseRel = 0x8004,
+};
+
+// A slow-path TS_INPUT_EVENT is eventTime(4) + messageType(2) + a 6-byte event
+// body (TS_KEYBOARD_EVENT, TS_UNICODE_KEYBOARD_EVENT, TS_POINTER_EVENT,
+// TS_POINTERX_EVENT, TS_SYNC_EVENT and TS_UNUSED_EVENT are each 6 bytes), so
+// every defined event occupies exactly 12 bytes.
+constexpr size_t kSlowPathInputEventHeaderSize = 6;
+constexpr size_t kSlowPathInputEventSize = 12;
+
 // Fast-path update codes ([MS-RDPBCGR] 2.2.9.1.2.1).
 enum class FastPathUpdateCode : uint8_t {
     kOrders = 0x0,

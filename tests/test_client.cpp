@@ -9,10 +9,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "rtsc/net/transport.h"
+#include "rtsc/proto/input.h"
 #include "rtsc/proto/rdp_neg.h"
 #include "rtsc/proto/share.h"
 #include "test_framework.h"
@@ -92,6 +94,37 @@ std::string Hex(const std::vector<uint8_t>& b) {
         s.push_back(k[c & 0xF]);
     }
     return s;
+}
+
+// The MOUSE events of a Fast-Path input PDU whose numEvents fits the 4-bit
+// header field (the wheel paths produce at most 8). Each TS_FP_POINTER_EVENT is
+// eventHeader(1) + pointerFlags(2) + xPos(2) + yPos(2) = 7 bytes, so event i's
+// pointerFlags start at 2 + 7*i. A two-byte FastPathLength never occurs here.
+struct DecodedWheelPdu {
+    size_t events = 0;
+    bool one_byte_length = false;
+    std::vector<uint16_t> pointer_flags;
+};
+
+DecodedWheelPdu DecodeWheelPdu(const std::vector<uint8_t>& pdu) {
+    DecodedWheelPdu out;
+    if (pdu.size() < 2) return out;
+    out.events = (pdu[0] >> 2) & 0x0F;
+    out.one_byte_length = (pdu[1] & 0x80) == 0;
+    for (size_t i = 0; i < out.events; ++i) {
+        const size_t off = 2 + 7 * i;
+        if (off + 3 > pdu.size()) break;
+        out.pointer_flags.push_back(
+            static_cast<uint16_t>(pdu[off + 1] | (pdu[off + 2] << 8)));
+    }
+    return out;
+}
+
+// Sign-extends the 9-bit WheelRotationMask field: 0x0100 is its sign bit
+// ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1), so 0x0300 is -256, not +256.
+int WheelRotation(uint16_t pointer_flags) {
+    const int raw = pointer_flags & 0x01FF;
+    return (raw & 0x0100) != 0 ? raw - 0x0200 : raw;
 }
 
 }  // namespace
@@ -188,25 +221,130 @@ RTSC_TEST(client_encodes_multi_notch_wheel) {
     CHECK_EQ(pdu[4], static_cast<uint8_t>(0x02));
 }
 
-RTSC_TEST(client_encodes_wheel_clamped_to_nine_bit_signed_range) {
+// N1: one UI wheel event may exceed the 9-bit field (3 notches = 360 units,
+// while the two's-complement field carries -256..+255). Clamping to 255 used to
+// lose 105 units (0.875 notch) silently. The event is split into chunks of at
+// most 255 units in the SAME Fast-Path PDU, largest magnitude first, all with
+// the sign of the original delta, so the wire sum is exactly 360 (or -360).
+RTSC_TEST(client_splits_three_notch_wheel_without_losing_rotation) {
     Client c(MakeDriver(), 16, 16);
-    InputEvent down;
-    down.kind = InputEvent::Kind::kMouseWheel;
-    down.wheel_delta = -120;  // -14400 wire units: clamps to -255
-    const auto pdu_down = c.EncodeInput(down);
-    CHECK_EQ(pdu_down.size(), static_cast<size_t>(9));
-    // PTRFLAGS_WHEEL | (-255 & 0x01FF = 0x101) = 0x0301.
-    CHECK_EQ(pdu_down[3], static_cast<uint8_t>(0x01));
-    CHECK_EQ(pdu_down[4], static_cast<uint8_t>(0x03));
-
     InputEvent up;
     up.kind = InputEvent::Kind::kMouseWheel;
-    up.wheel_delta = 120;  // +14400 wire units: clamps to +255
-    const auto pdu_up = c.EncodeInput(up);
-    CHECK_EQ(pdu_up.size(), static_cast<size_t>(9));
-    // PTRFLAGS_WHEEL | 255 = 0x02FF.
-    CHECK_EQ(pdu_up[3], static_cast<uint8_t>(0xFF));
-    CHECK_EQ(pdu_up[4], static_cast<uint8_t>(0x02));
+    up.wheel_delta = 3;  // 3 * WHEEL_DELTA(120) = 360 wire units
+    const DecodedWheelPdu up_pdu = DecodeWheelPdu(c.EncodeInput(up));
+    CHECK_EQ(up_pdu.events, static_cast<size_t>(2));
+    CHECK(up_pdu.one_byte_length);
+    CHECK_EQ(up_pdu.pointer_flags.size(), static_cast<size_t>(2));
+    if (up_pdu.pointer_flags.size() == 2) {
+        // 0x0200 | 255 = 0x02FF, then 0x0200 | 105 (0x69) = 0x0269.
+        CHECK_EQ(up_pdu.pointer_flags[0], static_cast<uint16_t>(0x02FF));
+        CHECK_EQ(up_pdu.pointer_flags[1], static_cast<uint16_t>(0x0269));
+        CHECK_EQ(WheelRotation(up_pdu.pointer_flags[0]) +
+                     WheelRotation(up_pdu.pointer_flags[1]),
+                 360);
+    }
+
+    InputEvent down;
+    down.kind = InputEvent::Kind::kMouseWheel;
+    down.wheel_delta = -3;  // -360 wire units
+    const DecodedWheelPdu down_pdu = DecodeWheelPdu(c.EncodeInput(down));
+    CHECK_EQ(down_pdu.events, static_cast<size_t>(2));
+    CHECK_EQ(down_pdu.pointer_flags.size(), static_cast<size_t>(2));
+    if (down_pdu.pointer_flags.size() == 2) {
+        // 0x0200 | (-255 & 0x01FF = 0x101) = 0x0301, then
+        // 0x0200 | (-105 & 0x01FF = 0x197) = 0x0397.
+        CHECK_EQ(down_pdu.pointer_flags[0], static_cast<uint16_t>(0x0301));
+        CHECK_EQ(down_pdu.pointer_flags[1], static_cast<uint16_t>(0x0397));
+        CHECK_EQ(WheelRotation(down_pdu.pointer_flags[0]) +
+                     WheelRotation(down_pdu.pointer_flags[1]),
+                 -360);
+    }
+}
+
+// A single UI event is expanded to at most kMaxWheelChunksPerEvent = 8 wire
+// events (8 * 255 units = 17 notches); this bounds the damage a garbage or
+// hostile wheel_delta can do instead of building a huge PDU. 120 notches is
+// 14,400 units = 57 chunks nominally, so only the first 8 full steps are sent.
+RTSC_TEST(client_caps_wheel_chunks_for_large_delta) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent up;
+    up.kind = InputEvent::Kind::kMouseWheel;
+    up.wheel_delta = 120;
+    const DecodedWheelPdu up_pdu = DecodeWheelPdu(c.EncodeInput(up));
+    CHECK_EQ(up_pdu.events, static_cast<size_t>(8));
+    CHECK_EQ(up_pdu.pointer_flags.size(), static_cast<size_t>(8));
+    for (uint16_t flags : up_pdu.pointer_flags) {
+        CHECK_EQ(flags, static_cast<uint16_t>(0x02FF));  // +255 each
+    }
+
+    InputEvent down;
+    down.kind = InputEvent::Kind::kMouseWheel;
+    down.wheel_delta = -120;
+    const DecodedWheelPdu down_pdu = DecodeWheelPdu(c.EncodeInput(down));
+    CHECK_EQ(down_pdu.events, static_cast<size_t>(8));
+    CHECK_EQ(down_pdu.pointer_flags.size(), static_cast<size_t>(8));
+    for (uint16_t flags : down_pdu.pointer_flags) {
+        CHECK_EQ(flags, static_cast<uint16_t>(0x0301));  // -255 each
+    }
+}
+
+// N6: INT16_MIN notches = -32768 * 120 = -3,932,160 units. The product must be
+// computed without signed overflow (notch count widened to 64 bits), and the
+// chunk cap keeps the PDU at 8 events instead of 15,420.
+RTSC_TEST(client_handles_int16_min_wheel_delta_without_overflow) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = (std::numeric_limits<int16_t>::min)();
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(8));
+    CHECK_EQ(pdu.pointer_flags.size(), static_cast<size_t>(8));
+    for (uint16_t flags : pdu.pointer_flags) {
+        CHECK_EQ(flags, static_cast<uint16_t>(0x0301));  // -255 each, sign kept
+    }
+}
+
+// N6: -256 notches = -30,720 wire units. One field value of -256 (0x0300 in
+// WheelRotationMask) is representable, but the splitter walks symmetric 255
+// steps (so the extra -256 code point is intentionally unused, N2); the sum is
+// still -30,720 by construction: 120 chunks x -255 would be needed, and the
+// 8-chunk cap keeps the first 8 full -255 steps. Expected values come from the
+// 9-bit two's-complement field, not from the implementation.
+RTSC_TEST(client_chunks_negative_256_notches_within_cap) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = -256;
+    const DecodedWheelPdu pdu = DecodeWheelPdu(c.EncodeInput(w));
+    CHECK_EQ(pdu.events, static_cast<size_t>(8));
+    CHECK_EQ(pdu.pointer_flags.size(), static_cast<size_t>(8));
+    for (uint16_t flags : pdu.pointer_flags) {
+        CHECK_EQ(WheelRotation(flags), -255);
+    }
+}
+
+// N3: a gated PTRFLAGS_HWHEEL drop is normal capability negotiation (the server
+// did not advertise INPUT_FLAG_MOUSE_HWHEEL), so the session must not be torn
+// down -- but it used to be invisible. The counter is monotonic and only counts
+// horizontal drops; a vertical wheel is never gated.
+RTSC_TEST(client_counts_dropped_hwheel_events) {
+    Client c(MakeDriver(), 16, 16);
+    CHECK_EQ(c.dropped_hwheel_count(), static_cast<size_t>(0));
+
+    InputEvent h;
+    h.kind = InputEvent::Kind::kMouseWheel;
+    h.horizontal = true;
+    h.wheel_delta = -1;
+    CHECK(c.EncodeInput(h).empty());
+    CHECK_EQ(c.dropped_hwheel_count(), static_cast<size_t>(1));
+    CHECK(c.EncodeInput(h).empty());
+    CHECK_EQ(c.dropped_hwheel_count(), static_cast<size_t>(2));
+
+    InputEvent v;
+    v.kind = InputEvent::Kind::kMouseWheel;
+    v.wheel_delta = 1;
+    CHECK(!c.EncodeInput(v).empty());
+    CHECK_EQ(c.dropped_hwheel_count(), static_cast<size_t>(2));
 }
 
 RTSC_TEST(client_hwheel_is_gated_on_server_support) {

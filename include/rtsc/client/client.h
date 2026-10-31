@@ -143,6 +143,15 @@ class Client {
     // the dialog next to the UTC timestamp.
     const std::string& activity_id() const noexcept { return activity_id_; }
 
+    // Number of PTRFLAGS_HWHEEL events dropped because the server did not
+    // advertise INPUT_FLAG_MOUSE_HWHEEL in its Input Capability Set. Monotonic:
+    // never reset. Gating is normal capability negotiation, not a protocol
+    // failure, so the session is not disconnected; the count makes the drop
+    // observable in diagnostics instead of silent.
+    size_t dropped_hwheel_count() const noexcept {
+        return dropped_hwheel_count_;
+    }
+
  private:
     // Applies one inbound post-session PDU (Fast-Path or slow-path).
     void OnSessionPdu(const std::vector<uint8_t>& pdu);
@@ -166,6 +175,9 @@ class Client {
     bool has_rtt_ = false;
     double rtt_ms_ = 0.0;
     std::string activity_id_;
+    // EncodeInput() is const but must record gated horizontal-wheel drops, so
+    // this diagnostic counter is mutable. It is monotonic and never reset.
+    mutable size_t dropped_hwheel_count_ = 0;
 };
 
 }  // namespace rtsc::client

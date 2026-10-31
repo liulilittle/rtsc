@@ -22,9 +22,19 @@ constexpr size_t kReadChunk = 16384;
 // reports notches instead (ui::InputEvent::wheel_delta).
 constexpr int kWheelUnitsPerNotch = 120;
 
-// The rotation field is 9 bits two's complement, so its symmetric range is
-// -255..+255; PTRFLAGS_WHEEL_NEGATIVE (0x0100) is that field's sign bit.
-constexpr int kMaxWheelRotation = 255;
+// The rotation field is 9 bits two's complement, so the range it can carry is
+// -256..+255: PTRFLAGS_WHEEL_NEGATIVE (0x0100) is the field's sign bit, which
+// makes 0x0300 mean -256. The splitter below advances in symmetric steps of 255
+// so both directions are identical; that leaves the single -256 code point
+// unused, which is harmless (a notch is 120 units, so -256 is not reachable
+// anyway). 255 is therefore the step size, NOT "the whole range".
+constexpr int kWheelStep = 255;
+
+// A single UI wheel event is expanded to at most this many wire events
+// (8 * 255 units = 17 notches). The cap bounds what a garbage or hostile
+// wheel_delta can amplify into; a real wheel cannot scroll 17 notches in one
+// event, so the excess is dropped rather than growing the PDU without limit.
+constexpr int kMaxWheelChunksPerEvent = 8;
 
 // The statistics window: a frame rate and a bandwidth over the last second.
 constexpr auto kStatWindow = std::chrono::seconds(1);
@@ -235,8 +245,14 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             // [MS-RDPBCGR] 2.2.8.1.1.3.1.1.1: PTRFLAGS_HWHEEL MUST NOT be sent
             // to a server that did not indicate support in its Input
             // Capability Set. A vertical wheel is an ordinary MOUSE event and
-            // is never gated.
-            if (ev.horizontal && !driver_.server_supports_hwheel()) return {};
+            // is never gated. Dropping the event is the correct behaviour
+            // (disconnecting over one unsupported axis would be far worse than
+            // degrading it to vertical-only), but it must not be silent, hence
+            // the monotonic counter.
+            if (ev.horizontal && !driver_.server_supports_hwheel()) {
+                ++dropped_hwheel_count_;
+                return {};
+            }
             // The UI layer reports notches; the wire carries WHEEL_DELTA (120)
             // rotation units per notch. FreeRDP PR #6806 fixed the old
             // "positive value plus negative flag" encoding (the server saw 136
@@ -244,18 +260,38 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             // OF the 9-bit two's-complement WheelRotationMask field, so the
             // masked value must be sent as-is and the bit must not be OR'ed in
             // separately (that made -1 look like 0x0301 = -257, not -120).
-            const int scaled =
-                static_cast<int>(ev.wheel_delta) * kWheelUnitsPerNotch;
-            const int units = scaled > kMaxWheelRotation
-                                  ? kMaxWheelRotation
-                                  : (scaled < -kMaxWheelRotation
-                                         ? -kMaxWheelRotation
-                                         : scaled);
-            uint16_t flags =
-                ev.horizontal ? proto::kPtrHwheel : proto::kPtrWheel;
-            flags |= static_cast<uint16_t>(
-                units & proto::kPtrWheelRotationMask);
-            return EncodeFastPathInputPdu({EncodeMouseEvent(flags, ev.x, ev.y)});
+            //
+            // One UI event can exceed that field (3 notches = 360 units, field
+            // -256..+255), so it is split into chunks of at most 255 units in
+            // the SAME Fast-Path PDU. All chunks carry the sign of the original
+            // delta and are emitted largest magnitude first (a fixed order, so
+            // the byte stream is deterministic); their sum is the source
+            // rotation, with nothing silently clamped away. A hostile delta is
+            // capped at kMaxWheelChunksPerEvent chunks.
+            const int64_t units =
+                static_cast<int64_t>(ev.wheel_delta) * kWheelUnitsPerNotch;
+            const int64_t magnitude = units < 0 ? -units : units;
+            int64_t chunks = magnitude / kWheelStep;
+            if (magnitude % kWheelStep != 0) ++chunks;
+            if (chunks == 0) chunks = 1;  // a zero delta stays one no-op event
+            if (chunks > kMaxWheelChunksPerEvent) {
+                chunks = kMaxWheelChunksPerEvent;
+            }
+            std::vector<std::vector<uint8_t>> events;
+            events.reserve(static_cast<size_t>(chunks));
+            int64_t remaining = magnitude;
+            for (int64_t i = 0; i < chunks; ++i) {
+                const int64_t part =
+                    remaining < kWheelStep ? remaining : kWheelStep;
+                remaining -= part;
+                const int64_t rotation = units < 0 ? -part : part;
+                uint16_t flags =
+                    ev.horizontal ? proto::kPtrHwheel : proto::kPtrWheel;
+                flags |= static_cast<uint16_t>(
+                    rotation & proto::kPtrWheelRotationMask);
+                events.push_back(EncodeMouseEvent(flags, ev.x, ev.y));
+            }
+            return EncodeFastPathInputPdu(events);
         }
         case ui::InputEvent::Kind::kClose:
         case ui::InputEvent::Kind::kNone:

@@ -132,9 +132,9 @@ rtsc_server_tests.exe  34 tests, 330 checks, 0 failing tests, 0 failed checks   
 同理 `2E4AEEFD…` 的 `:1174/:1175` 是 **D 的反向变异红证**（去掉清零 → 坐标 1/2/3/4/5/123/456 原样透出）。
 但**红基线不能作为验收**，需等执行 AI 把 C 收口后复测到 `0 failing`。
 
-A/B 已落地：`[READ:src/server/server.cpp:1643-1662]` 无 `ev.is_move = true`、无 PTRXFLAGS 回退，
-只 `DecodePointerButtons(pf, false, ev)`；对应断言 `[READ:tests/test_server.cpp:834]`（`!is_move`）、
-`[READ:tests/test_server.cpp:841-844]`（`0x0002 → button==0`、`!is_move`）。
+A 已落地：`[READ:src/server/server.cpp:1643-1662]` 无 `ev.is_move = true`，只 `DecodePointerButtons(pf, false, ev)`；
+对应断言 `[READ:tests/test_server.cpp:834]`（`!is_move`）、`[READ:tests/test_server.cpp:835-836]`（`x==y==0`）。
+B（PTRXFLAGS 回退）**不该删**——见 R4，规范原文推翻该裁决。
 
 ## R2b A/B/C/D 反向变异（最终基线 `27CF4F3E…EAD846A`，全部转红）
 
@@ -144,7 +144,7 @@ A/B 已落地：`[READ:src/server/server.cpp:1643-1662]` 无 `ev.is_move = true`
 | # | 反向变异（恢复旧行为） | 变异体 sha256 | 失败原文 |
 |---|---|---|---|
 | A | kMouseRel 内加回 `ev.is_move = true;` | `F8328B1E…7D11A21` | `:834 !got[0].is_move` / `:844 !got[1].is_move`，1 failing/2 failed |
-| B | 加回 PTRXFLAGS 回退（`0x0002 → X2`） | `3210FAB0…31C52134` | `:842 got[1].button==0 (got 5, want 0)`，1 failing/1 failed |
+| B | 加回 PTRXFLAGS 回退（`0x0002 → X2`） | `3210FAB0…31C52134` | `:842 got[1].button==0 (got 5, want 0)`，1 failing/1 failed —— **这是"假红"：转红只因测试本身写错了期望**，见 R4 |
 | C | wheel 分支内加回 `DecodePointerButtons(pf, false, ev);` | `19309376…A07D146F` | `:1179 button==0 (got 1)` / `:1180 !button_down`，1 failing/2 failed |
 | D | 删掉 wheel 分支的早退 `break;`（保留清零 = 死存储） | `2E4AEEFD…ADF76ABCC` | `:1174`×6 / `:1175`×6（1,2,3,4,5,123 / 1,2,3,4,5,456）+ `:1179/:1180`，14 failed |
 
@@ -155,15 +155,136 @@ C/D 两个缺陷会同时复活（本次 D 变异 14 条红即证据）。清零
 
 每条均 `sha_before_build == sha_after_build`，恢复后回到 `27CF4F3E…` 并复跑全绿。
 
+> **但 B 这一行不能算"变异被咬住"**：它转红是因为测试把 `0x0002 → button==0` 当成期望，而这个期望本身违反规范
+> （R4）。这正是第 16 条要防的镜像情况——**实现正确、测试错误**时，"变异"同样会红，却毫无保护价值。
+
 ## R3 结论与残留风险
 
-1. **A/B/C/D 四项均已落地并被反向变异咬住**（R2b 四条红 + 一条等价变异），基线 `27CF4F3E…` 在沙箱为
+1. **A/C/D 三项已落地并被反向变异咬住**（R2b 的 A/C/D 三条红 + 一条等价变异），基线 `27CF4F3E…` 在沙箱为
    `34 tests, 350 checks, 0 failing tests, 0 failed checks`（exit=0）。裁决 C/D 的实现方式与主代理要求一致：
    wheel 分支 `if (wheel) { …; ev.x = 0; ev.y = 0; break; }`，其后才是不带 wheel 门控的普通鼠标解码。
-2. **工作树在返工期间仍被原地变异过（2026-11-01 01:26:59）**：`F:\rtsc\src\server\server.cpp`
+   **B 为反向结论**：回退必须恢复，见 R4（本批若按原裁决提交，相对模式侧键会静默失效）。
+2. **工作树在返工期间被原地变异过（2026-11-01 01:26:59，现已还原）**：该时刻 `F:\rtsc\src\server\server.cpp`
    sha256 = `E58C1E46…A4404F5`，与沙箱基线 `27CF4F3E…` 的差异**只有一行**
    （`[BASH: git diff --no-index <sandbox>/src/server/server.cpp F:\rtsc\src\server\server.cpp]` →
-   `+ ev.is_move = true;`，插在 `ev.kind = kMouseRel;` 之后）。这正是变异 A，属反工单验证的中间态；
-   **交付前必须还原回 `27CF4F3E…` 并复跑全绿**，否则等于把缺陷 A 提交进仓库。
-3. 方法学：任何在仓库工作树内做变异（哪怕计划还原）都会与多代理共享工作树冲突——本轮的 A 残留在沙箱外复现，
-   与我这轮早前误留的 `// M2` 是同一类事故。变异必须在 `%TEMP%` 副本内做，且 `Copy-Item` 后要 touch。
+   `+ ev.is_move = true;`，插在 `ev.kind = kMouseRel;` 之后）；01:28:32 复读已回到 `27CF4F3E…`，属验证中间态。
+3. 方法学：任何在仓库工作树内做变异（哪怕计划还原）都会与多代理共享工作树冲突——该中间态与我早前误留的
+   `// M2` 是同一类事故。变异必须在 `%TEMP%` 副本内做，且 `Copy-Item` 后要 touch。
+
+## R4 **裁决 B 被规范原文推翻：PTRXFLAGS 回退必须恢复**（我上一轮判断有误，纠正）
+
+我在批 1 复核里把 B 报为"疑似与 2.2.8.1.2.2.7 的 PTRFLAGS 命名空间矛盾"，主代理据此裁决"删除回退"。
+**这条判断是错的**，现在用规范原文推翻：
+
+- `[WEB:https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/9af47964-8bfc-4f43-8a15-4339a89833fa]`
+  （2.2.8.1.1.3.1.1.7 `TS_RELPOINTER_EVENT`）pointerFlags 表**明确列出**：
+  > `PTRXFLAGS_BUTTON1 0x0001` Extended mouse button 1 (also referred to as button 4) was pressed or released…
+  > `PTRXFLAGS_BUTTON2 0x0002` Extended mouse button 2 (also referred to as button 5) was pressed or released…
+- `[WEB:https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3b4ee59e-6049-45a9-9fcb-2e308defa3eb]`
+  （2.2.8.1.2.2.7 `TS_FP_RELPOINTER_EVENT`）：
+  > pointerFlags … **The possible flags are identical to those found in the pointerFlags field of the TS_RELPOINTER_EVENT structure.**
+
+即 fast-path 相对事件的 pointerFlags **就是**慢路径 `TS_RELPOINTER_EVENT` 的那一套，含 `0x0001/0x0002` 的 X1/X2。
+`PTRXFLAGS_DOWN` 是 `0x8000`（与 `PTRFLAGS_DOWN` 同值），所以 `button_down` 解码不受影响；
+`0x0001/0x0002` 在 PTRFLAGS 命名空间里未定义，不存在二义性。
+
+**后果**：删除回退是**功能回归**——相对模式下的 X1/X2 按下/释放会被解码成 `button == 0`（seam 侧丢掉侧键）。
+更严重的是本批把错误行为**固化成断言**：`[READ:tests/test_server.cpp:820-823]`
+`EncodeRelativeMouseEvent(0x0002, 0, 0)` → 期望 `button == 0`，注释还写着"0x0002 is an undefined PTRFLAGS bit"——
+按规范应为 `button == 5`。这是本轮唯一的**固化式错误测试**（第 16 条意义上的反向：改坏实现它反而绿）。
+
+**返工要求（阻断交付）**：
+1. `src/server/server.cpp` 的 `kMouseRel` 分支恢复 X1/X2 解码：
+   `DecodePointerButtons(pf, false, ev);` 之后，若 `ev.button == 0`：
+   `if (pf & kPtrXButton2) ev.button = 5; else if (pf & kPtrXButton1) ev.button = 4;`
+   （`kPtrXButton1/2` = 0x0001/0x0002，两者互斥且与 wheel 位不重叠）。
+2. 测试改为：`0x0001 → button==4`、`0x0002 → button==5`；补 `0x8002 → button==5 && button_down`、
+   `0x0002` 单独 → `button==5 && !button_down`（释放语义）。
+3. 注释与 `docs/spec/share-data.md:805` 对齐（该本地笔记本来就是对的，无需改文档）。
+
+**我的方法论失误**：我拿"TS_FP_POINTERX_EVENT 用 PTRXFLAGS、TS_FP_POINTER_EVENT 用 PTRFLAGS"的类比去推断相对事件，
+没有查 2.2.8.1.2.2.7 的 cross-reference 原文。后续凡涉及"命名空间/可用取值"的论断，一律先抓原文再下结论。
+（同时确认 A 仍成立：`PTRFLAGS_MOVE` 在相对事件里语义是"按 delta 移动"，与绝对 `(x,y)` 无关，
+保持 `is_move == false` + `rel_x/rel_y` 是对的。）
+
+## R5 修复方案的沙箱预验证（先绿→变异红→复绿，可直接复制）
+
+仓库 `e0bee4b` 已含错误 B，工作树 `server.cpp` sha = `27CF4F3E…EAD846A`（= 该提交内容）。
+我在 `%TEMP%` 副本上把修复**完整实现并验证**，供修复提交直接采用（未改仓库任何 src/include/tests）：
+
+**实现（`kMouseRel` 分支，副本 `src/server/server.cpp:1660-1664`）**
+```cpp
+DecodePointerButtons(pf, false, ev);
+if (ev.button == 0) {
+    if ((pf & proto::kPtrXButton2) != 0) ev.button = 5;
+    else if ((pf & proto::kPtrXButton1) != 0) ev.button = 4;
+}
+pos += 6;
+```
+`if (ev.button == 0)` 保证不与 PTRFLAGS 的 BUTTON1/2/3（0x1000/0x2000/0x4000）抢优先级；
+0x0001/0x0002 与 wheel 的 `WheelRotationMask (0x01FF)` 位重叠，但相对事件不带 WHEEL/HWHEEL 位，
+畸形 `0x0201` 会被当成 X1（风险低，已在 N6 类覆盖缺口内，可后续补一条）。
+
+**测试（副本 `tests/test_server.cpp`，用例扩展为 5 个相对事件）**
+- `kPtrMove,10,-5` → `rel_x=10/rel_y=-5`、`!is_move`、`x==y==0`、`button==0`
+- `0x0001` → `button==4 && !button_down`
+- `0x0002` → `button==5 && !button_down`
+- `0x8002` → `button==5 && button_down`
+- `0x8001` → `button==4 && button_down`
+- 四个相对事件均断言 `!is_move`
+
+**验证链（全部 `sha_before_build == sha_after_build`）**
+```
+修复版 sha=3210FAB08739E72701881FF95DCCC0661FA45D549AF40C9C7EC7E00431C52134
+34 tests, 358 checks, 0 failing tests, 0 failed checks   (exit=0)
+
+反向变异 = 再次删除该回退（等价于仓库 e0bee4b 现状）
+  变异体 sha=27CF4F3E24B50140CFC10E9A82DFBCCB1C1A5ACF4A2A423994E24EBC9EAD846A  ← 与 HEAD 内容完全相同
+  FAIL tests/test_server.cpp:848  got[1].button == 4 (got 0, want 4)
+  FAIL tests/test_server.cpp:850  got[2].button == 5 (got 0, want 5)
+  FAIL tests/test_server.cpp:852  got[3].button == 5 (got 0, want 5)
+  FAIL tests/test_server.cpp:854  got[4].button == 4 (got 0, want 4)
+  1 tests, 24 checks, 1 failing tests, 4 failed checks   (exit=1)
+
+恢复修复版 → sha 回到 3210FAB0…，34 tests, 358 checks, 0 failing   (exit=0)
+```
+**这条变异体 sha 恰好等于仓库 HEAD 的 `server.cpp`**，即"现在的提交代码"就是"被变异体"，缺陷被证实为真。
+
+**同一变异体下其余用例仍全绿**（只有该用例 4 条红），说明断言定位精确、不是全局崩坏的假红。
+A/C/D 的断言（`!is_move`、wheel 的 `button==0`、wheel 坐标 `x==y==0`）在该修复版里同时为绿，
+即 R5 修复与 A/C/D 裁决**互不冲突**，可一并落地。
+
+## R6 执行 AI 落地版复核（`src=67A4ABAD…B92456`，A/B/C/D 四条变异全部复咬）
+
+工作树已由修复执行 AI 改写。我用 `Get-FileHash` 双证后同步到沙箱复跑：
+
+```
+src/server/server.cpp  sha256 = 67A4ABADA61C1689A5D9CABAD9D720D0D2CC3A8CF72E71A2E8C971AA1DB92456
+（= 工作树；沙箱副本同值）build: warning C = 0, error C = 0
+快照 A（tests 2B53BDCE…）：34 tests, 364 checks, 0 failing tests, 0 failed checks
+```
+实现（`[READ:src/server/server.cpp:1660-1664]`）与 R5 提议一致：`DecodePointerButtons` 后
+`if (ev.button == 0) { X2→5 / X1→4 }`。测试（`[READ:tests/test_server.cpp:873-876]`）四条相对事件
+`0x0001 / 0x0002 / 0x8002 / 0x8001`，断言 `4/5/5&&down/4&&down` 且均 `!is_move`、`x==y==0`。
+
+**四条反向变异（同一 src `67A4ABAD…`，全部转红、恢复后转绿）**
+
+| # | 变异 | 变异体 sha256 | 失败原文 |
+|---|---|---|---|
+| A | 相对分支加回 `ev.is_move = true;` | `74BAE7C5…CC3B28C` | `:848/:859/:867/:875 !got[i].is_move`（4 failed） |
+| B | 删除 X1/X2 回退 | `7907A949…F074CC42` | `:852/:857/:865/:873 button (got 0, want 4/5/5/4)`（4 failed） |
+| C | wheel 分支内加回 `DecodePointerButtons` | `0FE1A320…31450E19` | `:1212 wheels[5].button==0 (got 1)` / `:1213 !button_down` |
+| D | 删除 wheel 分支早退 `break;` | `00C9BD9A…24B35BE4` | `:1207`×6 / `:1208`×6（1..5,123 / 1..5,456）= 14 failed |
+
+每条均 `sha_before_build == sha_after_build`；B 的变异体等价于上一提交 `e0bee4b` 的代码，红证成立。
+
+**遗留覆盖缺口（低优先）**：相对事件用例里**没有**"纯移动、无按钮位 → `button == 0`"的断言
+（第一个事件 `0x0001` 已带按钮位，`[READ:tests/test_server.cpp:873]`）。建议补一条
+`EncodeRelativeMouseEvent(kPtrMove, 3, -4)` → `button==0 && !button_down`，否则"回退把 0 误判成按钮"这类
+新缺陷不会被发现（当前回退只在 `button == 0` 时生效，逻辑上安全，但缺回归护栏）。
+
+**同时观察（非本单范围，仅报告）**：2:00:52 的工作树 `tests/test_server.cpp` 已扩到 40 tests，新增
+slow-path 解码用例（`server_decodes_slowpath_*`、`server_slowpath_malformed_input_is_survivable`、
+`server_advertises_fastpath_input_capability`）当前为 **6 failing / 8 failed checks**（401 checks 总计），
+其中 `server_input_relative_mouse_keeps_signed_deltas` 等 5 个滚轮/输入用例仍全绿。
+该 6 条红属"实现未跟上"的中间态，**不可作为提交基线**；与本复核结论无关。

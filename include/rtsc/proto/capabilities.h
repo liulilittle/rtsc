@@ -217,21 +217,51 @@ struct OrderCapabilitySet {
 };
 
 // TS_INPUT_CAPABILITYSET ([MS-RDPBCGR] 2.2.7.1.6), 88 bytes total.
+//
+// inputFlags values verified against the published specification text
+// (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+//  b3bc76ae-9ee5-454f-b197-ede845ca69cc, retrieved 2026-11-01):
+//   0x0001 INPUT_FLAG_SCANCODES       (MUST be set)
+//   0x0004 INPUT_FLAG_MOUSEX
+//   0x0008 INPUT_FLAG_FASTPATH_INPUT  (RDP 5.0 and 5.1 servers)
+//   0x0010 INPUT_FLAG_UNICODE
+//   0x0020 INPUT_FLAG_FASTPATH_INPUT2 (all servers except RDP 4.0/5.0/5.1)
+//   0x0040 INPUT_FLAG_UNUSED1
+//   0x0080 INPUT_FLAG_MOUSE_RELATIVE
+//   0x0100 TS_INPUT_FLAG_MOUSE_HWHEEL
+//   0x0200 TS_INPUT_FLAG_QOE_TIMESTAMPS
+// The table has NO 0x0002 entry (see kInputFlagMouse below).
 struct InputCapabilitySet {
     static constexpr uint16_t kInputFlagScancodes = 0x0001;
+    // NOT a flag of [MS-RDPBCGR] 2.2.7.1.6: the published flag table has no
+    // 0x0002 value. This is a historical repo artifact that predates the spec
+    // check; it is kept only because the protocol unit test still names it and
+    // MUST NOT be advertised (see input_flags below).
     static constexpr uint16_t kInputFlagMouse = 0x0002;
     static constexpr uint16_t kInputFlagMouseX = 0x0004;
+    // "Advertised by RDP 5.0 and 5.1 servers to indicate support for fast-path
+    // input." This server decodes fast-path input, so the older flag is set
+    // alongside FASTPATH_INPUT2 for a pre-5.2 client.
+    static constexpr uint16_t kInputFlagFastPathInput = 0x0008;
     static constexpr uint16_t kInputFlagUnicode = 0x0010;
+    // "Advertised by all RDP servers, except for RDP 4.0, 5.0, and 5.1 servers,
+    // to indicate support for fast-path input. Clients that do not support this
+    // flag will not be able to use fast-path input when connecting to RDP 5.2,
+    // 6.0, ... 10.5 servers." A modern client checks this bit before it sends
+    // fast-path input; without it the client falls back to slow-path input
+    // (which HandleSlowPathPdu now decodes).
+    static constexpr uint16_t kInputFlagFastPathInput2 = 0x0020;
     static constexpr uint16_t kInputFlagMouseHWheel = 0x0100;
     static constexpr uint16_t kInputFlagQoeTimestamps = 0x0200;
 
     // At a minimum INPUT_FLAG_SCANCODES MUST be set. INPUT_FLAG_MOUSE_HWHEEL is
     // advertised because the client can send PTRFLAGS_HWHEEL; [MS-RDPBCGR]
     // 2.2.8.1.1.3.1.1.1 forbids sending it to a server that did not indicate
-    // support in its own Input Capability Set.
-    uint16_t input_flags = kInputFlagScancodes | kInputFlagMouse |
-                           kInputFlagMouseX | kInputFlagUnicode |
-                           kInputFlagMouseHWheel;
+    // support in its own Input Capability Set. The two fast-path flags match
+    // what the server actually implements (fast-path input decoding).
+    uint16_t input_flags = kInputFlagScancodes | kInputFlagFastPathInput |
+                           kInputFlagFastPathInput2 | kInputFlagMouseX |
+                           kInputFlagUnicode | kInputFlagMouseHWheel;
     uint32_t keyboard_layout = 0x00000409;
     uint32_t keyboard_type = 4;  // IBM enhanced 101/102
     uint32_t keyboard_sub_type = 0;

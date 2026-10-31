@@ -558,6 +558,45 @@ void DecodePointerButtons(uint16_t pf, bool mouse_x, InputEvent& ev) {
     else if ((pf & proto::kPtrButton1) != 0) ev.button = 1;
 }
 
+// Fills `ev` from the (pointerFlags, xPos, yPos) triple of a fast-path
+// TS_FP_POINTER_EVENT / TS_FP_POINTERX_EVENT ([MS-RDPBCGR] 2.2.8.1.2.2.3/.4)
+// or a slow-path TS_POINTER_EVENT / TS_POINTERX_EVENT (2.2.8.1.1.3.1.1.3/.4):
+// the two payloads are identical, so one decoder keeps both wire formats
+// producing the same InputEvent (P-10: no second semantic).
+void DecodePointerEvent(uint16_t pf, uint16_t x_pos, uint16_t y_pos,
+                        bool mouse_x, InputEvent& ev) {
+    ev.kind = InputEvent::Kind::kMouse;
+    const bool wheel =
+        (pf & proto::kPtrWheel) != 0 || (pf & proto::kPtrHwheel) != 0;
+    if (wheel) {
+        // PTRFLAGS_WHEEL / PTRFLAGS_HWHEEL share one 9-bit two's-complement
+        // rotation field ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1): 0x0100 is its sign
+        // bit, not a standalone negative flag, and the unit is WHEEL_DELTA
+        // (120) per notch. WHEEL wins when a sender sets both bits.
+        const bool vertical = (pf & proto::kPtrWheel) != 0;
+        ev.kind = InputEvent::Kind::kWheel;
+        ev.horizontal = !vertical;
+        const uint16_t raw =
+            static_cast<uint16_t>(pf & proto::kPtrWheelRotationMask);
+        ev.wheel_delta =
+            static_cast<int16_t>((raw & 0x0100) != 0 ? raw - 0x0200 : raw);
+        // A wheel event must ignore every other pointer flag and both
+        // coordinates ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3). Leaving a button or a
+        // stale position here would make the injection seam click or jump the
+        // cursor on a plain scroll.
+        ev.x = 0;
+        ev.y = 0;
+        return;
+    }
+    ev.x = x_pos;
+    ev.y = y_pos;
+    // PTRFLAGS_MOVE (0x0800): the pointer must move to (x, y). A button
+    // release does NOT carry this bit, which is what makes "move" and
+    // "release" distinguishable (P-5).
+    ev.is_move = (pf & proto::kPtrMove) != 0;
+    DecodePointerButtons(pf, mouse_x, ev);
+}
+
 // One accepted peer. Owns its transport, its X.224/MCS state, its security
 // state, its capability sets and its framebuffer. Nothing mutable is shared
 // with another session: this is the D1 single-writer-per-session model.
@@ -1473,8 +1512,15 @@ class RdpSession {
             std::vector<uint8_t> payload;
             if (!UnwrapInbound(sd.user_data, payload)) continue;
             if (sd.channel_id == io_channel_) {
-                if (!HandleSlowPathPdu(payload, &next_refresh)) break;
-                HandleInputPdu(payload);
+                bool was_share_data = false;
+                if (!HandleSlowPathPdu(payload, &next_refresh, &was_share_data)) {
+                    break;
+                }
+                // A well-formed share data PDU is never a fast-path PDU, so it
+                // must not be fed to the fast-path decoder a second time: a
+                // large slow-path input PDU can otherwise look like a plausible
+                // fast-path header (P-10).
+                if (!was_share_data) HandleInputPdu(payload);
             } else if (cliprdr_ != nullptr && cliprdr_channel_id_ != 0 &&
                        sd.channel_id == cliprdr_channel_id_) {
                 cliprdr_->OnChannelData(payload.data(), payload.size());
@@ -1491,20 +1537,27 @@ class RdpSession {
     }
 
     // Handles the client's slow-path share PDUs (everything a Fast-Path input
-    // PDU is not). Only two matter to this server ([MS-RDPBCGR] 1.3.7 /
-    // 2.2.11.2.1 / 2.2.11.3.1): Refresh Rect asks for an immediate redraw of
-    // the named areas, and Suppress Output gates the periodic desktop
-    // refresh. Everything else is ignored. Returns false when a refresh send
-    // failed: the session must then end (the caller breaks its loop).
+    // PDU is not). Three matter to this server ([MS-RDPBCGR] 1.3.7 /
+    // 2.2.11.2.1 / 2.2.11.3.1 / 2.2.8.1.1.3): Refresh Rect asks for an
+    // immediate redraw of the named areas, Suppress Output gates the periodic
+    // desktop refresh, and PDUTYPE2_INPUT carries slow-path input events.
+    // Everything else is ignored. Returns false when a refresh send failed:
+    // the session must then end (the caller breaks its loop). `handled` is set
+    // to true when the payload is a well-formed TS_SHAREDATAHEADER, so the
+    // caller knows the payload was consumed here and must not also be given
+    // to the fast-path decoder.
     bool HandleSlowPathPdu(
         const std::vector<uint8_t>& payload,
-        std::chrono::steady_clock::time_point* next_refresh) {
+        std::chrono::steady_clock::time_point* next_refresh,
+        bool* handled = nullptr) {
+        if (handled != nullptr) *handled = false;
         if (payload.size() < proto::ShareDataHeader::kSize) return true;
         proto::ShareDataHeader hdr;
         if (proto::ShareDataHeader::parse(payload.data(), payload.size(), hdr) !=
             Status::Ok) {
             return true;  // not a share data PDU (e.g. fast-path input)
         }
+        if (handled != nullptr) *handled = true;
         if (hdr.pdu_type2 == proto::ShareDataPduType::kRefreshRect) {
             proto::RefreshRectPdu refresh;
             if (proto::RefreshRectPdu::parse(payload.data() +
@@ -1536,8 +1589,112 @@ class RdpSession {
             // allowDisplayUpdates=1 resumes it (the stale deadline makes the
             // next read timeout fire a refresh immediately).
             output_suppressed_ = !sup.allow_display_updates;
+        } else if (hdr.pdu_type2 == proto::ShareDataPduType::kInput) {
+            // Slow-path input ([MS-RDPBCGR] 2.2.8.1.1.3): a client that did not
+            // negotiate fast-path sends PDUTYPE2_INPUT (0x1C) instead.
+            ParseSlowPathInput(payload.data() + proto::ShareDataHeader::kSize,
+                               payload.size() - proto::ShareDataHeader::kSize);
         }
         return true;
+    }
+
+    // Decodes a slow-path TS_INPUT_PDU_DATA ([MS-RDPBCGR] 2.2.8.1.1.3.1):
+    // numEvents(2) + pad2Octets(2), followed by numEvents x TS_INPUT_EVENT
+    // (eventTime(4) + messageType(2) + a 6-byte body, 2.2.8.1.1.3.1.1).
+    //
+    // The messageType values are the specification's, NOT a 0..4 sequence:
+    //   0x0000 SYNC, 0x0002 UNUSED, 0x0004 SCANCODE, 0x0005 UNICODE,
+    //   0x8001 MOUSE, 0x8002 MOUSEX, 0x8004 MOUSEREL.
+    // Every decoded event reuses the fast-path fill/callback path (including
+    // DecodePointerEvent for the wheel/HWHEEL 9-bit sign extension), so both
+    // wire formats yield the same InputEvent.
+    //
+    // Malformed input never reads past `n`: a short header or event body
+    // abandons the PDU. An unknown messageType is counted (P-11) and the rest
+    // of the PDU is abandoned because that event's length is unknown -- the
+    // same policy as an unknown fast-path eventCode.
+    void ParseSlowPathInput(const uint8_t* p, size_t n) {
+        if (n < 4) return;
+        const uint16_t count = static_cast<uint16_t>(p[0] | (p[1] << 8));
+        size_t pos = 4;  // numberEvents(2) + pad2Octets(2)
+        for (uint16_t i = 0; i < count; ++i) {
+            if (pos + proto::kSlowPathInputEventHeaderSize > n) return;
+            const uint16_t message_type = static_cast<uint16_t>(
+                p[pos + 4] | (p[pos + 5] << 8));  // eventTime is ignored
+            if (pos + proto::kSlowPathInputEventSize > n) return;
+            const uint8_t* body = p + pos + proto::kSlowPathInputEventHeaderSize;
+            pos += proto::kSlowPathInputEventSize;
+
+            InputEvent ev;
+            switch (static_cast<proto::SlowPathInputEventType>(message_type)) {
+                case proto::SlowPathInputEventType::kSync:
+                    // TS_SYNC_EVENT: pad2Octets(2) + toggleFlags(4). The toggle
+                    // bits have the same values as the fast-path eventFlags.
+                    ev.kind = InputEvent::Kind::kSync;
+                    ev.sync_flags = static_cast<uint8_t>(body[2] & 0x1F);
+                    break;
+                case proto::SlowPathInputEventType::kScancode: {
+                    // TS_KEYBOARD_EVENT: keyboardFlags(2) + keyCode(2) + pad(2).
+                    // A scancode is an 8-bit value, so only the low byte of
+                    // keyCode is meaningful ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1).
+                    const uint16_t kbd_flags =
+                        static_cast<uint16_t>(body[0] | (body[1] << 8));
+                    const uint16_t key_code =
+                        static_cast<uint16_t>(body[2] | (body[3] << 8));
+                    ev.kind = InputEvent::Kind::kKey;
+                    ev.scancode = static_cast<uint8_t>(key_code & 0xFF);
+                    ev.release = (kbd_flags & 0x8000) != 0;    // KBDFLAGS_RELEASE
+                    ev.extended = (kbd_flags & 0x0100) != 0;   // KBDFLAGS_EXTENDED
+                    ev.extended1 = (kbd_flags & 0x0200) != 0;  // KBDFLAGS_EXTENDED1
+                    break;
+                }
+                case proto::SlowPathInputEventType::kUnicode: {
+                    // TS_UNICODE_KEYBOARD_EVENT: keyboardFlags(2) +
+                    // unicodeCode(2) + pad(2).
+                    const uint16_t kbd_flags =
+                        static_cast<uint16_t>(body[0] | (body[1] << 8));
+                    ev.kind = InputEvent::Kind::kUnicode;
+                    ev.unicode_code =
+                        static_cast<uint16_t>(body[2] | (body[3] << 8));
+                    ev.release = (kbd_flags & 0x8000) != 0;
+                    break;
+                }
+                case proto::SlowPathInputEventType::kMouse:
+                case proto::SlowPathInputEventType::kMouseX:
+                    // TS_POINTER_EVENT / TS_POINTERX_EVENT: pointerFlags(2) +
+                    // xPos(2) + yPos(2), decoded by the same helper the
+                    // fast-path pointer events use.
+                    DecodePointerEvent(
+                        static_cast<uint16_t>(body[0] | (body[1] << 8)),
+                        static_cast<uint16_t>(body[2] | (body[3] << 8)),
+                        static_cast<uint16_t>(body[4] | (body[5] << 8)),
+                        static_cast<proto::SlowPathInputEventType>(message_type) ==
+                            proto::SlowPathInputEventType::kMouseX,
+                        ev);
+                    break;
+                case proto::SlowPathInputEventType::kUnused:
+                    continue;  // TS_UNUSED_EVENT: nothing to deliver
+                case proto::SlowPathInputEventType::kMouseRel:
+                    // The length is known, so the event can be skipped, but the
+                    // relative-mouse semantic belongs to the dedicated
+                    // kMouseRel workstream; count it rather than create a
+                    // second semantic here.
+                    if (unknown_input_events_) {
+                        unknown_input_events_->fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
+                    continue;
+                default:
+                    // Unknown messageType: its length is unknown, so this PDU
+                    // cannot be resynchronised.
+                    if (unknown_input_events_) {
+                        unknown_input_events_->fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
+                    return;
+            }
+            if (input_callback_) input_callback_(ev);
+        }
     }
 
     void HandleInputPdu(const std::vector<uint8_t>& payload) {
@@ -1595,41 +1752,8 @@ class RdpSession {
                     const uint16_t y_pos =
                         static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8));
                     pos += 6;
-                    ev.kind = InputEvent::Kind::kMouse;
-                    const bool wheel =
-                        (pf & proto::kPtrWheel) != 0 ||
-                        (pf & proto::kPtrHwheel) != 0;
-                    if (wheel) {
-                        // PTRFLAGS_WHEEL / PTRFLAGS_HWHEEL share one 9-bit
-                        // two's-complement rotation field ([MS-RDPBCGR]
-                        // 2.2.8.1.1.3.1.1.1): 0x0100 is its sign bit, not a
-                        // standalone negative flag, and the unit is
-                        // WHEEL_DELTA (120) per notch. WHEEL wins when a
-                        // sender sets both bits.
-                        const bool vertical = (pf & proto::kPtrWheel) != 0;
-                        ev.kind = InputEvent::Kind::kWheel;
-                        ev.horizontal = !vertical;
-                        const uint16_t raw = static_cast<uint16_t>(
-                            pf & proto::kPtrWheelRotationMask);
-                        ev.wheel_delta = static_cast<int16_t>(
-                            (raw & 0x0100) != 0 ? raw - 0x0200 : raw);
-                        // A wheel event must ignore every other pointer flag
-                        // and both coordinates ([MS-RDPBCGR]
-                        // 2.2.8.1.1.3.1.1.3). Leaving a button or a stale
-                        // position here would make the injection seam click or
-                        // jump the cursor on a plain scroll.
-                        ev.x = 0;
-                        ev.y = 0;
-                        break;
-                    }
-                    ev.x = x_pos;
-                    ev.y = y_pos;
-                    // PTRFLAGS_MOVE (0x0800): the pointer must move to (x, y).
-                    // A button release does NOT carry this bit, which is what
-                    // makes "move" and "release" distinguishable (P-5).
-                    ev.is_move = (pf & proto::kPtrMove) != 0;
-                    DecodePointerButtons(
-                        pf,
+                    DecodePointerEvent(
+                        pf, x_pos, y_pos,
                         static_cast<proto::FastPathInputEventCode>(code) ==
                             proto::FastPathInputEventCode::kMouseX,
                         ev);
@@ -1644,9 +1768,11 @@ class RdpSession {
                     // unlike the unsigned absolute x/y above
                     // ([MS-RDPBCGR] 2.2.8.1.2.2.7). A real input event, so it
                     // is delivered once as kMouseRel (never as a phantom kKey).
-                    // Its flags are PTRFLAGS (same namespace as
-                    // TS_FP_POINTER_EVENT), NOT PTRXFLAGS, so X1/X2 do not
-                    // exist here and the low bits must not be read as buttons.
+                    // Its pointerFlags are IDENTICAL to TS_RELPOINTER_EVENT's
+                    // ([MS-RDPBCGR] 2.2.8.1.2.2.7), and that table lists
+                    // PTRXFLAGS_BUTTON1 0x0001 (button 4) / PTRXFLAGS_BUTTON2
+                    // 0x0002 (button 5) ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.7), so a
+                    // relative event can carry X1/X2 as well.
                     // is_move stays false: that flag means "move the absolute
                     // pointer to (x, y)", and this event has x = y = 0.
                     if (pos + 6 > n) return;
@@ -1658,6 +1784,15 @@ class RdpSession {
                     ev.rel_y = static_cast<int16_t>(
                         static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8)));
                     DecodePointerButtons(pf, false, ev);
+                    // PTRFLAGS has no X1/X2 bits: those live in the PTRXFLAGS
+                    // namespace (0x0001/0x0002) that relative events share with
+                    // TS_RELPOINTER_EVENT ([MS-RDPBCGR] 2.2.8.1.2.2.7 and
+                    // 2.2.8.1.1.3.1.1.7), so decode them as a fallback in the
+                    // same order as DecodePointerButtons' X branch (X2 first).
+                    if (ev.button == 0) {
+                        if ((pf & proto::kPtrXButton2) != 0) ev.button = 5;
+                        else if ((pf & proto::kPtrXButton1) != 0) ev.button = 4;
+                    }
                     pos += 6;
                     break;
                 }

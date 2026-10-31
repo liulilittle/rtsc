@@ -181,6 +181,9 @@ struct HandshakeResult {
     uint16_t desktop_height = 0;
     bool license_valid_client = false;
     bool rect_extents_consistent = false;
+    // Input Capability Set advertised by the server's Demand Active (P-9).
+    bool got_input_caps = false;
+    uint16_t input_flags = 0;
     bool got_bitmap = false;
     uint16_t bitmap_width = 0;
     uint16_t bitmap_height = 0;
@@ -362,6 +365,13 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
         if (BitmapCapabilitySet::parse(*bmp, b) == Status::Ok) {
             r.desktop_width = b.desktop_width;
             r.desktop_height = b.desktop_height;
+        }
+    }
+    if (const auto* input = da.capabilities.find(CapabilityType::kInput)) {
+        InputCapabilitySet i;
+        if (InputCapabilitySet::parse(*input, i) == Status::Ok) {
+            r.input_flags = i.input_flags;
+            r.got_input_caps = true;
         }
     }
     r.got_demand_active = true;
@@ -599,6 +609,46 @@ RTSC_TEST(server_full_handshake_to_active) {
     runner.join();
 }
 
+RTSC_TEST(server_advertises_fastpath_input_capability) {
+    // P-9: this server implements fast-path input decoding only, so its Demand
+    // Active Input Capability Set ([MS-RDPBCGR] 2.2.7.1.6) MUST advertise
+    // fast-path support:
+    //   INPUT_FLAG_FASTPATH_INPUT  0x0008 (RDP 5.0/5.1 servers)
+    //   INPUT_FLAG_FASTPATH_INPUT2 0x0020 ("Advertised by all RDP servers,
+    //                               except for RDP 4.0, 5.0, and 5.1 servers")
+    // 0x0020 is what a modern client checks before it switches to fast-path;
+    // without it mstsc falls back to slow-path input, which used to be dropped.
+    //
+    // 0x0002 is NOT a flag of the Input Capability Set: the specification's
+    // flag table has no such value (0x0001 SCANCODES, 0x0004 MOUSEX, 0x0008,
+    // 0x0010 UNICODE, 0x0020, 0x0040 UNUSED1, 0x0080 MOUSE_RELATIVE,
+    // 0x0100 MOUSE_HWHEEL, 0x0200 QOE_TIMESTAMPS). The historical repo constant
+    // kInputFlagMouse = 0x0002 must never reach the wire.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+    CHECK(r.got_input_caps);
+    CHECK((r.input_flags & 0x0001) != 0);  // INPUT_FLAG_SCANCODES (MUST)
+    CHECK((r.input_flags & 0x0008) != 0);  // INPUT_FLAG_FASTPATH_INPUT
+    CHECK((r.input_flags & 0x0020) != 0);  // INPUT_FLAG_FASTPATH_INPUT2
+    CHECK((r.input_flags & 0x0002) == 0);  // no such flag in the specification
+    CHECK((r.input_flags & 0x0100) != 0);  // MOUSE_HWHEEL (HWHEEL is decoded)
+    CHECK((r.input_flags & 0x0010) != 0);  // UNICODE (Unicode events are decoded)
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_input_event_callback) {
     ServerConfig cfg;
     cfg.port = 0;  // ephemeral: the kernel picks a free port
@@ -785,8 +835,12 @@ RTSC_TEST(server_input_relative_mouse_keeps_signed_deltas) {
     // A relative event's movement lives in rel_x/rel_y and is identified by
     // kind == kMouseRel.
     //
-    // Its flags are PTRFLAGS, not PTRXFLAGS, so the low bits 0x0001/0x0002 are
-    // NOT X1/X2 buttons and must decode to button == 0.
+    // Its pointerFlags are IDENTICAL to TS_RELPOINTER_EVENT's
+    // ([MS-RDPBCGR] 2.2.8.1.2.2.7: "The possible flags are identical to those
+    // found in the pointerFlags field of the TS_RELPOINTER_EVENT structure"),
+    // and that table lists PTRXFLAGS_BUTTON1 0x0001 / PTRXFLAGS_BUTTON2 0x0002
+    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.7), so 0x0001/0x0002 are the X1/X2 buttons
+    // here too: 4 and 5, with PTRFLAGS_DOWN 0x8000 selecting press vs release.
     ServerConfig cfg;
     cfg.port = 0;
     cfg.desktop_width = 64;
@@ -816,32 +870,51 @@ RTSC_TEST(server_input_relative_mouse_keeps_signed_deltas) {
     CHECK(WriteAll(*r.transport, McsSendData::build_request(
                                      r.user_channel, r.io_channel,
                                      EncodeFastPathInputPdu({
-                                         EncodeRelativeMouseEvent(kPtrMove, 10, -5),
-                                         // 0x0002 is an undefined PTRFLAGS bit;
-                                         // decoding it as X2 would be a bug.
+                                         EncodeRelativeMouseEvent(0x0001, 10, -5),
                                          EncodeRelativeMouseEvent(0x0002, 0, 0),
+                                         EncodeRelativeMouseEvent(0x8002, 0, 0),
+                                         EncodeRelativeMouseEvent(0x8001, 0, 0),
                                      }))));
-    for (int i = 0; i < 100 && snapshot().size() < 2; ++i) {
+    for (int i = 0; i < 100 && snapshot().size() < 4; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     const auto got = snapshot();
-    CHECK_EQ(got.size(), static_cast<size_t>(2));
-    if (got.size() == 2) {
+    CHECK_EQ(got.size(), static_cast<size_t>(4));
+    if (got.size() == 4) {
         CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouseRel);
         CHECK_EQ(got[0].rel_x, static_cast<int16_t>(10));
         CHECK_EQ(got[0].rel_y, static_cast<int16_t>(-5));
         CHECK(!got[0].is_move);   // relative is NOT an absolute move
         CHECK_EQ(got[0].x, static_cast<uint16_t>(0));
         CHECK_EQ(got[0].y, static_cast<uint16_t>(0));
+        // PTRXFLAGS_BUTTON1 (0x0001), no DOWN => X1 release.
+        CHECK_EQ(got[0].button, static_cast<uint16_t>(4));
         CHECK(!got[0].button_down);
-        CHECK_EQ(got[0].button, static_cast<uint16_t>(0));
 
-        // Undefined low PTRFLAGS bits must not become X1/X2 buttons.
+        // PTRXFLAGS_BUTTON2 (0x0002), no DOWN => X2 release.
         CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kMouseRel);
-        CHECK_EQ(got[1].button, static_cast<uint16_t>(0));
+        CHECK_EQ(got[1].button, static_cast<uint16_t>(5));
         CHECK(!got[1].button_down);
         CHECK(!got[1].is_move);
+        CHECK_EQ(got[1].x, static_cast<uint16_t>(0));
+        CHECK_EQ(got[1].y, static_cast<uint16_t>(0));
+
+        // PTRFLAGS_DOWN | PTRXFLAGS_BUTTON2 => X2 press.
+        CHECK(got[2].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[2].button, static_cast<uint16_t>(5));
+        CHECK(got[2].button_down);
+        CHECK(!got[2].is_move);
+        CHECK_EQ(got[2].x, static_cast<uint16_t>(0));
+        CHECK_EQ(got[2].y, static_cast<uint16_t>(0));
+
+        // PTRFLAGS_DOWN | PTRXFLAGS_BUTTON1 => X1 press.
+        CHECK(got[3].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[3].button, static_cast<uint16_t>(4));
+        CHECK(got[3].button_down);
+        CHECK(!got[3].is_move);
+        CHECK_EQ(got[3].x, static_cast<uint16_t>(0));
+        CHECK_EQ(got[3].y, static_cast<uint16_t>(0));
     }
 
     server.Stop();
@@ -1281,6 +1354,73 @@ bool SendSlowPathPdu(HandshakeResult& r, ShareDataPduType type,
                                                share));
 }
 
+// ---- Slow-path input construction (P-10) ------------------------------------
+//
+// TS_INPUT_PDU_DATA ([MS-RDPBCGR] 2.2.8.1.1.3.1) = numEvents(2) +
+// pad2Octets(2) + numEvents x TS_INPUT_EVENT, and TS_INPUT_EVENT
+// (2.2.8.1.1.3.1.1) = eventTime(4) + messageType(2) + a 6-byte event body.
+// The messageType values are the specification's, NOT a 0..4 sequence:
+//   0x0000 SYNC, 0x0002 UNUSED, 0x0004 SCANCODE, 0x0005 UNICODE,
+//   0x8001 MOUSE, 0x8002 MOUSEX, 0x8004 MOUSEREL.
+// The event bodies are written with an explicit length so a test can build a
+// malformed one on purpose.
+
+std::vector<uint8_t> SlowPathInputEvent(uint16_t message_type,
+                                        const std::vector<uint8_t>& body) {
+    ByteWriter w;
+    w.u32le(0);             // eventTime: ignored by the server
+    w.u16le(message_type);  // messageType
+    for (uint8_t b : body) w.u8(b);
+    return w.take();
+}
+
+// TS_KEYBOARD_EVENT: keyboardFlags(2) + keyCode(2) + pad2Octets(2).
+std::vector<uint8_t> SlowPathKeyboardBody(uint16_t flags, uint16_t key_code) {
+    ByteWriter w;
+    w.u16le(flags);
+    w.u16le(key_code);
+    w.u16le(0);  // pad2Octets
+    return w.take();
+}
+
+// TS_UNICODE_KEYBOARD_EVENT: keyboardFlags(2) + unicodeCode(2) + pad(2).
+std::vector<uint8_t> SlowPathUnicodeBody(uint16_t flags, uint16_t code) {
+    ByteWriter w;
+    w.u16le(flags);
+    w.u16le(code);
+    w.u16le(0);  // pad2Octets
+    return w.take();
+}
+
+// TS_POINTER_EVENT / TS_POINTERX_EVENT: pointerFlags(2) + xPos(2) + yPos(2).
+std::vector<uint8_t> SlowPathPointerBody(uint16_t flags, uint16_t x,
+                                         uint16_t y) {
+    ByteWriter w;
+    w.u16le(flags);
+    w.u16le(x);
+    w.u16le(y);
+    return w.take();
+}
+
+// TS_SYNC_EVENT: pad2Octets(2) + toggleFlags(4).
+std::vector<uint8_t> SlowPathSyncBody(uint32_t toggle_flags) {
+    ByteWriter w;
+    w.u16le(0);  // pad2Octets
+    w.u32le(toggle_flags);
+    return w.take();
+}
+
+std::vector<uint8_t> SlowPathInputBody(
+    const std::vector<std::vector<uint8_t>>& events) {
+    ByteWriter w;
+    w.u16le(static_cast<uint16_t>(events.size()));  // numEvents
+    w.u16le(0);                                     // pad2Octets
+    for (const auto& e : events) {
+        for (uint8_t b : e) w.u8(b);
+    }
+    return w.take();
+}
+
 }  // namespace
 
 RTSC_TEST(server_refresh_rect_triggers_immediate_resend) {
@@ -1361,6 +1501,316 @@ RTSC_TEST(server_suppress_output_gates_refresh) {
     SlowPathGraphicsUpdate upd;
     CHECK(SlowPathGraphicsUpdate::parse(sd.user_data.data(), sd.user_data.size(),
                                         upd) == Status::Ok);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_decodes_slowpath_scancode_input) {
+    // P-10: a client that does not use fast-path sends PDUTYPE2_INPUT (0x1C)
+    // with TS_INPUT_PDU_DATA. Each TS_INPUT_EVENT is eventTime(4) +
+    // messageType(2) + body(6) ([MS-RDPBCGR] 2.2.8.1.1.3.1.1); for
+    // INPUT_EVENT_SCANCODE (0x0004) the body is keyboardFlags(2) +
+    // keyCode(2) + pad2Octets(2) (2.2.8.1.1.3.1.1.1), where KBDFLAGS_EXTENDED
+    // is 0x0100 and KBDFLAGS_RELEASE is 0x8000. The decoded event must be the
+    // same InputEvent the fast-path path produces.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({
+            SlowPathInputEvent(0x0000, SlowPathSyncBody(0x00000003)),   // NUM|CAPS
+            SlowPathInputEvent(0x0004, SlowPathKeyboardBody(0x0100, 0x4F)),  // End down
+            SlowPathInputEvent(0x0004, SlowPathKeyboardBody(0x8100, 0x4F)),  // End up
+        })));
+
+    std::vector<rtsc::server::InputEvent> got;
+    for (int i = 0; i < 100 && got.size() < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        got = events;
+    }
+    CHECK_EQ(got.size(), static_cast<size_t>(3));
+    if (got.size() == 3) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kSync);
+        CHECK_EQ(got[0].sync_flags, static_cast<uint8_t>(0x03));
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kKey);
+        CHECK_EQ(got[1].scancode, static_cast<uint8_t>(0x4F));
+        CHECK(got[1].extended);
+        CHECK(!got[1].release);
+        CHECK(got[2].kind == rtsc::server::InputEvent::Kind::kKey);
+        CHECK_EQ(got[2].scancode, static_cast<uint8_t>(0x4F));
+        CHECK(got[2].extended);
+        CHECK(got[2].release);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_decodes_slowpath_mouse_wheel) {
+    // P-10: INPUT_EVENT_MOUSE (0x8001) carries TS_POINTER_EVENT
+    // (pointerFlags(2) + xPos(2) + yPos(2), [MS-RDPBCGR] 2.2.8.1.1.3.1.1.3).
+    // The wheel fields are the SAME 9-bit two's-complement WheelRotationMask
+    // (0x01FF) used by fast-path: 0x0388 = WHEEL 0x0200 | sign bit 0x0100 |
+    // rotation 0x88 (136) -> 136 - 256 = -120 wire units. 0x0478 =
+    // HWHEEL 0x0400 | 0x78 (120) -> +120 horizontal. The slow-path decoder
+    // must reuse that arithmetic, not re-invent it.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({
+            SlowPathInputEvent(0x8001, SlowPathPointerBody(0x0388, 1, 1)),
+            SlowPathInputEvent(0x8001, SlowPathPointerBody(0x0478, 1, 2)),
+        })));
+
+    std::vector<rtsc::server::InputEvent> got;
+    for (int i = 0; i < 100 && got.size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        got = events;
+    }
+    CHECK_EQ(got.size(), static_cast<size_t>(2));
+    if (got.size() == 2) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kWheel);
+        CHECK_EQ(got[0].wheel_delta, static_cast<int16_t>(-120));
+        CHECK(!got[0].horizontal);
+        CHECK_EQ(got[0].x, static_cast<uint16_t>(0));
+        CHECK_EQ(got[0].y, static_cast<uint16_t>(0));
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kWheel);
+        CHECK_EQ(got[1].wheel_delta, static_cast<int16_t>(120));
+        CHECK(got[1].horizontal);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_decodes_slowpath_mousex) {
+    // P-10: INPUT_EVENT_MOUSEX (0x8002) carries TS_POINTERX_EVENT
+    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.4): same layout as TS_POINTER_EVENT but
+    // pointerFlags are PTRXFLAGS, so 0x0001/0x0002 are X1/X2 (buttons 4/5)
+    // and 0x8000 is PTRXFLAGS_DOWN.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({
+            SlowPathInputEvent(0x8002, SlowPathPointerBody(0x8001, 11, 21)),
+            SlowPathInputEvent(0x8002, SlowPathPointerBody(0x0002, 11, 21)),
+        })));
+
+    std::vector<rtsc::server::InputEvent> got;
+    for (int i = 0; i < 100 && got.size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        got = events;
+    }
+    CHECK_EQ(got.size(), static_cast<size_t>(2));
+    if (got.size() == 2) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK_EQ(got[0].button, static_cast<uint16_t>(4));  // X1
+        CHECK(got[0].button_down);
+        CHECK_EQ(got[0].x, static_cast<uint16_t>(11));
+        CHECK_EQ(got[0].y, static_cast<uint16_t>(21));
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK_EQ(got[1].button, static_cast<uint16_t>(5));  // X2
+        CHECK(!got[1].button_down);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_decodes_slowpath_unicode) {
+    // P-10: INPUT_EVENT_UNICODE (0x0005) carries TS_UNICODE_KEYBOARD_EVENT
+    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.2): keyboardFlags(2) + unicodeCode(2) +
+    // pad2Octets(2). KBDFLAGS_RELEASE is 0x8000.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({
+            SlowPathInputEvent(0x0005, SlowPathUnicodeBody(0x0000, 0x0041)),
+            SlowPathInputEvent(0x0005, SlowPathUnicodeBody(0x8000, 0x0041)),
+        })));
+
+    std::vector<rtsc::server::InputEvent> got;
+    for (int i = 0; i < 100 && got.size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        got = events;
+    }
+    CHECK_EQ(got.size(), static_cast<size_t>(2));
+    if (got.size() == 2) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kUnicode);
+        CHECK_EQ(got[0].unicode_code, static_cast<uint16_t>(0x0041));
+        CHECK(!got[0].release);
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kUnicode);
+        CHECK_EQ(got[1].unicode_code, static_cast<uint16_t>(0x0041));
+        CHECK(got[1].release);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_slowpath_malformed_input_is_survivable) {
+    // P-10 robustness: a malformed TS_INPUT_PDU_DATA must neither crash nor read
+    // past the payload, and the session must keep decoding input afterwards.
+    //   1) truncated: numEvents says 2, only one 12-byte event is present;
+    //   2) over-range: numEvents = 0xFFFF with a 4-byte payload;
+    //   3) unknown messageType (0x0007): counted, then the PDU is abandoned
+    //      because an unknown event's length is unknown.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto send_fast_key = [&](uint8_t scancode) {
+        return WriteAll(*r.transport,
+                        McsSendData::build_request(
+                            r.user_channel, r.io_channel,
+                            EncodeFastPathInputPdu(
+                                {EncodeKeyboardEvent(scancode, false, false)})));
+    };
+    auto saw_scancode = [&](uint8_t scancode) {
+        for (int i = 0; i < 100; ++i) {
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                for (const auto& ev : events) {
+                    if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
+                        ev.scancode == scancode) {
+                        return true;
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    };
+
+    // 1) Truncated: count 2, one event.
+    {
+        ByteWriter w;
+        w.u16le(2);  // numEvents
+        w.u16le(0);  // pad2Octets
+        const auto one =
+            SlowPathInputEvent(0x0004, SlowPathKeyboardBody(0x0000, 0x1E));
+        for (uint8_t b : one) w.u8(b);
+        CHECK(SendSlowPathPdu(r, ShareDataPduType::kInput, w.take()));
+    }
+    CHECK(send_fast_key(0x2C));  // Z: the session still decodes input
+    CHECK(saw_scancode(0x2C));
+
+    // 2) Over-range event count with an empty event array.
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kInput,
+                          {0xFF, 0xFF, 0x00, 0x00}));
+    CHECK(send_fast_key(0x2D));  // X
+    CHECK(saw_scancode(0x2D));
+
+    // 3) Unknown messageType: counted once, no callback, session alive.
+    const size_t unknown_before = server.unknown_input_event_count();
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({SlowPathInputEvent(0x0007, SlowPathPointerBody(
+                                                    0x0000, 0, 0))})));
+    CHECK(send_fast_key(0x2E));  // C
+    CHECK(saw_scancode(0x2E));
+    CHECK_EQ(server.unknown_input_event_count(), unknown_before + 1);
 
     server.Stop();
     runner.join();

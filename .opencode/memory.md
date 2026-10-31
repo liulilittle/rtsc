@@ -1946,3 +1946,12 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
     断言的期望值禁止取自本仓实现的输出。**
     同族：encode→decode 自证、测试固化缺陷（"那个字节今天解得对"不等于规范解得对：
     `0x0301` 在旧实现= -257，在正确实现= -255，断言必须锚规范位布局）。
+71. **位/字段定义只能查规范原文表格，不能靠"命名空间"推断**（第 797 轮，本仓第 16 例）。
+    我曾裁决"`TS_FP_RELPOINTER_EVENT.flags` 属 PTRFLAGS 命名空间，故不存在 PTRXFLAGS_BUTTON1/2"，
+    据此删掉相对事件的 X1/X2 解码。官方原文实际是：
+    「The possible flags are **identical** to those found in the pointerFlags field of the
+    TS_RELPOINTER_EVENT structure」，而该表**同时**列出 PTRFLAGS_* 与 PTRXFLAGS_BUTTON1(0x0001)/BUTTON2(0x0002)。
+    **同一 16 位字段的不同位段并不互斥**——"命名空间"是我发明的概念，规范里没有。
+    **判据：①任何位定义裁决必须 webfetch 规范表格并逐位抄行；②审计的"语义矛盾"若不能在原文逐行指出，
+    只能记 UNVERIFIED 并保留原行为，禁止据此改代码；③裁决比报告更危险——报告错了会被复核，
+    裁决错了会被执行并提交。**

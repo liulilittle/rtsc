@@ -233,6 +233,22 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
             CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[4]), static_cast<uint8_t>(0x04));
         }
 
+        // Negative HWHEEL (N6): one notch left is -120 rotation units, encoded
+        // as 0x0400 | (-120 & 0x01FF = 0x188) = 0x0588. The sign lives inside
+        // the 9-bit two's-complement mask; no separate negative flag is OR'ed.
+        rtsc::ui::InputEvent hwheel_left;
+        hwheel_left.kind = rtsc::ui::InputEvent::Kind::kMouseWheel;
+        hwheel_left.horizontal = true;
+        hwheel_left.wheel_delta = -1;
+        const auto hwheel_left_pdu = client.EncodeInput(hwheel_left);
+        CHECK(hwheel_left_pdu.size() == static_cast<size_t>(9));
+        if (hwheel_left_pdu.size() == 9) {
+            CHECK_EQ(static_cast<uint8_t>(hwheel_left_pdu[3]),
+                     static_cast<uint8_t>(0x88));
+            CHECK_EQ(static_cast<uint8_t>(hwheel_left_pdu[4]),
+                     static_cast<uint8_t>(0x05));
+        }
+
         // 1) Keyboard input through the same Client method the GUI calls.
         rtsc::ui::InputEvent key;
         key.kind = rtsc::ui::InputEvent::Kind::kKey;

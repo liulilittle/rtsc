@@ -789,3 +789,28 @@ FAIL tests/test_server.cpp:1141 wheels[2].wheel_delta == -255 (got 257, want -25
 - 报告"ctest 全绿"必须贴**原始输出末行**，且必须与该次 `Get-FileHash` 同批次；
   仅给"通过"两字不可采信。
 - 提交前主代理必须自己跑一次 `ctest`（不采信子代理的绿）。
+## 第797轮【重要】：主代理裁决 B 被官方规范推翻（第 16 例：**用"命名空间推断"替代查规范表**）
+### 事实（主代理 webfetch 独立核对，非采信审计）
+- `[WEB:https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/9af47964-8bfc-4f43-8a15-4339a89833fa]`
+  2.2.8.1.1.3.1.1.7 `TS_RELPOINTER_EVENT` 的 pointerFlags 表**明确列有**
+  `PTRXFLAGS_BUTTON1 0x0001`（button 4）、`PTRXFLAGS_BUTTON2 0x0002`（button 5）。
+- `[WEB:https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3b4ee59e-6049-45a9-9fcb-2e308defa3eb]`
+  2.2.8.1.2.2.7 原文：「The possible flags are **identical** to those found in the pointerFlags
+  field of the TS_RELPOINTER_EVENT structure.」
+→ 相对事件（fast-path `0x5`）**确实可以携带 X1/X2**；`docs/spec/share-data.md:805` 本来是对的。
+
+### 我错在哪
+我上轮以"2.2.8.1.2.2.7 的 flags 是 PTRFLAGS 命名空间，不是 PTRXFLAGS"为由，
+裁决**删除** `kMouseRel` 的 X1/X2 回退，并把甲的推断当成结论写进任务书。
+**"命名空间"是我的推理，不是规范原文** —— 规范原文写的是"identical to TS_RELPOINTER_EVENT"，
+而该结构表里 PTRFLAGS 与 PTRXFLAGS 是**同一字段的不同位置**，并非互斥命名空间。
+后果：`e0bee4b` 把"相对模式侧键静默失效"提交进仓库，且 `tests/test_server.cpp:820-823`
+把错误期望（`0x0002 → button==0`，注释还写"undefined PTRFLAGS bit"）固化成断言。
+这是**第 5 次"测试固化缺陷"**，而固化源是**我下的裁决**。
+
+### 规则（必须执行）
+1. 任何关于**字段/位定义**的裁决，必须先 webfetch 规范原文表格，**逐位抄行**（不能只读小节标题或凭结构名推断）。
+2. 审计提出的"命名空间/语义矛盾"，若无法在规范原文中逐行指出，**禁止采纳为裁决**；
+   只能记为 UNVERIFIED 并让执行方保留原行为 + 注释。
+3. 裁决进入任务书前，主代理必须自己独立取一次原始来源（本仓已有 rule：报告结论须回抄原文，
+   但此前只约束"报告"，未约束"裁决"——现扩展到裁决）。
