@@ -1,0 +1,29 @@
+== today (magnitude + separate negative flag) ==
+  d=    1 -> flags=0x0201 -> back=    1
+  d=   -1 -> flags=0x0301 -> back= -257
+  d=  120 -> flags=0x0278 -> back=  120
+  d= -120 -> flags=0x0378 -> back= -376
+  d=  240 -> flags=0x02F0 -> back=  240
+  d= -240 -> flags=0x03F0 -> back= -496
+  d= -255 -> flags=0x03FF -> back= -511
+  d=  255 -> flags=0x02FF -> back=  255
+[FAIL] today's codec round-trips (expected to fail)
+
+== 9-bit sign-extended field ==
+  d=    1 -> flags=0x0201 -> back=    1
+  d=   -1 -> flags=0x03FF -> back=   -1
+  d=  120 -> flags=0x0278 -> back=  120
+  d= -120 -> flags=0x0388 -> back= -120
+  d=  240 -> flags=0x02F0 -> back=  240
+  d= -240 -> flags=0x0310 -> back= -240
+  d= -255 -> flags=0x0301 -> back= -255
+  d=  255 -> flags=0x02FF -> back=  255
+[PASS] 9-bit sign-extended codec round-trips
+[PASS] 9-bit encode(-1) == 0x03FF (0x0200 | 0x1FF)
+[PASS] 9-bit encode(-120) == 0x0388
+[PASS] 9-bit encode(120) == 0x0278
+[PASS] HWHEEL encode(-1) == 0x05FF
+[PASS] HWHEEL decode(0x05F1) == -15
+[PASS] vertical takes precedence when both bits set
+
+SUMMARY failures=1
