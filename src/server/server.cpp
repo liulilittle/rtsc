@@ -540,6 +540,24 @@ std::vector<uint8_t> BuildLicenseError() {
 
 // ---- Session ---------------------------------------------------------------
 
+// Decodes the button bits of a TS_FP_POINTER_EVENT / TS_FP_POINTERX_EVENT /
+// TS_FP_RELPOINTER_EVENT ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3/.4). A button bit is
+// meaningful on its own: a release carries the same bit as the press and only
+// omits PTRFLAGS_DOWN, so the identity must be decoded outside the "down"
+// branch. `mouse_x` selects the PTRXFLAGS namespace, where the button bits are
+// 0x0001/0x0002 instead of 0x1000/0x2000/0x4000.
+void DecodePointerButtons(uint16_t pf, bool mouse_x, InputEvent& ev) {
+    ev.button_down = (pf & proto::kPtrDown) != 0;
+    if (mouse_x) {
+        if ((pf & proto::kPtrXButton2) != 0) ev.button = 5;
+        else if ((pf & proto::kPtrXButton1) != 0) ev.button = 4;
+        return;
+    }
+    if ((pf & proto::kPtrButton3) != 0) ev.button = 3;
+    else if ((pf & proto::kPtrButton2) != 0) ev.button = 2;
+    else if ((pf & proto::kPtrButton1) != 0) ev.button = 1;
+}
+
 // One accepted peer. Owns its transport, its X.224/MCS state, its security
 // state, its capability sets and its framebuffer. Nothing mutable is shared
 // with another session: this is the D1 single-writer-per-session model.
@@ -549,13 +567,15 @@ class RdpSession {
                DesktopSource* source, Authenticator authenticator,
                InputCallback input_callback, uint32_t session_id,
                clipboard::Clipboard* clipboard,
-               clipboard::FileListProvider* file_provider)
+               clipboard::FileListProvider* file_provider,
+               std::shared_ptr<std::atomic<size_t>> unknown_input_events)
         : transport_(std::move(transport)),
           config_(config),
           source_(source),
           authenticator_(std::move(authenticator)),
           input_callback_(std::move(input_callback)),
-          session_id_(session_id) {
+          session_id_(session_id),
+          unknown_input_events_(std::move(unknown_input_events)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
         // session's thread. The send lambda reads cliprdr_channel_id_ at send
@@ -1547,7 +1567,13 @@ class RdpSession {
                     ev.kind = InputEvent::Kind::kKey;
                     ev.scancode = p[pos++];
                     ev.release = (flags & proto::kKbdRelease) != 0;
+                    // FASTPATH_INPUT_KBDFLAGS_EXTENDED means "the keyCode is
+                    // prefixed by 0xE0", so it stays a separate flag; the
+                    // scancode itself is never offset by 0x100. EXTENDED1 is
+                    // the 0xE1 prefix used by the PAUSE sequence
+                    // ([MS-RDPBCGR] 2.2.8.1.2.2.1).
                     ev.extended = (flags & proto::kKbdExtended) != 0;
+                    ev.extended1 = (flags & proto::kKbdExtended1) != 0;
                     break;
                 }
                 case proto::FastPathInputEventCode::kUnicode: {
@@ -1564,12 +1590,16 @@ class RdpSession {
                     if (pos + 6 > n) return;
                     const uint16_t pf =
                         static_cast<uint16_t>(p[pos] | (p[pos + 1] << 8));
-                    ev.x = static_cast<uint16_t>(p[pos + 2] | (p[pos + 3] << 8));
-                    ev.y = static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8));
+                    const uint16_t x_pos =
+                        static_cast<uint16_t>(p[pos + 2] | (p[pos + 3] << 8));
+                    const uint16_t y_pos =
+                        static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8));
                     pos += 6;
                     ev.kind = InputEvent::Kind::kMouse;
-                    if ((pf & proto::kPtrWheel) != 0 ||
-                        (pf & proto::kPtrHwheel) != 0) {
+                    const bool wheel =
+                        (pf & proto::kPtrWheel) != 0 ||
+                        (pf & proto::kPtrHwheel) != 0;
+                    if (wheel) {
                         // PTRFLAGS_WHEEL / PTRFLAGS_HWHEEL share one 9-bit
                         // two's-complement rotation field ([MS-RDPBCGR]
                         // 2.2.8.1.1.3.1.1.1): 0x0100 is its sign bit, not a
@@ -1583,39 +1613,74 @@ class RdpSession {
                             pf & proto::kPtrWheelRotationMask);
                         ev.wheel_delta = static_cast<int16_t>(
                             (raw & 0x0100) != 0 ? raw - 0x0200 : raw);
+                        // A wheel event must ignore every other pointer flag
+                        // and both coordinates ([MS-RDPBCGR]
+                        // 2.2.8.1.1.3.1.1.3). Leaving a button or a stale
+                        // position here would make the injection seam click or
+                        // jump the cursor on a plain scroll.
+                        ev.x = 0;
+                        ev.y = 0;
+                        break;
                     }
-                    if ((pf & proto::kPtrDown) != 0) {
-                        ev.button_down = true;
-                        if (static_cast<proto::FastPathInputEventCode>(code) ==
-                            proto::FastPathInputEventCode::kMouseX) {
-                            // PTRXFLAGS ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.4):
-                            // X1 = 0x0001, X2 = 0x0002. Decoding the PTRFLAGS
-                            // bits here aliased X2 on the right button.
-                            if ((pf & proto::kPtrXButton2) != 0) ev.button = 5;
-                            else if ((pf & proto::kPtrXButton1) != 0) ev.button = 4;
-                        } else if ((pf & proto::kPtrButton3) != 0) {
-                            ev.button = 3;
-                        } else if ((pf & proto::kPtrButton2) != 0) {
-                            ev.button = 2;
-                        } else if ((pf & proto::kPtrButton1) != 0) {
-                            ev.button = 1;
-                        }
-                    }
+                    ev.x = x_pos;
+                    ev.y = y_pos;
+                    // PTRFLAGS_MOVE (0x0800): the pointer must move to (x, y).
+                    // A button release does NOT carry this bit, which is what
+                    // makes "move" and "release" distinguishable (P-5).
+                    ev.is_move = (pf & proto::kPtrMove) != 0;
+                    DecodePointerButtons(
+                        pf,
+                        static_cast<proto::FastPathInputEventCode>(code) ==
+                            proto::FastPathInputEventCode::kMouseX,
+                        ev);
                     break;
                 }
                 case proto::FastPathInputEventCode::kSync:
                     ev.kind = InputEvent::Kind::kSync;
                     ev.sync_flags = flags;
                     break;
-                case proto::FastPathInputEventCode::kMouseRel:
+                case proto::FastPathInputEventCode::kMouseRel: {
+                    // TS_FP_RELPOINTER_EVENT: xDelta/yDelta are SIGNED i16,
+                    // unlike the unsigned absolute x/y above
+                    // ([MS-RDPBCGR] 2.2.8.1.2.2.7). A real input event, so it
+                    // is delivered once as kMouseRel (never as a phantom kKey).
+                    // Its flags are PTRFLAGS (same namespace as
+                    // TS_FP_POINTER_EVENT), NOT PTRXFLAGS, so X1/X2 do not
+                    // exist here and the low bits must not be read as buttons.
+                    // is_move stays false: that flag means "move the absolute
+                    // pointer to (x, y)", and this event has x = y = 0.
                     if (pos + 6 > n) return;
+                    const uint16_t pf =
+                        static_cast<uint16_t>(p[pos] | (p[pos + 1] << 8));
+                    ev.kind = InputEvent::Kind::kMouseRel;
+                    ev.rel_x = static_cast<int16_t>(
+                        static_cast<uint16_t>(p[pos + 2] | (p[pos + 3] << 8)));
+                    ev.rel_y = static_cast<int16_t>(
+                        static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8)));
+                    DecodePointerButtons(pf, false, ev);
                     pos += 6;
                     break;
+                }
                 case proto::FastPathInputEventCode::kQoeTimestamp:
+                    // TS_FP_QOETIMESTAMP_EVENT is metadata (a timestamp), not
+                    // an input event: consume it and emit NOTHING. Letting it
+                    // fall through to the callback delivered the default
+                    // InputEvent (kind=kKey, scancode=0) -- a phantom key.
                     if (pos + 4 > n) return;
                     pos += 4;
-                    break;
+                    continue;
                 default:
+                    // Unknown eventCode. [MS-RDPBCGR] 2.2.8.1.2.2 says the
+                    // server SHOULD drop the connection; this server
+                    // deliberately deviates (SHOULD is not MUST) so a capture
+                    // can identify the offending client version instead of
+                    // losing the session. The event is counted and the rest of
+                    // this PDU is abandoned: its size is unknown, so there is
+                    // no safe way to resynchronise.
+                    if (unknown_input_events_) {
+                        unknown_input_events_->fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
                     return;
             }
             if (input_callback_) input_callback_(ev);
@@ -1628,6 +1693,9 @@ class RdpSession {
     Authenticator authenticator_;
     InputCallback input_callback_;
     uint32_t session_id_ = 0;
+    // Server-level counter shared with every session: an unknown eventCode is
+    // counted here so the operator can observe it without logs (P-11).
+    std::shared_ptr<std::atomic<size_t>> unknown_input_events_;
 
     std::vector<uint8_t> read_buf_;
     std::vector<uint8_t> pending_;
@@ -1732,6 +1800,10 @@ struct RdpServer::Impl {
     std::atomic<bool> running{false};
     std::shared_ptr<Registry> registry = std::make_shared<Registry>();
     std::atomic<size_t> total_session_count{0};
+    // Unknown fast-path input eventCodes, counted per server (P-11). A
+    // shared_ptr so a detached session thread cannot outlive the counter.
+    std::shared_ptr<std::atomic<size_t>> unknown_input_events =
+        std::make_shared<std::atomic<size_t>>(0);
     // One-shot guard for the accept-all WARNING. Intentionally a plain bool:
     // Start()/Run()/ServeOne() may be called concurrently only by embedding
     // at their own risk; firing a duplicate warning under a racy double
@@ -1847,7 +1919,8 @@ void RdpServer::Run() {
             if (!impl_->running.load(std::memory_order_relaxed)) break;
             session = std::make_shared<RdpSession>(
                 std::move(transport), config_, source_, authenticator_,
-                input_callback_, 0, clipboard_, file_list_provider_);
+                input_callback_, 0, clipboard_, file_list_provider_,
+                impl_->unknown_input_events);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1966,7 +2039,8 @@ bool RdpServer::ServeOne() {
     auto transport = impl_->listener->Accept();
     if (!transport) return false;
     RdpSession session(std::move(transport), config_, source_, authenticator_,
-                       input_callback_, 0, clipboard_, file_list_provider_);
+                       input_callback_, 0, clipboard_, file_list_provider_,
+                       impl_->unknown_input_events);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it.
     try {
@@ -2022,6 +2096,10 @@ uint16_t RdpServer::bound_port() const { return impl_->bound_port; }
 
 size_t RdpServer::total_session_count() const {
     return impl_->total_session_count.load(std::memory_order_relaxed);
+}
+
+size_t RdpServer::unknown_input_event_count() const {
+    return impl_->unknown_input_events->load(std::memory_order_relaxed);
 }
 
 // ---- Test pattern ----------------------------------------------------------

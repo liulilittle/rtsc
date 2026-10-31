@@ -199,6 +199,7 @@ struct InputEvent {
         kWheel,     // mouse wheel
         kSync,      // toggle-key sync
         kUnicode,   // unicode keyboard event
+        kMouseRel,  // relative pointer movement (TS_FP_RELPOINTER_EVENT)
     };
 
     Kind kind = Kind::kKey;
@@ -207,17 +208,43 @@ struct InputEvent {
     uint8_t scancode = 0;
     uint16_t unicode_code = 0;
     bool release = false;
+    // True when the keyCode is extended with the 0xE0 prefix
+    // (FASTPATH_INPUT_KBDFLAGS_EXTENDED, [MS-RDPBCGR] 2.2.8.1.2.2.1). This is
+    // a separate flag, NOT the value 0x100 added to the scancode: the prefix
+    // is not part of keyCode on the wire.
     bool extended = false;
+    // True for FASTPATH_INPUT_KBDFLAGS_EXTENDED1 (0x04), the 0xE1 prefix the
+    // PAUSE sequence carries on its CTRL events. Faithful wire report only:
+    // the injection seam cannot express 0xE1 through SendInput
+    // ([MS-RDPBCGR] 2.2.8.1.2.2.1; see docs/spec/input-injection-seam.md P-6).
+    bool extended1 = false;
 
-    // kMouse / kWheel
+    // kMouse / kWheel. The wire values are kept verbatim even for kWheel,
+    // where they are meaningless: [MS-RDPBCGR] 2.2.8.1.1.3.1.1.3 says xPos and
+    // yPos must be ignored for a wheel event, so the injection seam must not
+    // emit a move for kWheel (docs/spec/input-injection-seam.md section 4.3).
     uint16_t x = 0;
     uint16_t y = 0;
     uint16_t button = 0;   // 1 = left, 2 = right, 3 = middle, 4 = X1, 5 = X2
     bool button_down = false;
+    // kMouse only: PTRFLAGS_MOVE (0x0800) was set, i.e. the pointer must move
+    // to (x, y). A button release carries the button bit without MOVE, so this
+    // distinguishes "move" from "release" ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3).
+    // A relative event (kMouseRel) leaves this false: it has no absolute
+    // position, and moving to (x, y) would teleport the pointer to (0, 0).
+    // Consumers must use kind == kMouseRel plus rel_x/rel_y for relative
+    // movement.
+    bool is_move = false;
     int16_t wheel_delta = 0;  // wire units: WHEEL_DELTA (120) per notch
     // kWheel: set when the event was a PTRFLAGS_HWHEEL event (horizontal
     // scroll); a vertical wheel event leaves it false.
     bool horizontal = false;
+
+    // kMouseRel: SIGNED relative displacement (xDelta/yDelta), unlike the
+    // unsigned absolute x/y above ([MS-RDPBCGR] 2.2.8.1.2.2.7). kMouseRel is
+    // the marker for relative movement; is_move stays false for it.
+    int16_t rel_x = 0;
+    int16_t rel_y = 0;
 
     // kSync
     uint8_t sync_flags = 0;
@@ -297,6 +324,16 @@ class RdpServer {
     // session_count() for "how many are connected now".
     size_t total_session_count() const;
     const std::string& last_error() const { return last_error_; }
+
+    // Number of fast-path input events rejected because their eventCode is not
+    // one of the known types, over the life of this server (monotonic, never
+    // reset). The specification says the server SHOULD drop the connection
+    // ([MS-RDPBCGR] 2.2.8.1.2.2); this server deliberately stays lenient and
+    // only counts, so a capture can be used to identify the offending client
+    // version without losing the session. Events that are recognised and
+    // deliberately produce no callback (e.g. the QoE timestamp) are NOT
+    // counted here.
+    size_t unknown_input_event_count() const;
 
  private:
     struct Impl;

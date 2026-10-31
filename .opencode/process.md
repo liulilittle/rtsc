@@ -337,3 +337,67 @@ decode: 0x0388->-120  0x0278->+120  0x0301->-255  0x02FF->+255
 - P-9/P-10 复核：`[READ:include/rtsc/proto/capabilities.h:232-234]` 默认 0x0117 确无 0x0020；
   慢路径 0x1C 丢弃待读 1479-1521 确认。
 - 待办：甲最终盖章 → 定案 → 拆两批派执行（①协议完整性 P-1..P-12 ②注入器骨架默认 off）。
+## 第794轮：滚轮修复盖章 `042687f` + 批 1 派执行 + 双审复核
+### 主代理验证（执行 AI 连续上游中断后由主代理接管验证）
+- 构建：`cmake --build build --config Release` → **exit=0，warnings=0，errors=0**
+- 定向测试：`ctest -R "client|server|gui|proto|view|ui"` → **18/18 passed**
+- 变异：M1 去×120 → client **4 failing/5 checks**；M2 去符号扩展 → server **1 failing/2 checks**；
+  M3 去 clamp → client **1 failing/2 checks**；恢复后 client 17/75/0、server 28/253/0，
+  两文件与备份哈希一致
+- 提交 `042687f`（代码+测试+双审文档+注入四批路线图+变异证据）
+
+### 双审对账完成（甲报告）
+- 甲 `docs/spec/input-injection-evidence.md` 600 行；乙 `input-injection-seam.md` 382 行
+- **P-1..P-12 全部同意、无未决分歧**；最终裁决：SendInput / 前台窗口 / 自用 dwExtraInfo /
+  单会话门控 / UIPI 不可判 / 仅交互式会话 / 队列 256 / 用 `SetGeometry`
+- 甲另交 `evidence/input-inject-mapping-harness.*`（42 checks / 0 fail，7 变异体全红）
+- 行号漂移：回调点 1614→1621，以符号 `ParseInputEvents` 为准
+
+### 已派
+- 批 1 执行 `ses_e6d5fe161ffeg6xEfTfQbtNnkm`：P-3 相对移动、P-4 幻影按键、P-5 move/release + 测试固化、
+  P-6 扩展位、P-11 未知 eventCode 计数（TDD + 3 变异体）
+- 双审复核 `042687f`：甲（`input-wheel-review-A.md`）、乙（`input-wheel-review-B.md`），各自独立### 第794轮：乙复核 042687f → PASS 5/5；乙解散
+- 乙产物 `docs/spec/input-wheel-review-B.md`（4,070 B / 38 行）：
+  编码 PASS（`client.cpp:247-257`）、解码 PASS（`server.cpp:1571-1586`）、
+  单位契约 PASS（`kPtrWheelNegative|magnitude` 0 命中）、M1 变异 PASS（红→绿，PRE/POST 哈希逐字节相同）、
+  边界 PASS（INT16_MIN×120 无 UB；0x0600 双置位垂直优先 delta=0 需注入侧丢弃；截断包 PARTIAL）
+- 乙新发现（低危，已并入批 1 P-11）：未知 eventCode 只 `return`、无计数、`numEvents` 未交叉校验
+- 主代理核验乙的还原声明：`git diff --stat -- src/client/client.cpp` 为空 → M1 确已还原
+- 乙任务完成 → `delete` 解散（`ses_e6db6db1dffeJJge2MFgISFFyj`）
+- 在途：甲复核 A（busy）、批 1 执行（busy，`test_server.cpp` 已 +386 行）### 第794轮：批 1 在途代码 review（主代理只读核验）
+- `include/rtsc/server/server.h`：新增 `Kind::kMouseRel`、`extended1`（0xE1 前缀，仅忠实上报）、
+  `is_move`（0x0800 区分 move/release）、`rel_x/rel_y`（有符号）、`RdpServer::unknown_input_event_count()`。
+- `src/server/server.cpp`：抽出 `DecodePointerButtons`（释放也带按钮身份，修 P-5 测试固化根源）；
+  `kMouseRel` 产出 `kind=kMouseRel` 单次回调（1628-1652）；`kQoeTimestamp` 用 `continue` 跳过回调（1653-）；
+  `default` 计数 `unknown_input_events_` 后放弃本 PDU（P-11，注释写明规范 SHOULD 断连、本仓有意偏离）；
+  计数器用 `shared_ptr<atomic<size_t>>` 防 detached 会话线程越界。
+- 与裁决一致（QoE=0 回调、kMouseRel=1 回调），未再出现"或"的歧义。
+## 第795轮：变异残留来源查清（甲承认）+ 主代理独立复验 + 批 1 返工单
+### 残留根因（甲认账，证据充分）
+甲自承：在 `%TEMP%\opencode\wheelA` 用 PowerShell `cd` 后，仍以**相对路径**
+`src\server\server.cpp` 调 `.NET` `ReadAllText/WriteAllText` → **.NET 相对路径按进程 CWD（F:\rtsc）解析，
+不跟随 PowerShell 的 `cd`** → 写入落在真实工作树；其"还原"用的是沙箱绝对路径，故仓库残留。
+→ 执行 AI 的"ctest 15/15 全绿"声明在**其交付时刻**（0:33）为真，`// M2` 注入发生在 0:35:57（甲），
+两条时间线不矛盾。**这不是执行 AI 的错，也不是"报告造假"，是跨代理共享工作树的路径事故。**
+
+### 主代理独立复验（不采信任何子代理的绿）
+- `[BASH: cmake --build build --config Release]` → exit=0, warn=0, err=0
+- `[BASH: ctest -R "server|client|gui"]` → **100% tests passed, 0 tests failed out of 15**
+- `[BASH: rtsc_server_tests.exe]` → 34 tests, 330 checks, **0 failing**（批 1 的 7 个 server_input_* 全 OK）
+- 主代理自做 M1（QoE `continue`→`break`）：`FAIL :767 got 2 want 1`、`FAIL :872 got 3 want 2`、
+  `2 failing tests` → 红；恢复后哈希 `7BA3C8C1…31D2` 精确回基线、34/330/0 绿。
+- 变异标记全仓扫描：`src/include/tests` 中仅 `tests/test_view.cpp:418` 的英文注释词 "mutant"（既有合法注释，非标记）。
+
+### 甲对批 1 的 4 条新风险 → 主代理裁决（全部采纳，已下返工单）
+| 编号 | 问题 | 后果 | 裁决 |
+|---|---|---|---|
+| A | `kMouseRel` 置 `is_move=true` 但 x/y 为 0 | 注入层按契约当"绝对移到(0,0)"，**鼠标跳到左上角** | 删除该赋值；补断言 `!is_move && x==0 && y==0` |
+| B | 相对事件用 PTRXFLAGS(0x0001/2) 解 X 按钮 | 把未定义位当按钮（2.2.8.1.2.2.7 是 PTRFLAGS 命名空间） | 删除该回退；补 `flags=0x0002 → button==0` |
+| C (N4) | wheel 仍解按钮位 | 畸形 `WHEEL|DOWN|BUTTON1` 产出 button_down | wheel 分支不调 `DecodePointerButtons` |
+| D (N5) | wheel 仍写 x/y | 横向滚轮带陈旧坐标 | wheel 分支清 `x/y=0` |
+N1（3 格 clamp 丢 0.875 格）/N2（-256 码位）/N3（gating 静默）/N6（测试缺口）→ 单独立批（客户端拆包）。
+
+### 教训（第 15 例：**相对路径跨"CWD vs shell cd"**）
+.NET/PowerShell 混用时的经典陷阱：`Set-Location` 只改 PowerShell 的 provider 位置，
+**进程 CWD 不变**，`[IO.File]` 系列按进程 CWD 解析。沙箱化必须全程用**绝对路径**。
+本仓已出现两次同类事故（这次甲；round 793 我自己也差点用 `Copy-Item` 相对路径污染）。

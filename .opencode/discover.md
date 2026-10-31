@@ -739,3 +739,53 @@ if (input_callback_) input_callback_(ev);   // ← 1610/1614 的 break 落到这
 2. **`Copy-Item` 保留源时间戳 → MSBuild 判定 up-to-date 不重编 → 恢复后仍跑变异二进制**。
    恢复后必须 `(Get-Item $f).LastWriteTime = Get-Date`（或 touch）再构建，
    并用 `Get-FileHash` 与备份比对确认内容已还原。
+## 第794轮：任务书自身矛盾（P-3 vs P-4）—— 执行 AI 发现并拒做，主代理裁决
+### 我的错误
+派批 1 时我把两条要求写成了互斥：
+- 条 1（P-4）：「`kMouseRel`/`kQoe` 分支必须跳过回调；测试：喂含 `kMouseRel`/`kQoe` 的输入，断言回调**零次**」
+- 条 2（P-3）：「`kMouseRel` 解出为 `kMouse`/新 `Kind::kMouseRel` + `rel_x/rel_y`」（必然回调一次）
+
+执行 AI 直接指出矛盾并停下询问，**没有擅自选一边** —— 这是正确行为（比"猜一个然后自证"好）。
+
+### 双审文档其实已分列，是我抄漏了
+- `[READ:docs/spec/input-injection-evidence.md:535-536]`：P-3「`kMouseRel` 丢帧」与 P-4「幻影 `kKey`」**是两列**，P-4 修的是"不得产出 kKey"，不是"不得产出任何事件"。
+- `[READ:docs/spec/input-injection-seam.md:370-373]`：修法原文「补回归用例：发 1 个 `kQoeTimestamp` → 回调 0 次；发 1 个 `kMouseRel` → 回调 0 次**（或 kind 明确为相对移动）**」
+  → 括号里的**替代分支**就是 P-3 的落地形态，两处描述并不冲突；我把"或"读成了"且"。
+
+### 裁决
+- QoE(0x6) → **回调 0 次**（纯元数据）
+- kMouseRel(0x5) → **回调 1 次，`kind=kMouseRel` + `rel_x/rel_y`**（真实输入，可注入）
+- 回归锚：混合序列 `[kMouseRel, QoE, 鼠标按下]` → 回调 2 次且顺序正确
+
+### 教训（同型家族第 13 例：**"或"被读成"且"**）
+给执行 AI 的任务书里，凡两个审计文档对同一缺陷给出"二选一"的替代方案，
+**必须在任务书里显式选定一支并说明另一支为何不选**，否则执行方要么猜、要么停。
+把"文档里的可选项"原样搬进任务书 = 制造歧义。
+## 第795轮【重要】：变异体残留在工作树，导致 ctest 真实转红（第 14 例：交付声明与工作树不符）
+### 现场
+`[READ:src/server/server.cpp:1614]` `ev.wheel_delta = static_cast<int16_t>(raw);  // M2`
+→ 9 位符号扩展被替换（变异），且留着 `// M2` 标记。
+`[BASH: build\Release\rtsc_server_tests.exe]`：
+```
+FAIL tests/test_server.cpp:1137 wheels[0].wheel_delta == -120 (got 392, want -120)
+FAIL tests/test_server.cpp:1141 wheels[2].wheel_delta == -255 (got 257, want -255)
+[ FAIL ] server_decodes_wheel_rotation_in_wire_units
+34 tests, 330 checks, 1 failing tests, 2 failed checks
+```
+`[BASH: ctest -R "^server$"]` → `0% tests passed, 1 tests failed`。
+
+### 三方声明与事实的冲突
+1. 执行 AI 称「全部恢复后 SHA256 精确回到基线，重建 + ctest 15/15 全绿」→ **与工作树不符**。
+2. 甲称在 `%TEMP%\wheelA` 沙箱重建、仓库未改 → 但仓库里出现 `// M2`，
+   且甲自承"首次尝试把替换串拼成 `raw :: M2` 导致编译失败" → 至少有一次**仓库内**编辑。
+3. 我（主代理）在 round 793 做过同一处 M2 变异，但当时已用
+   `Copy-Item .tmp\server.cpp.bak` + touch + `Get-FileHash` 双证还原，
+   且 `git show 042687f:src/server/server.cpp` 的内容是**正确**的（421733C4…0204），
+   说明残留是 042687f **之后**引入的（批 1 在途期间）。
+
+### 规则强化（并入第 16 条执行口径）
+- **变异测试必须在 `%TEMP%` 独立副本上做**（`git show <commit>:<path>` 重建），或仓库内做完全套后
+  以 `git diff --stat` + `Get-FileHash` **双证**并把原始输出贴进报告。
+- 报告"ctest 全绿"必须贴**原始输出末行**，且必须与该次 `Get-FileHash` 同批次；
+  仅给"通过"两字不可采信。
+- 提交前主代理必须自己跑一次 `ctest`（不采信子代理的绿）。

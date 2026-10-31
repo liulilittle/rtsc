@@ -678,11 +678,13 @@ RTSC_TEST(server_decodes_mousex_buttons_with_ptrxflags) {
 
     struct Seen {
         bool x1_down = false, x2_down = false, left_down = false;
-        int nondown_mouse = 0;  // the two X releases arrive as plain mouse ups
+        bool x1_up = false, x2_up = false;
+        bool release_lost_button = false;
+        bool release_flagged_move = false;
     } seen;
     for (int i = 0;
          i < 100 && !(seen.x1_down && seen.x2_down && seen.left_down &&
-                      seen.nondown_mouse >= 2);
+                      seen.x1_up && seen.x2_up);
          ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         std::lock_guard<std::mutex> lock(mu);
@@ -692,15 +694,410 @@ RTSC_TEST(server_decodes_mousex_buttons_with_ptrxflags) {
                 if (ev.button == 4) seen.x1_down = true;
                 if (ev.button == 5) seen.x2_down = true;
                 if (ev.button == 1) seen.left_down = true;
-            } else {
-                ++seen.nondown_mouse;
+                continue;
             }
+            // P-5: a release carries the SAME button bit as its press, just
+            // without PTRFLAGS_DOWN ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3/.4). The
+            // previous assertion only counted "some non-down mouse event",
+            // which froze the lost-button defect (button=0) as the expectation.
+            if (ev.button == 0) seen.release_lost_button = true;
+            if (ev.is_move) seen.release_flagged_move = true;
+            if (ev.button == 4) seen.x1_up = true;
+            if (ev.button == 5) seen.x2_up = true;
         }
     }
     CHECK(seen.x1_down);   // PTRXFLAGS_BUTTON1 (0x0001) -> X1, not left
     CHECK(seen.x2_down);   // PTRXFLAGS_BUTTON2 (0x0002) -> X2, not right
     CHECK(seen.left_down);  // the plain POINTER left path is untouched
-    CHECK(seen.nondown_mouse >= 2);
+    CHECK(seen.x1_up);      // X1 release keeps its button identity
+    CHECK(seen.x2_up);      // X2 release keeps its button identity
+    CHECK(!seen.release_lost_button);
+    CHECK(!seen.release_flagged_move);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_qoe_timestamp_is_not_an_input_event) {
+    // P-4: the QoE timestamp (eventCode 0x6) is metadata, not an input event
+    // ([MS-RDPBCGR] 2.2.8.1.2.2.6). It used to consume its 4 bytes and fall
+    // through to the callback with a default-constructed InputEvent
+    // (kind=kKey, scancode=0), i.e. a phantom key press.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    // QoE first, then a real key in its own PDU: the key proves the QoE PDU
+    // was already parsed, so a phantom callback cannot arrive afterwards.
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(
+                                         {EncodeQoeTimestampEvent(0x11223344)}))));
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(
+                                         {EncodeKeyboardEvent(0x1E, false, false)}))));
+    for (int i = 0; i < 100 && snapshot().size() < 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(1));
+    if (got.size() == 1) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kKey);
+        CHECK_EQ(got[0].scancode, static_cast<uint8_t>(0x1E));
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_relative_mouse_keeps_signed_deltas) {
+    // P-3: TS_FP_RELPOINTER_EVENT (eventCode 0x5) carries SIGNED i16
+    // xDelta/yDelta ([MS-RDPBCGR] 2.2.8.1.2.2.7). It must surface as a
+    // kMouseRel event, never as the default kind=kKey phantom.
+    //
+    // It must NOT set is_move: is_move is the kMouse PTRFLAGS_MOVE contract
+    // ("move the pointer to (x, y)") and a relative event has x = y = 0, so a
+    // consumer honouring the contract would teleport the cursor to (0, 0).
+    // A relative event's movement lives in rel_x/rel_y and is identified by
+    // kind == kMouseRel.
+    //
+    // Its flags are PTRFLAGS, not PTRXFLAGS, so the low bits 0x0001/0x0002 are
+    // NOT X1/X2 buttons and must decode to button == 0.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu({
+                                         EncodeRelativeMouseEvent(kPtrMove, 10, -5),
+                                         // 0x0002 is an undefined PTRFLAGS bit;
+                                         // decoding it as X2 would be a bug.
+                                         EncodeRelativeMouseEvent(0x0002, 0, 0),
+                                     }))));
+    for (int i = 0; i < 100 && snapshot().size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(2));
+    if (got.size() == 2) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[0].rel_x, static_cast<int16_t>(10));
+        CHECK_EQ(got[0].rel_y, static_cast<int16_t>(-5));
+        CHECK(!got[0].is_move);   // relative is NOT an absolute move
+        CHECK_EQ(got[0].x, static_cast<uint16_t>(0));
+        CHECK_EQ(got[0].y, static_cast<uint16_t>(0));
+        CHECK(!got[0].button_down);
+        CHECK_EQ(got[0].button, static_cast<uint16_t>(0));
+
+        // Undefined low PTRFLAGS bits must not become X1/X2 buttons.
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[1].button, static_cast<uint16_t>(0));
+        CHECK(!got[1].button_down);
+        CHECK(!got[1].is_move);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_relative_qoe_pointer_sequence_keeps_order) {
+    // Regression anchor for the mixed stream: the relative event is delivered,
+    // the QoE timestamp is dropped, and the pointer press follows. The old
+    // decoder produced three callbacks (two phantom kKey events) here.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu({
+                                         EncodeRelativeMouseEvent(kPtrMove, -3, 7),
+                                         EncodeQoeTimestampEvent(42),
+                                         EncodeMouseEvent(0x9000, 30, 40, false),
+                                     }))));
+    for (int i = 0; i < 100 && snapshot().size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(2));
+    if (got.size() == 2) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[0].rel_x, static_cast<int16_t>(-3));
+        CHECK_EQ(got[0].rel_y, static_cast<int16_t>(7));
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK_EQ(got[1].button, static_cast<uint16_t>(1));
+        CHECK(got[1].button_down);
+        CHECK_EQ(got[1].x, static_cast<uint16_t>(30));
+        CHECK_EQ(got[1].y, static_cast<uint16_t>(40));
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_pointer_move_and_release_are_distinguishable) {
+    // P-5: PTRFLAGS_MOVE (0x0800) and a button release both used to decode as
+    // button=0, button_down=false, so the injector could not tell "move the
+    // pointer" from "release the left button".
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu({
+                                         EncodeMouseEvent(kPtrMove, 5, 6),  // move
+                                         EncodeMouseEvent(0x1000, 10, 20),  // left up
+                                         EncodeMouseEvent(0x9000, 30, 40),  // left down
+                                     }))));
+    for (int i = 0; i < 100 && snapshot().size() < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(3));
+    if (got.size() == 3) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK(got[0].is_move);          // pure move
+        CHECK(!got[0].button_down);
+        CHECK_EQ(got[0].button, static_cast<uint16_t>(0));
+
+        CHECK(got[1].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK(!got[1].is_move);         // release, not a move
+        CHECK(!got[1].button_down);
+        CHECK_EQ(got[1].button, static_cast<uint16_t>(1));  // identity kept
+
+        CHECK(got[2].kind == rtsc::server::InputEvent::Kind::kMouse);
+        CHECK(!got[2].is_move);
+        CHECK(got[2].button_down);
+        CHECK_EQ(got[2].button, static_cast<uint16_t>(1));
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_extended_flags_are_prefixes) {
+    // P-6: FASTPATH_INPUT_KBDFLAGS_EXTENDED (0x02) means "the keyCode is
+    // prefixed by 0xE0"; it is a flag, never the value 0x100 added to the
+    // scancode. FASTPATH_INPUT_KBDFLAGS_EXTENDED1 (0x04) is the 0xE1 prefix
+    // carried by the PAUSE sequence's CTRL events
+    // ([MS-RDPBCGR] 2.2.8.1.2.2.1; docs/spec/share-data.md 3.6.1).
+    // Pause injection itself stays UNVERIFIED (SendInput cannot express 0xE1);
+    // this test only locks the decoded fields.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    std::vector<std::vector<uint8_t>> seq = EncodePauseKey();
+    seq.push_back(EncodeKeyboardEvent(kScancodeEnd, false, true));  // E0 0x4F
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(seq))));
+    for (int i = 0; i < 100 && snapshot().size() < 5; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(5));
+    if (got.size() == 5) {
+        // CTRL down / NUMLOCK down / CTRL up / NUMLOCK up (the 0xE1 pair).
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kKey);
+        CHECK_EQ(got[0].scancode, static_cast<uint8_t>(0x1D));
+        CHECK(!got[0].extended);
+        CHECK(got[0].extended1);
+        CHECK(!got[0].release);
+
+        CHECK_EQ(got[1].scancode, static_cast<uint8_t>(0x45));
+        CHECK(!got[1].extended);
+        CHECK(!got[1].extended1);
+
+        CHECK_EQ(got[2].scancode, static_cast<uint8_t>(0x1D));
+        CHECK(!got[2].extended);
+        CHECK(got[2].extended1);
+        CHECK(got[2].release);
+
+        CHECK_EQ(got[3].scancode, static_cast<uint8_t>(0x45));
+        CHECK(got[3].release);
+
+        // E0-prefixed End: the flag is set, the scancode stays 0x4F.
+        CHECK_EQ(got[4].scancode, static_cast<uint8_t>(0x4F));
+        CHECK(got[4].extended);
+        CHECK(!got[4].extended1);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_unknown_event_code_is_counted) {
+    // P-11: [MS-RDPBCGR] 2.2.8.1.2.2 says the server SHOULD drop the
+    // connection for an unknown eventCode. This repo deliberately stays
+    // lenient (SHOULD is not MUST: a lenient session lets a capture identify
+    // the offending client version) but must count the event. Its size is
+    // unknown, so the rest of that PDU is abandoned.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    auto snapshot = [&]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return events;
+    };
+
+    const size_t before = server.unknown_input_event_count();
+    // eventHeader 0xE0 -> eventCode [7:5] = 0x7, an undefined type.
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu({{0xE0}}))));
+    // A following valid key proves the connection was not dropped.
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(
+                                         {EncodeKeyboardEvent(0x1E, false, false)}))));
+    for (int i = 0; i < 100 && snapshot().size() < 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK_EQ(server.unknown_input_event_count(), before + 1);
+    const auto got = snapshot();
+    CHECK_EQ(got.size(), static_cast<size_t>(1));
+    if (got.size() == 1) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kKey);
+        CHECK_EQ(got[0].scancode, static_cast<uint8_t>(0x1E));
+    }
 
     server.Stop();
     runner.join();
@@ -741,12 +1138,16 @@ RTSC_TEST(server_decodes_wheel_rotation_in_wire_units) {
         rtsc::proto::EncodeMouseEvent(0x0301, 1, 3),  // vertical, -255
         rtsc::proto::EncodeMouseEvent(0x02FF, 1, 4),  // vertical, +255
         rtsc::proto::EncodeMouseEvent(0x0600, 1, 5),  // WHEEL|HWHEEL: vertical wins
+        // Malformed WHEEL|DOWN|BUTTON1 with bogus coordinates: a wheel event
+        // must ignore the other pointer flags and xPos/yPos
+        // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3).
+        rtsc::proto::EncodeMouseEvent(0x9200, 123, 456),
     });
     CHECK(WriteAll(*r.transport, McsSendData::build_request(
                                      r.user_channel, r.io_channel, fp)));
 
     std::vector<rtsc::server::InputEvent> wheels;
-    for (int i = 0; i < 100 && wheels.size() < 5; ++i) {
+    for (int i = 0; i < 100 && wheels.size() < 6; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         std::lock_guard<std::mutex> lock(mu);
         wheels.clear();
@@ -756,8 +1157,8 @@ RTSC_TEST(server_decodes_wheel_rotation_in_wire_units) {
             }
         }
     }
-    CHECK_EQ(wheels.size(), static_cast<size_t>(5));
-    if (wheels.size() == 5) {
+    CHECK_EQ(wheels.size(), static_cast<size_t>(6));
+    if (wheels.size() == 6) {
         CHECK_EQ(wheels[0].wheel_delta, static_cast<int16_t>(-120));
         CHECK(!wheels[0].horizontal);
         CHECK_EQ(wheels[1].wheel_delta, static_cast<int16_t>(120));
@@ -768,6 +1169,15 @@ RTSC_TEST(server_decodes_wheel_rotation_in_wire_units) {
         CHECK(!wheels[3].horizontal);
         CHECK_EQ(wheels[4].wheel_delta, static_cast<int16_t>(0));
         CHECK(!wheels[4].horizontal);
+        // xPos/yPos are ignored for wheel events: never carried through.
+        for (const auto& w : wheels) {
+            CHECK_EQ(w.x, static_cast<uint16_t>(0));
+            CHECK_EQ(w.y, static_cast<uint16_t>(0));
+        }
+        // WHEEL|DOWN|BUTTON1 is malformed: the wheel kind must not expose a
+        // button state (the injection seam would otherwise emit a click).
+        CHECK_EQ(wheels[5].button, static_cast<uint16_t>(0));
+        CHECK(!wheels[5].button_down);
     }
 
     server.Stop();
