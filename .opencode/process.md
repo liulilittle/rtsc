@@ -838,3 +838,27 @@ SUMMARY failures=4
 修 3：两后端验证名统一（`tls_openssl.cpp` 的 `sni ?: peer_host` → `peer_host ?: sni`）
 测试：主机名表驱动 + 现有三个 stub 101 补正确 Accept + 缺/错 Accept 硬错 + 请求头完整性 + OpenSSL 语义锁定
 变异 3 项；双平台 `ctest -R` 定向（禁全量含 gateway）
+
+## 第780轮：乙补充实证 —— 三个 stub 101 把"无 Accept"固化为成功（主代理核实并补单）
+### 关键事实（`tests/test_gateway.cpp:2963-2981`）
+```cpp
+out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+           "Connection: Upgrade\r\n\r\n");   // 无 Sec-WebSocket-Accept
+CHECK(t.Connect(err));                        // 却断言成功
+CHECK(t.upgraded());
+```
+→ 三个 stub（`:2966` / `:3005` / `:3040`）**把缺陷行为固化成契约**。修复 Accept 校验后它们必然红，
+这不是回归而是缺陷暴露。**禁止**改成"接受无 Accept"来迁就实现——那是本项目已记录 3 次的
+"测试固化缺陷"老问题（USB 守卫方向 / 单测自造布局 / 同批）。
+
+### 补单内容
+1. 三 stub 补正确 `Sec-WebSocket-Accept`（推荐用 `RdgChannelRequestOptions.websocket_key` 注入已知 key，
+   stub 用同一 key 实算 `base64(SHA1(key + GUID))`；比从请求里解析更简单）
+2. 不得改写这三条用例的断言方向
+3. 确认不破坏 `:2985` 附件的"写入帧是 MASKED"断言（与之前"每帧新 mask"修复同处）
+
+### 乙另补充的 OpenSSL 实测（确认我的取证）
+- `*.com` ← x.com → **拒**（SChannel = 过 → 跨端分歧成立）
+- `*.co.uk` ← x.co.uk → 过（两后端都过，都未过 PSL 关）
+- `*.example.com` ← example.com → 过（OpenSSL）/ 拒（SChannel）→ 单侧差异
+- 两侧尾点一致 → 都过（都不跨尾点归一）
