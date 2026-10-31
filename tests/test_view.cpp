@@ -1415,10 +1415,13 @@ RTSC_TEST(view_scale_non_integer_upscale_is_nearest) {
 
 RTSC_TEST(view_scale_benchmark_budget) {
     // Timing guard over the seven contract shapes (1:1 / letterbox up to 1080p,
-    // 2x / 1.33x / 0.8x on 1080p, 0.5x and 0.4x on 4K). Thresholds are
-    // deliberately loose (a few times the measured value) so they catch an
-    // algorithmic regression -- e.g. a return to per-pixel division or a float
-    // resample -- without failing on CI jitter.
+    // 2x / 1.33x / 0.8x on 1080p, 0.5x and 0.4x on 4K). The budgets are ~3x the
+    // measured value so they catch an algorithmic regression -- a return to
+    // per-pixel division or a float resample is 10x or worse -- without failing
+    // when unrelated load steals the CPU. Measured on an idle machine: 0.12 /
+    // 0.12 / 4.8 / 16.5 / 14.4 / 2.8 / 30.5 ms; running the whole ctest suite
+    // concurrently with other services has been observed to inflate the 4K
+    // cases by ~50%, which the earlier 1.15x headroom could not absorb.
     struct Case {
         int sw, sh, dw, dh;
         const char* label;
@@ -1427,11 +1430,11 @@ RTSC_TEST(view_scale_benchmark_budget) {
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.0},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 0.6},
-        {1920, 1080, 3840, 2160, "2x", 8.0},
-        {1920, 1080, 1536, 864, "0.8x", 22.0},
-        {3840, 2160, 1920, 1080, "0.5x 4K", 25.0},
+        {1920, 1080, 3840, 2160, "2x", 15.0},
+        {1920, 1080, 1536, 864, "0.8x", 50.0},
+        {3840, 2160, 1920, 1080, "0.5x 4K", 45.0},
         {1920, 1080, 2560, 1440, "1.33x", 10.0},
-        {3840, 2160, 1536, 864, "0.4x 4K", 35.0},
+        {3840, 2160, 1536, 864, "0.4x 4K", 90.0},
     };
     for (const Case& c : cases) {
         Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));

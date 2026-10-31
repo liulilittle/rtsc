@@ -1786,19 +1786,23 @@ RTSC_TEST(udp_transport_reliable_ping_pong_over_loopback) {
     UdpTransport client(std::move(sock_a), config);
     UdpTransport server(std::move(sock_b), config);
 
-    bool server_read_ok = false;
+    // The server thread publishes the outcome; a plain bool here would be a
+    // data race (and the ACK is sent on enqueue, so client.Write can return
+    // before the server thread has even returned from Read).
+    std::atomic<bool> server_read_ok{false};
     std::vector<uint8_t> received;
     std::thread server_thread([&] {
         // Loop until the datagram arrives: Read() reports a bounded timeout
         // (kReadTimeout) while the peer is silent, which is not a disconnect.
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!server_read_ok && std::chrono::steady_clock::now() < deadline) {
+        while (!server_read_ok.load() &&
+               std::chrono::steady_clock::now() < deadline) {
             uint8_t buf[64];
             const int n = server.Read(buf, sizeof(buf));
             if (n > 0) {
                 received.assign(buf, buf + n);
-                server_read_ok = true;
+                server_read_ok.store(true);
             }
         }
         const uint8_t reply[] = {0x10, 0x20, 0x30};
@@ -1809,7 +1813,17 @@ RTSC_TEST(udp_transport_reliable_ping_pong_over_loopback) {
     CHECK(client.Write(data, sizeof(data)));
     CHECK_EQ(client.send_count(), static_cast<unsigned>(1));
     CHECK_EQ(client.retry_count(), static_cast<unsigned>(0));
-    CHECK(server_read_ok);
+    // client.Write only proves the ACK arrived; the server thread may still be
+    // between "ACK sent" and "Read returned", so wait for its publication.
+    {
+        const auto wait_until =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!server_read_ok.load() &&
+               std::chrono::steady_clock::now() < wait_until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    CHECK(server_read_ok.load());
     CHECK((received == std::vector<uint8_t>{0xCA, 0xFE}));
 
     // Read() reports a bounded timeout while the peer is silent, so poll until
@@ -1843,14 +1857,15 @@ RTSC_TEST(udp_transport_reliable_retransmits_a_dropped_datagram) {
     UdpTransport client(std::move(sock_a), config);
     UdpTransport server(std::move(sock_b), config);
 
-    bool server_read_ok = false;
+    std::atomic<bool> server_read_ok{false};
     std::thread server_thread([&] {
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!server_read_ok && std::chrono::steady_clock::now() < deadline) {
+        while (!server_read_ok.load() &&
+               std::chrono::steady_clock::now() < deadline) {
             uint8_t buf[64];
             const int n = server.Read(buf, sizeof(buf));
-            if (n > 0) server_read_ok = true;
+            if (n > 0) server_read_ok.store(true);
         }
     });
 
@@ -1859,7 +1874,17 @@ RTSC_TEST(udp_transport_reliable_retransmits_a_dropped_datagram) {
     const uint8_t data[] = {0x55};
     CHECK(client.Write(data, sizeof(data)));
     CHECK(client.retry_count() >= 1u);
-    CHECK(server_read_ok);
+    // The ACK rides on enqueue, so wait for the server thread's publication
+    // rather than assuming client.Write implies it.
+    {
+        const auto wait_until =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!server_read_ok.load() &&
+               std::chrono::steady_clock::now() < wait_until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    CHECK(server_read_ok.load());
 
     server_thread.join();
 }
