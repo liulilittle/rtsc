@@ -788,3 +788,13 @@
 - **主代理自建自跑**：`BUILD_RC=0`；`ctest -R tls|credssp|client|security|gateway|server` **6/6 passed**；tls 套件 **42 tests/193 checks/0 failing**（+1 新用例 `schannel_ktofu_without_pin_rejects_untrusted_chain`）。
 - 执行 AI 关键说明（已接受）：bench 的 TLS 全程脚本化（`main.cpp:600 SetTlsTransportForTest(ScriptedTls)`），证书策略不参与基准行为 → 改 kStrict 后 bench 默认仍 EXIT=0，CI 不受影响。
 - **审计甲已解散 → 新建第二审计丙 `ses_e708a4114ffeGnULsV7hJaB0Wu`** 做独立终审（13 项：TLS 安全 8 项 + 数据完整性 4 项 + 阶段2 行为 5 项 + 构建测试 3 项 + 文档一致性），要求变异抽验 2 项。
+
+## 第765轮：乙最终盖章 + 跨后端 pin 缺陷定性为真实功能缺陷
+- 乙（ses_e716db85）对最终批（修A/修B/补1/补2）**独立复现并盖章**：tls 42/193/0、gateway 111/1132/0、server 27/239/0、security 19/145/0、client 14/63/0、credssp 23/69/0；全量 build RC=0。
+- **主代理核实乙的"非阻塞录案"实为真功能缺陷**（`plan.md` 1aa61bd）：
+  - OpenSSL `:122-125` kTofu 与 kStrict 都 `SSL_VERIFY_PEER`（链校验），pin 在 `:427-445` 之后才验
+  - SChannel `:834` kTofu+pin 只验 pin 不查链
+  - → 自签网关 + `--gateway-trust=<spki>` 在 Windows 可用、**Linux/OpenSSL 上链阶段即失败**，逃生门失效
+  - 修复方案：OpenSSL 的 `kTofu+pin` 改 `SSL_VERIFY_NONE`（pin 即身份）；`tls.h` 补跨后端语义注释；**必须标 UNVERIFIED**（本机不编译 OpenSSL 后端）
+- 已 relay 执行 AI **先静默**，等丙审完当前已签版本再动手（避免审计期间工作树变动 → F5 类问题）。
+- 当前子代理：乙 ses_e716db85（idle，已盖章）、执行 ses_e70fdf49（idle，待命）、丙 ses_e708a4114（busy，终审中）。
