@@ -768,3 +768,13 @@
 
 两项已派执行 `ses_e70fdf49`，要求 A/B 分开报告以便分两次提交。
 另：执行 AI 三次投递 `ses_e715ef629ffeVtq4ItCnidsCDU` 失败 —— 该会话是已解散的阶段2执行者，无需转投。
+
+## 第763轮：同型排查（C9）+ 抓到变异中途态 + 补单
+- **同型排查（`grep CertPolicy::kInsecure` 全仓）**，结果入库 `plan.md`（e86b9bc）：
+  - `tools/rtsc_gui/main.cpp:279` 已修（阶段2，仅 --tls-insecure 降级）
+  - `tools/rtsc_connect/main.cpp:109` F2 修复中
+  - **`tools/rtsc_bench/main.cpp:400` 新发现，待修（P3）**：`MakeSecurityConfig()` 写死 kInsecure 连 127.0.0.1，假凭据；若指向真实服务器+真凭据即同类 MITM 面
+  - `tools/rtsc_server/main.cpp:276` **无需修**：`role=Role::kServer`（`:275`），而 `tls_schannel.cpp:818` 的 `VerifyPeerCertificate` 只在 `Role::kClient` 调用 → 服务端不校验对端证书是正常语义（已核实角色门存在）
+- **抓到执行 AI 变异中途态**：`tls_schannel.cpp:835` `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A`
+  —— 为证明新用例转红而临时插入，**不可验收不可提交**。已在 `:831-833` 看到修 A 的新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明意图已写入，仅实现行仍是变异态。
+- 已补单给执行 AI：补1 清除变异并附 grep 空输出证据（USB 批次曾因残留 `// MUTATION 2` 被退回）；补2 修 `rtsc_bench:400`（同款 kStrict + --tls-insecure），但若 bench 默认会跑不通须先报告不改。
