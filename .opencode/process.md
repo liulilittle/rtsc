@@ -830,3 +830,30 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 - **新发现产品限制**：`tls_openssl.cpp` 无 `Role::kServer`（恒 `SSL_set_connect_state`）→ Linux 服务器模式无法用 OpenSSL 提供 TLS，只能走 Standard RDP Security。已记录为 Linux 服务器模式前置缺口。
 - Windows 回归：build 0err/0warn、ctest **62/62**。
 - 提交：`f213457`（Linux 移植修复）、`8e7d59e`（移除误提交的 build-linux 产物 + .gitignore）。
+
+## 第769轮：消除 OpenSSL kTofu+pin UNVERIFIED + 发现并修复新缺陷
+### 新缺陷（P1，主代理写测试时暴露）
+- `src/net/tls_openssl.cpp` **从不调用 `SSL_get_verify_result`** → 链校验失败被报成 `kProtocolError`
+  （`:197 "handshake failed: ..."`），违反 `tls.h:96` 的 kStrict "failure reason must be reportable"，
+  且调用方无法区分"证书被拒"与"对端协议错误"。SChannel 侧一直正确报 `kCertRejected`。
+- 修复：握手失败分支先查 `SSL_get_verify_result`，非 `X509_V_OK` → `kCertRejected` + `X509_verify_cert_error_string`。
+
+### 补齐 OpenSSL 策略测试（此前 `fce4ac4` 仅编译级验证）
+新增 5 用例（`tests/test_tls_openssl.cpp`）：
+- `openssl_kinsecure_accepts_self_signed`
+- `openssl_kstrict_rejects_self_signed_peer` → `kCertRejected`
+- `openssl_ktofu_without_pin_rejects_untrusted_chain` → `kCertRejected`
+- `openssl_ktofu_pin_match_accepts_self_signed`（**验证 fce4ac4 的 pin 逃生门确实可用**）
+- `openssl_ktofu_pin_mismatch_is_rejected` → `kCertRejected`
+- 测试基建修正：`Server::Start()` 增加可选共享证书参数——`MakeSelfSigned` 每次生成新密钥，
+  原先"用 A 服务器的 SPKI 算 pin 去连 B 服务器"必然不匹配（我第一版测试即因此误报）。
+
+### 变异红证（实跑，已还原）
+1. kTofu+pin 改回恒 `SSL_VERIFY_PEER` → `openssl_ktofu_pin_match_accepts_self_signed` 红
+2. 删 `SSL_get_verify_result` 映射 → `kstrict` 与 `ktofu_without_pin` 两条 `kCertRejected` 断言红
+
+### 结果
+- Linux：`tls_openssl` **9 tests / 43 checks / 0 failing**；ctest **61/61**
+- Windows：build 0err/0warn；ctest **62/62**
+  （注：首次全量跑时 `view` 失败，单跑即过 —— 系 WSL `-j16` 编译争用 CPU 导致的已知基准抖动，非回归）
+- 提交 `a2cfebe`。
