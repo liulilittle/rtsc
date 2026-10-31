@@ -886,3 +886,22 @@ CHECK(t.upgraded());
 - 错误串必须含 `"Sec-WebSocket-Accept"`
 - **`*.foo.co.uk` ← `a.foo.co.uk` 必须通过**（表的正确性验证点）、**`*.uk.com` ← `x.uk.com` 必须通过**（私有注册域）
 - **两后端不对称必须注释**：修复后 SChannel 比 OpenSSL 更严（拒 `*.co.uk`、剥尾点），这是**档期已知差异、安全方向正确**，防误报
+
+## 第782轮：主代理独立核算 RFC 6455 测试向量（供后续核验执行 AI 实现）
+### 目的
+避免"用执行 AI 的实现验证执行 AI 的实现"（循环论证，本项目已记录 3 例）。我先用仓库自己的
+`crypto::Sha1` + 独立实现的 base64 算出 RFC 6455 §1.3 官方样例，作为外部基准。
+
+### 结果（`evidence/ws-accept-vector.txt`，8653347）
+```
+key      = dGhlIHNhbXBsZSBub25jZQ==
+material = dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11
+sha1     = b37a4f2cc0624f1690f64606cf385945b2bec4ea
+accept   = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+[PASS] RFC 6455 1.3 vector
+```
+与 RFC 6455 §1.3 原文给出的 `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` **逐字一致**。
+
+### 后续核验点
+执行 AI 交付后，必须确认它实现的 `ComputeWebSocketAccept` 对同一输入产出**同一字节串**，
+且该断言写进了测试（否则测试可能只是"实现自证"）。
