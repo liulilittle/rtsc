@@ -783,3 +783,29 @@ D1 修好后握手完成时 `pending_cipher_` 已清空 → 合段的 CredSSP �
 即**运行了完整 gateway 套件**。这违反了既定禁令（34GB 事故后的"禁跑 gateway 完整套件"）。
 虽然本次实测仅 55.5MB 无事故，但违规成立：**禁用规则不得因"我验证过安全"而自行解除**。
 处置：已在 `discover.md` 记录；后续批次明确"即使单测当前安全，全量网关仍需用户书面解除禁令"。
+
+## 第777轮：OpenSSL server 角色 + D1 + P0 死锁 全部入库（84cf12b）
+### 双章收口（甲 ses_e70232b5 + 乙 ses_e7023156，各自独立变异复现）
+- 甲：六点复核全过；独立变异 `/tmp/rt-p0red2`（drain 移回 if 内）→ P0 用例 FAIL(:591 got_challenge)
+- 乙：六点复核全过；独立变异 `/tmp/mut3` 证明**两层用例分离成立**——
+  同一变异下 `server_security` 的 P0 用例红，而 `tls_openssl` 16/134 **全绿**
+  （端点用例直接驱动后端、不经 ServerSecurityLayer）→ 两条用例各锁一层，缺一不可
+- 偏离判定（P0 用例放 `test_server_security.cpp` 而非 `test_tls_openssl.cpp`）：**合理**，
+  因 P0 根因在 `ServerSecurityLayer`，必须驱动 `DriveCredssp`，而 `test_tls_openssl.cpp` 不链接 `rtsc_security`
+
+### DriveEuar 同型点判定（主代理独立核实）
+`security_layer.cpp:312` `if (euar_buf_.size() < 4 && !pending_cipher_.empty())` 包住 `:321` 的 drain。
+**无死锁路径**（甲/乙判定 + 主代理核实 `:280-303`）：EUAR 是服务器在 step5 之后**独立 SSL_write**
+的唯一 4B 尾消息，协议上不可能与握手尾或 CredSSP 消息合段 → 无可达滞留场景。记 P3（防未来回归）。
+全仓 `buffered_input()>0` 共 7 处：2 处 DrainCredssp 已 hoist、2 处 ReceivePdu 本就在 if 外、
+1 处 DriveEuar（P3 无死锁）、`tls_openssl.cpp:324`（D1 注释引用）、`gateway_transport.cpp:516`（读循环非门控）。
+
+### 双平台（双方 + 主代理三方独立复跑）
+- Linux：build 0 err（-Werror）；server_security **8/67**、tls_openssl **16/134**、security 19/145、client 13/52、server 27/238
+- Windows：build 0 err/0 warn；ctest **62/62**（server_security 7/60 —— P0 用例 `#if !defined(_WIN32)`，SChannel 由 `coalesced_finished_and_app_data_are_both_delivered` 覆盖合段）
+
+### 本批修复缺陷汇总
+1. **P0** D1 `consumed` 语义错误 → GCM nonce 重用
+2. **P0** CredSSP drain 门控死锁（合段首记录滞留）
+3. **P0** OpenSSL 无 server 角色（Linux 服务器模式无 TLS/CredSSP）
+4. 3 个子代理全部 delete 解散（child_subagents=0）
