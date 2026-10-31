@@ -878,3 +878,21 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 - 后果：**Linux 上 `rtsc_server` 无法提供 TLS/CredSSP**，只能 Standard RDP Security；且 `test_server_security.cpp` 的 server-role loopback 在非 SChannel 后端被跳过 → **Linux 上该路径零测试覆盖**。
 - 已派双审计（甲 ses_e70232b5 / 乙 ses_e7023156），已互告 ID。
 - 特别要求两审判定：**临时自签证书的稳定性**——若每次握手换证书，客户端 `kTofu`+pin 每次都不匹配，TOFU 失效（可能是阻断项）。
+
+## 第771轮：双审终稿（OpenSSL server 角色）+ D1 阻断项入库 + 派执行
+### 双审双章终稿要点（甲 ses_e70232b5 + 乙 ses_e7023156）
+- **路线定案**：**A2 默认**（进程级临时自签，`call_once` 缓存 DER 纯字节，规避静态对象析构序；进程内 SPK 稳定 → `kTofu`+pin 开箱可用）+ **B 可选层**（`Config.server_certificate_pem/server_private_key_pem`，跨重启稳定身份）；A1（每连接生成）为保守回退。
+- **关键纠偏**：pubKeyAuth 是**绑定哈希** `HashWithMagic(magic, nonce, SPK)`（`credssp.cpp:63-69`），**不是私钥签名** → TLS 私钥与 CredSSP 无关，接口无缺口。
+- `LocalSubjectPublicKey` 正确取法：`X509_get_X509_PUBKEY` → `X509_PUBKEY_get0_param(&alg,&pk,&pklen,...)`，RSA-2048 pklen=**270**、首字节 `30 82`、SPKI 整体 294B（甲实测）。
+- `LocalCertificateDer` 生产路径**零消费**（主代理核实：全仓仅两后端实现自身出现）→ `tls.h:182-190` 注释失真需修。
+- SChannel 每次连接都重新生成自签（`tls_schannel.cpp:703-706` 注释已言明）→ **TOFU pin 跨连接不稳定是既有平台属性**，非本批引入。
+- OpenSSL 须用 RSA-2048（SChannel 439B DER 尺寸推断为 RSA-1024，W5 未直接探测位数）。
+
+### D1（P0 阻断，乙 WSL 探针红证）已入库 `discover.md`（41feebb）
+- `tls_openssl.cpp:214-218` 用 `BIO_ctrl_pending` 增量模拟 SSPI 的 EXTRA 语义 → 合段时误报 `consumed < in_size` → `SecurityLayer` 重放 → **同记录双写 → AES-GCM nonce 重用 → SSL_ERROR_SSL**。
+- 对照 SChannel `:315` 就是 `consumed = in_size;`。
+- 修法：`consumed = in_size;`；残留由 `while (buffered_input() > 0) Receive(nullptr,0)` 收敛。
+- **教训（同型家族第 7 例）**：接口契约的"如何计算"可能绑定特定后端语义——`tls.h:146-150` 写的是 SSPI 算法，照搬到 BIO 模型就是错的。
+
+### 执行已派 `ses_e700314b9ffe7mcBUFJd0KIxti`
+修 1（D1 consumed）/ 修 2（server 角色 + A2 + B 可选 + Local* + tls.h 注释）/ 修 3（放开 Linux server-role 测试）/ 6 条新测试 / 3 项变异红证 / 双平台验证。
