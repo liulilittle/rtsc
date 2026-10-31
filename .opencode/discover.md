@@ -667,3 +667,39 @@ SUMMARY failures=3
 ### 已 relay 两审
 要求：①有异议给字节级证据（mstsc 抓包/FreeRDP 实际 flags）；②同意则 encoder+decoder 双侧修 +
 规范锚断言；③横向滚轮同 9 位字段 + WHEEL 优先于 HWHEEL；④甲的 Win32 注入取证报告仍缺，需补。
+
+## 第791轮【重大】：滚轮单位也错了 —— 推翻两审双章定案
+### 三份外部权威一致：wire 单位 = 120/格（WHEEL_DELTA）
+1. **FreeRDP PR #6806**「clients: Use the correct wheel rotation value」原文：
+   "xfreerdp currently uses the positive wheel value in addition to the negative flag,
+   which results in a wrong wheel value on the server side (**136 instead of 120**)."
+2. **Remmina 4a546fac**：`PTR_FLAGS_WHEEL | 0x0188; // -120 (one scroll unit)`
+3. **gnome-remote-desktop f134b16**：`axis_step = -axis_value / 120.0;`
+
+### 本仓缺陷是**两层**（不是一层）
+- `ui::InputEvent.wheel_delta` 单位是**格数**（`window_win32.cpp:505-507` 已除以 120）
+- `client.cpp:231-238` 把**格数直接当单位**放上线
+- 探针（`evidence/input-wheel-unit-probe.txt`，aac435c）：
+  ```
+  notch=  1 -> flags=0x0201 -> reference reads -0.0083 notches   ← 仅 1/120 格
+  notch= -1 -> flags=0x0301 -> reference reads  2.1250 notches   ← 错乱
+  ```
+- **对我们自己的 server 却"正常"**（server 也按格数解读）→ **内部往返自洽掩盖真实互通失效**
+
+### 推翻两审的三处一致结论
+| 两审定案 | 实际正确 |
+|---|---|
+| `encode(-1) == 0x03FF` | **0x0388**（-120 单位）；0x03FF 是 -1 **单位** = 1/120 格 |
+| clamp `±255`（格） | clamp `±255 单位` = **±2 格**；3 格（360 单位）装不下 |
+| 甲："mouseData=±120 直透" | wire 上就是 ±120/格，但**我们发的是 ±1** |
+
+### 新发现的符号约定问题（两审均未提）
+gnome-remote-desktop 用 `axis_step = -axis_value/120`（**取负**），本仓文档写 "positive = up" → **方向相反**。
+修完单位后滚动方向可能整体反转，必须先确认正方向。
+
+### 教训（同型家族第 12 例）
+**"内部往返自洽"是最隐蔽的假绿来源**：encoder 与 decoder 用同一个错误单位假设，
+往返测试永远通过，而真实对端（mstsc）行为完全不同。这与"encode→decode 自证"是同一家族的
+更隐蔽变体——**单位/量纲错误不会在自证中暴露**。
+→ 规则：任何"量纲/单位"必须锚定外部权威（本批：FreeRDP PR + gnome 补丁 + 规范），
+  不能靠内部往返验证。
