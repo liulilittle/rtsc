@@ -906,3 +906,25 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 - 新增测试：tls_openssl **15 tests/123 checks**、server_security **7 tests/60 checks**；`tls_server_loopback_to_done` **不再 skip**。
 - 工作树 5 文件（+选做 `tools/rtsc_server/main.cpp`），全部在预期范围内。
 - 待：Linux 全量（禁 gateway）+ Windows 62/62 的最终验证报告。
+
+## 第774轮：主代理独立发现 D1 的耦合问题（server 侧 drain 被 if 包住）
+### 事实（`src/security/server_security_layer.cpp`）
+- drain 存在两处：`:186-193`（`DriveCredssp` 内）、`:285-292`（`ReceivePdu` 内）。
+- **但 `:186-193` 被包在 `if (!pending_cipher_.empty())`（`:178`）内**。
+- D1 修好后握手完成时 `pending_cipher_` 被 `erase(consumed == in_size)` 清空
+  → 握手后首次进 `DriveCredssp` 时 `pending_cipher_.empty()` → **整段跳过，包括 drain**
+  → 合段的 CredSSP 记录滞留在 OpenSSL rbio（`buffered_input() > 0`）无人取出
+  → `plain_buf_` 空 → 返回 `Want::kRead`，等客户端再发。
+- `client` 侧 `security_layer.cpp:224-229` 是同一形状（同型）。
+
+### 主代理判定
+**不是数据丢失，是"残留滞留到下一次输入"**：CredSSP 必有多轮，下一次 `Step()` 带数据进来时
+`pending_cipher_` 非空，`Receive` 会按顺序先解出滞留记录 → 功能正确，但**多一个往返**。
+严重度待双审判定（P3 行为不精确 / P2 特定时序卡住）。
+修法候选：把 `while (buffered_input() > 0) Receive(nullptr, 0, ...)` **移到 `if` 外面**（两端都改）。
+
+### 覆盖缺口
+执行 AI 的合段用例 `openssl_coalesced_final_flight_plus_first_record`（`test_tls_openssl.cpp:583-660`）
+**只覆盖 client 角色**（产品 client + 裸 OpenSSL server），未覆盖 server 角色产物。
+
+已 relay 乙要求判定严重度 + 确认修法 + 补 server 角色合段用例。
