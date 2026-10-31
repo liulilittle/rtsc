@@ -896,3 +896,13 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 
 ### 执行已派 `ses_e700314b9ffe7mcBUFJd0KIxti`
 修 1（D1 consumed）/ 修 2（server 角色 + A2 + B 可选 + Local* + tls.h 注释）/ 修 3（放开 Linux server-role 测试）/ 6 条新测试 / 3 项变异红证 / 双平台验证。
+
+## 第772轮：执行进度核实（D1 + server 角色已落地，等全量验证）
+- 执行 AI `ses_e700314b9ffe` 报告：修1/修2/修3/测试在 Linux 全部完成并绿；变异 3/3 已还原。
+- 主代理独立核实：
+  - **D1 已修**：`tls_openssl.cpp:325 consumed = in_size;`，且 `:314-324` 有 11 行注释完整解释"EXTRA 恒 0 / 重放→nonce 重用→SSL_ERROR_SSL / 镜像 SChannel / 残留由 drain 收敛"——注释质量高，正是我在 discover 里要求的"写明后端语义差异"。
+  - **server 角色已落地**：`:161 call_once` 进程级身份、`:196 TLS_server_method() : TLS_client_method()` 按角色分支、`:257 SSL_set_accept_state`、`:583-592` B 层 PEM 校验（成对要求 + 解析失败报错）。
+- 变异红证 3/3（执行 AI 报告）：①回退旧 consumed 算法 → 合段用例 RED（**且复现了真实的 GCM nonce 重用失败态**，非仅断言不符）；②connect_state → 反转型 loopback RED；③LocalSPK 回 kUnsupported → 一致性 RED。
+- 新增测试：tls_openssl **15 tests/123 checks**、server_security **7 tests/60 checks**；`tls_server_loopback_to_done` **不再 skip**。
+- 工作树 5 文件（+选做 `tools/rtsc_server/main.cpp`），全部在预期范围内。
+- 待：Linux 全量（禁 gateway）+ Windows 62/62 的最终验证报告。
