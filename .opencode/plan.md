@@ -497,11 +497,15 @@
 
 ## 待处理
 
-### P2 —— D1 的耦合问题（主代理发现，待双审判定）
+### P0 —— D1 的耦合问题（主代理发现，乙判定 P0 死锁，已采纳）
 `server_security_layer.cpp:186-193` 的 `while (buffered_input() > 0) Receive(nullptr,0,...)` **被包在
 `if (!pending_cipher_.empty())`（`:178`）里**。D1 修好后握手完成时 `pending_cipher_` 已清空
-→ 合段的 CredSSP 记录滞留在 OpenSSL rbio 无人取出 → 多一个往返。
-`security_layer.cpp:224-229` 同形。修法：把 drain 移到 `if` 外面（两端）。
+→ 合段的 CredSSP 记录（NEGOTIATE）滞留在 OpenSSL rbio 无人取出 → 返回 `Want::kRead`。
+**死锁机制**：客户端此时在等服务器 CHALLENGE，不会发新字节；服务端等新字节 → 双向互等。
+违反 `tls.h:182-185` 的 Drain obligation（必须持续 Receive 直到 `buffered_input()==0`）。
+乙实测红证（产品 kServer + 裸 TLS1.3 client，Finished+首记录 119B 合段）：`buffered_input()=39`；hoist 后一次取出 17B 明文、`buffered_input()==0`。
+`security_layer.cpp:224-229` 同形（client 侧良性但对称修复）。
+**修法**：drain 移到 `if` 外面（两端）+ 补 **server 侧合段用例**。修复中。
 
 ### P3（记录）
 - 主机名硬化：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
