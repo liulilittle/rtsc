@@ -595,3 +595,42 @@ wildcard-only          host=a.b.example.com  =>  0
 - 甲的错：把 0 读成 1（读数错误）
 - 乙的错：多 SAN 污染（构造错误）
 两者表象相同、根因不同。**报告结论必须能追溯到一条可隔离复现的探针。**
+
+## 第788轮：乙发现协议解码层缺陷 —— 负滚轮往返 bug 已实证（主代理独立复现）
+### 主代理探针实测（`evidence/input-wheel-probe.txt`，e703e13）
+```
+[INFO] delta=    1 -> flags=0x0201 -> decoded=    1   PASS
+[INFO] delta=   -1 -> flags=0x0301 -> decoded= -257   FAIL
+[INFO] delta=  120 -> flags=0x0278 -> decoded=  120   PASS
+[INFO] delta= -120 -> flags=0x0378 -> decoded= -376   FAIL
+[INFO] delta=  240 -> flags=0x02F0 -> decoded=  240   PASS
+[INFO] delta= -240 -> flags=0x03F0 -> decoded= -496   FAIL
+SUMMARY failures=3
+```
+**根因**：位掩码重叠。
+- `kPtrWheel=0x0200`、`kPtrWheelNegative=0x0100`、`kPtrWheelRotationMask=0x01FF`（`proto/input.h:41-44`）
+- 编码（`client.cpp:231-238`）：`flags = kPtrWheel | kPtrWheelNegative | (|delta| & 0x01FF)`
+  → `-1` 得 `0x0301`
+- 解码（`server.cpp:1573-1577`）：`rot = flags & 0x01FF` → `0x0301 & 0x01FF = 0x0101 = 257`（**把 flag 位当成了幅值**）
+  → 再取负 = `-257`
+→ **本仓自己的 encoder/decoder 互相矛盾**：-1 圈变成 -257 圈（放大 257 倍）。
+
+### 乙报告的其他协议层缺陷（待双审确认）
+1. **横向滚轮丢失**：解码只判 `kPtrWheel(0x0200)`，不认 `kPtrHwheel(0x0400)`；
+   而服务器默认广告 `kInputFlagMouseHWheel` 能力（`capabilities.h:232-234`），
+   自己的客户端也按 `server_supports_hwheel` 发 `0x0401` → 自己发自己收不回。
+2. **相对移动丢失**：`kMouseRel(0x5)` 只 `pos += 6` 后落到默认回调，发出 **伪 kKey 事件**。
+3. **QoE 时间戳(0x6)** 同伪事件。
+4. **E1(EXTENDED1) 丢失**：Pause 键（E1 序列）无法忠实转发。
+5. **move vs release 歧义**：`kPtrMove(0x0800)` 与按钮释放都解成 `button=0/button_down=false`
+   （主代理探针实测：release flags=0x1000 → button=1，move flags=0x0800 → button=0，
+   即**在原始 flags 层可区分，但 `InputEvent` 结构没有承载"是否是移动"的字段**）。
+
+### 乙的安全判定（主代理采纳）
+**默认必须 off**：镜像查看（只读）→ 操作整个交互会话（文件/浏览器/UAC/Ctrl+Alt+Del）是
+单向权限跃迁，必须显式 opt-in；与驱动器重定向/USB/音频（`--audio` 默认 off）策略一致。
+叠加 `--no-enhanced + --allow-any-credentials` 时开 input = 任何能触达端口者获桌面完全控制。
+
+### 测试盲区（乙判定 FAIL）
+4 处 `SetInputCallback` 用例（`test_server:615/655/2017`、`test_gui_send:200`）**只断言"收到事件/计数"**，
+0 断解码语义、0 断注入 → 负滚轮、横向滚轮、相对移动全部无覆盖。
