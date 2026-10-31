@@ -1,0 +1,9 @@
+openssl: OpenSSL 3.0.13 30 Jan 2024
+
+SAN *.com            <- host x.com              =>  0 (no-match)
+SAN *.co.uk          <- host x.co.uk            =>  1 (MATCH)
+SAN *.example.com    <- host example.com        =>  0 (no-match)
+SAN *.example.com    <- host a.example.com      =>  1 (MATCH)
+SAN *.example.com    <- host a.b.example.com    =>  0 (no-match)
+SAN example.com      <- host example.com.       =>  0 (no-match)
+SAN example.com      <- host example.com        =>  1 (MATCH)

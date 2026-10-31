@@ -463,3 +463,33 @@ Linux `/usr/bin/time -v ./build-linux/rtsc_gateway_tests` → 峰值 RSS 55,584 
   出参回传）+ transport 存 key + 101 时算 `base64(SHA1(key||GUID))` 精确比较 +
   连带校验 `Upgrade: websocket` / `Connection: Upgrade` + 失败硬错关闭 + 401 重试刷新 key。
 - 两后端验证名统一（D-H4）。
+
+## 第783轮：主代理裁决"裸域通配"分歧 —— 两名审计都错了，执行 AI 正确
+### 分歧
+- 甲/乙（两名审计）**都**称：OpenSSL `X509_check_host` 对 `SAN *.example.com` ← `host example.com` 返回 **1（过）**
+- 执行 AI 称：**0（拒）**，并说"未写该条注释，避免铸造虚假断言"
+
+### 主代理独立裁决（`evidence/openssl-x509-bare-domain-adjudication.txt`）
+自建探针（内存 SAN 证书 + 直调 `X509_check_host`，OpenSSL 3.0.13）：
+```
+SAN *.com            <- host x.com              =>  0 (no-match)
+SAN *.co.uk          <- host x.co.uk            =>  1 (MATCH)
+SAN *.example.com    <- host example.com        =>  0 (no-match)   ← 关键
+SAN *.example.com    <- host a.example.com      =>  1 (MATCH)
+SAN *.example.com    <- host a.b.example.com    =>  0 (no-match)
+SAN example.com      <- host example.com.       =>  0 (no-match)
+SAN example.com      <- host example.com        =>  1 (MATCH)
+```
+
+**结论：执行 AI 正确，甲和乙都错了。** 裸域通配在 OpenSSL 也是拒绝的（RFC 6125 §6.4.4 正确行为），
+两后端在这条上**本来就一致**，不存在"单侧差异"。
+
+### 为什么这条错误危险
+若照甲/乙的说法在代码里写"OpenSSL 过 / SChannel 拒"的注释，就会**伪造一处不存在的不一致**，
+未来审计会照着这条假注释去"修"一个不存在的问题，或据此放松 SChannel 的检查。
+执行 AI 拒绝写这条注释是正确的判断——**它顶住了两名审计的一致错误**。
+
+### 同型家族第 10 例
+**两名审计一致 = 不等于正确。** 本项目的"双章"是流程保证，不是真理保证；
+最终裁决必须由**独立探针**给出。甲/乙的 OpenSSL 结论很可能是从另一处（如多 SAN 证书、
+或 `X509_check_host` 的 flags 差异）误推的，没有各自独立复现。
