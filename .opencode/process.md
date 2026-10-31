@@ -817,3 +817,16 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
   - **P2** 跨后端 kTofu+pin 逃生门失效（OpenSSL 链校验先于 pin）
   - **P3** RFC6455 单次 Write 内 mask 复用
 - 遗留（已入 plan.md）：`*.com` 通配/IDN/尾点三项主机名硬化、Sec-WebSocket-Accept 未校验、`0x6a4/0x6a6` 异值场景、真机网关 101 互通、USB P2/P3、W5 真机。
+
+## 第768轮：Linux 门禁首次通过（61/61）+ 修 9 处移植缺陷
+- 环境：WSL Ubuntu-24.04（cmake 3.28.3 / g++ 13.3 / OpenSSL 3.0.13 / 32 核）。
+- 结果：**构建 0err/0warn（-Wall -Wextra -Werror -Wpedantic）、ctest 61/61 全绿**；`tls_openssl` 套件 Passed。
+- 修复（全部为 Linux 门禁首次运行暴露，Windows 行为不变）：
+  - `rdp6.cpp` 缺 `<cstring>`；`byte_order.h` 与 `test_rdp6.cpp` 的 `vector::insert` 触发 GCC13 `-Werror=stringop-overflow` 误报 → resize+memcpy
+  - `CMakeLists.txt` `rtsc_gui` 加 `if(WIN32)` 门控（Win32 专用）
+  - `test_gui_send.cpp` `[[maybe_unused]]`；`test_rdpsnd_server.cpp` 枚举转 uint32_t
+  - `test_rdpdr_client.cpp`：Windows 路径用例 POSIX 跳过 + **两处 `rsp->begin()+28` 无长度检查导致 `std::length_error` 崩溃** + 新增 POSIX 路径守卫用例
+  - `test_drop_files.cpp` 用 `preferred_separator`；`test_server_security.cpp` 非 SChannel 跳过 server 角色 loopback
+- **新发现产品限制**：`tls_openssl.cpp` 无 `Role::kServer`（恒 `SSL_set_connect_state`）→ Linux 服务器模式无法用 OpenSSL 提供 TLS，只能走 Standard RDP Security。已记录为 Linux 服务器模式前置缺口。
+- Windows 回归：build 0err/0warn、ctest **62/62**。
+- 提交：`f213457`（Linux 移植修复）、`8e7d59e`（移除误提交的 build-linux 产物 + .gitignore）。
