@@ -354,6 +354,16 @@ class RdgspTransport : public Transport {
         // streams after upgrade" fallback; UNVERIFIED, see evidence section 11).
         bool upgrade_steals_write = true;
 
+        // -- RFC 6455 upgrade (OUT channel) -----------------------------------
+        // Pinned Sec-WebSocket-Key for the OUT upgrade request. Empty (the
+        // default) makes the builder generate a FRESH key for every attempt, so
+        // a 401 retry never reuses a nonce. Setting it pins one exact key (test
+        // seam / deterministic deployment): the caller must then answer the
+        // matching Sec-WebSocket-Accept. The 101 handler recomputes the Accept
+        // from the key THIS attempt actually sent, so a pinned key and a fresh
+        // key are validated identically.
+        std::string websocket_key;
+
         Deadlines deadlines;
 
         // -- connection factory seam (test / deployment injection) ----------
@@ -407,6 +417,13 @@ class RdgspTransport : public Transport {
     bool EstablishOutChannel(std::string& error);
     // H5-H7: establishes IN (RDG_IN_DATA, chunked body; IN 101 is a hard error).
     bool EstablishInChannel(std::string& error);
+    // RFC 6455 4.1 three-way check on a 101: Upgrade: websocket, a Connection
+    // header carrying the Upgrade token, and Sec-WebSocket-Accept equal to
+    // ComputeWebSocketAccept(the key this attempt sent). Any mismatch fails
+    // closed through Fail() (the connection is already upgraded, so the bytes
+    // cannot be re-read as an HTTP body).
+    bool ValidateWebSocketUpgrade(const proto::HttpMessage& response,
+                                  const std::string& used_key);
     void Fail(const std::string& reason, uint32_t hr);
 
     // Read data plane helpers.

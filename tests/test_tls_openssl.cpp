@@ -15,6 +15,7 @@
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <array>
 #include <cstring>
@@ -867,6 +868,65 @@ RTSC_TEST(openssl_client_role_local_identity_is_protocol_error) {
     CHECK(DriveHandshake(*client, server));
     CHECK(client->LocalCertificateDer(der).status == Status::kProtocolError);
     CHECK(client->LocalSubjectPublicKey(spk).status == Status::kProtocolError);
+}
+
+// Builds a bare certificate carrying `sans` as subjectAltName dNSName entries.
+// Used to lock what X509_check_host (the primitive SSL_set1_host drives)
+// actually decides, independent of the chain-validation path.
+X509* MakeCertWithDnsSans(const char* const* sans, int count) {
+    X509* cert = X509_new();
+    if (cert == nullptr) return nullptr;
+    GENERAL_NAMES* gens = sk_GENERAL_NAME_new_null();
+    if (gens == nullptr) {
+        X509_free(cert);
+        return nullptr;
+    }
+    for (int i = 0; i < count; ++i) {
+        GENERAL_NAME* g = GENERAL_NAME_new();
+        ASN1_IA5STRING* ia = ASN1_IA5STRING_new();
+        if (g == nullptr || ia == nullptr) {
+            if (g != nullptr) GENERAL_NAME_free(g);
+            if (ia != nullptr) ASN1_IA5STRING_free(ia);
+            GENERAL_NAMES_free(gens);
+            X509_free(cert);
+            return nullptr;
+        }
+        ASN1_STRING_set(ia, sans[i], -1);
+        GENERAL_NAME_set0_value(g, GEN_DNS, ia);  // ia is now owned by g
+        sk_GENERAL_NAME_push(gens, g);            // g is now owned by gens
+    }
+    const int ok = X509_add1_ext_i2d(cert, NID_subject_alt_name, gens, 0, 0);
+    GENERAL_NAMES_free(gens);
+    if (ok != 1) {
+        X509_free(cert);
+        return nullptr;
+    }
+    return cert;
+}
+
+RTSC_TEST(openssl_x509_check_host_wildcard_semantics_locked) {
+    // Locks the exact OpenSSL primitive the backend relies on. The verification
+    // name passed to SSL_set1_host is the reference identifier "peer_host ?:
+    // sni" (see Start()); OpenSSL then evaluates the peer SAN with its own
+    // RFC 6125 wildcard rules, which the Linux probe (evidence/) pinned:
+    //   * "*.com" vs "x.com"        -> rejected (no dot between the wildcard
+    //                                  and the TLD label)
+    //   * "*.co.uk" vs "x.co.uk"    -> accepted (OpenSSL has no ccSLD /
+    //                                  public-suffix table)
+    // The SChannel backend is deliberately STRICTER here (it rejects *.co.uk
+    // via its ccSLD table in DnsNameMatches); that single-side divergence is
+    // documented in tls_schannel.cpp and is not a defect. This test exists to
+    // surface any future OpenSSL drift.
+    const char* sans[] = {"*.com", "*.co.uk", "*.example.com"};
+    X509* cert = MakeCertWithDnsSans(sans, 3);
+    CHECK(cert != nullptr);
+    if (cert == nullptr) return;
+
+    CHECK_EQ(X509_check_host(cert, "x.com", 0, 0, nullptr), 0);
+    CHECK_EQ(X509_check_host(cert, "x.co.uk", 0, 0, nullptr), 1);
+    CHECK_EQ(X509_check_host(cert, "a.example.com", 0, 0, nullptr), 1);
+    CHECK_EQ(X509_check_host(cert, "a.b.example.com", 0, 0, nullptr), 0);
+    X509_free(cert);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_tls_openssl_tests"); }

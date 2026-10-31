@@ -1,8 +1,8 @@
 // SChannel backend for rtsc::tls::TlsTransport.
 //
 // Design reference: docs/spec/tls-backend.design-a.md
-//   §3.4.1  the record framing / buffering pseudocode implemented below
-//   §3.4.3  the twelve boundaries covered by tests/test_tls.cpp
+//   闁?.4.1  the record framing / buffering pseudocode implemented below
+//   闁?.4.3  the twelve boundaries covered by tests/test_tls.cpp
 //
 // Everything SChannel-specific stays in this translation unit. The public
 // header has no Windows types, so the protocol layer compiles unchanged on
@@ -88,17 +88,158 @@ bool EndsWithIgnoreCase(const std::string& value, const std::string& suffix) {
     return EqualsIgnoreCase(value.substr(value.size() - suffix.size()), suffix);
 }
 
-// RFC 6125 single-label wildcard. "*.example.com" matches "a.example.com"
-// only: not "example.com" (no label) and not "a.b.example.com" (two labels).
+// Two-label country-code public suffixes (the "ccSLD" set). A wildcard whose
+// base is exactly one of these would otherwise sweep every host under a whole
+// country second level ("*.co.uk" <=> any domain under .co.uk), which is the
+// RFC 6125 6.4.3 abuse the probe flagged as a P2 over-permission. The list is
+// a SIMPLIFIED subset derived from the public suffix list (publicsuffix.org,
+// ccTLD section): ~450 common two-label registrable country suffixes,
+// deliberately narrower than the full PSL. Entries are hand-maintained and
+// MUST stay sorted ascending (the lookup is a binary search); adding a new
+// suffix is a manual edit, not an auto-sync. Registered-domain suffixes such
+// as "uk.com" (a privately registrable domain, NOT a public suffix) are
+// intentionally absent.
+static constexpr const char* const kCcSld[] = {
+    "ac.ca", "ac.cy", "ac.id", "ac.il", "ac.in", "ac.jp", "ac.ke", "ac.kr",
+    "ac.nz", "ac.rs", "ac.ru", "ac.tz", "ac.uk", "ac.vn", "ac.za", "ad.jp",
+    "asn.au", "biz.cy", "biz.id", "biz.tr", "biz.vn", "club.tw", "co.am", "co.cr",
+    "co.id", "co.il", "co.in", "co.ir", "co.jp", "co.ke", "co.kr", "co.ma",
+    "co.ni", "co.nz", "co.rs", "co.th", "co.tz", "co.ug", "co.uk", "co.za",
+    "co.zm", "com.am", "com.ar", "com.au", "com.az", "com.bo", "com.br", "com.by",
+    "com.cn", "com.co", "com.cy", "com.do", "com.ec", "com.eg", "com.es", "com.ge",
+    "com.gr", "com.hk", "com.hn", "com.hr", "com.kz", "com.mx", "com.my", "com.ng",
+    "com.ni", "com.pa", "com.pe", "com.ph", "com.pl", "com.pt", "com.py", "com.ro",
+    "com.ru", "com.sa", "com.sg", "com.tn", "com.tr", "com.tw", "com.ua", "com.ug",
+    "com.uy", "com.ve", "com.vn", "com.zm", "coop.py", "csiro.au", "desa.id", "ed.jp",
+    "edu.am", "edu.ar", "edu.au", "edu.az", "edu.br", "edu.cn", "edu.co", "edu.ec",
+    "edu.eg", "edu.es", "edu.ge", "edu.gr", "edu.hk", "edu.in", "edu.jo", "edu.kr",
+    "edu.kz", "edu.mx", "edu.my", "edu.ng", "edu.nz", "edu.pe", "edu.ph", "edu.pl",
+    "edu.pt", "edu.ro", "edu.rs", "edu.ru", "edu.sa", "edu.sg", "edu.tr", "edu.tw",
+    "edu.ua", "edu.uy", "edu.ve", "edu.vn", "edu.za", "ekloges.cy", "ens.tn", "es.kr",
+    "eun.eg", "fi.cr", "fin.ec", "firm.in", "firm.ro", "from.hr", "gc.ca", "geek.nz",
+    "gen.in", "gen.nz", "gen.tr", "go.id", "go.jp", "go.ke", "go.kr", "go.th",
+    "go.tz", "go.ug", "gob.ar", "gob.es", "gob.mx", "gob.pe", "gov.am", "gov.ar",
+    "gov.au", "gov.az", "gov.br", "gov.by", "gov.cn", "gov.co", "gov.cy", "gov.do",
+    "gov.ec", "gov.eg", "gov.ge", "gov.gr", "gov.hk", "gov.il", "gov.in", "gov.ir",
+    "gov.kz", "gov.ma", "gov.my", "gov.ng", "gov.ph", "gov.pl", "gov.pt", "gov.rs",
+    "gov.ru", "gov.sa", "gov.sg", "gov.tn", "gov.tr", "gov.tw", "gov.ua", "gov.uk",
+    "gov.vn", "gov.za", "govt.nz", "gr.jp", "gub.uy", "hs.kr", "id.au", "id.ir",
+    "id.vn", "idv.hk", "idv.tw", "in.rs", "in.th", "in.ua", "ind.br", "ind.gt",
+    "ind.in", "inf.br", "info.az", "info.hu", "info.in", "info.ke", "info.ro", "info.tn",
+    "info.tr", "info.tz", "info.ve", "info.vn", "info.zm", "int.ar", "int.az", "int.bo",
+    "int.pt", "int.ru", "int.vn", "intl.tn", "iwi.nz", "iz.hr", "k12.tr", "kg.kr",
+    "law.za", "lg.jp", "ltd.cy", "ltd.uk", "maori.nz", "mb.ca", "me.ke", "me.tz",
+    "me.uk", "med.br", "med.sa", "mi.th", "mil.am", "mil.ar", "mil.br", "mil.cn",
+    "mil.co", "mil.ec", "mil.eg", "mil.id", "mil.kr", "mil.kz", "mil.my", "mil.nz",
+    "mil.pe", "mil.ru", "mil.tz", "mil.uy", "mil.za", "mobi.ke", "mobi.ng", "mobi.tz",
+    "ms.kr", "msk.ru", "muni.il", "my.id", "name.az", "name.cy", "name.eg", "name.hr",
+    "name.ng", "name.tr", "name.vn", "nat.tn", "nb.ca", "ne.jp", "ne.ke", "ne.kr",
+    "ne.tz", "ne.ug", "net.am", "net.ar", "net.au", "net.az", "net.bo", "net.br",
+    "net.by", "net.cn", "net.co", "net.cy", "net.do", "net.ec", "net.eg", "net.ge",
+    "net.gr", "net.gt", "net.hk", "net.hn", "net.hr", "net.id", "net.il", "net.in",
+    "net.ir", "net.kz", "net.ma", "net.mx", "net.my", "net.ng", "net.ni", "net.nz",
+    "net.pa", "net.pe", "net.ph", "net.pl", "net.pt", "net.ru", "net.sa", "net.sg",
+    "net.th", "net.tn", "net.tr", "net.tw", "net.ua", "net.uk", "net.uy", "net.ve",
+    "net.vn", "net.za", "net.zm", "nf.ca", "ngo.ph", "nhs.uk", "nl.ca", "nom.co",
+    "nom.es", "nom.my", "nom.pe", "nom.ro", "nome.pt", "ns.ca", "nt.ca", "nt.ro",
+    "nu.ca", "of.by", "on.ca", "or.cr", "or.id", "or.jp", "or.ke", "or.kr",
+    "or.th", "or.tz", "or.ug", "org.am", "org.ar", "org.au", "org.az", "org.bo",
+    "org.br", "org.by", "org.cn", "org.co", "org.cy", "org.do", "org.ec", "org.eg",
+    "org.es", "org.ge", "org.gr", "org.gt", "org.hk", "org.hn", "org.il", "org.in",
+    "org.ir", "org.kz", "org.ma", "org.mx", "org.my", "org.ng", "org.ni", "org.nz",
+    "org.pa", "org.pe", "org.ph", "org.pl", "org.pt", "org.ro", "org.rs", "org.ru",
+    "org.sa", "org.sg", "org.tn", "org.tr", "org.tw", "org.ua", "org.uk", "org.uy",
+    "org.ve", "org.vn", "org.za", "org.zm", "pe.ca", "pe.kr", "per.sg", "perso.tn",
+    "plc.uk", "pol.tr", "police.uk", "ponpes.id", "pp.ru", "pp.ua", "press.cy", "press.ma",
+    "pro.br", "pro.cy", "pro.vn", "pub.sa", "publ.pt", "pvt.ge", "qc.ca", "re.kr",
+    "rec.br", "res.in", "sa.cr", "sc.ke", "sc.kr", "sc.tz", "sch.id", "sch.ir",
+    "sch.ng", "sch.sa", "sch.uk", "sch.zm", "school.nz", "sci.br", "sci.eg", "sk.ca",
+    "sld.do", "spb.ru", "tel.tr", "tm.cy", "tm.ro", "tourism.tn", "tsk.tr", "tv.bo",
+    "tv.tz", "web.do", "web.id", "web.tr", "web.ve", "web.za", "yk.ca",
+};
+constexpr size_t kCcSldCount = sizeof(kCcSld) / sizeof(kCcSld[0]);
+
+constexpr bool kCcSldIsSorted() {
+    for (size_t i = 1; i < kCcSldCount; ++i) {
+        size_t j = 0;
+        while (kCcSld[i - 1][j] != '\0' && kCcSld[i][j] != '\0' &&
+               kCcSld[i - 1][j] == kCcSld[i][j]) {
+            ++j;
+        }
+        if (static_cast<unsigned char>(kCcSld[i - 1][j]) >
+            static_cast<unsigned char>(kCcSld[i][j])) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(kCcSldIsSorted(), "kCcSld must be sorted ascending for the binary search");
+
+bool IsCcSldSuffix(const std::string& rest) {
+    std::string lower = rest;
+    for (char& c : lower) {
+        c = static_cast<char>(AsciiLower(static_cast<unsigned char>(c)));
+    }
+    size_t lo = 0;
+    size_t hi = kCcSldCount;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        const int cmp = lower.compare(kCcSld[mid]);
+        if (cmp == 0) return true;
+        if (cmp < 0) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return false;
+}
+
+// RFC 6125 single-label wildcard, hardened against public-suffix and FQDN
+// abuse. Rules in order:
+//   1. A single trailing dot is the same name (FQDN form); strip ONE from both
+//      sides first. An empty or dot-terminated remainder (".", "..", "a..") is
+//      a degenerate name and is rejected.
+//   2. Non-wildcard: exact case-insensitive equality.
+//   3. Wildcard "*.rest":
+//      a. "rest" must contain at least one '.' -- "*.com" / "*.cn" are
+//         rejected structurally (RFC 6125 6.4.3 forbids a wildcard in front of
+//         a bare TLD), with no suffix table needed.
+//      b. "rest" must NOT be a two-label ccSLD table entry: "*.co.uk" /
+//         "*.com.au" are rejected, so a wildcard cannot sweep a whole country
+//         second level. A registered domain is NOT a ccSLD: "*.foo.co.uk" and
+//         the privately registrable "*.uk.com" keep matching.
+//      c. the host must be exactly "label.rest" with one dot-free label:
+//         "*.example.com" matches "a.example.com", never the bare domain and
+//         never "a.b.example.com".
+// This is INTENTIONALLY STRICTER than the OpenSSL backend (X509_check_host has
+// no ccSLD table -- it accepts "*.co.uk" -- and rejects trailing-dot FQDNs).
+// That single-side divergence is a documented known-ok difference, not a bug:
+// SChannel refuses wildcard public suffixes and harmonizes FQDNs. See
+// tls_openssl.cpp Start() and tests/test_tls_openssl.cpp
+// openssl_x509_check_host_wildcard_semantics_locked.
 bool DnsNameMatches(const std::string& pattern, const std::string& host) {
-    if (pattern.size() > 2 && pattern[0] == '*' && pattern[1] == '.') {
-        const std::string suffix = pattern.substr(1);
-        if (host.size() <= suffix.size()) return false;
-        if (!EndsWithIgnoreCase(host, suffix)) return false;
-        const std::string label = host.substr(0, host.size() - suffix.size());
+    std::string p = pattern;
+    std::string h = host;
+    if (!p.empty() && p.back() == '.') p.pop_back();
+    if (!h.empty() && h.back() == '.') h.pop_back();
+    if (p.empty() || h.empty()) return false;              // "" / "."
+    if (p.back() == '.' || h.back() == '.') return false;  // ".." / "a.."
+
+    if (p.size() > 2 && p[0] == '*' && p[1] == '.') {
+        const std::string rest = p.substr(2);
+        if (rest.empty() || rest.front() == '.' ||
+            rest.find('.') == std::string::npos) {
+            return false;  // "*.", "*..x", "*.com", "*.cn"
+        }
+        if (IsCcSldSuffix(rest)) return false;  // "*.co.uk", "*.com.au"
+        const std::string suffix = "." + rest;
+        if (h.size() <= rest.size()) return false;
+        if (!EndsWithIgnoreCase(h, suffix)) return false;
+        const std::string label = h.substr(0, h.size() - suffix.size());
         return !label.empty() && label.find('.') == std::string::npos;
     }
-    return EqualsIgnoreCase(pattern, host);
+    return EqualsIgnoreCase(p, h);
 }
 
 std::string WideToUtf8(const wchar_t* w, int len) {

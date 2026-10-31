@@ -27,6 +27,45 @@ inline bool SeqAtOrAfter(uint32_t a, uint32_t b) {
     return static_cast<int32_t>(a - b) >= 0;
 }
 
+// ASCII-only case fold for HTTP header tokens (hostnames and tokens on the
+// wire are ASCII; locale-dependent folding could disagree between platforms).
+std::string AsciiLower(const std::string& s) {
+    std::string out = s;
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+bool AsciiEqualsIgnoreCase(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && AsciiLower(a) == AsciiLower(b);
+}
+
+// True when ANY header named `name` has `token` among its comma-separated
+// values (case-insensitive). HTTP/1.1 permits several Connection header lines
+// and a list inside one, so all entries of that name are scanned.
+bool AnyHeaderHasToken(const proto::HttpMessage& msg, const std::string& name,
+                       const std::string& token) {
+    for (const auto& h : msg.headers) {
+        if (!AsciiEqualsIgnoreCase(h.name, name)) continue;
+        size_t start = 0;
+        while (start <= h.value.size()) {
+            size_t comma = h.value.find(',', start);
+            const size_t end = comma == std::string::npos ? h.value.size() : comma;
+            const std::string item = h.value.substr(start, end - start);
+            size_t b = item.find_first_not_of(" \t");
+            size_t e = item.find_last_not_of(" \t");
+            if (b != std::string::npos) {
+                const std::string tok = item.substr(b, e - b + 1);
+                if (AsciiEqualsIgnoreCase(tok, token)) return true;
+            }
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 UdpTransport::UdpTransport(std::unique_ptr<UdpSocket> socket,
@@ -888,6 +927,35 @@ bool RdgspTransport::HandleChallenge(const proto::HttpMessage& response,
     return false;
 }
 
+bool RdgspTransport::ValidateWebSocketUpgrade(
+    const proto::HttpMessage& response, const std::string& used_key) {
+    // RFC 6455 4.1 three-way check. Every leg is required; a failure closes the
+    // connection because the stream already switched to frames and the bytes
+    // after the 101 head cannot be re-interpreted as an HTTP entity.
+    const uint32_t hr = 0x80190000u | 101u;  // switch-protocols failure profile
+    const std::string expected = proto::ComputeWebSocketAccept(used_key);
+    const std::string got = response.header_or("Sec-WebSocket-Accept");
+    if (got != expected) {
+        Fail("RDGSP WebSocket upgrade failed (Sec-WebSocket-Accept): server "
+             "accept does not match the key this attempt sent",
+             hr);
+        return false;
+    }
+    if (!AsciiEqualsIgnoreCase(response.header_or("Upgrade"), "websocket")) {
+        Fail("RDGSP WebSocket upgrade failed (Sec-WebSocket-Accept): response "
+             "did not switch to the websocket protocol",
+             hr);
+        return false;
+    }
+    if (!AnyHeaderHasToken(response, "Connection", "Upgrade")) {
+        Fail("RDGSP WebSocket upgrade failed (Sec-WebSocket-Accept): response "
+             "Connection header lacks the Upgrade token",
+             hr);
+        return false;
+    }
+    return true;
+}
+
 bool RdgspTransport::EstablishOutChannel(std::string& error) {
     if (config_.auth_scheme == RdgspTransport::AuthScheme::kUnsupported) {
         Fail("unsupported authentication scheme", 0x80004001);
@@ -895,6 +963,11 @@ bool RdgspTransport::EstablishOutChannel(std::string& error) {
         return false;
     }
     std::string authorization;
+    // The WebSocket key the CURRENT attempt's request carried. Rebuilt from
+    // scratch every iteration, so a 401 retry never reuses the previous nonce
+    // (RFC 6455 4.1 requires a fresh key per handshake). The 101 branch below
+    // validates against THIS attempt's key.
+    std::string used_key;
     const std::string authority = GatewayAuthority(config_);
     for (int attempt = 0;; ++attempt) {
         proto::RdgChannelRequestOptions o;
@@ -904,6 +977,7 @@ bool RdgspTransport::EstablishOutChannel(std::string& error) {
         o.connection_id = config_.connection_id;
         o.user_agent = config_.user_agent;
         o.authorization = authorization;
+        o.websocket_key = config_.websocket_key;
         // The OUT channel asks for an RFC 6455 upgrade; a 200 means the gateway
         // did not support it and the body stays chunked/plain. The exact
         // upgrade headers are UNVERIFIED (the factory delegates to WinHTTP).
@@ -913,7 +987,7 @@ bool RdgspTransport::EstablishOutChannel(std::string& error) {
         std::vector<uint8_t> leftover;
         const int st =
             SendAndReadResponse(*out_,
-                                proto::BuildRdgChannelRequest(o),
+                                proto::BuildRdgChannelRequest(o, &used_key),
                                 config_.deadlines.response_ms, response,
                                 leftover);
         if (st < 0) {
@@ -929,6 +1003,13 @@ bool RdgspTransport::EstablishOutChannel(std::string& error) {
             return true;
         }
         if (st == 101) {
+            // RFC 6455: the response must actually have switched protocols.
+            // The connection is ALREADY upgraded, so a mismatched handshake
+            // cannot be re-read as an HTTP body and must fail closed.
+            if (!ValidateWebSocketUpgrade(response, used_key)) {
+                error = error_;
+                return false;
+            }
             // Evidence: OUT only; state switches to raw duplex frames.
             mode_ = Mode::kUpgraded;
             out_plain_ = false;

@@ -257,14 +257,27 @@ class OpensslTransport final : public TlsTransport {
             SSL_set_accept_state(ssl_);
         } else {
             SSL_set_connect_state(ssl_);
+            // SNI is a handshake HINT; the reference identifier for hostname
+            // verification is the name the user asked to reach (peer_host),
+            // exactly like the SChannel backend's VerifyHostname()
+            // (tls_schannel.cpp: "peer_host ?: sni"). A gateway reached via a
+            // proxy/prefix name must still be verified against the real target.
             const std::string sni =
                 config_.sni.empty() ? config_.peer_host : config_.sni;
             if (config_.send_sni && !sni.empty()) {
                 SSL_set_tlsext_host_name(ssl_, sni.c_str());
             }
-            if (config_.cert_policy == CertPolicy::kStrict && !sni.empty()) {
-                SSL_set1_host(ssl_, sni.c_str());
+            const std::string verify_name =
+                config_.peer_host.empty() ? config_.sni : config_.peer_host;
+            if (config_.cert_policy == CertPolicy::kStrict &&
+                !verify_name.empty()) {
+                SSL_set1_host(ssl_, verify_name.c_str());
             }
+            // Known single-side divergence vs SChannel (documented, not a bug):
+            // OpenSSL's X509_check_host has no ccSLD table, so it ACCEPTS
+            // "*.co.uk" (SChannel rejects it) and it REJECTS trailing-dot FQDN
+            // forms (SChannel normalizes them). SChannel is stricter on the
+            // wildcard side; see tls_schannel.cpp DnsNameMatches.
         }
         return true;
     }

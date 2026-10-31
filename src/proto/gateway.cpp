@@ -3,12 +3,14 @@
 #include "rtsc/proto/gateway.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
 
+#include "rtsc/crypto/hash.h"
 #include "rtsc/crypto/random.h"
 
 namespace rtsc::proto {
@@ -379,7 +381,8 @@ std::vector<uint8_t> BuildHttpConnectRequest(const ConnectRequestOptions& o) {
     return w.take();
 }
 
-std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
+std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o,
+                                            std::string* out_websocket_key) {
     // Every configured value (the method belongs to the request line) must be
     // injection-free, and the method must not be empty (an empty method would
     // yield a request line with a leading space). A violation is reported as
@@ -392,6 +395,7 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
         ContainsCrlfOrNul(o.load_balancer_cookie) ||
         ContainsCrlfOrNul(o.app_build) || ContainsCrlfOrNul(o.auth_scheme) ||
         ContainsCrlfOrNul(o.diagnostics_info) ||
+        ContainsCrlfOrNul(o.websocket_key) ||
         ContainsCrlfOrNul(o.authorization)) {
         return {};
     }
@@ -423,7 +427,13 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
     if (o.direction == RdgChannelDirection::kIn) {
         write_header("Transfer-Encoding", "chunked");
     } else {
-        write_header("Connection", "Keep-Alive");
+        // The OUT request is a plain Keep-Alive request UNLESS an RFC 6455
+        // upgrade is asked; the upgrade branch below then writes the single
+        // "Connection: Upgrade" header. Never emit both (a duplicate
+        // Connection header is ambiguous to a proxy).
+        if (!o.request_websocket_upgrade) {
+            write_header("Connection", "Keep-Alive");
+        }
         // Content-Length: 0 -- the OUT request has no entity body. This is
         // UNVERIFIED against the factory binary: mstscax.dll has no explicit
         // Content-Length / Host strings (0 hits; WinHTTP generates them
@@ -476,19 +486,26 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
     if (o.request_websocket_upgrade) {
         write_header("Connection", "Upgrade");
         write_header("Upgrade", "websocket");
-        uint8_t key_bytes[16];
-        if (rtsc::crypto::RandomBytes(key_bytes, sizeof(key_bytes))) {
-            write_header("Sec-WebSocket-Key",
-                         EncodeBase64(std::string(
-                             reinterpret_cast<const char*>(key_bytes),
-                             sizeof(key_bytes))));
-        } else {
-            // CSPRNG failure: the upgrade still proceeds with a fixed ephemeral
-            // key (freshness, not a secret); failure is a local environment
-            // issue, not a protocol error.
-            write_header("Sec-WebSocket-Key",
-                         EncodeBase64("rtsc-gw-fallback-key!!"));
+        // A caller-pinned key (websocket_key) is used verbatim; an empty one
+        // gets a fresh 16-byte base64 nonce (RFC 6455 4.1). Either way the
+        // key actually emitted is reported through out_websocket_key so the
+        // 101's Sec-WebSocket-Accept can be recomputed and checked.
+        std::string key = o.websocket_key;
+        if (key.empty()) {
+            uint8_t key_bytes[16];
+            if (rtsc::crypto::RandomBytes(key_bytes, sizeof(key_bytes))) {
+                key = EncodeBase64(std::string(
+                    reinterpret_cast<const char*>(key_bytes),
+                    sizeof(key_bytes)));
+            } else {
+                // CSPRNG failure: the upgrade still proceeds with a fixed
+                // ephemeral key (freshness, not a secret); failure is a local
+                // environment issue, not a protocol error.
+                key = EncodeBase64("rtsc-gw-fallback-key!!");
+            }
         }
+        if (out_websocket_key != nullptr) *out_websocket_key = key;
+        write_header("Sec-WebSocket-Key", key);
         write_header("Sec-WebSocket-Version", "13");
     }
 
@@ -500,6 +517,19 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
 
     AppendCrLf(w);
     return w.take();
+}
+
+// RFC 6455 4.1: accept = base64(SHA1(key + GUID)). The GUID is the fixed
+// handshake magic; base64 payloads are case-significant, so the comparison the
+// transport performs against the response header is exact.
+std::string ComputeWebSocketAccept(const std::string& key) {
+    const char* const kWebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    const std::string input = key + kWebSocketGuid;
+    const std::array<uint8_t, 20> digest =
+        rtsc::crypto::Sha1(reinterpret_cast<const uint8_t*>(input.data()),
+                           input.size());
+    return EncodeBase64(std::string(
+        reinterpret_cast<const char*>(digest.data()), digest.size()));
 }
 
 // ---- chunked transfer coding -------------------------------------------------

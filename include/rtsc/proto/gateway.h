@@ -174,6 +174,12 @@ struct RdgChannelRequestOptions {
     std::string auth_scheme;       // RDG-Auth-Scheme (factory values e.g.
                                    // SMARTCARD / CONNID; none defaulted here)
     std::string diagnostics_info;  // RDG-Diagnostics-Info
+    // RFC 6455 Sec-WebSocket-Key for the OUT upgrade ask. Empty (the default)
+    // makes the builder generate a fresh 16-byte base64 nonce per request; a
+    // non-empty value is emitted verbatim. The actual key the request carried
+    // is reported through BuildRdgChannelRequest's out_websocket_key, so the
+    // caller can compute the expected Sec-WebSocket-Accept without guessing.
+    std::string websocket_key;
     // Optional Authorization header (NTLM / Basic client authentication). Used
     // by RdgspTransport's 401 handling. Also validated against CRLF / NUL in
     // the builder's injection check chain (a hostile value here would smuggle
@@ -194,7 +200,17 @@ struct RdgChannelRequestOptions {
 };
 
 // Builds an RDGSP HTTP channel request (the IN/OUT channel creation request).
-std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& options);
+// When request_websocket_upgrade is set, the emitted Sec-WebSocket-Key is
+// reported through *out_websocket_key (never null-checked when provided): the
+// caller needs it to validate the 101's Sec-WebSocket-Accept. An empty
+// websocket_key in the options means "generate one".
+std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& options,
+                                            std::string* out_websocket_key = nullptr);
+
+// RFC 6455 4.1: the server's Sec-WebSocket-Accept for a given client key is
+// base64(SHA-1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")). Pure function:
+// the 101-validation code path and the tests share it.
+std::string ComputeWebSocketAccept(const std::string& key);
 
 // ---------------------------------------------------------------------------
 // HTTP chunked transfer coding (RFC 9112 section 7.1)

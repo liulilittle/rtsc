@@ -381,6 +381,23 @@ std::string RequestText(const std::vector<uint8_t>& req) {
     return std::string(req.begin(), req.end());
 }
 
+// The RFC 6455 4.1 sample key/accept pair. Locked by the accept test and used
+// to build valid stub 101 responses with a deterministic Sec-WebSocket-Accept.
+const char* const kWebSocketSampleKey = "dGhlIHNhbXBsZSBub25jZQ==";
+const char* const kWebSocketSampleAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+// Extracts the base64 "Sec-WebSocket-Key" value from a recorded request head.
+bool WebSocketKeyFromRequest(const std::vector<uint8_t>& req, std::string& key) {
+    const std::string text = RequestText(req);
+    const std::string marker = "Sec-WebSocket-Key: ";
+    const size_t at = text.find(marker);
+    if (at == std::string::npos) return false;
+    const size_t nl = text.find("\r\n", at);
+    if (nl == std::string::npos) return false;
+    key = text.substr(at + marker.size(), nl - (at + marker.size()));
+    return !key.empty();
+}
+
 std::string StubNtlmType2Base64() {
     rtsc::credssp::ChallengeMessage chg;
     chg.flags = 0xE28A8235u;
@@ -1022,11 +1039,74 @@ RTSC_TEST(rdg_channel_request_rejects_crlf_and_nul_in_values) {
         {out, [](RdgChannelRequestOptions& o, const std::string& v) { o.load_balancer_cookie = v; }},
         {out, [](RdgChannelRequestOptions& o, const std::string& v) { o.app_build = v; }},
         {in, [](RdgChannelRequestOptions& o, const std::string& v) { o.user_id = v; }},
+        {out, [](RdgChannelRequestOptions& o, const std::string& v) { o.websocket_key = v; }},
     };
     for (const Case& c : cases) {
         c.set(c.o, injected);
         const std::vector<uint8_t> req = BuildRdgChannelRequest(c.o);
         CHECK(req.empty());  // caller-visible failure
+    }
+}
+
+RTSC_TEST(build_websocket_accept_matches_rfc6455_sample) {
+    // RFC 6455 4.1 pins exactly one key/accept pair. ComputeWebSocketAccept
+    // must reproduce it byte-for-byte: the 101 check compares this value
+    // case-sensitively (base64 is significant), so a wrong byte here fails the
+    // handshake.
+    CHECK(ComputeWebSocketAccept(kWebSocketSampleKey) ==
+          std::string(kWebSocketSampleAccept));
+}
+
+RTSC_TEST(rdg_channel_upgrade_uses_injected_key_and_reports_it) {
+    // A caller may pin its own Sec-WebSocket-Key; the builder must emit that
+    // exact value AND report it back so the caller can compute the expected
+    // Sec-WebSocket-Accept without guessing.
+    RdgChannelRequestOptions options;
+    options.method = kRdgOutData;
+    options.direction = RdgChannelDirection::kOut;
+    options.gateway_host = "gw.example:443";
+    options.connection_id = "{conn}";
+    options.user_agent = "rtsc";
+    options.request_websocket_upgrade = true;
+    options.websocket_key = kWebSocketSampleKey;
+    std::string used;
+    const std::vector<uint8_t> request = BuildRdgChannelRequest(options, &used);
+    const std::string text(request.begin(), request.end());
+    CHECK(text.find("Sec-WebSocket-Key: " + std::string(kWebSocketSampleKey) +
+                         "\r\n") != std::string::npos);
+    CHECK(used == kWebSocketSampleKey);
+    // An upgraded OUT request carries exactly ONE Connection header
+    // ("Upgrade"), never the old "Keep-Alive" default alongside it.
+    const size_t first = text.find("Connection: ");
+    CHECK(first != std::string::npos);
+    CHECK(text.find("Connection: ", first + 1) == std::string::npos);
+    CHECK(text.find("Connection: Upgrade\r\n") != std::string::npos);
+    CHECK(text.find("Sec-WebSocket-Version: 13\r\n") != std::string::npos);
+}
+
+RTSC_TEST(rdg_channel_upgrade_generates_24char_key_when_not_injected) {
+    // Empty websocket_key => the builder generates one: the RFC 6455 nonce is
+    // 16 random bytes, so the base64 form is exactly 24 chars.
+    RdgChannelRequestOptions options;
+    options.method = kRdgOutData;
+    options.direction = RdgChannelDirection::kOut;
+    options.gateway_host = "gw.example:443";
+    options.connection_id = "{conn}";
+    options.user_agent = "rtsc";
+    options.request_websocket_upgrade = true;
+    std::string used;
+    const std::vector<uint8_t> request = BuildRdgChannelRequest(options, &used);
+    const std::string text(request.begin(), request.end());
+    CHECK_EQ(used.size(), static_cast<size_t>(24));
+    if (used.size() == 24) {
+        const auto is_b64 = [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                   (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=';
+        };
+        for (const char c : used) CHECK(is_b64(c));
+        std::string key;
+        CHECK(WebSocketKeyFromRequest(request, key));
+        CHECK(key == used);
     }
 }
 
@@ -2963,17 +3043,30 @@ RTSC_TEST(rdgsp_chunked_half_eof_reports_truncation) {
 RTSC_TEST(rdgsp_upgraded_101_reads_and_writes_websocket_frames) {
     auto out = std::make_shared<ScriptedRdgsp>();
     auto in = std::make_shared<ScriptedRdgsp>();
+    // A valid RFC 6455 101: Upgrade + Connection: Upgrade + the Accept derived
+    // from the injected key (ComputeWebSocketAccept(kWebSocketSampleKey)).
     out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-               "Connection: Upgrade\r\n\r\n");
+               "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+               std::string(kWebSocketSampleAccept) + "\r\n\r\n");
     // Server->client data frame: unmasked binary, 5-byte payload "hello".
     out->Reply(std::vector<uint8_t>{0x82, 0x05, 'h', 'e', 'l', 'l', 'o'});
     in->Reply(kInHead200);
     ConfigT c = RdgspTestConfig(out, in);
+    c.websocket_key = kWebSocketSampleKey;
     rtsc::net::RdgspTransport t(c);
     std::string err;
     CHECK(t.Connect(err));
     CHECK(t.upgraded());
     CHECK(t.mode() == rtsc::net::RdgspTransport::Mode::kUpgraded);
+
+    // Request-head completeness: the OUT upgrade ask carried the pinned key
+    // (24-char base64) and the RFC 6455 version under which the Accept that
+    // just validated was computed.
+    std::string sent_key;
+    CHECK(WebSocketKeyFromRequest(out->requests()[0], sent_key));
+    CHECK(sent_key == kWebSocketSampleKey);
+    CHECK(RequestText(out->requests()[0]).find("Sec-WebSocket-Version: 13\r\n") !=
+          std::string::npos);
 
     uint8_t buf[64] = {};
     const int n = t.Read(buf, sizeof(buf));
@@ -3003,9 +3096,11 @@ RTSC_TEST(rdgsp_upgraded_each_frame_gets_a_fresh_mask) {
     auto out = std::make_shared<ScriptedRdgsp>();
     auto in = std::make_shared<ScriptedRdgsp>();
     out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-               "Connection: Upgrade\r\n\r\n");
+               "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+               std::string(kWebSocketSampleAccept) + "\r\n\r\n");
     in->Reply(kInHead200);
     ConfigT c = RdgspTestConfig(out, in);
+    c.websocket_key = kWebSocketSampleKey;
     rtsc::net::RdgspTransport t(c);
     std::string err;
     CHECK(t.Connect(err));
@@ -3038,9 +3133,11 @@ RTSC_TEST(rdgsp_upgraded_write_can_stay_on_in) {
     auto out = std::make_shared<ScriptedRdgsp>();
     auto in = std::make_shared<ScriptedRdgsp>();
     out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-               "Connection: Upgrade\r\n\r\n");
+               "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+               std::string(kWebSocketSampleAccept) + "\r\n\r\n");
     in->Reply(kInHead200);
     ConfigT c = RdgspTestConfig(out, in);
+    c.websocket_key = kWebSocketSampleKey;
     c.upgrade_steals_write = false;
     rtsc::net::RdgspTransport t(c);
     std::string err;
@@ -3058,6 +3155,102 @@ RTSC_TEST(rdgsp_upgraded_write_can_stay_on_in) {
     CHECK(!dec.failed());
     CHECK_EQ(frames.size(), static_cast<size_t>(1));
     if (frames.size() == 1) CHECK(frames[0].payload == ToVec("in"));
+}
+
+RTSC_TEST(rdgsp_upgraded_101_missing_accept_fails_closed) {
+    // A 101 without Sec-WebSocket-Accept must fail closed: the connection is
+    // already upgraded, and its bytes cannot be re-interpreted as an HTTP body
+    // after the fact. The old "status code alone" accept was a frozen defect.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    c.websocket_key = kWebSocketSampleKey;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK(t.hresult() != 0);
+    CHECK(!t.connected());
+    CHECK(!t.upgraded());
+    CHECK(err.find("Sec-WebSocket-Accept") != std::string::npos);
+}
+
+RTSC_TEST(rdgsp_upgraded_101_wrong_accept_fails_closed) {
+    // A 101 whose Sec-WebSocket-Accept does not match the computed value is a
+    // man-in-the-middle / handshake-mismatch signal: hard error, never a
+    // downgrade to the chunked path.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+               std::string(28, 'A') + "\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    c.websocket_key = kWebSocketSampleKey;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK(t.hresult() != 0);
+    CHECK(!t.connected());
+    CHECK(!t.upgraded());
+    CHECK(err.find("Sec-WebSocket-Accept") != std::string::npos);
+}
+
+RTSC_TEST(rdgsp_upgraded_101_rejects_missing_or_wrong_protocol_headers) {
+    // All three legs of the RFC 6455 handshake must hold: Upgrade: websocket,
+    // Connection containing the Upgrade token, and the matching Accept. A 101
+    // with a correct Accept but a broken Upgrade/Connection leg still fails.
+    const char* heads[] = {
+        // No Upgrade / Connection headers at all.
+        "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+        // Wrong Upgrade value but a Connection header.
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+        // Right Upgrade value but Connection lacks the Upgrade token.
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+        "Connection: close\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+    };
+    for (const char* head : heads) {
+        auto out = std::make_shared<ScriptedRdgsp>();
+        auto in = std::make_shared<ScriptedRdgsp>();
+        out->Reply(head);
+        in->Reply(kInHead200);
+        ConfigT c = RdgspTestConfig(out, in);
+        c.websocket_key = kWebSocketSampleKey;
+        rtsc::net::RdgspTransport t(c);
+        std::string err;
+        CHECK(!t.Connect(err));
+        CHECK(t.hresult() != 0);
+        CHECK(!t.upgraded());
+        CHECK(err.find("Sec-WebSocket-Accept") != std::string::npos);
+    }
+}
+
+RTSC_TEST(rdgsp_out_401_refreshes_websocket_key_each_attempt) {
+    // The RFC 6455 nonce must not be reused across 401 retries: attempt 2
+    // carries a fresh Sec-WebSocket-Key. (Accept validation uses the key of the
+    // attempt that produced the 101, so a stale key would derail the check.)
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: NTLM\r\n"
+               "Content-Length: 0\r\n\r\n");
+    out->Reply(kOutHead200Plain);
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.mode() == rtsc::net::RdgspTransport::Mode::kChunked);
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(2));
+    if (out->requests().size() == 2) {
+        std::string k1, k2;
+        CHECK(WebSocketKeyFromRequest(out->requests()[0], k1));
+        CHECK(WebSocketKeyFromRequest(out->requests()[1], k2));
+        CHECK(!k1.empty());
+        CHECK(k1 != k2);
+    }
 }
 
 RTSC_TEST(rdgsp_unsupported_auth_scheme_fails_explicitly) {

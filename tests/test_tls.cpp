@@ -510,6 +510,49 @@ RTSC_TEST(schannel_hostname_wildcard_matches_one_label_only) {
     CHECK(!DnsNameMatchesForTest("a.example.com", "b.example.com"));
 }
 
+RTSC_TEST(schannel_hostname_public_suffix_and_fqdn_rules) {
+    // Locks the hardened DnsNameMatches rules:
+    //  * a wildcard whose base is a public suffix is rejected structurally
+    //    (*.com / *.cn: the base label has no internal dot) or by the ccSLD
+    //    table (*.co.uk, *.com.au), so "*.co.uk" cannot match every host under
+    //    the co.uk suffix;
+    //  * a registered domain is NOT a public suffix: "*.foo.co.uk" and the
+    //    privately-registrable "*.uk.com" must keep matching;
+    //  * a single trailing dot (FQDN form) names the same host, from either
+    //    side;
+    //  * degenerate forms (".", "..", a trailing double dot, a bare "*.") are
+    //    rejected.
+    const struct {
+        const char* pattern;
+        const char* host;
+        bool want;
+    } cases[] = {
+        // Public-suffix wildcards, rejected in every form.
+        {"*.com", "x.com", false},
+        {"*.cn", "x.cn", false},
+        {"*.co.uk", "x.co.uk", false},
+        {"*.com.au", "x.com.au", false},
+        {"*.co.uk", "a.b.co.uk", false},
+        // Registered-domain wildcards: still single-label matches.
+        {"*.example.com", "a.example.com", true},
+        {"*.foo.co.uk", "a.foo.co.uk", true},
+        {"*.uk.com", "x.uk.com", true},
+        // FQDN trailing dot: the same name, from either side.
+        {"example.com", "example.com.", true},
+        {"example.com.", "example.com", true},
+        // Degenerate forms, rejected.
+        {"example.com..", "example.com", false},
+        {"example.com", ".", false},
+        {".", "example.com", false},
+        {"example.com", "", false},
+        {"..", "example.com", false},
+        {"*.", "x.example.com", false},
+    };
+    for (const auto& c : cases) {
+        CHECK_EQ(DnsNameMatchesForTest(c.pattern, c.host), c.want);
+    }
+}
+
 // Builds a self-signed certificate for the hostname-extraction test: CN always
 // "localhost"; when with_san is true, dNSName SAN entries are added.
 PCCERT_CONTEXT MakeNameTestCert(bool with_san) {
