@@ -514,3 +514,26 @@ server/proxy to predict the masking key for a subsequent frame."
 ### D-T4：`Sec-WebSocket-Accept` 未校验（执行 AI 已标 UNVERIFIED）
 101 升级后未验证服务端回显的 `Sec-WebSocket-Accept`（RFC 6455 §4.1 要求客户端校验）。
 外层 TLS 已保护信道，风险有限；真机联调时补。
+
+## 同型排查：CertPolicy::kInsecure 全仓使用点（2026-10-31，C9 要求）
+
+缺陷修复后必须排查全部同型实现点。全仓 `grep CertPolicy::kInsecure` 结果：
+
+| 位置 | 角色 | 判定 |
+|---|---|---|
+| `src/net/tls_openssl.cpp:119` | 后端实现 | 正常（策略分发） |
+| `src/net/tls_schannel.cpp:687,828,1087` | 后端实现 | 正常（策略分发） |
+| `tools/rtsc_gui/main.cpp:279` | 客户端 | **已修**（阶段 2：仅 `--tls-insecure` 显式时才 kInsecure） |
+| `tools/rtsc_connect/main.cpp:109` | 客户端 | **F2 修复中**（默认改 kStrict + `--tls-insecure`） |
+| `tools/rtsc_bench/main.cpp:400` | 客户端 | **待修（P3）**：`MakeSecurityConfig()` 写死 kInsecure，连 127.0.0.1。凭据是假值（Domain/User/Password），无真实秘密泄露；但若有人指向真实服务器并填真凭据，即为同类 MITM 面。 |
+| `tools/rtsc_server/main.cpp:276` | **服务端** | **无需修**：`role = Role::kServer`（`:275`），而 `tls_schannel.cpp:818` 的 `VerifyPeerCertificate` 只在 `Role::kClient` 调用 —— 服务端不校验对端证书是正常语义（服务端只出示自己的自签证书）。已核实角色门存在。 |
+
+**结论**：客户端侧共 3 处硬编码 kInsecure（gui 已修 / connect 修中 / bench 待修）；服务端 1 处属正常语义。
+
+**新增待办**：`tools/rtsc_bench/main.cpp:400` → 与 rtsc_connect 同款修复（默认 kStrict + `--tls-insecure`），P3（bench 工具，非交付主路径）。
+
+## 验收状态（2026-10-31 第141轮）
+- 执行 AI `ses_e70fdf49` 正在修 A（kTofu 无 pin 时链校验）与 F2（rtsc_connect）。
+- **当前工作树处于变异中途**：`tls_schannel.cpp:835` 留有 `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A` —— 这是为证明新用例转红而临时插入的变异，**不可验收、不可提交**。
+- 已在 `:831-833` 看到新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明修 A 的意图已写入，仅 `:835` 的实现行还是变异态。
+- 待执行 AI 交付并清除 MUTATION 标记后再复核。
