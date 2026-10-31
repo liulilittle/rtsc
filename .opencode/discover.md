@@ -1439,3 +1439,26 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 - **影响**：本机所有 TLS（直连 CredSSP step5 密码密封 + 网关外层 + `--gateway-trust` pin）全部无校验 → 中间人可读明文密码。
 - **裁定**：F1 为阶段 2 签署前置条件。修复见 `docs/spec/tls-schannel-p0-verification.md` §5。F2（`tools/rtsc_connect/main.cpp:109` 仍 kInsecure）在 F1 后独立提交。
 - **教训（同型家族第 5 例）**："改了默认值"不等于"改了行为"——必须验证后端是否真的实现了该策略；默认值变更必须配套"该策略确实会拒绝"的测试。
+
+## D1（P0）：OpenSSL 后端 `consumed` 语义错误 → AES-GCM nonce 重用
+
+**发现者**：审计乙 `ses_e70231563ffedTdORoCFniqPmK`（WSL 探针实测红证）。
+**主代理核实**：`src/net/tls_openssl.cpp:214-218` 与 `src/net/tls_schannel.cpp:312-315` 对照，及 `src/security/security_layer.cpp:169-171 / :224-229` 的消费链路。
+
+**症状**：握手完成时若对端把最终握手段与首条应用记录合段（mstsc/FreeRDP/测试常态），`Handshake` 报告的 `consumed < in_size` 让 `SecurityLayer::DriveTls` 把残留留在 `pending_cipher_`，随后 `DriveCredssp` 再喂给 `Receive()` → **同一记录进 BIO 两次 → 相同序列号 → AES-GCM nonce 重用 → `SSL_ERROR_SSL` 致命**。
+
+**根因**：OpenSSL 与 SChannel 的 `consumed` 语义相反。
+- SChannel（SSPI）：未消费字节作为 `EXTRA` 缓冲返回给调用方重放 → `consumed = in_size - sum(EXTRA)`（`tls.h:146-150` 契约）。
+- OpenSSL（内存 BIO）：`Handshake` 把整个输入 `BIO_write` 进 `rbio_`，字节已归 SSL 对象所有，**EXTRA 恒为 0**。
+- 当前实现却用 `BIO_ctrl_pending(rbio_)` 的增量模拟 EXTRA，把握手完成瞬间后端已持有的残留误判为"未消费"。
+- 对照：SChannel 后端 `:315` 就是 `consumed = in_size;`（注释写明"leaving bytes unconsumed would make the caller replay them forever"）。
+
+**影响面**：
+- server 角色（修好 accept 后）：Finished + 首条 CredSSP 记录合段 → 首包即死，且**时绿时红**（取决于对端是否合段）。
+- client 角色：Finished + TLS1.3 tickets 合段同型潜伏；现有 9 个用例未触发（tickets 独立成段）。
+
+**修复**：`consumed = in_size;`（删 `pending_before`/`pending_after`/`left`）。残留经 `SecurityLayer` 既有的 `while (buffered_input() > 0) Receive(nullptr, 0, ...)` drain 收敛。与 `tls.h:146-150` 契约不冲突（OpenSSL 的 EXTRA 恒 0）。
+
+**测试**：合段用例（最终握手段 + 首条应用记录同一 buffer）断言 `consumed == in_size` 且数据可读、无 `SSL_ERROR_SSL`。修复前必须红。
+
+**教训（同型家族第 7 例）**：**接口契约的"如何计算"可能绑定特定后端语义**。`tls.h:146-150` 写的是 SSPI 的算法（`in_size - sum(EXTRA)`），照搬到 BIO 模型就是错的。跨后端抽象必须在注释里写明"本契约是 X 后端的语义，Y 后端应等价实现为……"，否则实现者会照着算法抄。
