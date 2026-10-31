@@ -646,3 +646,27 @@ WSL `Ubuntu-24.04`：cmake 3.28.3、g++ 13.3.0、OpenSSL 3.0.13、32 核。
 ## 仍未验证（W5）
 - ~~`kTofu + pin` 行为未验证~~ → **已验证**（第769轮，`a2cfebe`）：`tests/test_tls_openssl.cpp` 补齐 5 条策略用例（pin 匹配接受自签 / pin 不匹配拒绝 / kStrict 与 kTofu 无 pin 拒绝），Linux 实跑全绿；顺带修复 OpenSSL 不查 `SSL_get_verify_result` 导致链校验失败误报 `kProtocolError` 的缺陷。
 - `rdpdr` 驱动器重定向的 Linux 行为未覆盖（测试为 Windows 路径语义）；仅路径守卫有 POSIX 用例。
+
+## 性能基准（2026-10-31，Windows Release，MSVC 1944）
+
+`rtsc_bench.exe` 实测（1920x1080，8.29 MB RGBA8888）：
+
+| codec | 输入 | median | min | max | stddev | 输出 MB/s | fps |
+|---|---|---|---|---|---|---|---|
+| raw-32bpp | 8.29 MB | 4.994 ms | 4.479 | 6.425 | 0.485 | 1660.8 | 200.2 |
+| rle-16bpp | 2.17 MB | 9.115 ms | 8.459 | 11.471 | 0.642 | 910.0 | 109.7 |
+| rdp6-argb | 8.29 MB | 6.034 ms | 5.582 | 7.555 | 0.523 | 1374.6 | 165.7 |
+| rdp6-aycocg | 6.22 MB | 7.332 ms | 6.890 | 8.693 | 0.426 | 1131.3 | 136.4 |
+| nsc-aycocg-cs | 5.18 MB | 6.479 ms | 5.856 | 8.896 | 0.602 | 1280.1 | 154.3 |
+
+端到端 loopback（脚本化 TLS，300 个 tile PDU）：
+- 往返（加解密）median **0.800 ms**（min 0.779 / max 0.882 / stddev 0.033）
+- 有效吞吐 **10373.2 MB/s**
+- 端到端帧（transport+parse+decode）**5.168 ms = 193.5 fps**
+
+CPU 占用（rdp6-argb 解码，2.0 s 墙钟，322 帧 = 160.4 fps）：CPU 2.007 s / 墙钟 2.007 s = **100.0%**（= 一个完整核心，单线程解码符合预期，无多核空转）。
+
+**结论**：1080p 全帧解码最慢的 codec 是 rle-16bpp（9.1 ms → 109.7 fps），端到端 193.5 fps，均远超 30/60 fps 的交互需求；CPU 为单核饱和而非"炸"（无忙等、无多核空转）。
+
+`view_scale_benchmark_budget`（7 种缩放形状）通过：1:1 ≤1.0 ms、letterbox ≤0.6、2x ≤8.0、0.8x ≤22、0.5x 4K ≤25、1.33x ≤10、0.4x 4K ≤35。
+（注：该测试在 WSL `-j16` 编译争用 CPU 时会偶发红，单跑即绿；本轮已复现并确认非代码回归。）
