@@ -862,3 +862,27 @@ CHECK(t.upgraded());
 - `*.co.uk` ← x.co.uk → 过（两后端都过，都未过 PSL 关）
 - `*.example.com` ← example.com → 过（OpenSSL）/ 拒（SChannel）→ 单侧差异
 - 两侧尾点一致 → 都过（都不跨尾点归一）
+
+## 第781轮：甲双章报告 + 主代理撤回自己的让步（`*.co.uk` 必须做 ccSLD 表）
+### 甲的关键论证（我采纳，并撤销自己任务书里的让步）
+纯规则法**不可能**区分：
+- `*.co.uk`（3 段，**应拒**）
+- `*.example.com`（3 段，**应放**）
+→ 任何"通配符右侧 ≥2 标签"的规则都放行 `*.co.uk`；
+   任何"两侧 ≥3 标签"的规则都误拒 `*.example.com`。
+**⇒ 必须引入 PSL 知识（ccSLD 表）。**
+
+我原任务书写"若成本过高先只做结构拒 `*.com`"——这个让步**已撤销**。
+
+### 主代理独立核实的三项事实
+1. `include/rtsc/crypto/hash.h:28` `std::array<uint8_t, 20> Sha1(...)` **可用**
+2. **重复 `Connection` 头确认存在**：`src/proto/gateway.cpp:426` `Keep-Alive` + `:477` `Upgrade`（同一请求两个 Connection 头）
+3. `HttpMessage::find` 已具备取头能力
+
+### 补充要求已 relay 给执行 AI
+- ccSLD 静态排序表 + 二分查找，~200-400 条，文档化来源 + "简化集非全 PSL"声明
+- `ComputeWebSocketAccept` 用 **RFC 6455 官方样例**锁定：`"dGhlIHNhbXBsZSBub25jZQ=="` → `"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="`
+- 101 三条件全查（Upgrade + Connection token + Accept）
+- 错误串必须含 `"Sec-WebSocket-Accept"`
+- **`*.foo.co.uk` ← `a.foo.co.uk` 必须通过**（表的正确性验证点）、**`*.uk.com` ← `x.uk.com` 必须通过**（私有注册域）
+- **两后端不对称必须注释**：修复后 SChannel 比 OpenSSL 更严（拒 `*.co.uk`、剥尾点），这是**档期已知差异、安全方向正确**，防误报
