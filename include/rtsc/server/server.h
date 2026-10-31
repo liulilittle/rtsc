@@ -214,7 +214,10 @@ struct InputEvent {
     uint16_t y = 0;
     uint16_t button = 0;   // 1 = left, 2 = right, 3 = middle, 4 = X1, 5 = X2
     bool button_down = false;
-    int16_t wheel_delta = 0;
+    int16_t wheel_delta = 0;  // wire units: WHEEL_DELTA (120) per notch
+    // kWheel: set when the event was a PTRFLAGS_HWHEEL event (horizontal
+    // scroll); a vertical wheel event leaves it false.
+    bool horizontal = false;
 
     // kSync
     uint8_t sync_flags = 0;

@@ -220,7 +220,8 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
 
         // Horizontal wheel: the in-tree server advertises INPUT_FLAG_MOUSE_HWHEEL
         // (0x0100), so the client must encode the PTRFLAGS_HWHEEL event
-        // (0x0400 | 1 = 0x0401), not gate it away.
+        // (0x0400 | WHEEL_DELTA 120 = 0x0478), not gate it away. The rotation
+        // unit is WHEEL_DELTA per notch, exactly as for the vertical wheel.
         rtsc::ui::InputEvent hwheel;
         hwheel.kind = rtsc::ui::InputEvent::Kind::kMouseWheel;
         hwheel.horizontal = true;
@@ -228,7 +229,7 @@ RTSC_TEST(gui_send_uses_the_application_plane_under_standard_rdp) {
         const auto hwheel_pdu = client.EncodeInput(hwheel);
         CHECK(hwheel_pdu.size() == static_cast<size_t>(9));
         if (hwheel_pdu.size() == 9) {
-            CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[3]), static_cast<uint8_t>(0x01));
+            CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[3]), static_cast<uint8_t>(0x78));
             CHECK_EQ(static_cast<uint8_t>(hwheel_pdu[4]), static_cast<uint8_t>(0x04));
         }
 

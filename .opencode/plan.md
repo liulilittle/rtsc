@@ -358,6 +358,8 @@
 - [x] **A6 智能缩放/自适应**（裁定 FUN_18003444c=门控缩放；实现 3414ece 双审；EnableSmartSizing=0→1:1）：`EnableSmartSizing` 的确切语义（窗口缩放时保持纵横比的方式、何时用 HALFTONE 的快速路径 FUN_180036ba0）。
 - [x] **A7 连接栏/全屏/多显示器 UI**（multimon-ui-evidence；mstsc.exe=薄壳；全屏/多屏已实现双审 296fcfd）：mstsc.exe 侧的窗口管理。
 - [~] **A8 服务器模式**（自研 RdpServer：桌面渲染✓ 剪贴板✓ 多会话并发✓ rdpdr 握手实施中；不依赖 termsrv→家庭版天然可用）：mstsc 无服务器实现，另以 termsrv.dll/rdpdd.dll 为取证目标（本阶段不做）。
+  - [~] A8-a 输入注入（P0）：滚轮单位/9 位二补码/HWHEEL/clamp 修复执行中（round 793）；
+    注入器设计由双审取证（round 793，`docs/spec/input-injection-{evidence,seam}.md`），默认 off + 显式 `--allow-input`。
 
 **每项流程（强制）**：①定问题 → ②二进制取证（函数地址 + 伪代码 + 交叉佐证）→ ③写成可复核证据条目 → ④先写失败测试（期望值来自②，禁止用生产输出当期望）→ ⑤最小实现 → ⑥双审独立复验（含变异反证）→ ⑦盖章提交。
 
@@ -567,3 +569,24 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 
 **待做**：派 W11 双审计设计输入注入方案（Win32 `SendInput` 语义、扫描码映射、绝对/相对坐标、
 多会话时的桌面归属、UIPI/权限提升输入、Ctrl+Alt+Del 特例）。
+
+---
+
+# 输入注入批次（round 793 新增，P0）
+
+## 现状证据
+- 服务器侧 Win32 注入调用 = 0；`SetInputCallback` 只写日志（`tools/rtsc_server/main.cpp:453-463`）。
+- 解码缺陷已定案（`docs/spec/input-injection-evidence.md` 498 行 + `input-injection-seam.md` 382 行）：
+  P-1 HWHEEL 丢弃、P-2 滚轮单位、P-3 相对移动、P-4 幻影按键（`server.cpp:1610-1621` 回调前置缺陷）、
+  P-5 move/release 歧义 + 测试固化（`tests/test_server.cpp:695-703`）、P-6 EXTENDEDKEY 仅 0xE0、
+  P-9 未广告 `INPUT_FLAG_FASTPATH_INPUT2 0x0020`、P-10 慢路径 `0x1C` 静默丢弃
+  （`server.cpp:1479-1521` 仅 RefreshRect/SuppressOutput，主代理已复核）、P-11 未知 eventCode 不断连、
+  P-12 `session_id=0` 无法归属（`server.cpp:1843/1962`）。
+
+## 分批（每批独立 TDD + 双审复验 + 变异）
+- [ ] 批 1 协议完整性：P-1..P-6、P-11（编码/解码 + 断言语义；滚轮部分已在 round 793 落地）
+- [ ] 批 2 capability 与慢路径：P-9（0x0020）、P-10（0x1C 慢路径输入解码）
+- [ ] 批 3 注入器骨架：`InputSink` + 单工作线程队列 + `--allow-input` 默认 off +
+      拒绝组合（`--no-enhanced`/`--allow-any-credentials`）+ `ReleaseSession` 补 keyup +
+      纯函数 `Translate(InputEvent, InjectGeometry) -> PlatformInput`（不引 windows.h）
+- [ ] 批 4 真机验证：UIPI 落点、多会话、安全桌面、Pause、kSync、DPI/多屏（UNVERIFIED 清单）

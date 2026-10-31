@@ -17,6 +17,15 @@ namespace {
 
 constexpr size_t kReadChunk = 16384;
 
+// One wheel notch is WHEEL_DELTA = 120 rotation units on the wire
+// ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1 "Number of rotation units"); the UI layer
+// reports notches instead (ui::InputEvent::wheel_delta).
+constexpr int kWheelUnitsPerNotch = 120;
+
+// The rotation field is 9 bits two's complement, so its symmetric range is
+// -255..+255; PTRFLAGS_WHEEL_NEGATIVE (0x0100) is that field's sign bit.
+constexpr int kMaxWheelRotation = 255;
+
 // The statistics window: a frame rate and a bandwidth over the last second.
 constexpr auto kStatWindow = std::chrono::seconds(1);
 
@@ -228,14 +237,24 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             // Capability Set. A vertical wheel is an ordinary MOUSE event and
             // is never gated.
             if (ev.horizontal && !driver_.server_supports_hwheel()) return {};
+            // The UI layer reports notches; the wire carries WHEEL_DELTA (120)
+            // rotation units per notch. FreeRDP PR #6806 fixed the old
+            // "positive value plus negative flag" encoding (the server saw 136
+            // instead of 120). PTRFLAGS_WHEEL_NEGATIVE (0x0100) is the sign bit
+            // OF the 9-bit two's-complement WheelRotationMask field, so the
+            // masked value must be sent as-is and the bit must not be OR'ed in
+            // separately (that made -1 look like 0x0301 = -257, not -120).
+            const int scaled =
+                static_cast<int>(ev.wheel_delta) * kWheelUnitsPerNotch;
+            const int units = scaled > kMaxWheelRotation
+                                  ? kMaxWheelRotation
+                                  : (scaled < -kMaxWheelRotation
+                                         ? -kMaxWheelRotation
+                                         : scaled);
             uint16_t flags =
                 ev.horizontal ? proto::kPtrHwheel : proto::kPtrWheel;
-            const int16_t delta = ev.wheel_delta;
-            const int16_t magnitude =
-                static_cast<int16_t>(delta < 0 ? -delta : delta);
-            if (delta < 0) flags |= proto::kPtrWheelNegative;
             flags |= static_cast<uint16_t>(
-                magnitude & proto::kPtrWheelRotationMask);
+                units & proto::kPtrWheelRotationMask);
             return EncodeFastPathInputPdu({EncodeMouseEvent(flags, ev.x, ev.y)});
         }
         case ui::InputEvent::Kind::kClose:

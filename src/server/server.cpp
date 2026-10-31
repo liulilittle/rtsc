@@ -1568,14 +1568,21 @@ class RdpSession {
                     ev.y = static_cast<uint16_t>(p[pos + 4] | (p[pos + 5] << 8));
                     pos += 6;
                     ev.kind = InputEvent::Kind::kMouse;
-                    if ((pf & proto::kPtrWheel) != 0) {
+                    if ((pf & proto::kPtrWheel) != 0 ||
+                        (pf & proto::kPtrHwheel) != 0) {
+                        // PTRFLAGS_WHEEL / PTRFLAGS_HWHEEL share one 9-bit
+                        // two's-complement rotation field ([MS-RDPBCGR]
+                        // 2.2.8.1.1.3.1.1.1): 0x0100 is its sign bit, not a
+                        // standalone negative flag, and the unit is
+                        // WHEEL_DELTA (120) per notch. WHEEL wins when a
+                        // sender sets both bits.
+                        const bool vertical = (pf & proto::kPtrWheel) != 0;
                         ev.kind = InputEvent::Kind::kWheel;
-                        const uint16_t rot =
-                            static_cast<uint16_t>(pf & proto::kPtrWheelRotationMask);
-                        ev.wheel_delta = static_cast<int16_t>(rot);
-                        if ((pf & proto::kPtrWheelNegative) != 0) {
-                            ev.wheel_delta = static_cast<int16_t>(-ev.wheel_delta);
-                        }
+                        ev.horizontal = !vertical;
+                        const uint16_t raw = static_cast<uint16_t>(
+                            pf & proto::kPtrWheelRotationMask);
+                        ev.wheel_delta = static_cast<int16_t>(
+                            (raw & 0x0100) != 0 ? raw - 0x0200 : raw);
                     }
                     if ((pf & proto::kPtrDown) != 0) {
                         ev.button_down = true;

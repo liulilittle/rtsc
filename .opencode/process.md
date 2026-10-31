@@ -197,78 +197,10 @@ CHECK(t.upgraded());
 - `*.example.com` ← example.com → 过（OpenSSL）/ 拒（SChannel）→ 单侧差异
 - 两侧尾点一致 → 都过（都不跨尾点归一）
 
-## 第781轮：甲双章报告 + 主代理撤回自己的让步（`*.co.uk` 必须做 ccSLD 表）
-### 甲的关键论证（我采纳，并撤销自己任务书里的让步）
-纯规则法**不可能**区分：
-- `*.co.uk`（3 段，**应拒**）
-- `*.example.com`（3 段，**应放**）
-→ 任何"通配符右侧 ≥2 标签"的规则都放行 `*.co.uk`；
-   任何"两侧 ≥3 标签"的规则都误拒 `*.example.com`。
-**⇒ 必须引入 PSL 知识（ccSLD 表）。**
-
-我原任务书写"若成本过高先只做结构拒 `*.com`"——这个让步**已撤销**。
-
-### 主代理独立核实的三项事实
-1. `include/rtsc/crypto/hash.h:28` `std::array<uint8_t, 20> Sha1(...)` **可用**
-2. **重复 `Connection` 头确认存在**：`src/proto/gateway.cpp:426` `Keep-Alive` + `:477` `Upgrade`（同一请求两个 Connection 头）
-3. `HttpMessage::find` 已具备取头能力
-
-### 补充要求已 relay 给执行 AI
-- ccSLD 静态排序表 + 二分查找，~200-400 条，文档化来源 + "简化集非全 PSL"声明
-- `ComputeWebSocketAccept` 用 **RFC 6455 官方样例**锁定：`"dGhlIHNhbXBsZSBub25jZQ=="` → `"s3pPLMBiTxaQ9kYGzzhZRbK+xOo="`
-- 101 三条件全查（Upgrade + Connection token + Accept）
-- 错误串必须含 `"Sec-WebSocket-Accept"`
-- **`*.foo.co.uk` ← `a.foo.co.uk` 必须通过**（表的正确性验证点）、**`*.uk.com` ← `x.uk.com` 必须通过**（私有注册域）
-- **两后端不对称必须注释**：修复后 SChannel 比 OpenSSL 更严（拒 `*.co.uk`、剥尾点），这是**档期已知差异、安全方向正确**，防误报
-
-## 第782轮：主代理独立核算 RFC 6455 测试向量（供后续核验执行 AI 实现）
-### 目的
-避免"用执行 AI 的实现验证执行 AI 的实现"（循环论证，本项目已记录 3 例）。我先用仓库自己的
-`crypto::Sha1` + 独立实现的 base64 算出 RFC 6455 §1.3 官方样例，作为外部基准。
-
-### 结果（`evidence/ws-accept-vector.txt`，8653347）
-```
-key      = dGhlIHNhbXBsZSBub25jZQ==
-material = dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11
-sha1     = b37a4f2cc0624f1690f64606cf385945b2bec4ea
-accept   = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
-[PASS] RFC 6455 1.3 vector
-```
-与 RFC 6455 §1.3 原文给出的 `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` **逐字一致**。
-
-### 后续核验点
-执行 AI 交付后，必须确认它实现的 `ComputeWebSocketAccept` 对同一输入产出**同一字节串**，
-且该断言写进了测试（否则测试可能只是"实现自证"）。
-
-## 第786轮：主机名硬化 + WebSocket Accept 入库 `407d03e`，子代理全解散
-### 双章（甲 ses_e6f64e81 + 乙 ses_e6f64d71，各自独立复验）
-- 甲认错：把 `X509_check_host` 的 0 读成 1
-- 乙认错并给根因：用了**多 SAN 证书**（`DNS:example.com,DNS:*.example.com`），字面 SAN 先命中
-- **主代理独立验证乙的根因**（`evidence/openssl-multi-san-rootcause.txt`）：
-  ```
-  multi-SAN      host=example.com   => 1   ← 字面 SAN 命中（不是通配）
-  wildcard-only  host=example.com   => 0   ← 纯通配拒绝裸域
-  ```
-  根因解释完全成立。
-- 两审六项复核全 PASS：ccSLD 447 条 + 编译期排序守卫 + 大小写归一 + 误伤验证
-  （`*.foo.co.uk` / `*.uk.com` 通过）+ Connection token 多行逗号语义 + key 401 刷新 +
-  变异 M1/M2 红证 + 双平台 -R 全绿。
-- 主代理另行纠正甲的"Windows ctest 注册为空"误报（实测 **62 tests**）。
-
-### 本批修复
-- 主机名：尾点归一 + 结构拒 `*.com` + ccSLD 表拒 `*.co.uk`（纯规则法不可能区分
-  `*.co.uk` 与 `*.example.com`，甲证明）
-- WebSocket：key 生命周期打通 + `ComputeWebSocketAccept`（RFC 官方样例锁定）+
-  101 三条件校验（accept/upgrade/connection token）+ 失败硬错 + 401 刷新 key +
-  重复 Connection 头收敛
-- 两后端验证名统一（`peer_host ?: sni`）；两处单侧差异（ccSLD、尾点）双端注释
-
-### 验证
-- 主机名探针 **9/9 PASS**（原 4 FAIL 全转绿）
-- Windows：build 0 err/0 warn；`ctest -R` **6/6**
-- Linux：build 0 err（-Werror）；`ctest -R` **5/5**
-- 3 个子代理全部 delete 解散
-
+## 第781-786轮（已压缩摘要）
+- 781-782：两审定案 ccSLD 表 + RFC6455 Accept；主代理独立核算 `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` 向量。
+- 783-786：主机名硬化 + WebSocket Accept 入库 `407d03e`；主代理独立探针裁决"裸域通配"——两审一致错误（OpenSSL 纯通配拒裸域），执行 AI 正确；根因=多 SAN 证书污染样本。教训：双章≠真理，必须独立探针（discover 第 10-11 例）。
+- 详细证据见 git 历史与 discover.md 第 10-11 例。
 ## 第787轮：发现 P0 功能缺口「服务器只能看不能操作」+ 派双审计
 ### 主代理取证（三份硬证据）
 1. `[BASH: grep 'SendInput|keybd_event|mouse_event|SetCursorPos' src/ include/ tools/]` → 4 命中，
@@ -354,3 +286,54 @@ clamped 255 -> 255 (sign preserved)
 ### 待乙回执
 乙上一轮已认可"9 位二补码"，但未对"单位 = 120"表态。甲称已同步乙。
 若乙无异议，即可派执行。
+
+## 第793轮：循环恢复，派执行修滚轮 + 双审计补 Win32 注入设计
+### 主代理复核（派发前）
+- HEAD 453fb94 只改 process.md；工作树干净（git status 空）。
+- 滚轮缺陷仍在：编码 [READ:src/client/client.cpp:231-238] 用 magnitude+kPtrWheelNegative 且格数直接上线；解码 [READ:src/server/server.cpp:1571-1578] 只认 kPtrWheel、9 位掩码二次取负。
+- 单位三层确认：[READ:src/ui/window_win32.cpp:501-514] ÷120；[READ:src/ui/window_x11.cpp:161] ±1；[READ:src/ui/window_wayland.cpp:219] ±1。	tests/test_view.cpp:911 用 120 只作非零坐标样本（只取符号），非单位契约。
+
+### 已派（全部后台）
+- 执行 AI ses_e6db7292effeP7r4WX0a48hO8C：TDD 修 encoder/decoder/InputEvent.horizontal/HWHEEL/clamp；锚断言 encode(-1)=0x0388、encode(+1)=0x0278、encode(-120)=0x0301、encode(+120)=0x02FF、hwheel(+1)=0x0478；解码 0x0388→-120、0x0478→+120、0x0301→-255、0x02FF→+255、0x0600→垂直优先；三变异体必须红。
+- 审计甲 ses_e6db711e9ffeie9GVIfm6NDNL6：Win32 SendInput 取证 → docs/spec/input-injection-evidence.md（SCANCODE/EXTENDEDKEY/UNICODE/ABSOLUTE 归一化/WHEEL_DELTA/UIPI/Session 0/SendSAS）。
+- 审计乙 ses_e6db6db1dffeJJge2MFgISFFyj：接缝/默认 off/多会话互扰/协议丢字段（HWHEEL、kMouseRel、QoE、E1/Pause、move-release 歧义）→ docs/spec/input-injection-seam.md。
+- 成员 ID 互告完成；甲任务提示里误带的执行 ID 已 relay 纠正（甲只读，不得改 src/tests）。
+
+### 待办
+1. 三路回报后：执行交付先做双审复验（含变异反证），有问题回退重做。
+2. 双审计收敛 → 主代理定案 → 再派执行实现注入（默认 off、显式 --allow-input）。### 主代理独立核算锚点表（`evidence/round793-wheel-anchor-table.txt`，本轮）
+按交付给执行 AI 的规格独立实现 enc/dec（不引用仓库代码）核算：
+```
+notch=-1   -> 0x0388 OK     notch=+1 -> 0x0278 OK
+notch=-120 -> 0x0301 OK     notch=+120 -> 0x02FF OK
+hwheel +1  -> 0x0478 OK
+clamp: ±3 格(±360u) -> ±255u -> 0x02FF / 0x0301；±273 格同样夹到 ±255u
+decode: 0x0388->-120  0x0278->+120  0x0301->-255  0x02FF->+255
+        0x0478->+120(hwheel)  0x0600->垂直优先(delta 0)  0x1388->-120
+[PASS] anchors internally consistent
+```
+→ 规格本身无误（我本轮第一版探针脚本把 `-120` 配错期望值，已自纠，非规格错误）。
+执行 AI 进度（git status）：已改 `include/rtsc/server/server.h`、`tests/test_client.cpp`、
+`tests/test_gui_send.cpp`、`tests/test_server.cpp`；`src/` 尚未改。### 第793轮续：执行 AI 上游超时（未报告），主代理核验工作树后唤醒续做
+- [BASH: git diff --stat] 执行 AI 已落地：`include/rtsc/proto/input.h`(+5, 符号位注释)、
+  `include/rtsc/server/server.h`(+5, `wheel_delta` 单位注释+`horizontal`)、
+  `src/client/client.cpp`(+31: `kWheelUnitsPerNotch=120`、clamp ±255、mask 直写)、
+  `src/server/server.cpp`(+21: WHEEL/HWHEEL 都认、垂直优先、9 位符号扩展)、
+  三个测试文件(+130)。
+- 主代理读 diff 核对：与规格逐条一致；发现 `client.cpp` 顶部一条无代码的杂散注释
+  `// The static channel chunk floor ...`，已要求在续做时删除。
+- 执行 AI 上游 570s 超时（`[req_53ca9694]`），非其结论；已 `prompt` 唤醒续做
+  （构建/ctest/三变异体/清理/relay 报告），不另开新会话。
+- 甲已产出 `evidence/input-inject-mapping-probe.{cpp,txt}`（六项探针：MapVirtualKeyW 双向、
+  虚拟桌面 2048x1152 归一化往返误差 0、WHEEL_DELTA、session=1 桌面判定）；
+  `docs/spec/input-injection-*.md` 两份设计文档**尚未落地**，乙仍 busy 且 wrote=null。### 第793轮：乙交付 + 主代理复核「幻影按键」机制（成立）
+- 乙产物 `docs/spec/input-injection-seam.md`（51,311 B / 382 行）；甲产物
+  `docs/spec/input-injection-evidence.md`（55,062 B / 498 行）。两文档已互相读到，证据级高度收敛
+  （滚轮 mouseData 不乘 120 / ABSOLUTE|VIRTUALDESK / UIPI 不可检 / EXTENDEDKEY 仅 0xE0 /
+  session_id=0 无法归属 / 接口形态），未最终盖章（乙 relay 对账 requests 返回 accepted_busy）。
+- 主代理独立复核乙的 P-4 机制：`[READ:src/server/server.cpp:1610-1621]` 两分支 `break` 后**仍执行**
+  `if (input_callback_) input_callback_(ev);`，而 `ev.kind` 默认 `kKey`（`server.h:204`）、`scancode=0`
+  → 接上注入器会发**幻影按键**。修复点必须在 1614 之前跳过回调，非补 default。
+- P-9/P-10 复核：`[READ:include/rtsc/proto/capabilities.h:232-234]` 默认 0x0117 确无 0x0020；
+  慢路径 0x1C 丢弃待读 1479-1521 确认。
+- 待办：甲最终盖章 → 定案 → 拆两批派执行（①协议完整性 P-1..P-12 ②注入器骨架默认 off）。

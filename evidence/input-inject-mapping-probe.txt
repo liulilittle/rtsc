@@ -1,0 +1,63 @@
+﻿== 1. MapVirtualKeyW: virtual key -> scan code ==
+VK_LSHIFT    vk=0xA0  VK_TO_VSC=0x002A  VK_TO_VSC_EX=0x002A  (low=0x2A high=0x00)
+VK_RSHIFT    vk=0xA1  VK_TO_VSC=0x0036  VK_TO_VSC_EX=0x0036  (low=0x36 high=0x00)
+VK_LCONTROL  vk=0xA2  VK_TO_VSC=0x001D  VK_TO_VSC_EX=0x001D  (low=0x1D high=0x00)
+VK_RCONTROL  vk=0xA3  VK_TO_VSC=0x001D  VK_TO_VSC_EX=0xE01D  (low=0x1D high=0xE0)
+VK_LMENU     vk=0xA4  VK_TO_VSC=0x0038  VK_TO_VSC_EX=0x0038  (low=0x38 high=0x00)
+VK_RMENU     vk=0xA5  VK_TO_VSC=0x0038  VK_TO_VSC_EX=0xE038  (low=0x38 high=0xE0)
+VK_LWIN      vk=0x5B  VK_TO_VSC=0x005B  VK_TO_VSC_EX=0xE05B  (low=0x5B high=0xE0)
+VK_RWIN      vk=0x5C  VK_TO_VSC=0x005C  VK_TO_VSC_EX=0xE05C  (low=0x5C high=0xE0)
+VK_APPS      vk=0x5D  VK_TO_VSC=0x005D  VK_TO_VSC_EX=0xE05D  (low=0x5D high=0xE0)
+VK_DELETE    vk=0x2E  VK_TO_VSC=0x0053  VK_TO_VSC_EX=0x0053  (low=0x53 high=0x00)
+VK_HOME      vk=0x24  VK_TO_VSC=0x0047  VK_TO_VSC_EX=0x0047  (low=0x47 high=0x00)
+VK_END       vk=0x23  VK_TO_VSC=0x004F  VK_TO_VSC_EX=0x004F  (low=0x4F high=0x00)
+VK_NUMLOCK   vk=0x90  VK_TO_VSC=0x0045  VK_TO_VSC_EX=0x0045  (low=0x45 high=0x00)
+VK_PAUSE     vk=0x13  VK_TO_VSC=0x0000  VK_TO_VSC_EX=0xE11D  (low=0x1D high=0xE1)
+VK_SNAPSHOT  vk=0x2C  VK_TO_VSC=0x0054  VK_TO_VSC_EX=0x0054  (low=0x54 high=0x00)
+VK_DIVIDE    vk=0x6F  VK_TO_VSC=0x0035  VK_TO_VSC_EX=0xE035  (low=0x35 high=0xE0)
+VK_RETURN    vk=0x0D  VK_TO_VSC=0x001C  VK_TO_VSC_EX=0x001C  (low=0x1C high=0x00)
+VK_CAPITAL   vk=0x14  VK_TO_VSC=0x003A  VK_TO_VSC_EX=0x003A  (low=0x3A high=0x00)
+'A'          vk=0x41  VK_TO_VSC=0x001E  VK_TO_VSC_EX=0x001E  (low=0x1E high=0x00)
+
+== 2. MapVirtualKeyW: scan code -> virtual key (what the OS thinks a RDP keyCode means) ==
+0x0038 (RDP LAlt byte)             scancode=0x0038 -> VK_EX=0xA4
+0xE038 (RDP 0x38 + extended)       scancode=0xE038 -> VK_EX=0xA5
+0x001D (RDP LCtrl byte)            scancode=0x001D -> VK_EX=0xA2
+0xE01D (RDP 0x1D + extended)       scancode=0xE01D -> VK_EX=0xA3
+0x0045 (RDP NumLock byte)          scancode=0x0045 -> VK_EX=0x90
+0xE045 (RDP 0x45 + extended)       scancode=0xE045 -> VK_EX=0x00
+0x0053 (RDP DeleteByte? set1 Delete) scancode=0x0053 -> VK_EX=0x2E
+0xE053 (0x53 + extended = Del)     scancode=0xE053 -> VK_EX=0x2E
+0xE05B (0x5B + extended = LWin)    scancode=0xE05B -> VK_EX=0x5B
+
+== 3. Virtual screen / monitors (coordinate space for ABSOLUTE|VIRTUALDESK) ==
+virtual screen: origin=(0,0) size=2048x1152
+primary screen: 2048x1152   monitors=1
+mouse buttons=16 wheel present=1
+
+== 4. Absolute normalization round trip (RDP desktop px -> 0..65535 -> px) ==
+formula: norm = round((px - origin) * 65535 / (extent - 1))
+px=(   0,   0) -> norm=(    0,    0) -> back=(   0,   0) err=(0,0)
+px=(   1,   0) -> norm=(   32,    0) -> back=(   1,   0) err=(0,0)
+px=(1024, 576) -> norm=(32784,32796) -> back=(1024, 576) err=(0,0)
+px=(2047,1151) -> norm=(65535,65535) -> back=(2047,1151) err=(0,0)
+px=(2046,1150) -> norm=(65503,65478) -> back=(2046,1150) err=(0,0)
+
+== 5. Wheel: notches -> mouseData (WHEEL_DELTA=120) ==
+WHEEL_DELTA=120
+notches=   1 -> mouseData=        120 (DWORD)0x00000078
+notches=  -1 -> mouseData=       -120 (DWORD)0xFFFFFF88
+notches=   3 -> mouseData=        360 (DWORD)0x00000168
+notches=  -3 -> mouseData=       -360 (DWORD)0xFFFFFE98
+notches=  10 -> mouseData=       1200 (DWORD)0x000004B0
+notches= -10 -> mouseData=      -1200 (DWORD)0xFFFFFB50
+notches= 255 -> mouseData=      30600 (DWORD)0x00007788
+notches=-255 -> mouseData=     -30600 (DWORD)0xFFFF8878
+
+== 6. Which desktop would the injector land on? ==
+current process session id = 1
+WTSGetActiveConsoleSessionId = 0x00000001
+window station = WinSta0
+thread desktop = Default
+input desktop  = Default
+thread desktop == input desktop: no (handle differs; compare names)

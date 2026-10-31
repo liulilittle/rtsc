@@ -1,0 +1,22 @@
+﻿== anchors issued to execution AI (round 793) ==
+notch=   -1 -> 0x0388 anchor 0x0388 OK
+notch=   +1 -> 0x0278 anchor 0x0278 OK
+notch= -120 -> 0x0301 anchor 0x0301 OK
+notch= +120 -> 0x02FF anchor 0x02FF OK
+hwheel notch=+1 -> 0x0478 anchor 0x0478 OK
+== clamp boundary (units domain, sign preserved) ==
+notch=  +2 units=  +240 clamped=+240 flags=0x02F0
+notch=  -2 units=  -240 clamped=-240 flags=0x0310
+notch=  +3 units=  +360 clamped=+255 flags=0x02FF
+notch=  -3 units=  -360 clamped=-255 flags=0x0301
+notch=+273 units=+32760 clamped=+255 flags=0x02FF
+notch=-273 units=-32760 clamped=-255 flags=0x0301
+== decode ==
+flags=0x0388 wheel=1 hwheel=0 delta=-120
+flags=0x0278 wheel=1 hwheel=0 delta=120
+flags=0x0301 wheel=1 hwheel=0 delta=-255
+flags=0x02FF wheel=1 hwheel=0 delta=255
+flags=0x0478 wheel=0 hwheel=1 delta=120
+flags=0x0600 wheel=1 hwheel=1 delta=0
+flags=0x1388 wheel=1 hwheel=0 delta=-120
+[PASS] anchors internally consistent

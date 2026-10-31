@@ -1,0 +1,35 @@
+===== BASELINE =====
+BASELINE: 42 checks, 0 failure(s) (all green expected)
+exit=0
+===== MUTANT 1 =====
+  FAIL A2 KEYEVENTF_EXTENDEDKEY set
+  FAIL A3 flags = SCANCODE|EXTENDEDKEY|KEYUP
+MUTANT: 42 checks, 2 failure(s)
+exit=1
+===== MUTANT 2 =====
+  FAIL A9 +1 notch -> mouseData 120
+  FAIL A9 -1 notch -> mouseData -120 (two's complement)
+  FAIL A9 horizontal + -> right (same sign)
+MUTANT: 42 checks, 3 failure(s)
+exit=1
+===== MUTANT 3 =====
+  FAIL A5 (w-1,h-1) -> (65535,65535)
+MUTANT: 42 checks, 1 failure(s)
+exit=1
+===== MUTANT 4 =====
+  FAIL A3 flags = SCANCODE|EXTENDEDKEY|KEYUP
+MUTANT: 42 checks, 1 failure(s)
+exit=1
+===== MUTANT 5 =====
+  FAIL A8 X1 -> XDOWN + XBUTTON1
+MUTANT: 42 checks, 1 failure(s)
+exit=1
+===== MUTANT 6 =====
+  FAIL A5 ABSOLUTE|VIRTUALDESK always set
+  FAIL A6 first input is MOVE
+MUTANT: 42 checks, 2 failure(s)
+exit=1
+===== MUTANT 7 =====
+  FAIL A12 scancode 0 must be refused
+MUTANT: 42 checks, 1 failure(s)
+exit=1

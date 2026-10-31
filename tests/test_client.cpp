@@ -147,15 +147,66 @@ RTSC_TEST(client_encodes_mouse_button) {
 }
 
 RTSC_TEST(client_encodes_mouse_wheel) {
+    // The wire rotation unit is one notch = WHEEL_DELTA (120) units
+    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1). FreeRDP PR #6806 fixed exactly this:
+    // "xfreerdp currently uses the positive wheel value in addition to the
+    // negative flag, which results in a wrong wheel value on the server side
+    // (136 instead of 120)." The UI layer reports notches, so one notch down is
+    // -120, which fits entirely inside the 9-bit two's-complement
+    // WheelRotationMask: 0x0200 | (0xFF88 & 0x01FF) = 0x0388.
     Client c(MakeDriver(), 16, 16);
     InputEvent w;
     w.kind = InputEvent::Kind::kMouseWheel;
-    w.wheel_delta = -1;  // scroll down
+    w.wheel_delta = -1;  // one notch down
     const auto pdu = c.EncodeInput(w);
     CHECK_EQ(pdu.size(), static_cast<size_t>(9));
-    // PTRFLAGS_WHEEL (0x0200) | PTRFLAGS_WHEEL_NEGATIVE (0x0100) | 1 = 0x0301.
-    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x01));
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x88));
     CHECK_EQ(pdu[4], static_cast<uint8_t>(0x03));
+}
+
+RTSC_TEST(client_encodes_one_notch_up_wheel) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 1;  // one notch up
+    const auto pdu = c.EncodeInput(w);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(9));
+    // PTRFLAGS_WHEEL (0x0200) | 120 (0x78) = 0x0278.
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x78));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x02));
+}
+
+RTSC_TEST(client_encodes_multi_notch_wheel) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.wheel_delta = 2;  // two notches up
+    const auto pdu = c.EncodeInput(w);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(9));
+    // PTRFLAGS_WHEEL (0x0200) | 240 (0xF0) = 0x02F0.
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0xF0));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x02));
+}
+
+RTSC_TEST(client_encodes_wheel_clamped_to_nine_bit_signed_range) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent down;
+    down.kind = InputEvent::Kind::kMouseWheel;
+    down.wheel_delta = -120;  // -14400 wire units: clamps to -255
+    const auto pdu_down = c.EncodeInput(down);
+    CHECK_EQ(pdu_down.size(), static_cast<size_t>(9));
+    // PTRFLAGS_WHEEL | (-255 & 0x01FF = 0x101) = 0x0301.
+    CHECK_EQ(pdu_down[3], static_cast<uint8_t>(0x01));
+    CHECK_EQ(pdu_down[4], static_cast<uint8_t>(0x03));
+
+    InputEvent up;
+    up.kind = InputEvent::Kind::kMouseWheel;
+    up.wheel_delta = 120;  // +14400 wire units: clamps to +255
+    const auto pdu_up = c.EncodeInput(up);
+    CHECK_EQ(pdu_up.size(), static_cast<size_t>(9));
+    // PTRFLAGS_WHEEL | 255 = 0x02FF.
+    CHECK_EQ(pdu_up[3], static_cast<uint8_t>(0xFF));
+    CHECK_EQ(pdu_up[4], static_cast<uint8_t>(0x02));
 }
 
 RTSC_TEST(client_hwheel_is_gated_on_server_support) {

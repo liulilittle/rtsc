@@ -706,6 +706,74 @@ RTSC_TEST(server_decodes_mousex_buttons_with_ptrxflags) {
     runner.join();
 }
 
+RTSC_TEST(server_decodes_wheel_rotation_in_wire_units) {
+    // PTRFLAGS_WHEEL and PTRFLAGS_HWHEEL share the 9-bit two's-complement
+    // WheelRotationMask (0x01FF): 0x0100 is that field's sign bit, not a
+    // standalone negative flag ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.1). One notch is
+    // WHEEL_DELTA = 120 wire units, so the decoded delta is the signed 9-bit
+    // value itself. HWHEEL events are decoded too (they used to be dropped as
+    // plain pointer events), and WHEEL wins when both flags are present.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    const std::vector<uint8_t> fp = rtsc::proto::EncodeFastPathInputPdu({
+        rtsc::proto::EncodeMouseEvent(0x0388, 1, 1),  // vertical, -120
+        rtsc::proto::EncodeMouseEvent(0x0478, 1, 2),  // horizontal, +120
+        rtsc::proto::EncodeMouseEvent(0x0301, 1, 3),  // vertical, -255
+        rtsc::proto::EncodeMouseEvent(0x02FF, 1, 4),  // vertical, +255
+        rtsc::proto::EncodeMouseEvent(0x0600, 1, 5),  // WHEEL|HWHEEL: vertical wins
+    });
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel, fp)));
+
+    std::vector<rtsc::server::InputEvent> wheels;
+    for (int i = 0; i < 100 && wheels.size() < 5; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        wheels.clear();
+        for (const auto& ev : events) {
+            if (ev.kind == rtsc::server::InputEvent::Kind::kWheel) {
+                wheels.push_back(ev);
+            }
+        }
+    }
+    CHECK_EQ(wheels.size(), static_cast<size_t>(5));
+    if (wheels.size() == 5) {
+        CHECK_EQ(wheels[0].wheel_delta, static_cast<int16_t>(-120));
+        CHECK(!wheels[0].horizontal);
+        CHECK_EQ(wheels[1].wheel_delta, static_cast<int16_t>(120));
+        CHECK(wheels[1].horizontal);
+        CHECK_EQ(wheels[2].wheel_delta, static_cast<int16_t>(-255));
+        CHECK(!wheels[2].horizontal);
+        CHECK_EQ(wheels[3].wheel_delta, static_cast<int16_t>(255));
+        CHECK(!wheels[3].horizontal);
+        CHECK_EQ(wheels[4].wheel_delta, static_cast<int16_t>(0));
+        CHECK(!wheels[4].horizontal);
+    }
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_interop_with_client_machine) {
     // Drive the server with the project's own client connection machine, so the
     // X.224 / MCS / Client Info exchange is checked against the code the real

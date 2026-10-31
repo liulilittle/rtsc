@@ -40,6 +40,11 @@ enum PointerFlag : uint16_t {
     kPtrMove = 0x0800,
     kPtrHwheel = 0x0400,
     kPtrWheel = 0x0200,
+    // kPtrWheelNegative is the sign bit INSIDE the 9-bit two's-complement
+    // kPtrWheelRotationMask field, not a separate "negative" flag: it MUST NOT
+    // be OR'ed in independently of the rotation value ([MS-RDPBCGR]
+    // 2.2.8.1.1.3.1.1.1). Kept under its historical name for source
+    // compatibility.
     kPtrWheelNegative = 0x0100,
     kPtrWheelRotationMask = 0x01FF,
 };

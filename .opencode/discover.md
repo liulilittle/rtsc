@@ -703,3 +703,39 @@ gnome-remote-desktop 用 `axis_step = -axis_value/120`（**取负**），本仓�
 更隐蔽变体——**单位/量纲错误不会在自证中暴露**。
 → 规则：任何"量纲/单位"必须锚定外部权威（本批：FreeRDP PR + gnome 补丁 + 规范），
   不能靠内部往返验证。
+
+## 第793轮：注入前置缺陷——`kMouseRel`/QoE 分支 break 后仍回调，产生「幻影按键」
+### 乙报告 + 主代理独立复核（[READ:src/server/server.cpp:1610-1621]）
+```cpp
+case kMouseRel:      if (pos + 6 > n) return; pos += 6; break;
+case kQoeTimestamp:  if (pos + 4 > n) return; pos += 4; break;
+default:             return;
+}
+if (input_callback_) input_callback_(ev);   // ← 1610/1614 的 break 落到这里
+```
+`ev` 的默认 `kind = Kind::kKey`（[READ:include/rtsc/server/server.h:204]）、`scancode = 0`。
+→ **相对移动与 QoE 时间戳会各触发一次 `kKey` 回调，注入器一旦接上就发 `scancode 0` 的按键**。
+修复点必须是 **1614 行之前**（这两分支要 `continue`/跳过回调），不是只补 `default` 分支。
+乙指出这条时把机制描述从"落到 default"更正为"break 后仍回调"——**两者修复点完全不同**。
+
+### 同轮乙的另外两条（待甲/主代理复核）
+- P-9：服务器只实现 fast-path 输入，却未广告 `INPUT_FLAG_FASTPATH_INPUT2 0x0020`
+  （[READ:include/rtsc/proto/capabilities.h:232-234] 默认 0x0117 无 0x0020）→ 真实 mstsc 可能改发慢路径【UNVERIFIED】。
+- P-10：慢路径输入 `pduType2=0x1C` 被静默丢弃（`server.cpp:1479-1521` 只处理 RefreshRect/SuppressOutput）
+  → 即使接上注入器，真实客户端也可能零事件。
+## 第793轮：变异测试实测（主代理代跑，因执行 AI 连续上游中断）
+环境：MSVC 17 2022 Enterprise，`build` (Release)。
+| 变异体 | 改动 | 结果 |
+|---|---|---|
+| M1 去 ×120 | `scaled = ev.wheel_delta`（不乘 120） | `rtsc_client_tests` 17 tests / **4 failing tests, 5 failed checks** exit=1 → 红 |
+| M2 去符号扩展 | 解码 `ev.wheel_delta = (int16_t)raw` | `rtsc_server_tests` 28 tests / **1 failing test, 2 failed checks** exit=1 → 红 |
+| M3 去 clamp | `units = scaled`（不夹 ±255） | `rtsc_client_tests` 17 tests / **1 failing test, 2 failed checks** exit=1 → 红 |
+恢复后：client 17/75/0 fail、server 28/253/0 fail，两文件与备份哈希一致。
+
+### 两个踩过的坑（必须记住）
+1. **变异体语法错误会让构建失败，而随后运行的是旧 exe → 假绿**。M2 第一次把
+   `(raw & 0x0100) != 0 ? raw - 0x0200 : raw)` 替换成 `(raw);` 留下不配对括号，
+   `C1075` 构建失败却跑出 "0 failing" —— 必须检查构建退出码/错误行，不能只看测试输出。
+2. **`Copy-Item` 保留源时间戳 → MSBuild 判定 up-to-date 不重编 → 恢复后仍跑变异二进制**。
+   恢复后必须 `(Get-Item $f).LastWriteTime = Get-Date`（或 touch）再构建，
+   并用 `Get-FileHash` 与备份比对确认内容已还原。
