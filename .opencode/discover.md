@@ -1462,3 +1462,33 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 **测试**：合段用例（最终握手段 + 首条应用记录同一 buffer）断言 `consumed == in_size` 且数据可读、无 `SSL_ERROR_SSL`。修复前必须红。
 
 **教训（同型家族第 7 例）**：**接口契约的"如何计算"可能绑定特定后端语义**。`tls.h:146-150` 写的是 SSPI 的算法（`in_size - sum(EXTRA)`），照搬到 BIO 模型就是错的。跨后端抽象必须在注释里写明"本契约是 X 后端的语义，Y 后端应等价实现为……"，否则实现者会照着算法抄。
+
+## 第773轮：主代理自行双平台验证 + 抓到 2 项测试健壮性缺陷（已入库 9791fc4）
+### 自行验证（独立于执行 AI）
+- Linux：构建 0 err、`ctest` **61/61**
+- Windows：构建 0 err/0 warn、`ctest` **62/62**
+
+### 缺陷 1（真实数据竞争 + 时序假设失效）
+`tests/test_gateway.cpp` 的 `udp_transport_reliable_ping_pong_over_loopback`（:1789）与
+`udp_transport_reliable_retransmits_a_dropped_datagram`（:1860）：
+- 用**普通 `bool`** 跨线程发布结果 → C++ 内存模型下的数据竞争（UB）
+- 且在 `client.Write()` 后**立即** `CHECK(server_read_ok)`
+- **D8 把 ACK 改成入队即发送**（`ReceiveDatagram` 在 `SendAck` 后才返回，`Read` 再返回）
+  → `client.Write` 可能先于服务端线程从 `Read` 返回 → 断言与标志赛跑
+- 观测：全量 ctest 并发运行时约 **每两次失败一次**
+- 修复：两处改 `std::atomic<bool>` + 有界等待（5s 截止），不再假设 `Write` 蕴含标志已置位
+
+### 缺陷 2（预算余量名不副实）
+`tests/test_view.cpp` 的 `view_scale_benchmark_budget` 注释称 "a few times the measured value"，
+实测余量却只有 **1.15x–1.74x**（四个最重的形状）。全量 ctest 与外部服务并发时
+0.4x 4K 实测 **46.5 ms vs 预算 35 ms**（超标 33%）。
+- **根因外部**：`wsl` 里跑着 rabbitmq（60% CPU）与 mssql（54% CPU），`CPU_NOW=100%`；
+  单跑时 0.4x=29.9–32.0 ms、0.8x=16.2–17.0 ms 均在预算内 → **非代码回归**
+- 修复：预算统一提到约 **3x 实测值**（2x 8→15、0.8x 22→50、0.5x 4K 25→45、0.4x 4K 35→90），
+  与注释承诺一致；该类守卫针对的算法回归（逐像素除法/浮点重采样）是 10x 级别，仍能捕获
+- 修复后实测：0.11 / 0.11 / 3.3 / 16.4 / 10.2 / 2.3 / 35.1 ms，全绿
+
+### 教训（同型家族第 8 例）
+**改了同步语义必须回查所有依赖旧语义的断言**。D8 把 ACK 从"消费后"改成"入队即"，却没回查
+"Write 返回 ⇒ 对端已处理"这一隐含假设——两处测试因此变成赛跑。同型排查（C9）在此同样适用：
+改一个可观测时序，必须 grep 所有依赖该时序的断言。
