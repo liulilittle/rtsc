@@ -33,8 +33,10 @@ constexpr const char* kVersion = "rtsc_connect 0.1.0";
 void usage() {
     std::printf(
         "%s\n"
-        "usage: rtsc_connect [--rdp] <host> [port] [domain] [user] [password]\n"
-        "  --rdp  request PROTOCOL_RDP (Standard RDP Security, RC4 data plane)\n"
+        "usage: rtsc_connect [--rdp] [--tls-insecure] <host> [port] [domain] "
+        "[user] [password]\n"
+        "  --rdp           request PROTOCOL_RDP (Standard RDP Security, RC4 data plane)\n"
+        "  --tls-insecure  disable TLS certificate verification (not recommended)\n"
         "  port defaults to 3389; credentials are optional.\n",
         kVersion);
 }
@@ -51,10 +53,15 @@ int main(int argc, char** argv) {
     rtsc::util::InstallCrashGuard("rtsc_connect");
 
     bool standard_rdp = false;
+    bool tls_insecure = false;
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--rdp") == 0) {
             standard_rdp = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--tls-insecure") == 0) {
+            tls_insecure = true;
             continue;
         }
         args.emplace_back(argv[i]);
@@ -106,7 +113,11 @@ int main(int argc, char** argv) {
 
     rtsc::security::Config scfg;
     scfg.tls_config.peer_host = host;
-    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    // Certificate verification is on by default; --tls-insecure is the
+    // explicit escape hatch for isolated environments.
+    scfg.tls_config.cert_policy = tls_insecure
+                                      ? rtsc::tls::CertPolicy::kInsecure
+                                      : rtsc::tls::CertPolicy::kStrict;
     scfg.credentials.domain = domain;
     scfg.credentials.user = user;
     scfg.credentials.password = password;

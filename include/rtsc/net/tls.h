@@ -92,8 +92,11 @@ struct RecordSizes {
 
 enum class CertPolicy : uint8_t {
     kInsecure,  // no validation at all (isolated environments only)
-    kTofu,      // trust on first use + SPKI SHA-256 pin (default)
-    kStrict,    // full chain + hostname validation, failure reason must be reportable
+    // no pin: chain only (no hostname). With a pin: the pin IS the identity
+    // (self-signed accepted), chain not required. Default.
+    kTofu,
+    // full chain + hostname validation, failure reason must be reportable
+    kStrict,
 };
 
 // TLS endpoint role. The same TlsTransport interface serves both ends of the
@@ -228,6 +231,17 @@ std::vector<BackendInfo> EnumerateTlsBackends();
 // Test hook: maps a native SChannel status to a transport Status for the
 // shutdown path. Exposed for rule-level testing only.
 Status MapShutdownStatusForTest(int32_t native_status);
+
+// Test hook: certificate DNS-name matching used by kStrict hostname
+// verification (case-insensitive, single-label wildcard). Exposed for
+// rule-level testing only.
+bool DnsNameMatchesForTest(const char* pattern, const char* host);
+
+// Test hook: runs the kStrict hostname extraction (subjectAltName dNSName,
+// falling back to the subject CN) against a DER-encoded certificate.
+// Exposed for rule-level testing only.
+bool CertificateHostMatchesForTest(const uint8_t* der, size_t der_size,
+                                   const char* host);
 
 inline std::unique_ptr<TlsTransport> CreatePlatformTlsTransport(const Config& c,
                                                                std::string& w) {

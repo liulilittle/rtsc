@@ -120,6 +120,20 @@ class OpensslTransport final : public TlsTransport {
                 SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
                 break;
             case CertPolicy::kTofu:
+                // kTofu + pin: the pin IS the identity (SChannel parity); a
+                // chain check here would reject a self-signed gateway before
+                // the pin comparison at PostHandshakeChecks can run. Without a
+                // pin, kTofu keeps verifying the chain (no hostname check).
+                //
+                // UNVERIFIED on Windows hosts: tls_openssl.cpp is not built
+                // here. Verify on Linux with -DRTSC_TLS_OPENSSL=ON by running
+                // the tls_openssl suite, and against a self-signed gateway
+                // using --gateway-trust=<spki>.
+                SSL_CTX_set_verify(ctx_,
+                                   config_.pin_is_set ? SSL_VERIFY_NONE
+                                                      : SSL_VERIFY_PEER,
+                                   nullptr);
+                break;
             case CertPolicy::kStrict:
                 SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
                 break;

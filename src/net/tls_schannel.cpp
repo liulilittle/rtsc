@@ -27,12 +27,15 @@
 #define SECURITY_WIN32
 
 #include <windows.h>
+#include <bcrypt.h>
 #include <schannel.h>
 #include <sspi.h>
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 #include <string>
 #include <vector>
@@ -61,6 +64,144 @@ std::string FormatCode(long code) {
     char buf[32];
     sprintf_s(buf, "0x%08lX", static_cast<unsigned long>(code));
     return buf;
+}
+
+// DNS names and configured hosts are ASCII (IDNs are punycode), so a plain
+// ASCII fold is enough and avoids locale-dependent behaviour.
+unsigned char AsciiLower(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c - 'A' + 'a') : c;
+}
+
+bool EqualsIgnoreCase(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (AsciiLower(static_cast<unsigned char>(a[i])) !=
+            AsciiLower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool EndsWithIgnoreCase(const std::string& value, const std::string& suffix) {
+    if (value.size() < suffix.size()) return false;
+    return EqualsIgnoreCase(value.substr(value.size() - suffix.size()), suffix);
+}
+
+// RFC 6125 single-label wildcard. "*.example.com" matches "a.example.com"
+// only: not "example.com" (no label) and not "a.b.example.com" (two labels).
+bool DnsNameMatches(const std::string& pattern, const std::string& host) {
+    if (pattern.size() > 2 && pattern[0] == '*' && pattern[1] == '.') {
+        const std::string suffix = pattern.substr(1);
+        if (host.size() <= suffix.size()) return false;
+        if (!EndsWithIgnoreCase(host, suffix)) return false;
+        const std::string label = host.substr(0, host.size() - suffix.size());
+        return !label.empty() && label.find('.') == std::string::npos;
+    }
+    return EqualsIgnoreCase(pattern, host);
+}
+
+std::string WideToUtf8(const wchar_t* w, int len) {
+    if (w == nullptr || len <= 0) return std::string();
+    const int need = WideCharToMultiByte(CP_UTF8, 0, w, len, nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return std::string();
+    std::string out(static_cast<size_t>(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, len, out.data(), need, nullptr, nullptr);
+    return out;
+}
+
+bool Sha256(const std::vector<uint8_t>& data, std::array<uint8_t, 32>& digest) {
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM,
+                                                    nullptr, 0))) {
+        return false;
+    }
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = false;
+    if (BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0))) {
+        ok = BCRYPT_SUCCESS(BCryptHashData(hash, const_cast<PUCHAR>(data.data()),
+                                           static_cast<ULONG>(data.size()), 0)) &&
+             BCRYPT_SUCCESS(BCryptFinishHash(hash, digest.data(),
+                                             static_cast<ULONG>(digest.size()), 0));
+        BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return ok;
+}
+
+struct HostMatchResult {
+    bool matched = false;
+    bool had_dns_san = false;
+    std::string names;  // comma-joined certificate names, for the error message
+};
+
+// Matches `host` against the certificate's subjectAltName dNSName entries,
+// falling back to the subject CN only when no dNSName entry exists. The CN is
+// retrieved with CertGetNameStringW and the subject string with CertNameToStrW
+// is kept for diagnostics, so a rejection is reportable.
+HostMatchResult CertificateMatchesHost(PCCERT_CONTEXT cert, const std::string& host) {
+    HostMatchResult result;
+    std::vector<std::string> names;
+
+    const CERT_EXTENSION* ext =
+        CertFindExtension(szOID_SUBJECT_ALT_NAME2, cert->pCertInfo->cExtension,
+                          cert->pCertInfo->rgExtension);
+    if (ext == nullptr) {
+        ext = CertFindExtension(szOID_SUBJECT_ALT_NAME, cert->pCertInfo->cExtension,
+                                cert->pCertInfo->rgExtension);
+    }
+    if (ext != nullptr) {
+        CERT_ALT_NAME_INFO* alt = nullptr;
+        DWORD size = 0;
+        if (CryptDecodeObjectEx(X509_ASN_ENCODING, X509_ALTERNATE_NAME, ext->Value.pbData,
+                                ext->Value.cbData, CRYPT_DECODE_ALLOC_FLAG, nullptr, &alt,
+                                &size)) {
+            for (DWORD i = 0; i < alt->cAltEntry; ++i) {
+                if (alt->rgAltEntry[i].dwAltNameChoice != CERT_ALT_NAME_DNS_NAME) continue;
+                result.had_dns_san = true;
+                const wchar_t* dns = alt->rgAltEntry[i].pwszDNSName;
+                if (dns == nullptr) continue;
+                const std::string name =
+                    WideToUtf8(dns, static_cast<int>(wcslen(dns)));
+                if (name.empty()) continue;
+                if (DnsNameMatches(name, host)) result.matched = true;
+                names.push_back(name);
+            }
+            LocalFree(alt);
+        }
+    }
+
+    if (!result.had_dns_san) {
+        wchar_t buf[512];
+        char oid[] = "2.5.4.3";  // szOID_COMMON_NAME
+        const DWORD n = CertGetNameStringW(cert, CERT_NAME_ATTR_TYPE, 0, oid, buf,
+                                           static_cast<DWORD>(sizeof(buf) / sizeof(buf[0])));
+        if (n > 1) {
+            const std::string cn = WideToUtf8(buf, static_cast<int>(n - 1));
+            if (!cn.empty()) {
+                if (DnsNameMatches(cn, host)) result.matched = true;
+                names.push_back(cn);
+            }
+        }
+        if (names.empty()) {
+            wchar_t subject[512];
+            if (CertNameToStrW(X509_ASN_ENCODING, &cert->pCertInfo->Subject,
+                               CERT_X500_NAME_STR, subject,
+                               static_cast<DWORD>(sizeof(subject) / sizeof(subject[0]))) >
+                1) {
+                names.push_back(
+                    WideToUtf8(subject, static_cast<int>(wcslen(subject))));
+            } else {
+                names.push_back("(no CN)");
+            }
+        }
+    }
+
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i != 0) result.names += ", ";
+        result.names += names[i];
+    }
+    return result;
 }
 
 // Parses a TLS record header. Returns false when the record type is not one
@@ -115,6 +256,11 @@ public:
             // would silently drop records.
             return MakeError(Status::kOk, 0, "");
         }
+        if (config_.cert_policy == CertPolicy::kStrict && config_.peer_host.empty() &&
+            config_.sni.empty()) {
+            // A strict client without a name can never verify the peer.
+            return FailWith(Status::kCertRejected, "no peer host to verify");
+        }
 
         std::vector<uint8_t> token;
         if (in_size != 0) token.assign(in, in + in_size);
@@ -137,22 +283,16 @@ public:
         }
 
         DWORD out_flags = 0;
-        DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
-                    ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
-                    ISC_REQ_STREAM;
-        switch (config_.cert_policy) {
-            case CertPolicy::kInsecure:
-                req |= ISC_REQ_MANUAL_CRED_VALIDATION;
-                break;
-            case CertPolicy::kStrict:
-                // DEFERRED lets the chain result be queried afterwards; MANUAL
-                // would make kStrict indistinguishable from kInsecure.
-                req |= ISC_REQ_MANUAL_CRED_VALIDATION;
-                break;
-            case CertPolicy::kTofu:
-                req |= ISC_REQ_MANUAL_CRED_VALIDATION;
-                break;
-        }
+        // kInsecure keeps manual validation: SChannel then accepts any peer.
+        // kStrict/kTofu must not set ISC_REQ_MANUAL_CRED_VALIDATION because it
+        // disables SChannel's own chain build (measured: with it the deferred
+        // result is not populated and the query fails). Deferred validation is
+        // requested at credential acquisition instead: the matching value
+        // ISC_REQ_DEFERRED_CRED_VALIDATION is a 64-bit flag that cannot fit in
+        // this 32-bit fContextReq parameter and would truncate to zero.
+        const DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
+                          ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
+                          ISC_REQ_STREAM | IscPolicyFlag();
 
         const std::wstring target = TargetName();
         const SECURITY_STATUS st = InitializeSecurityContextW(
@@ -175,13 +315,15 @@ public:
         consumed = in_size;
 
         switch (st) {
-            case SEC_E_OK:
-                if (!FinishHandshake(why_)) {
-                    last_error_ = MakeError(Status::kInternal, 0, why_);
+            case SEC_E_OK: {
+                const Error finished = FinishHandshake(why_);
+                if (!finished.ok()) {
+                    last_error_ = finished;
                     terminal_ = true;
                     return last_error_;
                 }
                 return MakeError(Status::kOk, 0, "");
+            }
             case SEC_I_CONTINUE_NEEDED:
                 return MakeError(Status::kNeedMoreInput, 0, "");
             case SEC_I_INCOMPLETE_CREDENTIALS:
@@ -245,13 +387,15 @@ public:
         consumed = in_size;
 
         switch (st) {
-            case SEC_E_OK:
-                if (!FinishHandshake(why_)) {
-                    last_error_ = MakeError(Status::kInternal, 0, why_);
+            case SEC_E_OK: {
+                const Error finished = FinishHandshake(why_);
+                if (!finished.ok()) {
+                    last_error_ = finished;
                     terminal_ = true;
                     return last_error_;
                 }
                 return MakeError(Status::kOk, 0, "");
+            }
             case SEC_I_CONTINUE_NEEDED:
                 return MakeError(Status::kNeedMoreInput, 0, "");
             case SEC_E_INCOMPLETE_MESSAGE:
@@ -435,26 +579,11 @@ public:
 
     // ------------------------------------------------------------- peer identity
     Error PeerSubjectPublicKeyInfo(std::vector<uint8_t>& out) const override {
-        out.clear();
-        PCCERT_CONTEXT cert = PeerCert();
-        if (cert == nullptr) return NotHandshaken();
-        DWORD size = 0;
-        if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
-                                 &cert->pCertInfo->SubjectPublicKeyInfo, 0, nullptr,
-                                 nullptr, &size)) {
-            return ConstError(Status::kInternal, static_cast<int32_t>(GetLastError()),
-                              "CryptEncodeObjectEx(size) failed");
-        }
-        out.resize(size);
-        if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
-                                 &cert->pCertInfo->SubjectPublicKeyInfo, 0, nullptr,
-                                 out.data(), &size)) {
+        if (!handshake_complete_) {
             out.clear();
-            return ConstError(Status::kInternal, static_cast<int32_t>(GetLastError()),
-                              "CryptEncodeObjectEx(data) failed");
+            return NotHandshaken();
         }
-        out.resize(size);
-        return MakeError(Status::kOk, 0, "");
+        return ReadPeerSpki(out);
     }
 
     Error PeerSubjectPublicKey(std::vector<uint8_t>& out) const override {
@@ -550,6 +679,14 @@ private:
         SCHANNEL_CRED legacy{};
         legacy.dwVersion = SCHANNEL_CRED_VERSION;
         legacy.grbitEnabledProtocols = ProtocolMask();
+        // The context-level ISC_REQ_DEFERRED_CRED_VALIDATION value is 64-bit
+        // (0x0000000200000000) and fContextReq is a 32-bit unsigned long, so it
+        // truncates to zero if OR-ed into the handshake flags. The credential
+        // flag is the usable switch: SChannel then builds the chain, records
+        // the result, and does not fail the handshake (verified by probe).
+        if (config_.cert_policy != CertPolicy::kInsecure) {
+            legacy.dwFlags |= SCH_CRED_DEFERRED_CRED_VALIDATION;
+        }
 
         TimeStamp ts{};
         SECURITY_STATUS st = AcquireCredentialsHandleW(
@@ -658,11 +795,15 @@ private:
     }
 
     // ------------------------------------------------------------ post-handshake
-    bool FinishHandshake(std::string& why) {
+    // Runs exactly once when SChannel reports SEC_E_OK and before
+    // handshake_complete_ becomes observable, so a rejected peer is never
+    // treated as handshaken. The server role is exempt: its self-signed
+    // identity is the normal accept path and is not the peer under evaluation.
+    Error FinishHandshake(std::string& why) {
         SecPkgContext_StreamSizes ss{};
         if (QueryContextAttributesW(&ctx_, SECPKG_ATTR_STREAM_SIZES, &ss) != SEC_E_OK) {
             why = "SECPKG_ATTR_STREAM_SIZES failed";
-            return false;
+            return MakeError(Status::kInternal, 0, why);
         }
         sizes_.header = ss.cbHeader;
         sizes_.max_plaintext = ss.cbMaximumMessage;
@@ -672,10 +813,98 @@ private:
         // See ExpectedActualOverhead(): corrected on the first real record.
         sizes_.overhead_actual = ExpectedActualOverhead();
 
-        if (!QueryNegotiated(why)) return false;
-        if (!EnforceVersionWindow(why)) return false;
+        if (!QueryNegotiated(why)) return MakeError(Status::kInternal, 0, why);
+        if (!EnforceVersionWindow(why)) return MakeError(Status::kInternal, 0, why);
+        if (config_.role == Role::kClient) {
+            const Error verified = VerifyPeerCertificate();
+            if (!verified.ok()) return verified;
+        }
         handshake_complete_ = true;
-        return true;
+        return MakeError(Status::kOk, 0, "");
+    }
+
+    Error VerifyPeerCertificate() {
+        switch (config_.cert_policy) {
+            case CertPolicy::kInsecure:
+                return MakeError(Status::kOk, 0, "");
+            case CertPolicy::kTofu:
+                // Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER)
+                // but does not compare the hostname. A configured pin is the
+                // TOFU identity and intentionally accepts a self-signed peer.
+                if (config_.pin_is_set) return VerifySpkiPin();
+                return VerifyChainOnly();
+            case CertPolicy::kStrict:
+                return VerifyStrictPeer();
+        }
+        return MakeError(Status::kOk, 0, "");
+    }
+
+    // Mirrors tls_openssl.cpp: hash the full SubjectPublicKeyInfo DER and
+    // compare it byte-for-byte with the configured pin.
+    Error VerifySpkiPin() {
+        std::vector<uint8_t> spki;
+        if (!ReadPeerSpki(spki).ok() || spki.empty()) {
+            return MakeError(Status::kCertRejected, 0, "cannot read the peer SPKI");
+        }
+        std::array<uint8_t, 32> digest{};
+        if (!Sha256(spki, digest)) {
+            return MakeError(Status::kInternal, 0, "SHA-256 of the peer SPKI failed");
+        }
+        if (std::memcmp(digest.data(), config_.pinned_spki_sha256.data(),
+                        digest.size()) != 0) {
+            return MakeError(Status::kCertRejected, 0, "SPKI pin mismatch");
+        }
+        return MakeError(Status::kOk, 0, "");
+    }
+
+    Error VerifyStrictPeer() {
+        const Error chain = VerifyChainOnly();
+        if (!chain.ok()) return chain;
+        return VerifyHostname();
+    }
+
+    // Chain-only verification: the kStrict chain gate and the whole kTofu
+    // check when no pin is configured.
+    Error VerifyChainOnly() {
+        // Deferred credential validation makes SChannel build and verify the
+        // chain without failing the handshake; the recorded result is the
+        // authority here. An unavailable result cannot be trusted either.
+        SecPkgContext_CertificateValidationResult vr{};
+        const SECURITY_STATUS q =
+            QueryContextAttributesW(&ctx_, SECPKG_ATTR_CERT_CHECK_RESULT, &vr);
+        if (q != SEC_E_OK) {
+            return MakeError(Status::kCertRejected, static_cast<int32_t>(q),
+                             "certificate chain result unavailable: " + FormatCode(q));
+        }
+        if (vr.dwChainErrorStatus != 0 || FAILED(vr.hrVerifyChainStatus)) {
+            return MakeError(
+                Status::kCertRejected, static_cast<int32_t>(vr.hrVerifyChainStatus),
+                "certificate chain rejected: dwChainErrorStatus=" +
+                    FormatCode(static_cast<long>(vr.dwChainErrorStatus)) +
+                    " hrVerifyChainStatus=" +
+                    FormatCode(static_cast<long>(vr.hrVerifyChainStatus)));
+        }
+        return MakeError(Status::kOk, 0, "");
+    }
+
+    Error VerifyHostname() {
+        const std::string host =
+            !config_.peer_host.empty() ? config_.peer_host : config_.sni;
+        if (host.empty()) {
+            return MakeError(Status::kCertRejected, 0, "no peer host to verify");
+        }
+        PCCERT_CONTEXT cert = FetchPeerCert();
+        if (cert == nullptr) {
+            return MakeError(Status::kCertRejected, 0,
+                             "certificate host mismatch: peer certificate unavailable");
+        }
+        const HostMatchResult match = CertificateMatchesHost(cert, host);
+        if (match.matched) return MakeError(Status::kOk, 0, "");
+        return MakeError(Status::kCertRejected, 0,
+                         "certificate host mismatch: host=" + host +
+                             " certificate=" +
+                             (match.names.empty() ? std::string("(none)")
+                                                  : match.names));
     }
 
     // cbTrailer is an allocation upper bound, so the real trailer must come
@@ -833,9 +1062,12 @@ private:
             AcceptSecurityContext(&cred_, &ctx_, &ibd, req, SECURITY_NATIVE_DREP, &ctx_,
                                   &obd, &flags, nullptr);
         } else {
-            DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
-                        ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
-                        ISC_REQ_STREAM | ISC_REQ_MANUAL_CRED_VALIDATION;
+            // Same policy flags as Handshake: a context created with deferred
+            // credentials rejects ISC_REQ_MANUAL_CRED_VALIDATION with
+            // SEC_E_INVALID_PARAMETER (measured).
+            const DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
+                              ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
+                              ISC_REQ_STREAM | IscPolicyFlag();
             InitializeSecurityContextW(&cred_, &ctx_, nullptr, req, 0,
                                        SECURITY_NATIVE_DREP, &ibd, 0, &ctx_, &obd, &flags,
                                        nullptr);
@@ -847,8 +1079,20 @@ private:
     }
 
     // ------------------------------------------------------------------ helpers
-    PCCERT_CONTEXT PeerCert() const {
-        if (!handshake_complete_) return nullptr;
+    // Manual validation is only requested for kInsecure. kStrict/kTofu rely on
+    // the deferred credential flag (see AcquireCredentials): combining that
+    // credential flag with ISC_REQ_MANUAL_CRED_VALIDATION fails the handshake
+    // with SEC_E_INVALID_PARAMETER (measured).
+    DWORD IscPolicyFlag() const {
+        return config_.cert_policy == CertPolicy::kInsecure
+                   ? static_cast<DWORD>(ISC_REQ_MANUAL_CRED_VALIDATION)
+                   : 0u;
+    }
+
+    // A certificate context may be needed before handshake_complete_ is set
+    // (policy verification); the public PeerCert() keeps the old post-handshake
+    // contract while this fetches and caches unconditionally.
+    PCCERT_CONTEXT FetchPeerCert() const {
         if (peer_cert_ != nullptr) return peer_cert_;
         PCCERT_CONTEXT peer = nullptr;
         // The API takes a non-const handle even though it only reads; the
@@ -860,6 +1104,34 @@ private:
         }
         peer_cert_ = peer;
         return peer_cert_;
+    }
+
+    PCCERT_CONTEXT PeerCert() const {
+        if (!handshake_complete_) return nullptr;
+        return FetchPeerCert();
+    }
+
+    Error ReadPeerSpki(std::vector<uint8_t>& out) const {
+        out.clear();
+        PCCERT_CONTEXT cert = FetchPeerCert();
+        if (cert == nullptr) return NotHandshaken();
+        DWORD size = 0;
+        if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+                                 &cert->pCertInfo->SubjectPublicKeyInfo, 0, nullptr,
+                                 nullptr, &size)) {
+            return ConstError(Status::kInternal, static_cast<int32_t>(GetLastError()),
+                              "CryptEncodeObjectEx(size) failed");
+        }
+        out.resize(size);
+        if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+                                 &cert->pCertInfo->SubjectPublicKeyInfo, 0, nullptr,
+                                 out.data(), &size)) {
+            out.clear();
+            return ConstError(Status::kInternal, static_cast<int32_t>(GetLastError()),
+                              "CryptEncodeObjectEx(data) failed");
+        }
+        out.resize(size);
+        return MakeError(Status::kOk, 0, "");
     }
 
     Error NotHandshaken() const {
@@ -886,6 +1158,12 @@ private:
     // written once instead of at each of the six call sites.
     Error Fail(Status s, long code) {
         last_error_ = MakeError(s, code, FormatCode(code));
+        terminal_ = true;
+        return last_error_;
+    }
+
+    Error FailWith(Status s, std::string message) {
+        last_error_ = MakeError(s, 0, std::move(message));
         terminal_ = true;
         return last_error_;
     }
@@ -927,6 +1205,22 @@ Status MapShutdownStatus(SECURITY_STATUS st) {
 
 Status MapShutdownStatusForTest(int32_t s) {
     return MapShutdownStatus(static_cast<SECURITY_STATUS>(s));
+}
+
+bool DnsNameMatchesForTest(const char* pattern, const char* host) {
+    if (pattern == nullptr || host == nullptr) return false;
+    return DnsNameMatches(pattern, host);
+}
+
+bool CertificateHostMatchesForTest(const uint8_t* der, size_t der_size,
+                                   const char* host) {
+    if (der == nullptr || der_size == 0 || host == nullptr) return false;
+    PCCERT_CONTEXT cert = CertCreateCertificateContext(
+        X509_ASN_ENCODING, der, static_cast<DWORD>(der_size));
+    if (cert == nullptr) return false;
+    const HostMatchResult match = CertificateMatchesHost(cert, host);
+    CertFreeCertificateContext(cert);
+    return match.matched;
 }
 
 // Renamed away from the old public factory name (S21): the facade owns the

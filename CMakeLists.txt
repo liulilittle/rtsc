@@ -137,7 +137,7 @@ target_include_directories(rtsc_tls_api INTERFACE include)
 if(WIN32)
     add_library(rtsc_tls_schannel STATIC src/net/tls_schannel.cpp)
     target_link_libraries(rtsc_tls_schannel PUBLIC rtsc_tls_api)
-    target_link_libraries(rtsc_tls_schannel PUBLIC secur32 crypt32)
+    target_link_libraries(rtsc_tls_schannel PUBLIC secur32 crypt32 bcrypt)
 endif()
 
 # OpenSSL backend for non-Windows platforms. Off by default (design-a D5: a
@@ -473,9 +473,12 @@ add_test(NAME net COMMAND rtsc_net_tests)
 # RD Gateway tunnel + RDP-UDP transport ([MS-TSGU] / [MS-RDPEUDP]).
 # Platform neutral: the transport logic lives in gateway_transport.cpp; the
 # UDP socket seam has a Winsock backend (Windows) and a POSIX backend.
+# The RDGSP transport composes two byte transports and runs the NTLM message
+# layer, so the library links rtsc_net (ConnectTcp fallback), rtsc_credssp
+# (NTLM messages) and rtsc_tls (outer-gateway TLS byte adapter).
 add_library(rtsc_gateway STATIC src/net/gateway_transport.cpp)
 target_include_directories(rtsc_gateway PUBLIC include)
-target_link_libraries(rtsc_gateway PUBLIC rtsc_proto)
+target_link_libraries(rtsc_gateway PUBLIC rtsc_proto rtsc_net rtsc_credssp rtsc_tls)
 if(WIN32)
     target_sources(rtsc_gateway PRIVATE src/net/udp_winsock.cpp)
     target_link_libraries(rtsc_gateway PUBLIC ws2_32)
@@ -570,7 +573,7 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 # Full client: connection driver + graphics pipeline + window backend.
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp)
-target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_proto rtsc_util)
+target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util)
 target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc)
 if(WIN32)
     target_link_libraries(rtsc_gui PRIVATE rtsc_audio rtsc_usb_win32)

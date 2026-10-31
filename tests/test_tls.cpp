@@ -18,11 +18,13 @@
 #define SECURITY_WIN32
 
 #include <windows.h>
+#include <bcrypt.h>
 #include <schannel.h>
 #include <sspi.h>
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -156,20 +158,28 @@ public:
 
 private:
     static PCCERT_CONTEXT MakeCert() {
-        CERT_NAME_BLOB subj{};
-        char name[] = "CN=rtsc-tls-test";
-        if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
-                            nullptr, &subj.cbData, nullptr)) {
-            return nullptr;
+        // The peer identity is shared across servers on purpose: the TOFU tests
+        // learn the pin from one connection and must find the same SPKI on the
+        // next one. Callers own (and free) a duplicate, so the shared context
+        // stays valid for the whole test process.
+        static PCCERT_CONTEXT shared = nullptr;
+        if (shared == nullptr) {
+            CERT_NAME_BLOB subj{};
+            char name[] = "CN=localhost";
+            if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
+                                nullptr, &subj.cbData, nullptr)) {
+                return nullptr;
+            }
+            Bytes nb(subj.cbData);
+            subj.pbData = nb.data();
+            if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
+                                subj.pbData, &subj.cbData, nullptr)) {
+                return nullptr;
+            }
+            shared = CertCreateSelfSignCertificate(0, &subj, 0, nullptr, nullptr,
+                                                   nullptr, nullptr, nullptr);
         }
-        Bytes nb(subj.cbData);
-        subj.pbData = nb.data();
-        if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
-                            subj.pbData, &subj.cbData, nullptr)) {
-            return nullptr;
-        }
-        return CertCreateSelfSignCertificate(0, &subj, 0, nullptr, nullptr, nullptr,
-                                             nullptr, nullptr);
+        return shared != nullptr ? CertDuplicateCertificateContext(shared) : nullptr;
     }
 
     CredHandle cred_{};
@@ -382,6 +392,199 @@ RTSC_TEST(record_sizes_are_measured_not_assumed) {
     CHECK(s.header > 0);
     CHECK(s.overhead_upper >= s.overhead_actual);
     CHECK(s.overhead_actual > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Certificate policy: kStrict / kTofu must verify the peer, kInsecure must not
+// ---------------------------------------------------------------------------
+
+bool Sha256Of(const Bytes& data, std::array<uint8_t, 32>& digest) {
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM,
+                                                    nullptr, 0))) {
+        return false;
+    }
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = false;
+    if (BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0))) {
+        ok = BCRYPT_SUCCESS(BCryptHashData(hash, const_cast<PUCHAR>(data.data()),
+                                           static_cast<ULONG>(data.size()), 0)) &&
+             BCRYPT_SUCCESS(BCryptFinishHash(hash, digest.data(),
+                                             static_cast<ULONG>(digest.size()), 0));
+        BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return ok;
+}
+
+Config StrictConfig() {
+    Config c = InsecureConfig();
+    c.cert_policy = CertPolicy::kStrict;
+    return c;
+}
+
+Config TofuConfig(const std::array<uint8_t, 32>& pin) {
+    Config c = InsecureConfig();
+    c.cert_policy = CertPolicy::kTofu;
+    c.pinned_spki_sha256 = pin;
+    c.pin_is_set = true;
+    return c;
+}
+
+// Learns the peer SPKI pin over a kInsecure handshake. The peer certificate is
+// shared by the fixture, so the learned pin is valid for the next connection.
+bool LearnPeerPin(std::array<uint8_t, 32>& pin) {
+    Loopback probe;
+    std::string why;
+    if (!probe.Start(InsecureConfig(), why)) {
+        ::rtsc::test::report_failure(__FILE__, __LINE__, "pin probe loopback: " + why);
+        return false;
+    }
+    Bytes spki;
+    if (!probe.client().PeerSubjectPublicKeyInfo(spki).ok() || spki.empty()) {
+        ::rtsc::test::report_failure(__FILE__, __LINE__, "pin probe: SPKI unavailable");
+        return false;
+    }
+    if (!Sha256Of(spki, pin)) {
+        ::rtsc::test::report_failure(__FILE__, __LINE__, "pin probe: SHA-256 failed");
+        return false;
+    }
+    return true;
+}
+
+RTSC_TEST(schannel_kstrict_rejects_self_signed_peer) {
+    Loopback lb;
+    std::string why;
+    CHECK(!lb.Start(StrictConfig(), why));
+    CHECK(lb.client().last_error().status == Status::kCertRejected);
+}
+
+RTSC_TEST(schannel_ktofu_pin_mismatch_is_rejected) {
+    std::array<uint8_t, 32> pin{};
+    if (!LearnPeerPin(pin)) return;
+    pin[0] ^= 0xFFu;
+    Loopback lb;
+    std::string why;
+    CHECK(!lb.Start(TofuConfig(pin), why));
+    const Error& e = lb.client().last_error();
+    CHECK(e.status == Status::kCertRejected);
+    CHECK(e.message.find("SPKI pin mismatch") != std::string::npos);
+}
+
+RTSC_TEST(schannel_ktofu_pin_match_is_accepted) {
+    std::array<uint8_t, 32> pin{};
+    if (!LearnPeerPin(pin)) return;
+    Loopback lb;
+    std::string why;
+    CHECK(lb.Start(TofuConfig(pin), why));
+    CHECK(lb.client().handshake_complete());
+}
+
+RTSC_TEST(schannel_ktofu_without_pin_rejects_untrusted_chain) {
+    // Mirrors OpenSSL: kTofu without a pin still verifies the chain (no
+    // hostname check). An untrusted self-signed peer must be rejected.
+    Config c = InsecureConfig();
+    c.cert_policy = CertPolicy::kTofu;
+    c.pin_is_set = false;
+    Loopback lb;
+    std::string why;
+    CHECK(!lb.Start(c, why));
+    CHECK(lb.client().last_error().status == Status::kCertRejected);
+}
+
+RTSC_TEST(schannel_kinsecure_still_accepts_self_signed) {
+    Loopback lb;
+    std::string why;
+    CHECK(lb.Start(InsecureConfig(), why));
+    CHECK(lb.client().handshake_complete());
+}
+
+RTSC_TEST(schannel_hostname_wildcard_matches_one_label_only) {
+    CHECK(DnsNameMatchesForTest("example.com", "EXAMPLE.COM"));
+    CHECK(DnsNameMatchesForTest("*.example.com", "a.example.com"));
+    CHECK(DnsNameMatchesForTest("*.example.com", "A.EXAMPLE.COM"));
+    // A wildcard covers exactly one label: deeper names and the bare domain
+    // must not match (RFC 6125).
+    CHECK(!DnsNameMatchesForTest("*.example.com", "a.b.example.com"));
+    CHECK(!DnsNameMatchesForTest("*.example.com", "example.com"));
+    CHECK(!DnsNameMatchesForTest("a.example.com", "b.example.com"));
+}
+
+// Builds a self-signed certificate for the hostname-extraction test: CN always
+// "localhost"; when with_san is true, dNSName SAN entries are added.
+PCCERT_CONTEXT MakeNameTestCert(bool with_san) {
+    CERT_NAME_BLOB subj{};
+    char name[] = "CN=localhost";
+    if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr, nullptr,
+                        &subj.cbData, nullptr)) {
+        return nullptr;
+    }
+    Bytes nb(subj.cbData);
+    subj.pbData = nb.data();
+    if (!CertStrToNameA(X509_ASN_ENCODING, name, CERT_X500_NAME_STR, nullptr,
+                        subj.pbData, &subj.cbData, nullptr)) {
+        return nullptr;
+    }
+    if (!with_san) {
+        return CertCreateSelfSignCertificate(0, &subj, 0, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr);
+    }
+    wchar_t dns1[] = L"test.example.com";
+    wchar_t dns2[] = L"*.wild.example.com";
+    CERT_ALT_NAME_ENTRY entries[2]{};
+    entries[0].dwAltNameChoice = CERT_ALT_NAME_DNS_NAME;
+    entries[0].pwszDNSName = dns1;
+    entries[1].dwAltNameChoice = CERT_ALT_NAME_DNS_NAME;
+    entries[1].pwszDNSName = dns2;
+    CERT_ALT_NAME_INFO alt{2, entries};
+    DWORD value_size = 0;
+    if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_ALTERNATE_NAME, &alt, 0, nullptr,
+                             nullptr, &value_size)) {
+        return nullptr;
+    }
+    Bytes value(value_size);
+    if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_ALTERNATE_NAME, &alt, 0, nullptr,
+                             value.data(), &value_size)) {
+        return nullptr;
+    }
+    CERT_EXTENSION ext{};
+    ext.pszObjId = const_cast<char*>(szOID_SUBJECT_ALT_NAME2);
+    ext.Value.cbData = value_size;
+    ext.Value.pbData = value.data();
+    CERT_EXTENSIONS extensions{1, &ext};
+    return CertCreateSelfSignCertificate(0, &subj, 0, nullptr, nullptr, nullptr,
+                                         nullptr, &extensions);
+}
+
+RTSC_TEST(schannel_hostname_extraction_reads_cn_and_san) {
+    PCCERT_CONTEXT cn_only = MakeNameTestCert(false);
+    CHECK(cn_only != nullptr);
+    if (cn_only != nullptr) {
+        CHECK(CertificateHostMatchesForTest(cn_only->pbCertEncoded,
+                                            cn_only->cbCertEncoded, "LOCALHOST"));
+        CHECK(!CertificateHostMatchesForTest(cn_only->pbCertEncoded,
+                                             cn_only->cbCertEncoded,
+                                             "other.example.com"));
+        CertFreeCertificateContext(cn_only);
+    }
+
+    PCCERT_CONTEXT with_san = MakeNameTestCert(true);
+    CHECK(with_san != nullptr);
+    if (with_san != nullptr) {
+        CHECK(CertificateHostMatchesForTest(with_san->pbCertEncoded,
+                                            with_san->cbCertEncoded,
+                                            "test.example.com"));
+        CHECK(CertificateHostMatchesForTest(with_san->pbCertEncoded,
+                                            with_san->cbCertEncoded,
+                                            "a.wild.example.com"));
+        CHECK(!CertificateHostMatchesForTest(with_san->pbCertEncoded,
+                                             with_san->cbCertEncoded,
+                                             "a.b.wild.example.com"));
+        // RFC 6125: when dNSName SAN entries exist the CN is not a fallback.
+        CHECK(!CertificateHostMatchesForTest(with_san->pbCertEncoded,
+                                             with_san->cbCertEncoded, "localhost"));
+        CertFreeCertificateContext(with_san);
+    }
 }
 
 // ---------------------------------------------------------------------------

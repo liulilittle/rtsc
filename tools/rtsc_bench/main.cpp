@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -394,10 +395,14 @@ Bytes ServerChallengeMessage() {
     return out;
 }
 
-rtsc::security::Config MakeSecurityConfig() {
+rtsc::security::Config MakeSecurityConfig(bool tls_insecure) {
     rtsc::security::Config cfg;
     cfg.tls_config.peer_host = "127.0.0.1";
-    cfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    // Certificate verification is on by default; --tls-insecure is the
+    // explicit escape hatch for isolated environments.
+    cfg.tls_config.cert_policy = tls_insecure
+                                     ? rtsc::tls::CertPolicy::kInsecure
+                                     : rtsc::tls::CertPolicy::kStrict;
     cfg.credssp_version = 6;
     cfg.credentials.domain = "Domain";
     cfg.credentials.user = "User";
@@ -582,11 +587,12 @@ void BenchmarkBitmapDecoders() {
     std::printf("\n");
 }
 
-void BenchmarkLoopback() {
+void BenchmarkLoopback(bool tls_insecure) {
     std::printf("=== End-to-end loopback latency (scripted TLS, 1920x1080 frame) ===\n");
 
     std::string why;
-    auto layer = rtsc::security::SecurityLayer::Create(MakeSecurityConfig(), why);
+    auto layer =
+        rtsc::security::SecurityLayer::Create(MakeSecurityConfig(tls_insecure), why);
     if (!layer) {
         std::printf("  FAILED: could not create security layer: %s\n", why.c_str());
         return;
@@ -746,12 +752,18 @@ void PrintEnvironment() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    bool tls_insecure = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--tls-insecure") == 0) {
+            tls_insecure = true;
+        }
+    }
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("RTSC performance benchmark\n\n");
     PrintEnvironment();
     BenchmarkBitmapDecoders();
-    BenchmarkLoopback();
+    BenchmarkLoopback(tls_insecure);
     BenchmarkCpuOccupancy();
     return 0;
 }
