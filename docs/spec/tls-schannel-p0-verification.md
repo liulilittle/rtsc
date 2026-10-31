@@ -130,3 +130,59 @@ Config InsecureConfig() {
 必须在 F1 之后、作为独立提交修复（默认改 kStrict + 新增 `--tls-insecure` 逃生开关），
 理由：同类风险（CredSSP step5 明文），但改动面与阶段 2 无关，混入会使阶段 2 的
 冻结 SHA 作废。
+
+---
+
+## 8. 父代理修复指令的 API 错误（执行 AI 探针纠正，2026-10-31）
+
+执行 AI `ses_e70fdf498ffeYs1dPwL4nS6qr3` 用本机探针证明：**第 5 节的两处 API 用法是错的**。
+父代理已在 SDK 头文件中独立复核并确认。
+
+### 8.1 `ISC_REQ_DEFERRED_CRED_VALIDATION` 不能用（会被截断为 0）
+
+`[READ: C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\shared\sspi.h:612]`
+```c
+#define ISC_REQ_DEFERRED_CRED_VALIDATION 0x0000000200000000
+```
+`[READ: sspi.h:1716]` `InitializeSecurityContextW(..., _In_ unsigned long fContextReq, ...)`
+—— `fContextReq` 是 **32 位 `unsigned long`**，`0x0000000200000000` OR 进去会被截断成 **0**，
+等于什么都没做。**这条指令若被盲目执行，修复会静默失效**——正是本项目反复出现的缺陷类型。
+
+### 8.2 正确机制是**凭据级** `SCH_CRED_DEFERRED_CRED_VALIDATION`
+
+`[READ: ...\um\schannel.h:678]`
+```c
+#define SCH_CRED_DEFERRED_CRED_VALIDATION            0x04000000
+```
+须在 `AcquireCredentialsHandle` 的 `SCHANNEL_CRED.dwFlags` 中置位（客户端凭据），
+而不是在 `ISC_REQ_*` 里。
+
+### 8.3 `SECPKG_ATTR_CERT_CHECK_RESULT` 的结构体字段名
+
+`[READ: ...\um\schannel.h]`
+```c
+typedef struct _SecPkgContext_CertificateValidationResult {
+    DWORD   dwChainErrorStatus;    // CertGetCertificateChain error flags
+    HRESULT hrVerifyChainStatus;   // CertVerifyCertificateChainPolicy result
+} SecPkgContext_CertificateValidationResult;
+```
+父代理原写的 `CertChainErrorStatus` 字段**不存在**。接受判据应为：
+`dwChainErrorStatus == 0 && SUCCEEDED(hrVerifyChainStatus)`。
+
+### 8.4 执行 AI 的探针实测（本机，可作为行为证据）
+
+| 场景 | 结果 |
+|---|---|
+| 凭据 DEFERRED + 自签 | 握手 `SEC_E_OK` 完成；`dwChainErrorStatus=0x20`(UNTRUSTED_ROOT)、`hrVerifyChainStatus=0x800B0109`(CERT_E_UNTRUSTEDROOT) |
+| 凭据 DEFERRED + `ISC_REQ_MANUAL_CRED_VALIDATION` | `SEC_E_INVALID_PARAMETER`(0x8009035D)，**禁止组合** |
+| DEFERRED 模式 + 主机名不匹配 | 只报链错误，**不做主机名比对** → 主机名必须自查 |
+| MANUAL 模式（凭据 AUTO）查询 CERT_CHECK_RESULT | `SEC_E_INVALID_HANDLE`(0x80090301) |
+
+**结论**：DEFERRED 只解决"链结果可查询"，主机名校验必须由客户端自己实现
+（用 `CertGetNameStringW` 取 CN、`CryptDecodeObjectEx` 枚举 dNSName SAN、SAN 存在时忽略 CN）。
+
+### 8.5 教训（同型家族第 6 例）
+
+**"没有实测的修复指令本身就是缺陷来源"**。父代理凭记忆写下 `ISC_REQ_DEFERRED_CRED_VALIDATION`，
+若执行方照做，结果是一个"看起来改了、实际截断为 0"的空修复，而所有测试可能仍然通过
+（因为 kStrict 本来就放行）。修复指令涉及平台 API 时，必须先在目标平台写最小探针验证签名与行为。
