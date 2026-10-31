@@ -518,3 +518,30 @@ SAN example.com      <- host example.com        =>  1 (MATCH)
 **两名审计一致 ≠ 正确。** "双章"是流程保证，不是真理保证；最终裁决必须由**独立探针**给出。
 已要求两审回答"当时探针是怎么得出 1 的"——这关系到他们其余 OpenSSL 结论的可信度
 （`*.co.uk`=1 我实测一致，所以只有裸域那条错）。
+
+## 第784轮：甲双章认错 + 主代理纠正其"Windows ctest 为空"的误报
+### 甲认错（诚实记录）
+甲承认其团队报告"OpenSSL X509_check_host 对 `*.example.com`←`example.com` 返回 1"是**读反了返回值**
+——其探针 `ws-x509check.sh` 原始输出本来就是 **0**。执行 AI 与主代理独立实测均正确。
+甲的其余 OpenSSL 结论（`*.co.uk`=1、`a.b.example.com`=0、尾点双向 0）与主代理实测**逐项一致**。
+
+**这是本轮第二次出现"审计自报结论与其探针输出不符"**（第一次是我自己把"无 Accept"误读成"无 Key"）。
+教训：**报告结论必须逐条回抄探针原始输出**，不能凭记忆写"通过/失败"。
+
+### 甲盖章内容（六项复核全过）
+1. ccSLD 447 条 + `kCcSldIsSorted()` constexpr 逐字节校验 + `static_assert` 编译期锁序；
+   `IsCcSldSuffix` 先 AsciiLower 再二分，与表的小写升序口径一致
+2. 误伤验证：`*.foo.co.uk`←`a.foo.co.uk` TRUE、`*.uk.com`←`x.uk.com` TRUE
+3. `AnyHeaderHasToken`（`gateway_transport.cpp:47-67`）：遍历全部同名头 + 逗号分割 + 去 OWS + 大小写不敏感
+4. key 生命周期：每次 attempt 重建 options、`used_key` 每次刷新、401 不复用
+5. 独立变异 M1（去 ccSLD）/ M2（去尾点归一）均 CAUGHT
+6. 双平台定向复跑零失败
+
+### 主代理纠正甲的一条误报
+甲称"本机 Windows ctest 注册为空（0 tests）"→ **不成立**。主代理实测：
+```
+ctest --test-dir build -C Release -N → Total Tests: 62
+build/CTestTestfile.cmake → 78,192 字节（10:21:33 生成）
+```
+Windows ctest 注册正常（62 个）。甲大概是在错误的构建目录或未配置的树上跑的。
+**其"建议补齐 add_test"也因此不成立**——不需要补。
