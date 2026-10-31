@@ -793,3 +793,27 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 自此至丙审计结束，任何人不得写这些文件；若有变动，丙的复核作废。
 - 主代理已 pause 下一轮修复（OpenSSL kTofu+pin），避免破坏冻结。
 - 待丙盖章后：①应用 OpenSSL pin 修复（标 UNVERIFIED）②分两次提交 ③解散全部子代理。
+
+## 第767轮：阶段 2 + TLS 安全修复全部入库（两次提交）+ 子代理全解散
+### 提交
+- `fce4ac4` **fix(tls): make certificate policy actually enforce on the Windows backend**
+  （tls_schannel.cpp、tls_openssl.cpp、tls.h、rtsc_connect、rtsc_bench、test_tls.cpp、CMakeLists）
+- `ae3f08a` **feat(gateway): RDGSP stage 2 - dual-connection transport wiring**
+  （gateway_transport.{h,cpp}、gateway.{h,cpp}、byte_order.{h,cpp}、session_info.{h,cpp}、main.cpp、test_gateway.cpp、test_session_info.cpp）
+- 工作树干净（`git status` 空）。
+
+### 双审闭环
+- 乙（ses_e716db85）对最终三项独立复核并盖章：gateway 112/1139、tls 42/193、server 27/239、security 19/145、client 14/63、credssp 23/69 全绿；MUTATION 0。
+- 丙（ses_e708a4114）13 项终审"可签章"，独立复现两组变异红证，冻结基线 12 文件 SHA 全程未变。
+- 3 个子代理全部 delete 解散（child_subagents=0）。
+
+### 本批最终验收
+- C0 全量 `ctest` **62/62**；全量 build 0err/0warn（/W4 /WX）。
+- 本批修复的缺陷（全部有探针红证）：
+  - **P0** SChannel 零证书校验（三策略全 MANUAL；Windows 唯一后端）→ kStrict 链+主机名、kTofu pin/链
+  - **P0** rtsc_connect 默认 kInsecure → kStrict + --tls-insecure
+  - **P1** TlsByteTransport Write 忽略 consumed / Read 丢尾部（2/2 探针 RED）
+  - **P1** 空请求静默发送（D-A1/D-A4）
+  - **P2** 跨后端 kTofu+pin 逃生门失效（OpenSSL 链校验先于 pin）
+  - **P3** RFC6455 单次 Write 内 mask 复用
+- 遗留（已入 plan.md）：`*.com` 通配/IDN/尾点三项主机名硬化、Sec-WebSocket-Accept 未校验、`0x6a4/0x6a6` 异值场景、真机网关 101 互通、USB P2/P3、W5 真机。
