@@ -558,3 +558,27 @@ server/proxy to predict the masking key for a subsequent frame."
 
 判定：三项均为**假阴性或低风险**（不会导致错误放行真实攻击面，第 1 项除外但需公有后缀才可利用），
 不阻塞阶段 2 签章；记入后续硬化批次。
+
+## 跨后端 kTofu+pin 语义分歧（P2，功能缺陷，非仅文档）
+
+**事实**（主代理独立核实）：
+- `src/net/tls_openssl.cpp:122-125`：`kTofu` 与 `kStrict` **都** `SSL_CTX_set_verify(SSL_VERIFY_PEER)` → 握手阶段即强制链校验
+- `src/net/tls_openssl.cpp:427-445`：pin 校验在握手**之后**才做
+- `src/net/tls_schannel.cpp:834`：`kTofu + pin_is_set → VerifySpkiPin()`（**只验 pin，不查链**）
+
+**后果**：用自签证书 + `--gateway-trust=<spki>` 的网关：
+- Windows/SChannel：**可用**（pin 即身份）
+- Linux/OpenSSL：**在链校验阶段就失败**，pin 根本没机会生效
+
+即 `--gateway-trust` 这个逃生门在 OpenSSL 后端上**完全失效**。这是功能缺陷，不只是"语义差异"。
+
+**修复方案**：OpenSSL 的 `kTofu + pin_is_set` 改为 `SSL_VERIFY_NONE`（跳过链，由 pin 把关），
+与 SChannel 对齐，也与 `tls.h:95` 的注释"kTofu = trust on first use + SPKI SHA-256 pin"一致
+（pin 就是身份，不需要 CA 链）。
+
+**验证限制（W5）**：本机为 Windows，`tls_openssl.cpp` 仅在 `RTSC_TLS_OPENSSL`/非 WIN32 下编译，
+**本机无法编译或运行该后端** → 此修复**未验证**。
+验证方法：在 Linux 上 `cmake -DRTSC_TLS_OPENSSL=ON` 构建，跑 `rtsc_tls_tests` 的
+`schannel_*` 对应用例（需为 OpenSSL 后端补同名用例）或手工用自签网关 + `--gateway-trust` 复测。
+
+**状态**：待丙终审完成后应用（避免工作树在审计期间变动）。P2，不阻塞 Windows 主路径签章。
