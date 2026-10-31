@@ -1,0 +1,11 @@
+[PASS] example.com == EXAMPLE.COM
+[PASS] *.example.com matches a.example.com
+[PASS] *.example.com rejects a.b.example.com
+[PASS] *.example.com rejects example.com
+[PASS] *.com must be rejected (public suffix wildcard)
+[PASS] *.co.uk must be rejected (two-label public suffix)
+[PASS] example.com. matches example.com
+[PASS] example.com matches example.com.
+[PASS] xn--bcher-kva.example matches itself
+
+SUMMARY failures=0
