@@ -545,3 +545,28 @@ build/CTestTestfile.cmake → 78,192 字节（10:21:33 生成）
 ```
 Windows ctest 注册正常（62 个）。甲大概是在错误的构建目录或未配置的树上跑的。
 **其"建议补齐 add_test"也因此不成立**——不需要补。
+
+## 第785轮：主代理独立审计 ccSLD 表内容（甲只验了存在与排序）
+脚本解析 `src/net/tls_schannel.cpp` 的 `kCcSld[]`：
+```
+entries: 447
+ok    uk.com / com.com / co.com / net.com / org.com / github.io / herokuapp.com
+      ← 未误收注册域或私有后缀（正确排除）
+out-of-order pairs: 0                ← 全表 ASCII 升序
+entries without a dot: [] count= 0   ← 无裸 TLD 混入
+has co.uk / com.au / co.jp / co.in / ac.uk / gov.uk / co.nz / com.br /
+    co.za / com.cn / co.kr / com.tw / co.id / com.mx   ← 常见 ccSLD 齐全
+```
+**结论**：表内容质量通过。甲只验证了"表存在 + static_assert 锁序"，我补验了**内容正确性**
+（不误收注册域、不混裸 TLD）。
+
+## 纠正甲的误报
+甲称"本机 Windows ctest 注册为空（0 tests）"→ **不成立**：
+`ctest --test-dir build -C Release -N` → `Total Tests: 62`；`CTestTestfile.cmake` 78KB 今日生成。
+其"建议补齐 add_test"因此不必要。已要求乙复核此项并贴出实际命令输出。
+
+## 教训补充
+本轮**第二次**出现"报告结论与探针原始输出不符"：
+- 甲：把 `X509_check_host` 的 0 读成 1
+- 我自己：把"无 Accept"误读成"无 Key"
+→ **立即纪律**：报告中的每个通过/失败结论必须逐条回抄探针原始输出，不得凭记忆转述。
