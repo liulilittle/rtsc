@@ -268,3 +268,30 @@ accept   = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 - Windows：build 0 err/0 warn；`ctest -R` **6/6**
 - Linux：build 0 err（-Werror）；`ctest -R` **5/5**
 - 3 个子代理全部 delete 解散
+
+## 第787轮：发现 P0 功能缺口「服务器只能看不能操作」+ 派双审计
+### 主代理取证（三份硬证据）
+1. `[BASH: grep 'SendInput|keybd_event|mouse_event|SetCursorPos' src/ include/ tools/]` → 4 命中，
+   **全部客户端侧**：`src/client/client.cpp:267` `Client::SendInput`（发给远端）、
+   `include/rtsc/client/client.h:95`、`tools/rtsc_gui/main.cpp:1186/1190`。
+   → **服务器侧 Win32 注入 API 调用 = 0**
+2. `[READ:tools/rtsc_server/main.cpp:453-463]` 唯一的 `SetInputCallback` 生产调用**只写日志**
+   （注释明说"是会话到达 active 阶段的证明"）
+3. `[READ:include/rtsc/server/server.h:191-224]` `InputEvent` 结构 + `InputCallback` seam **已就绪**
+   → 缺口不在协议解析层，在最后一步「注入本地桌面」完全没写
+
+### 影响
+- 目标明确要求"推进 RDP 服务器模式"；输入注入是**可用性的定义性前提**，非增强项。
+- 8 会话并发（已通过）在无输入时只是 8 个只读镜像。
+
+### 为什么此前没被发现
+- `server_multisession` 压测只验证并发正确性与隔离（剪贴板/帧分发），
+  `SetInputCallback` 只断言"收到事件"，**从未断言桌面被操作** → 测试固化了
+  "callback 被调用 = 功能正常"的假设（同型家族：测试固化缺陷方向）。
+
+### 双审已派（互告 ID）
+- 甲 `ses_e6ebabc7`：Win32 注入路径反编译取证（`termsrv.dll`/`rdpdd.dll`/`win32kfull.sys`）+
+  `SendInput` 语义清单（EXTENDEDKEY/KEYUP/SCANCODE/UNICODE/ABSOLUTE 归一化/滚轮 WHEEL_DELTA）
+  + 多会话共享桌面抢鼠标判定 + UIPI 限制
+- 乙 `ses_e6ebaa3e`：协议层是否丢字段（**横向滚轮 PTRFLAGS_HWHEEL、相对移动 PTRFLAGS_MOVE**）
+  + 接缝设计 + 安全（默认开/关、输入回显、多会话互相干扰）+ 测试盲区
