@@ -1,0 +1,21 @@
+Today's encoder vs the reference decoder (gnome-remote-desktop)
+  notch=  1 -> flags=0x0201 -> reference reads -0.0083 notches
+  notch= -1 -> flags=0x0301 -> reference reads 2.1250 notches
+  notch=  2 -> flags=0x0202 -> reference reads -0.0167 notches
+  notch= -2 -> flags=0x0302 -> reference reads 2.1167 notches
+[PASS] today: one notch travels as one unit (1/120 of a notch)
+
+Correct encoder vs the reference decoder
+  notch=  1 -> flags=0x0278 -> reference reads -1.0000 notches
+  notch= -1 -> flags=0x0388 -> reference reads 1.0000 notches
+  notch=  2 -> flags=0x02F0 -> reference reads -2.0000 notches
+  notch= -2 -> flags=0x0310 -> reference reads 2.0000 notches
+[PASS] correct: encode(1) uses 120 units
+[PASS] correct: encode(-1) == 0x0388 (9-bit two's complement of -120)
+[PASS] correct: encode(2) == 0x02F0 (240)
+[PASS] correct: encode(-2) == 0x0310
+[PASS] correct: magnitude of +120 units is 1 notch
+[PASS] correct: magnitude of -120 units is 1 notch
+[PASS] 3 notches (360 units) does NOT fit: must be split
+
+SUMMARY failures=0
