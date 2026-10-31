@@ -537,3 +537,24 @@ server/proxy to predict the masking key for a subsequent frame."
 - **当前工作树处于变异中途**：`tls_schannel.cpp:835` 留有 `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A` —— 这是为证明新用例转红而临时插入的变异，**不可验收、不可提交**。
 - 已在 `:831-833` 看到新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明修 A 的意图已写入，仅 `:835` 的实现行还是变异态。
 - 待执行 AI 交付并清除 MUTATION 标记后再复核。
+
+## 主机名校验逻辑审查（2026-10-31，主代理独立审查，P3 硬化项）
+
+审查 `src/net/tls_schannel.cpp:93-102 DnsNameMatches` 与 `:142 CertificateMatchesHost`：
+
+**正确项（已确认）**：
+- `*.example.com` 匹配 `a.example.com`（`:94-99`：suffix=`.example.com`，label=`a` 无点）
+- `*.example.com` **不**匹配 `example.com`（`:96 host.size() <= suffix.size()`）
+- `*.example.com` **不**匹配 `a.b.example.com`（`:99 label.find('.')` 有值）
+- 大小写不敏感（`EndsWithIgnoreCase`/`EqualsIgnoreCase`）
+- SAN 存在时忽略 CN（符合 RFC 6125 §6.4.4）
+
+**P3 硬化项（未修，记录）**：
+1. **`*.com` 会被接受**：`DnsNameMatches("*.com","a.com")` → suffix=`.com`，label=`a` 无点 → true。
+   RFC 6125 §6.4.3 要求通配符不得位于"最左标签之外"（即禁止 `*.com`/`*.co.uk` 这类公有后缀通配）。
+   实际风险低（公有 CA 不会签发 `*.com`，且 kStrict 下仍需链校验通过），但应拒绝。
+2. **无 IDN/punycode 归一**：证书 SAN 为 `xn--...` 而用户输入 Unicode 主机名时不匹配（假阴性，安全方向，不误放行）。
+3. **尾点未归一**：`example.com.` 与 `example.com` 不匹配（假阴性）。
+
+判定：三项均为**假阴性或低风险**（不会导致错误放行真实攻击面，第 1 项除外但需公有后缀才可利用），
+不阻塞阶段 2 签章；记入后续硬化批次。
