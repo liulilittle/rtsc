@@ -831,3 +831,10 @@ SUMMARY failures=4
 ### 双审已派（已互告 ID）
 - 甲 `ses_e6f64e81`：修复策略对比（内置后缀表 vs 纯规则法 vs 更严格规则）+ 误判集分析 + OpenSSL 侧一致性 + 101 请求头完整性
 - 乙 `ses_e6f64d71`：协议完整性（**101 是否真发了 `Sec-WebSocket-Key`/`Version`/`Upgrade`** —— 若未发则升级本身是伪实现，比未校验 Accept 更严重）+ 两后端语义一致性（**用 Linux 实测 `X509_check_host` 对 `*.com` 的行为**）+ D-H1 真实攻击面诚实判定
+
+### 修复已派 `ses_e6f45a7feffeiNH2IRgRdIly3B`
+修 1：`DnsNameMatches` 硬化（尾点归一 + 通配需 rest 含 `.` 结构拒 `*.com` + ccSLD 表拒 `*.co.uk`）
+修 2：`Sec-WebSocket-Accept` 校验（key 生命周期打通 + SHA1+base64 精确比较 + 连带校验 Upgrade/Connection + 失败硬错 + 401 刷新 key）
+修 3：两后端验证名统一（`tls_openssl.cpp` 的 `sni ?: peer_host` → `peer_host ?: sni`）
+测试：主机名表驱动 + 现有三个 stub 101 补正确 Accept + 缺/错 Accept 硬错 + 请求头完整性 + OpenSSL 语义锁定
+变异 3 项；双平台 `ctest -R` 定向（禁全量含 gateway）
