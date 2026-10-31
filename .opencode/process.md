@@ -809,3 +809,25 @@ D1 修好后握手完成时 `pending_cipher_` 已清空 → 合段的 CredSSP �
 2. **P0** CredSSP drain 门控死锁（合段首记录滞留）
 3. **P0** OpenSSL 无 server 角色（Linux 服务器模式无 TLS/CredSSP）
 4. 3 个子代理全部 delete 解散（child_subagents=0）
+
+## 第778轮：主机名匹配探针实证 4 项缺陷 + 派双审
+### 主代理探针实测（`evidence/tls-hostmatch-probe.txt`，a047a9b）
+```
+[PASS] example.com == EXAMPLE.COM
+[PASS] *.example.com matches a.example.com
+[PASS] *.example.com rejects a.b.example.com
+[PASS] *.example.com rejects example.com
+[FAIL] *.com must be rejected (public suffix wildcard)
+[FAIL] *.co.uk must be rejected (two-label public suffix)
+[FAIL] example.com. matches example.com
+[FAIL] example.com matches example.com.
+SUMMARY failures=4
+```
+- **D-H1（P2）**：`tls_schannel.cpp:93-102 DnsNameMatches` 只检查"通配符左侧恰好一个标签"，
+  未拒绝公有后缀通配（RFC 6125 §6.4.3 禁止 `*.com`）。
+- **D-H2（P3）**：尾点（FQDN 形式）双向不匹配 —— 假阴性，安全方向正确但违反 DNS 语义。
+- **另**：`Sec-WebSocket-Accept` 全仓零命中（RFC 6455 §4.1）。
+
+### 双审已派（已互告 ID）
+- 甲 `ses_e6f64e81`：修复策略对比（内置后缀表 vs 纯规则法 vs 更严格规则）+ 误判集分析 + OpenSSL 侧一致性 + 101 请求头完整性
+- 乙 `ses_e6f64d71`：协议完整性（**101 是否真发了 `Sec-WebSocket-Key`/`Version`/`Upgrade`** —— 若未发则升级本身是伪实现，比未校验 Accept 更严重）+ 两后端语义一致性（**用 Linux 实测 `X509_check_host` 对 `*.com` 的行为**）+ D-H1 真实攻击面诚实判定
