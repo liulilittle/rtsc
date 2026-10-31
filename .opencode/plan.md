@@ -531,3 +531,39 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - ~~需自定义 `RdgByteTransport`~~ → 路线 A'（单 Transport 外观 + 内部双连接）
 - ~~TLS 默认 kTofu 安全~~ → SChannel 三策略全零校验（已修，`fce4ac4`）
 - ~~按报错文本推头部方向~~ → `gateway-header-direction-ruling.md`
+
+## 缺陷（P0 级功能缺口，2026-10-31 第148轮）：服务器模式「只能看不能操作」
+
+**症状**：`rtsc_server` 能向客户端推送桌面帧（GDI 捕获 → 编码 → 发送），但**远程用户的键鼠无法注入本地桌面**。
+→ 实际不可用作远程桌面（只能当"屏幕直播"）。
+
+**证据（W5）**
+1. `[BASH: grep 'SendInput|keybd_event|mouse_event|SetCursorPos' src/ include/ tools/]` → 4 命中，
+   **全部是客户端侧**：
+   - `src/client/client.cpp:267` `Client::SendInput(...)`（把本地输入发给远端）
+   - `include/rtsc/client/client.h:95` 同上声明
+   - `tools/rtsc_gui/main.cpp:1186,1190` 调用上述客户端函数
+   → **服务器侧调用 Win32 注入 API 的次数 = 0**
+2. `[READ:tools/rtsc_server/main.cpp:453-463]` 唯一的 `SetInputCallback` 生产调用**只写日志**：
+   ```cpp
+   server.SetInputCallback([&log](const rtsc::server::InputEvent& ev) {
+       ... log.line(std::string("session active: ") + kind + " event forwarded");
+   });
+   ```
+   注释还明说"是会话到达 active 阶段的证明"——即它被当作**探针/日志**用，不是功能实现。
+3. `[READ:include/rtsc/server/server.h:191-224]` `InputEvent` 结构（kKey/kMouse/kWheel/kSync/kUnicode
+   + scancode/unicode/button/wheel_delta/sync_flags）与 `InputCallback` seam **已就绪**。
+   → 缺口不在协议解析层，在**最后一步"注入本地桌面"**完全没写。
+
+**影响**
+- 目标明确要求"推进 RDP 服务器模式（家庭版解禁、多远程用户）"——输入注入是可用性的**定义性前提**，
+  不是增强项。
+- 多会话（8 会话并发已通过）在无输入时只是 8 个只读镜像。
+
+**为什么此前没被发现**
+- `server_multisession` 压力测试只验证**并发正确性与隔离**（剪贴板、帧分发），
+  输入回调在测试里只断言"收到事件"，从未断言"桌面真的被操作"。
+- 测试固化了"callback 被调用 = 功能正常"的假设（同型家族：测试固化缺陷方向）。
+
+**待做**：派 W11 双审计设计输入注入方案（Win32 `SendInput` 语义、扫描码映射、绝对/相对坐标、
+多会话时的桌面归属、UIPI/权限提升输入、Ctrl+Alt+Del 特例）。
