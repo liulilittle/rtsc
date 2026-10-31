@@ -134,6 +134,15 @@ struct ServerConfig {
         std::function<std::unique_ptr<rtsc::audio::AudioCaptureSource>()>;
     AudioSourceFactory audio_source_factory;
 
+    // Desktop input injection. When false (the default) the server only
+    // observes input through SetInputCallback; even an installed
+    // DesktopInputSink is never called. When true, every decoded input event is
+    // also handed to the sink, which injects it into the local interactive
+    // desktop -- the remote peer can then operate this machine (pointer,
+    // keyboard focus and whatever window is in the foreground). This is an
+    // explicit opt-in; see docs/spec/input-injection-seam.md section 2.
+    bool enable_desktop_input = false;
+
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.
     uint32_t session_id = 0;
@@ -253,6 +262,10 @@ struct InputEvent {
 // Invoked once per decoded input event, on the session thread that received it.
 using InputCallback = std::function<void(const InputEvent&)>;
 
+// Desktop input injection seam (include/rtsc/server/desktop_input.h). Forward
+// declared so this core header does not pull in the platform factory.
+class DesktopInputSink;
+
 // A deterministic test pattern: a two-axis colour gradient with a bright
 // border, so a received frame is immediately recognisable.
 std::unique_ptr<DesktopSource> MakeTestPatternSource();
@@ -275,6 +288,14 @@ class RdpServer {
     // Sets the input-event callback (nullptr clears it). The callback runs on
     // the session thread, once per decoded Fast-Path input event.
     void SetInputCallback(InputCallback cb);
+
+    // Sets the desktop input sink (nullptr clears it). The sink is consulted
+    // only when ServerConfig::enable_desktop_input is true: every decoded input
+    // event is then injected before the observation callback runs. Borrowed
+    // pointer with the same lifetime contract as SetClipboard: it must outlive
+    // the server (including Stop()), because session threads call it until they
+    // are joined. The server does not take ownership.
+    void SetInputSink(DesktopInputSink* sink);
 
     // Sets the local clipboard served by every session's cliprdr virtual
     // channel (nullptr disables clipboard redirection). All sessions share one
@@ -342,6 +363,8 @@ class RdpServer {
     DesktopSource* source_ = nullptr;
     Authenticator authenticator_;
     InputCallback input_callback_;
+    // Borrowed desktop input sink; used only with enable_desktop_input.
+    DesktopInputSink* input_sink_ = nullptr;
     // The shared local clipboard for the cliprdr virtual channel, and the
     // shared file-list provider for its file-serve path. Both are borrowed,
     // never owned, and read by every session thread (the Win32 backend

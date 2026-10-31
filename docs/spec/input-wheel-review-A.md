@@ -288,3 +288,28 @@ slow-path 解码用例（`server_decodes_slowpath_*`、`server_slowpath_malforme
 `server_advertises_fastpath_input_capability`）当前为 **6 failing / 8 failed checks**（401 checks 总计），
 其中 `server_input_relative_mouse_keeps_signed_deltas` 等 5 个滚轮/输入用例仍全绿。
 该 6 条红属"实现未跟上"的中间态，**不可作为提交基线**；与本复核结论无关。
+
+## §10b3b20 复核（只读；提交内容以 `git show 10b3b20:<path>` 为准）
+
+1. **PASS** 能力集：`[BASH: git show 10b3b20:include/rtsc/proto/capabilities.h]` `:245` 0x0008、`:253` 0x0020、
+   `:262-264` 默认 `input_flags = 0x0001|0x0008|0x0020|0x0004|0x0010|0x0100 = 0x013D`；`:240` 仅保留 `kInputFlagMouse=0x0002`
+   且注明"不得广告"（被 `tests/test_capabilities.cpp:356-358` 引用，不能删）。
+2. **PASS** 慢路径取值：`[BASH: git show 10b3b20:include/rtsc/proto/share.h]` `:176-182` = `0x0000/0x0002/0x0004/0x0005/0x8001/0x8002/0x8004`；
+   `:190` `kSlowPathInputEventSize = 12`（头 6 + 体 6）。与 [WEB:ms-rdpbcgr/a9a26b3d] 表逐值一致 → 旧任务书的 0..4/4B 作废，实现正确。
+3. **PASS** 无第二套语义：`[BASH: git show 10b3b20:src/server/server.cpp]` 慢路径 wheel 在 `:1667` 调 `DecodePointerEvent`，
+   其 9 位符号扩展在 `:573-582`（`0x0100` 为符号位、`raw-0x0200`）；fast-path 同函数（`:1755`），`is_move/horizontal` 同结构体。
+4. **PASS（实测）** 基线：`C:\Users\liulilte\rtsc-mutbuild-a2`（源 `...\rtsc-mutsrc-a2`，`git archive 10b3b20`）构建 `0 warning C / 0 error C`；
+   server `40 tests/433 checks/0 failing`、capabilities `42/315/0`、client `21/127/0`、gui_send `2/38/0`。
+5. **PASS（变异）** M1 去 `0x0020` → `FAIL tests/test_server.cpp:643 (r.input_flags & 0x0020) != 0`（1 failing/1 check）；
+   恢复（touch 后重编）→ `1 tests/9 checks/0 failing`。M2 `kWheelStep 255→120` → `FAIL test_client.cpp:235/237/251/252`
+   （`got 3, want 2`）；恢复 → `21 tests/127 checks/0 failing`。
+6. **GAP-1（低）** 客户端切块上限 `8*255=2040 units`，对 >17 格的 delta 会**静默丢弃**余量，但 `[READ:src/client/client.cpp:269]`
+   注释称"nothing silently clamped away"——注释与行为不符，且无丢弃计数器（对比 HWHEEL 有 `dropped_hwheel_count_`）。
+7. **GAP-2（低）** 慢路径 `numberEvents` 与实际长度不符时直接 `return`（`[READ:src/server/server.cpp:1621-1626]`），
+   **不计数**；而未知 messageType 会计数。建议截断路径也 `fetch_add`，否则捕获侧看不到畸形 slow-path。
+8. **GAP-3（低）** 慢路径 MOUSEREL 被记入 `unknown_input_event_count`（`:1682-1686`）——它是**已知**类型，
+   语义上污染"未知 eventCode"指标；建议单列 `undecoded_slowpath_relative_count` 或直接解码。
+9. **GAP-4（低）** `was_share_data` 依赖 `ShareDataHeader::parse` 的 version/type 校验；畸形 fast-path PDU 若
+   byte2=0x17、byte3=0x00 且长度≥18，会被误判为 share data 而**吞掉 fast-path 事件**（概率低，需畸形包）。建议只对
+   已知 `pdu_type2`（refresh/suppress/input）置 handled。
+10. **UNVERIFIED** `0x0080 MOUSE_RELATIVE` 未广告时真实 mstsc 的慢路径/相对模式行为（无真机抓包）。

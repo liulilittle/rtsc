@@ -49,6 +49,17 @@
 //                     channel: "off" (default; no capture) or "sine" (a
 //                     deterministic 440 Hz test tone through the same source
 //                     seam a WASAPI loopback backend will use later)
+//   --allow-input     hand the local interactive desktop to the remote client:
+//                     inbound keyboard and pointer events are injected with
+//                     SendInput (default off). DANGEROUS: the peer can operate
+//                     the machine this server runs on (files, browsers, the
+//                     foreground window), and every session shares the same
+//                     physical desktop. Refused together with --no-enhanced or
+//                     --allow-any-credentials unless --allow-input-unverified
+//                     is also given.
+//   --allow-input-unverified
+//                     accept the unsafe --allow-input combination above after
+//                     printing a prominent warning. Only for isolated lab use.
 //   --log FILE        append human-readable session lines to FILE
 //
 // The password is only ever handed to the NTLM computation; it is never written
@@ -75,6 +86,7 @@
 #include "rtsc/audio/audio_source.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/net/tls.h"
+#include "rtsc/server/desktop_input.h"
 #include "rtsc/server/server.h"
 #include "rtsc/util/crash_guard.h"
 
@@ -103,6 +115,12 @@ struct Options {
     // Server-side audio capture for the rdpsnd virtual channel.
     enum class AudioSource { kOff, kSine };
     AudioSource audio = AudioSource::kOff;  // default: no capture (privacy)
+    // Desktop input injection: off by default; the peer can operate the local
+    // desktop (a stronger grant than screen viewing).
+    bool allow_input = false;
+    // Escape hatch for the deliberately unsafe combination of --allow-input
+    // with --no-enhanced / --allow-any-credentials.
+    bool allow_input_unverified = false;
 };
 
 void usage() {
@@ -113,6 +131,7 @@ void usage() {
         "                       [--allow-any-credentials] [--test-pattern]\n"
         "                       [--monitor N] [--width W] [--height H]\n"
         "                       [--once] [--seconds N] [--audio off|sine]\n"
+        "                       [--allow-input] [--allow-input-unverified]\n"
         "                       [--tls-cert FILE] [--tls-key FILE]\n"
         "                       [--log FILE]\n",
         kVersion);
@@ -222,6 +241,10 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
                             v.c_str());
                 return false;
             }
+        } else if (arg == "--allow-input") {
+            opt.allow_input = true;
+        } else if (arg == "--allow-input-unverified") {
+            opt.allow_input_unverified = true;
         } else if (arg == "--seconds") {
             std::string v;
             if (!need(v)) return false;
@@ -297,6 +320,33 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Desktop input injection hands the peer operational control of this
+    // machine. It must never be combined silently with a credential policy that
+    // verifies nothing: --no-enhanced performs no password check at all, and
+    // --allow-any-credentials accepts any account with the literal default
+    // password. Refuse to start unless the operator explicitly acknowledges
+    // the risk with --allow-input-unverified.
+    const bool weakened_credentials = !opt.enhanced || opt.allow_any_credentials;
+    const bool unsafe_input = opt.allow_input && weakened_credentials;
+    if (unsafe_input && !opt.allow_input_unverified) {
+        std::printf(
+            "refusing to start: --allow-input requires verified credentials.\n");
+        if (!opt.enhanced) {
+            std::printf(
+                "  conflicting option --no-enhanced: no password check at "
+                "all.\n");
+        }
+        if (opt.allow_any_credentials) {
+            std::printf(
+                "  conflicting option --allow-any-credentials: every account "
+                "is accepted.\n");
+        }
+        std::printf(
+            "  Remove those options, or pass --allow-input-unverified to "
+            "accept unauthenticated remote control.\n");
+        return 2;
+    }
+
     rtsc::server::ServerConfig cfg;
     cfg.port = opt.port;
     cfg.desktop_width = opt.width;
@@ -307,6 +357,9 @@ int main(int argc, char** argv) {
     // announced below and in the help).
     cfg.accept_any_credentials = opt.allow_any_credentials;
     cfg.enable_enhanced_security = opt.enhanced;
+    // The server only consults an installed sink when this is true; the flag
+    // mirrors --allow-input so the default configuration never injects.
+    cfg.enable_desktop_input = opt.allow_input;
     cfg.tls_config.role = rtsc::tls::Role::kServer;
     cfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
     cfg.credssp_version = 6;
@@ -365,6 +418,15 @@ int main(int argc, char** argv) {
         local_clipboard = std::make_unique<rtsc::clipboard::NullClipboard>();
     }
 
+    // Desktop input injection (opt-in, --allow-input). The sink owns one worker
+    // thread and has the same lifetime contract as the clipboard: session
+    // threads call it until Stop() has joined them, so it is declared before
+    // `server` and therefore destroyed only after the server has stopped.
+    std::unique_ptr<rtsc::server::DesktopInputSink> input_sink;
+    if (opt.allow_input) {
+        input_sink = rtsc::server::MakeWin32DesktopInputSink();
+    }
+
     SessionLog log(opt.log_path);
     log.line(std::string(kVersion) + " starting");
     log.line("port=" + std::to_string(cfg.port) +
@@ -379,7 +441,8 @@ int main(int argc, char** argv) {
                                                : "enabled") +
              " audio=" +
              std::string(opt.audio == Options::AudioSource::kSine ? "sine"
-                                                                  : "off"));
+                                                                   : "off") +
+             " input=" + (opt.allow_input ? "on" : "off"));
     if (opt.allow_any_credentials) {
         log.line(
             "WARNING: credential validation is DISABLED "
@@ -388,6 +451,32 @@ int main(int argc, char** argv) {
     } else {
         log.line("credentials: enforced (account " + accepted_user + "@" +
                  accepted_domain + " from the Client Info PDU)");
+    }
+    if (opt.allow_input) {
+        log.line(
+            "WARNING: desktop input injection is ENABLED (--allow-input): the "
+            "remote client can move the pointer, type into the foreground "
+            "window and operate this machine. Every session shares the same "
+            "physical desktop.");
+    }
+    if (unsafe_input && opt.allow_input_unverified) {
+        log.line(
+            "**************************************************************"
+            "********");
+        log.line("WARNING: --allow-input-unverified is in effect.");
+        log.line(
+            "This server combines desktop input injection with a weakened "
+            "credential policy");
+        log.line(
+            "(--no-enhanced and/or --allow-any-credentials). Any client that "
+            "reaches the port");
+        log.line(
+            "can take control of this machine's interactive desktop. Use this "
+            "only on an");
+        log.line("isolated network with no untrusted peers.");
+        log.line(
+            "**************************************************************"
+            "********");
     }
 
     // The server serves the same source to every session; it must outlive the
@@ -447,6 +536,7 @@ int main(int argc, char** argv) {
     }
     server.SetDesktopSource(source);
     server.SetClipboard(local_clipboard.get());
+    if (input_sink) server.SetInputSink(input_sink.get());
     // Input events are only forwarded by the session's active loop, so a key or
     // pointer callback is a server-side proof that a session reached the active
     // phase. It is deliberately cheap and logs nothing sensitive.

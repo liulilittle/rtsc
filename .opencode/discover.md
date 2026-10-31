@@ -814,3 +814,31 @@ FAIL tests/test_server.cpp:1141 wheels[2].wheel_delta == -255 (got 257, want -25
    只能记为 UNVERIFIED 并让执行方保留原行为 + 注释。
 3. 裁决进入任务书前，主代理必须自己独立取一次原始来源（本仓已有 rule：报告结论须回抄原文，
    但此前只约束"报告"，未约束"裁决"——现扩展到裁决）。
+## 第799轮【重要】：我的任务书 messageType 值全错，执行 AI 按规范纠正（第 17 例：任务书数值必须来自规范原文）
+### 我写进任务书的错误值
+「`messageType==0`(SYNC)、`1`(SCANCODE)、`2`(UNICODE)、`3`(MOUSE)、`4`(MOUSEX)；
+SCANCODE/UNICODE 体 4 字节」
+### 规范原文（主代理 webfetch 独立核对）
+`[WEB:https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a9a26b3d-84a2-495f-83fc-9edd6601f33b]`
+2.2.8.1.1.3.1.1 `TS_INPUT_EVENT` 的 messageType 表：
+```
+INPUT_EVENT_SYNC      0x0000
+INPUT_EVENT_UNUSED    0x0002
+INPUT_EVENT_SCANCODE  0x0004
+INPUT_EVENT_UNICODE   0x0005
+INPUT_EVENT_MOUSE     0x8001
+INPUT_EVENT_MOUSEX    0x8002
+INPUT_EVENT_MOUSEREL  0x8004
+```
+交叉验证 FreeRDP `libfreerdp/core/input.c` 同一组宏；且未知类型时 FreeRDP 直接 `Stream_Seek(s, 6)`
+→ **每个事件体统一 6 字节**（SCANCODE/UNICODE 是 flags(2)+code(2)+pad(2)，不是 4 字节）。
+
+### 后果评估（若照我的任务书实现）
+慢路径 SCANCODE/UNICODE/MOUSE 全部落到 default → 计入 unknown 并丢弃 → **真实 mstsc 慢路径零事件**，
+P-10 修复等于没做。执行 AI 主动比对 `docs/spec/input-injection-seam.md:458-460` 与官方表后**拒绝按任务书实现**，
+改按规范实现并在报告里显式请双审确认 —— 这是正确行为。
+
+### 规则
+1. 任务书里出现任何**协议常量/枚举值/结构尺寸**，必须由主代理 webfetch 规范原文后**逐行抄入**，
+   禁止凭记忆或凭"看起来合理"的序列（0/1/2/3/4 就是典型的"看起来合理"）。
+2. 与第 16 例（PTRXFLAGS 命名空间）合并为一条：**主代理的一切数值型断言必须可追溯到规范原文行**。

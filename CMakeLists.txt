@@ -666,12 +666,32 @@ if(WIN32)
     target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
 endif()
 
+# Server-side desktop input injection. The mapping layer is platform neutral
+# (it only turns InputEvent into PlatformInput) and is covered by ctest on every
+# platform. The sink itself posts SendInput calls from a single worker thread on
+# Windows; other platforms get a counting no-op so the host links unchanged.
+add_library(rtsc_server_desktop_input_map STATIC src/server/desktop_input_map.cpp)
+target_include_directories(rtsc_server_desktop_input_map PUBLIC include)
+
+add_executable(rtsc_desktop_input_tests tests/test_desktop_input.cpp)
+target_link_libraries(rtsc_desktop_input_tests PRIVATE rtsc_server_desktop_input_map rtsc_util)
+target_include_directories(rtsc_desktop_input_tests PRIVATE tests)
+
+if(WIN32)
+    add_library(rtsc_server_desktop_input STATIC src/server/desktop_input_win32.cpp)
+    target_link_libraries(rtsc_server_desktop_input PUBLIC rtsc_server_desktop_input_map user32)
+else()
+    add_library(rtsc_server_desktop_input STATIC src/server/desktop_input_null.cpp)
+    target_link_libraries(rtsc_server_desktop_input PUBLIC rtsc_server_desktop_input_map)
+endif()
+
 # Standalone host for the RDP server role: the same RdpServer the loopback
 # tests drive, configured from the command line and served to a real client
 # (mstsc). The GDI desktop capture is Windows-only; other platforms fall back to
 # the synthetic test pattern inside the tool.
 add_executable(rtsc_server_host tools/rtsc_server/main.cpp)
-target_link_libraries(rtsc_server_host PRIVATE rtsc_server rtsc_util rtsc_rdpsnd)
+target_link_libraries(rtsc_server_host PRIVATE
+                      rtsc_server rtsc_util rtsc_rdpsnd rtsc_server_desktop_input)
 if(WIN32)
     target_link_libraries(rtsc_server_host PRIVATE rtsc_server_desktop_gdi)
 endif()
@@ -743,6 +763,7 @@ add_test(NAME graphics COMMAND rtsc_graphics_tests)
 add_test(NAME view COMMAND rtsc_view_tests)
 add_test(NAME session_info COMMAND rtsc_session_info_tests)
 add_test(NAME client COMMAND rtsc_client_tests)
+add_test(NAME desktop_input COMMAND rtsc_desktop_input_tests)
 if(WIN32)
     add_test(NAME tls COMMAND rtsc_tls_tests)
 endif()
@@ -845,6 +866,9 @@ if(MSVC)
         target_compile_options(rtsc_server_desktop_gdi PRIVATE /W4 /WX)
         target_compile_options(rtsc_desktop_gdi_tests PRIVATE /W4 /WX)
     endif()
+    target_compile_options(rtsc_server_desktop_input_map PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_desktop_input PRIVATE /W4 /WX)
+    target_compile_options(rtsc_desktop_input_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail PRIVATE /W4 /WX)
     target_compile_options(rtsc_rail_client_tests PRIVATE /W4 /WX)

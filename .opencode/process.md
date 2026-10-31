@@ -491,3 +491,68 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
   各自转红并恢复绿；构建 0/0；`// M<n>` 0 命中
 - **主代理独立复核**：`client_tests` → `21 tests, 127 checks, 0 failing`；
   逐行读切块循环确认 `part` 有 255 上限（无字段溢出），上限丢弃有注释
+## 第799轮：批 3 完成并盖章 `10b3b20`（三项合并提交）
+### 批 3 交付（P-9/P-10）
+- `capabilities.h:219-266`：按 2.2.7.1.6 重写注释，新增 `kInputFlagFastPathInput(0x0008)`、
+  `kInputFlagFastPathInput2(0x0020)`，默认 `input_flags` 去掉非规范的 `0x0002` → 现为 **0x013D**
+- `share.h:170-190`：`SlowPathInputEventType` + `kSlowPathInputEvent{Header,}Size`
+- `server.cpp:566-610` 抽出 `DecodePointerEvent`；`:1514-1523` share-data 分发守卫；
+  `:1543-1597` `HandleSlowPathPdu` 加 0x1C 分支；`:1616-1709` `ParseSlowPathInput`
+- 5 个慢路径测试 + 能力集测试 + 畸形包测试
+- **执行 AI 纠正了我的错误任务书**：messageType 实为 0x0000/0x0002/0x0004/0x0005/0x8001/0x8002/0x8004，
+  事件体统一 6 字节（我已 webfetch 官方 a9a26b3d 页 + FreeRDP 交叉确认）
+
+### 主代理验证（三项合并）
+- `[BASH: cmake --build]` exit=0, warn=0, err=0
+- `[BASH: ctest 全量]` **62/62 passed**（93.22 s）
+- `[BASH: rtsc_client_tests]` 21/127/0；`[BASH: server_input_relative]` 2/42/0
+- 提交 `10b3b20`（含批 2 客户端切块、X 按钮恢复、批 3 慢路径/能力集）
+- 批 2（`ses_e6cf58127…`）、X 修复（`ses_e6ceb8651…`）、批 3（`ses_e6cf5670e…`）全部 delete 解散
+
+### 遗留（转入后续批）
+- 真机 UNVERIFIED：mstsc 是否因缺 0x0020 改发慢路径；UIPI/多会话/安全桌面/SAS
+- 服务器 Input Capability 的 keyboardLayout/Type/SubType/FunctionKey 仍非 0（规范 SHOULD 为 0，未修）
+- `0x0080 MOUSE_RELATIVE` 未广告
+### 第799轮：三路派发（双审复核 `10b3b20` + 批 4 注入器骨架）
+- 审计甲 `ses_e6db711e9ffeie9GVIfm6NDNL6`：复核 `10b3b20`（能力位/messageType 逐位核对、
+  慢路径是否复用 fast-path 语义、1 个变异 M（去 0x0020）、健壮性）
+- 审计乙（新）`ses_e6ca36b97ffeyeiHxLtCfVopTf`：**独立**复核同一提交，**禁止读甲的文档**，
+  自建 `docs/spec/input-injection-review-B.md`；同样自己 webfetch 规范
+- 批 4 执行 `ses_e6ca5a01dffev0jAbAmzlThKIa`：
+  `DesktopInputSink`（SetGeometry/Inject/ReleaseSession）+ `ServerConfig.enable_desktop_input=false`
+  + `--allow-input` / `--allow-input-unverified` + 危险组合拒绝启动（退出码 2）
+  + `TranslateInput` 纯函数（14 条单测，T8 锚 `wheel=120` 不乘 120）+ Win32 sink（单线程队列 256、
+  移动合并、键/按钮不丢、ReleaseSession 补 up）+ null 后端 + CMake
+- 成员 ID 已互告（甲↔乙↔批 4）
+### 第799轮：甲会话上游拒绝（模型/供应商侧）
+- 甲在"复核 10b3b20"任务上先报 `upstream_rejected`（"the model's provider rejected the request.
+  check the model id and request fields"），随后连续无输出、被系统唤醒。
+- 处置：按规则**未更换模型**；核实会话仍存在（busy/pending）→ 以**最短任务**（3 条 Select-String + 10 行结论）
+  重发，缩小请求体以规避拒绝。若再次失败，将用 `task` 新开审计替代并在收尾报告中列为已知限制。
+- 同一时段批 4（`ses_e6ca5a01`）与乙（`ses_e6ca36b9`）均正常在跑 → 判断为**单会话侧**问题，
+  非全局 provider 故障。### 第799轮：审计甲复核 `10b3b20` → PASS（5 项）+ 4 条低优先 GAP
+- PASS：能力集（`:245` 0x0008、`:253` 0x0020、默认 `0x013D`、0x0002 不广告）；
+  慢路径取值与规范逐值一致（`share.h:176-182`，事件 12B）；语义复用（慢路径 wheel 走 `DecodePointerEvent`，
+  符号扩展 `:573-582` 与 fast-path 同一函数）；`git archive 10b3b20` 独立构建 0/0 且四套件全绿；
+  变异 M1（去 0x0020）→ `FAIL :643`、M2（`kWheelStep 255→120`）→ `FAIL :235/237/251/252`，恢复后绿
+- GAP①（低，**已派批 5**）：8 块上限静默丢余量，注释却写 "nothing silently clamped away"，且无计数
+- GAP②（低）：慢路径 `numberEvents` 与长度不符时 `return` 不计数（`server.cpp:1621-1626`）
+- GAP③（低）：慢路径 MOUSEREL 计入 `unknown_input_event_count`，污染"未知类型"指标（`:1682-1686`）
+- GAP④（低）：`was_share_data` 守卫可能把畸形 fast-path PDU 误判为 share data 而吞事件
+  → ②③④ 与批 4 的 `server.cpp` 改动冲突，待批 4 落地后合并为批 6
+- 甲裁定：批 3 实现正确、**我的任务书 0..4/4B 错误**（与 discover 第 17 例一致）
+- 批 5 已派（只改 client 三文件，与批 4 文件不相交）
+### 第799轮：批 5 盖章 `e6c4ad7`；审计乙因 TLS 中断，已 task 新开替身
+- 批 5（GAP①）交付并提交 `e6c4ad7`：`client.h:155-165/188-192` 新增
+  `dropped_wheel_units_count()`（单位=rotation units，单调）；`client.cpp:304-307` 累加 `remaining`；
+  注释纠正（8 块=2040 units=17 格，超出**丢弃**）
+- 主代理复验：`[BASH: rtsc_client_tests.exe]` **25 tests, 139 checks, 0 failing**；
+  `[READ:client.cpp:305]` 累加行就位
+- 执行方证据：TDD 红（`FAIL :331/:349 got 0 want 120/12360`）；变异①不去累加、②上限 8→4 各自红；
+  恢复后绿；`// M<n>` 0 命中 → 已 delete 解散
+- **审计乙 `ses_e6ca36b97ffeyeiHxLtCfVopTf` 因宿主 `unknown certificate verification error` 终止**
+  （未知证书校验错误，与甲此前同类；**非其结论问题**）。按规则上报用户、不擅自换模型，
+  并以 `task` 新开替身 `ses_e6c7bbce7ffezhO5j6DsMSLV9T`（禁止读甲的文档以保证独立性，
+  要求自建 `docs/spec/input-injection-review-B.md`）
+- 环境观察：本会话内子代理多次出现 TLS/证书类宿主错误（甲 2 次、乙 1 次、批 2 一次），
+  错因在宿主到 provider 的链路，非任务内容；已按"技术故障须恢复并继续"处理

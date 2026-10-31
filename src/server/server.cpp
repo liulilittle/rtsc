@@ -54,6 +54,7 @@
 #include "rtsc/proto/share.h"
 #include "rtsc/proto/tpkt.h"
 #include "rtsc/proto/x224.h"
+#include "rtsc/server/desktop_input.h"
 
 namespace rtsc::server {
 
@@ -605,6 +606,7 @@ class RdpSession {
     RdpSession(std::unique_ptr<net::Transport> transport, const ServerConfig& config,
                DesktopSource* source, Authenticator authenticator,
                InputCallback input_callback, uint32_t session_id,
+               DesktopInputSink* input_sink, uint32_t input_session_id,
                clipboard::Clipboard* clipboard,
                clipboard::FileListProvider* file_provider,
                std::shared_ptr<std::atomic<size_t>> unknown_input_events)
@@ -614,6 +616,8 @@ class RdpSession {
           authenticator_(std::move(authenticator)),
           input_callback_(std::move(input_callback)),
           session_id_(session_id),
+          input_sink_(input_sink),
+          input_session_id_(input_session_id),
           unknown_input_events_(std::move(unknown_input_events)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
@@ -683,6 +687,17 @@ class RdpSession {
     void Stop() {
         stop_requested_.store(true, std::memory_order_relaxed);
         if (transport_) transport_->Close();
+    }
+
+    // Releases every key/button this session still holds. Called exactly once
+    // from the teardown paths, before the session leaves the registry, so the
+    // borrowed sink is never used after the host has destroyed it.
+    void ReleaseInput() {
+        if (input_released_) return;
+        input_released_ = true;
+        if (config_.enable_desktop_input && input_sink_ != nullptr) {
+            input_sink_->ReleaseSession(input_session_id_);
+        }
     }
 
     const Credentials& credentials() const { return credentials_; }
@@ -1151,6 +1166,14 @@ class RdpSession {
                          client_desktop_height_ != 0 ? client_desktop_height_
                                                      : config_.desktop_height,
                          &desktop_width_, &desktop_height_);
+        // The negotiated framebuffer is the coordinate space of the inbound
+        // pointer events, so tell the injection sink about it once it is final
+        // (the clamp above is what Demand Active announces).
+        if (config_.enable_desktop_input && input_sink_ != nullptr) {
+            input_sink_->SetGeometry(input_session_id_,
+                                     InjectGeometry{desktop_width_,
+                                                    desktop_height_});
+        }
 
         std::vector<proto::GccUserData::Block> blocks;
         blocks.push_back({kScCore, BuildServerCoreBody(requested_protocols_)});
@@ -1693,6 +1716,9 @@ class RdpSession {
                     }
                     return;
             }
+            if (config_.enable_desktop_input && input_sink_ != nullptr) {
+                input_sink_->Inject(input_session_id_, ev);
+            }
             if (input_callback_) input_callback_(ev);
         }
     }
@@ -1818,6 +1844,9 @@ class RdpSession {
                     }
                     return;
             }
+            if (config_.enable_desktop_input && input_sink_ != nullptr) {
+                input_sink_->Inject(input_session_id_, ev);
+            }
             if (input_callback_) input_callback_(ev);
         }
     }
@@ -1828,6 +1857,12 @@ class RdpSession {
     Authenticator authenticator_;
     InputCallback input_callback_;
     uint32_t session_id_ = 0;
+    // Borrowed injection sink and the id used only to attribute injected input
+    // to this session. Deliberately separate from session_id_ (which feeds the
+    // wire shareId): making the wire id per-session would change Demand Active.
+    DesktopInputSink* input_sink_ = nullptr;
+    uint32_t input_session_id_ = 0;
+    bool input_released_ = false;
     // Server-level counter shared with every session: an unknown eventCode is
     // counted here so the operator can observe it without logs (P-11).
     std::shared_ptr<std::atomic<size_t>> unknown_input_events_;
@@ -1935,6 +1970,9 @@ struct RdpServer::Impl {
     std::atomic<bool> running{false};
     std::shared_ptr<Registry> registry = std::make_shared<Registry>();
     std::atomic<size_t> total_session_count{0};
+    // Monotonic id used only to attribute injected input to a session. Starts
+    // at 1 so 0 remains "no session"; it never feeds the wire shareId.
+    std::atomic<uint32_t> next_input_session_id{0};
     // Unknown fast-path input eventCodes, counted per server (P-11). A
     // shared_ptr so a detached session thread cannot outlive the counter.
     std::shared_ptr<std::atomic<size_t>> unknown_input_events =
@@ -1969,6 +2007,8 @@ void RdpServer::SetAuthenticator(Authenticator auth) {
 void RdpServer::SetInputCallback(InputCallback cb) {
     input_callback_ = std::move(cb);
 }
+
+void RdpServer::SetInputSink(DesktopInputSink* sink) { input_sink_ = sink; }
 
 void RdpServer::SetClipboard(clipboard::Clipboard* clipboard) {
     clipboard_ = clipboard;
@@ -2054,8 +2094,10 @@ void RdpServer::Run() {
             if (!impl_->running.load(std::memory_order_relaxed)) break;
             session = std::make_shared<RdpSession>(
                 std::move(transport), config_, source_, authenticator_,
-                input_callback_, 0, clipboard_, file_list_provider_,
-                impl_->unknown_input_events);
+                input_callback_, 0, input_sink_,
+                impl_->next_input_session_id.fetch_add(
+                    1, std::memory_order_relaxed) + 1,
+                clipboard_, file_list_provider_, impl_->unknown_input_events);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2125,6 +2167,10 @@ void RdpServer::Run() {
                 session->ScrubCredentials();
             } catch (...) {
             }
+            try {
+                session->ReleaseInput();
+            } catch (...) {
+            }
             release();
         };
         bool started = false;
@@ -2173,9 +2219,11 @@ bool RdpServer::ServeOne() {
     }
     auto transport = impl_->listener->Accept();
     if (!transport) return false;
-    RdpSession session(std::move(transport), config_, source_, authenticator_,
-                       input_callback_, 0, clipboard_, file_list_provider_,
-                       impl_->unknown_input_events);
+    RdpSession session(
+        std::move(transport), config_, source_, authenticator_, input_callback_,
+        0, input_sink_,
+        impl_->next_input_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
+        clipboard_, file_list_provider_, impl_->unknown_input_events);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it.
     try {
@@ -2187,6 +2235,7 @@ bool RdpServer::ServeOne() {
     }
     session.Stop();
     session.ScrubCredentials();
+    session.ReleaseInput();
     return true;
 }
 
