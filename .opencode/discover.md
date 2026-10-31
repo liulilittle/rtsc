@@ -1492,3 +1492,28 @@ tsc_gateway_tests（PID 62700）WS=33973MB、Private=70289MB（用户观测到"�
 **改了同步语义必须回查所有依赖旧语义的断言**。D8 把 ACK 从"消费后"改成"入队即"，却没回查
 "Write 返回 ⇒ 对端已处理"这一隐含假设——两处测试因此变成赛跑。同型排查（C9）在此同样适用：
 改一个可观测时序，必须 grep 所有依赖该时序的断言。
+
+## 第775轮：乙判定 drain 问题为 P0 死锁（主代理采纳，推翻自己 P2 判定）
+### 乙的红证（产品后端实跑）
+产品 `role=kServer` + 裸 TLS1.3 client，Finished + 首应用记录 **119B 合段**一次喂 `Handshake`：
+- `ok=1 consumed=119(=in_size) handshake_complete=1`
+- **`buffered_input()=39`**（客户端 NEGOTIATE 已在后端）
+- 当前门控空 pending → 不 drain → 滞留
+- hoist `Receive(nullptr,0)` → 一次取出 `NEGOTIATE-PAYLOAD`(17B)，`buffered_input()==0`
+
+### 死锁机制（我采纳，比我原先"多一个往返"的判断严重）
+客户端在等服务器 CHALLENGE，**不会发新字节**；服务端等新字节 → **双向互等**。
+违反 `tls.h:182-185` 的 Drain obligation（"必须持续 Receive 直到 buffered_input()==0"）。
+
+生产影响：mstsc/FreeRDP 合段是常态 → **Linux rtsc_server 卡死首条 CredSSP**。
+现有 Linux 61/61 全绿只是回环时序恰好未合段。
+
+### 我的判定失误记录
+我此前判"不是数据丢失，多一个往返"，**低估了**：漏了"客户端此时不会主动重发"这一环。
+教训：**评估残留缓冲的影响，必须同时问"对端此刻会不会再发"**——单向看本地逻辑会得出错误的良性结论。
+
+### 修复已派 `ses_e700314b9ffe`
+修 1（P0）：两端 drain 移到 `if` 外（保留 `kNeedMoreInput` break 防死循环）
+修 2（必须）：补 **server 侧合段用例**（产品 kServer + 裸 client 合段喂 Handshake 后不再喂输入）
+修 3（可选）：两条全链路改确定性合段
+变异红证：drain 挪回 `if` 内 → 新用例必须红
