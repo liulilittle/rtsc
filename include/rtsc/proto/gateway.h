@@ -174,6 +174,18 @@ struct RdgChannelRequestOptions {
     std::string auth_scheme;       // RDG-Auth-Scheme (factory values e.g.
                                    // SMARTCARD / CONNID; none defaulted here)
     std::string diagnostics_info;  // RDG-Diagnostics-Info
+    // Optional Authorization header (NTLM / Basic client authentication). Used
+    // by RdgspTransport's 401 handling. Also validated against CRLF / NUL in
+    // the builder's injection check chain (a hostile value here would smuggle
+    // a header).
+    std::string authorization;
+    // When set, the OUT channel request carries an RFC 6455 upgrade ask
+    // (Connection: Upgrade / Upgrade: websocket / Sec-WebSocket-Key /
+    // Sec-WebSocket-Version). The exact factory request headers are not in the
+    // evidence (mstscax uses WinHTTP's UPGRADE_TO_WEB_SOCKET, which generates
+    // them implicitly): the layout is standard [RFC 6455] client framing,
+    // UNVERIFIED against the shipped binary.
+    bool request_websocket_upgrade = false;
     // IN-channel retry mode (evidence section 3: `0x1806d0f60` carries
     // `RDG-INCHANNEL-RETRYMODE` and `IN_CHANNEL_RETRY_COUNT_%d`). Emitted only
     // for kIn when retry_count is positive, as
@@ -202,6 +214,17 @@ inline constexpr size_t kMaxChunkTotalBytes = 64u * 1024u * 1024u;
 std::vector<uint8_t> ChunkedEncode(const uint8_t* data, size_t size);
 inline std::vector<uint8_t> ChunkedEncode(const std::vector<uint8_t>& data) {
     return ChunkedEncode(data.data(), data.size());
+}
+
+// Encodes `data` as ONE chunk of a request body: "<hex-size>\r\n<data>\r\n",
+// WITHOUT the terminating 0-chunk (ChunkedEncode appends it). The RDGSP IN
+// channel writes a long-lived stream of such chunks over a whole session; only
+// the server (or the last chunk) terminates the body, so per-write framing must
+// not close it. Empty input encodes to nothing.
+std::vector<uint8_t> ChunkedEncodeChunk(const uint8_t* data, size_t size);
+inline std::vector<uint8_t> ChunkedEncodeChunk(
+    const std::vector<uint8_t>& data) {
+    return ChunkedEncodeChunk(data.data(), data.size());
 }
 
 // Why the chunked decoder failed. kNone is not a failure; every other value is
@@ -277,6 +300,91 @@ bool IsChunkedBody(const HttpMessage& message);
 uint32_t MapGatewayStatusToHresult(int status_code, bool password_expired);
 
 // ---------------------------------------------------------------------------
+// RFC 6455 WebSocket framing (client role, RDGSP OUT upgraded data plane)
+// ---------------------------------------------------------------------------
+
+// WebSocket opcodes ([RFC 6455] section 5.2). The RDGSP upgrade only needs the
+// whitelisted subset; `kContinuation` supports fragmented messages.
+enum class WebSocketOpcode : uint8_t {
+    kContinuation = 0x0,
+    kText = 0x1,
+    kBinary = 0x2,
+    kClose = 0x8,
+    kPing = 0x9,
+    kPong = 0xA,
+};
+
+// A control frame is one whose opcode high bit is set (opcode >= 0x8,
+// [RFC 6455] section 5.5). Control frames MUST be FIN and MUST carry at most
+// 125 payload bytes.
+bool IsWebSocketControlOpcode(WebSocketOpcode opcode);
+
+// One frame's payload is capped at the project channel-message ceiling
+// (16 MiB, the same value kMaxChunkedChunkBytes uses). A 64-bit extended
+// length above this is rejected while the header is parsed, before anything
+// is sized from it.
+inline constexpr uint64_t kMaxWebSocketPayloadBytes = 16u * 1024u * 1024u;
+
+// Encodes one complete client frame: FIN set, opcode as given, payload masked
+// with `mask_key` (client frames are always masked, [RFC 6455] section 5.3).
+// The extended-length form is minimal (126 for 126..65535, 127 beyond).
+std::vector<uint8_t> WebSocketEncodeClientFrame(WebSocketOpcode opcode,
+                                                const uint8_t* payload,
+                                                size_t size, uint32_t mask_key);
+
+// Why the frame decoder failed. kNone / kNeedMoreData are not failures; every
+// other value is a hard error the decoder latches.
+enum class WebSocketError {
+    kNone,
+    kNeedMoreData,      // a complete frame is not buffered yet
+    kTruncated,         // the byte stream ended mid-frame
+    kInvalidOpcode,     // opcode outside the whitelist {0,1,2,8,9,10}
+    kReservedBits,      // RSV1-3 set although no extension was negotiated
+    kControlFrameNotFinal,  // a control frame with FIN == 0
+    kControlFrameTooLarge,  // a control frame with more than 125 payload bytes
+    kPayloadTooLarge,       // 64-bit length above kMaxWebSocketPayloadBytes
+    kNonMinimalLength,      // 126/127 form used for a length that fits earlier
+};
+
+const char* to_string(WebSocketError e);
+
+// A decoded frame: the FIN bit, the opcode, and the unmasked payload.
+struct WebSocketFrame {
+    bool fin = true;
+    WebSocketOpcode opcode = WebSocketOpcode::kBinary;
+    std::vector<uint8_t> payload;
+};
+
+// Incremental client-role frame decoder. Feed network fragments; each call
+// returns every frame fully decoded by that call. The MASK bit is honored (a
+// masked frame is unmasked with its key), so both normal server frames
+// (unmasked) and, symmetrically, masked test frames decode identically.
+class WebSocketFrameDecoder {
+ public:
+    WebSocketFrameDecoder() = default;
+    WebSocketFrameDecoder(const WebSocketFrameDecoder&) = delete;
+    WebSocketFrameDecoder& operator=(const WebSocketFrameDecoder&) = delete;
+
+    // Decodes as much of `data` as possible and returns the complete frames.
+    // On a latched failure returns an empty vector; check failed()/error().
+    std::vector<WebSocketFrame> Feed(const uint8_t* data, size_t size);
+    std::vector<WebSocketFrame> Feed(const std::vector<uint8_t>& bytes);
+
+    // Signals the underlying byte stream ended. A partial frame latches
+    // kTruncated.
+    void EndOfStream();
+
+    bool failed() const { return error_ != WebSocketError::kNone; }
+    WebSocketError error() const { return error_; }
+    size_t frames_parsed() const { return frames_parsed_; }
+
+ private:
+    std::vector<uint8_t> buffer_;
+    WebSocketError error_ = WebSocketError::kNone;
+    size_t frames_parsed_ = 0;
+};
+
+// ---------------------------------------------------------------------------
 // RD Gateway authentication (TLSAuth / SOAP)
 // ---------------------------------------------------------------------------
 
@@ -285,6 +393,11 @@ struct RdgAuthParam {
     std::string key;
     std::string value;  // quotes stripped
 };
+
+// RFC 4648 base64 encoding. Used internally for RDG-User-Id; exposed so the
+// RDGSP transport can build the NTLM / Basic Authorization tokens from the same
+// transform.
+std::string EncodeBase64(const std::string& bytes);
 
 // A parsed WWW-Authenticate challenge: `scheme` plus its auth params (RFC
 // 7235). `realm` is the convenience mirror of the realm= param, preserved from

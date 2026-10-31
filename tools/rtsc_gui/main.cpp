@@ -10,6 +10,7 @@
 // the window, present, and forward window input as Fast-Path input PDUs.
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -42,7 +43,9 @@
 #include "rtsc/client/session_info.h"
 #include "rtsc/client/version.h"
 #include "rtsc/client/view.h"
+#include "rtsc/net/gateway_transport.h"
 #include "rtsc/net/transport.h"
+#include "rtsc/net/tls.h"
 #include "rtsc/proto/connect_machine.h"
 #include "rtsc/proto/rdp_neg.h"
 #include "rtsc/rdpdr/drive_enum.h"
@@ -214,6 +217,11 @@ void usage() {
         "  viewport_w/h: force the window surface size (drives auto-resize).\n"
         "  multimon: 1 = one window per monitor when the server reports a\n"
         "  multi-monitor layout; 0 (default) = one span window for the union.\n"
+        "  --gateway=host:port (or RTSC_GATEWAY): tunnel through an RD Gateway\n"
+        "  (RDGSP, dual IN/OUT connections) instead of a direct TCP connection.\n"
+        "  TLS: BOTH layers default to strict validation. Deregulate only with\n"
+        "  explicit switches: --tls-insecure (inner RDP TLS/CredSSP), and for\n"
+        "  the gateway TLS --gateway-insecure or --gateway-trust=<64-hex SPKI>.\n"
         "  --frames N / --seconds N: bound the run (automation only). The default\n"
         "  is unlimited, so a real session renders until the window is closed.\n"
         "  In-session: a plain wheel scrolls the remote desktop; Ctrl+wheel\n"
@@ -228,7 +236,8 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
                                             const std::string& password,
                                             bool standard_rdp,
                                             bool rail_mode,
-                                            bool usb_redirect) {
+                                            bool usb_redirect,
+                                            bool tls_insecure) {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
     if (standard_rdp) {
@@ -262,12 +271,130 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
 
     rtsc::security::Config scfg;
     scfg.tls_config.peer_host = host;
-    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    // D-A3 (P0): the inner RDP TLS/CredSSP transport defaults to STRICT
+    // validation. kInsecure used to be the default, which let a MITM read the
+    // CredSSP step-5 plaintext password. Deregation is now an explicit opt-in
+    // (--tls-insecure) for isolated lab environments only.
+    scfg.tls_config.cert_policy =
+        tls_insecure ? rtsc::tls::CertPolicy::kInsecure
+                     : rtsc::tls::CertPolicy::kStrict;
     scfg.credentials.domain = domain;
     scfg.credentials.user = user;
     scfg.credentials.password = password;
 
     return rtsc::security::ConnectionDriver(mcfg, creds, scfg);
+}
+
+// Splits "--gateway=host:port" into host and port. The last colon is the port
+// separator unless the value is a bracketed IPv6 literal "[...]:port"; a bare
+// IPv6 literal (no port) is accepted whole. Returns false for a bad port.
+bool SplitGatewayAddress(const std::string& addr, std::string& host,
+                         uint16_t& port) {
+    host.clear();
+    port = 443;
+    if (addr.empty()) return false;
+    const auto is_all_digits = [](const std::string& s) {
+        return !s.empty() &&
+               s.find_first_not_of("0123456789") == std::string::npos;
+    };
+    if (addr.size() >= 2 && addr.front() == '[') {
+        const size_t close = addr.find(']');
+        if (close == std::string::npos) return false;
+        host = addr.substr(1, close - 1);
+        if (host.empty()) return false;
+        const std::string rest = addr.substr(close + 1);
+        if (rest.empty()) return true;  // "[::1]" -> default port
+        if (rest.front() != ':') return false;
+        const std::string p = rest.substr(1);
+        if (!is_all_digits(p)) return false;
+        const unsigned long v = std::strtoul(p.c_str(), nullptr, 10);
+        if (v == 0 || v > 65535) return false;
+        port = static_cast<uint16_t>(v);
+        return true;
+    }
+    const size_t colon = addr.rfind(':');
+    if (colon == std::string::npos) {
+        host = addr;
+        return true;
+    }
+    // More than one colon and a non-numeric tail: treat the whole value as an
+    // IPv6 literal (no port).
+    if (addr.find(':') != colon || !is_all_digits(addr.substr(colon + 1))) {
+        host = addr;
+        return true;
+    }
+    host = addr.substr(0, colon);
+    if (host.empty()) return false;
+    const unsigned long v =
+        std::strtoul(addr.substr(colon + 1).c_str(), nullptr, 10);
+    if (v == 0 || v > 65535) return false;
+    port = static_cast<uint16_t>(v);
+    return true;
+}
+
+// Builds the RD Gateway transport chain (stage-2 D): TCP(+ outer gateway TLS)
+// -> RdgspTransport, and RUNS the RdgspTransport handshake (H0-H8) here so a
+// handshake failure surfaces as a clear error instead of a silent connect.
+// The two channels share the gateway authority; each gets its own connection
+// (dual-connection ruling, gateway-stage2-evidence.md section 10).
+std::unique_ptr<rtsc::net::Transport> CreateGatewayTransport(
+    const std::string& gateway_address, bool gateway_insecure,
+    const std::array<uint8_t, 32>& pinned_spki, const std::string& domain,
+    const std::string& user, const std::string& password,
+    std::string& error) {
+    std::string gw_host;
+    uint16_t gw_port = 0;
+    if (!SplitGatewayAddress(gateway_address, gw_host, gw_port) ||
+        gw_host.empty()) {
+        error = "--gateway / RTSC_GATEWAY must be host:port";
+        return nullptr;
+    }
+    const bool has_pin =
+        pinned_spki != std::array<uint8_t, 32>{};  // all-zero = no pin
+
+    rtsc::net::RdgspTransport::Config cfg;
+    cfg.host = gw_host;
+    cfg.port = gw_port;
+    // The connection id is a client-generated GUID carried on both channels.
+    cfg.connection_id = rtsc::client::GenerateActivityId();
+    cfg.domain = domain;
+    cfg.user_name = user;
+    cfg.password = password;
+    // The factory's UA string; the rest of the header set comes from the
+    // channel builder.
+    cfg.user_agent = "MS-RDGateway/1.0";
+    // Reduce the handshake deadlines from the factory table's general values
+    // to something a CLI connect can wait for; the wire behaviour is governed
+    // by the evidence table (120/60/30/90/30 s).
+    cfg.connect_out = [gw_host, gw_port, gateway_insecure, pinned_spki,
+                       has_pin, &error](
+                          std::string& e) -> std::unique_ptr<rtsc::net::Transport> {
+        auto tcp = rtsc::net::ConnectTcp(gw_host, gw_port, e);
+        if (!tcp) return nullptr;
+        if (gateway_insecure) return tcp;  // explicit deregulation only
+        rtsc::tls::Config tls_cfg;
+        tls_cfg.peer_host = gw_host;
+        if (has_pin) {
+            // Pinned SPKI: trust the pinned identity instead of the CA chain
+            // (the only self-signed path short of --gateway-insecure).
+            tls_cfg.cert_policy = rtsc::tls::CertPolicy::kTofu;
+            tls_cfg.pinned_spki_sha256 = pinned_spki;
+            tls_cfg.pin_is_set = true;
+        } else {
+            tls_cfg.cert_policy = rtsc::tls::CertPolicy::kStrict;
+        }
+        auto tls = rtsc::net::TlsByteTransport::Wrap(std::move(tcp), tls_cfg, e);
+        if (!tls) return nullptr;
+        return tls;
+    };
+    cfg.connect_in = cfg.connect_out;  // each channel runs its own connection
+
+    auto transport = std::make_unique<rtsc::net::RdgspTransport>(cfg);
+    if (!transport->Connect(error)) {
+        if (error.empty()) error = "RD Gateway handshake failed";
+        return nullptr;
+    }
+    return transport;
 }
 
 }  // namespace
@@ -284,6 +411,12 @@ int main(int argc, char** argv) {
     bool standard_rdp = false;
     bool input_probe = false;
     bool rail_mode = false;
+    // TLS policy (D-A3, P0): the default on both TLS layers is STRICT. The
+    // explicit switches are the only way to deregulate, for isolated labs.
+    bool tls_insecure = false;
+    bool gateway_insecure = false;
+    std::string gateway_address;  // "--gateway=host:port"
+    std::string gateway_pinned_spki;  // "--gateway-trust=<64-hex>"
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(argc));
     for (int i = 1; i < argc; ++i) {
@@ -311,7 +444,63 @@ int main(int argc, char** argv) {
             max_seconds = std::atol(argv[++i]);
             continue;
         }
+        // D-A3 (P0): TLS deregulation switches. There is no other way to use
+        // kInsecure; the default is strict on both the inner RDP TLS and the
+        // outer gateway TLS.
+        if (std::strcmp(a, "--tls-insecure") == 0) {
+            tls_insecure = true;
+            continue;
+        }
+        if (std::strcmp(a, "--gateway-insecure") == 0) {
+            gateway_insecure = true;
+            continue;
+        }
+        if (std::strncmp(a, "--gateway-trust=", 16) == 0) {
+            gateway_pinned_spki = a + 16;
+            continue;
+        }
+        if (std::strncmp(a, "--gateway=", 10) == 0) {
+            gateway_address = a + 10;
+            continue;
+        }
         args.emplace_back(a);
+    }
+    // RTSC_GATEWAY environment fallback (same style as RTSC_REDIRECT_*). A
+    // command-line --gateway wins over the environment.
+    if (gateway_address.empty()) {
+        char* env_gateway = nullptr;
+        size_t env_len = 0;
+        if (_dupenv_s(&env_gateway, &env_len, "RTSC_GATEWAY") == 0 &&
+            env_gateway != nullptr) {
+            gateway_address = env_gateway;
+            std::free(env_gateway);
+        }
+    }
+    // New external input surfaces are rejected up front for CR/LF/NUL (the
+    // handshake builders would do the same, but a CLI value with a smuggled
+    // header break must never reach them in the first place).
+    if (gateway_address.find_first_of("\r\n") != std::string::npos ||
+        gateway_address.find('\0') != std::string::npos) {
+        std::printf("rtsc_gui: --gateway / RTSC_GATEWAY contains CRLF or NUL; "
+                    "rejected\n");
+        return 2;
+    }
+    std::array<uint8_t, 32> gateway_pin{};
+    if (!gateway_pinned_spki.empty()) {
+        // SPKI SHA-256 pin: exactly 64 lowercase/uppercase hex digits.
+        if (gateway_pinned_spki.size() != 64 ||
+            gateway_pinned_spki.find_first_not_of(
+                "0123456789abcdefABCDEF") != std::string::npos) {
+            std::printf(
+                "rtsc_gui: --gateway-trust must be a 64-hex-digit SPKI SHA-256\n");
+            return 2;
+        }
+        for (size_t i = 0; i < 32; ++i) {
+            char hex[3] = {gateway_pinned_spki[i * 2],
+                           gateway_pinned_spki[i * 2 + 1], 0};
+            gateway_pin[i] =
+                static_cast<uint8_t>(std::strtoul(hex, nullptr, 16));
+        }
     }
     if (args.empty()) {
         usage();
@@ -381,7 +570,22 @@ int main(int argc, char** argv) {
     }
 
     std::string error;
-    auto transport = rtsc::net::ConnectTcp(host, port, error);
+    std::unique_ptr<rtsc::net::Transport> transport;
+    if (!gateway_address.empty()) {
+        // RD Gateway path (wired in phase 2 of the stage-2 work): the outer
+        // gateway TLS policy is strict by default; --gateway-insecure or
+        // --gateway-trust deregulate it. The transport chain itself is built
+        // by CreateGatewayTransport below.
+        std::printf("rtsc_gui: RD Gateway %s (gateway TLS %s%s)\n",
+                    gateway_address.c_str(),
+                    gateway_insecure ? "insecure" : "strict",
+                    gateway_pinned_spki.empty() ? "" : ", SPKI pinned");
+        transport = CreateGatewayTransport(
+            gateway_address, gateway_insecure, gateway_pin, domain, user,
+            password, error);
+    } else {
+        transport = rtsc::net::ConnectTcp(host, port, error);
+    }
     if (!transport) {
         std::printf("connect failed: %s\n", error.c_str());
         return 1;
@@ -405,7 +609,7 @@ int main(int argc, char** argv) {
 
     rtsc::client::Client client(
         MakeDriver(host, domain, user, password, standard_rdp, rail_mode,
-                   rtsc::usb::UsbGateEnabled(usb_spec)),
+                   rtsc::usb::UsbGateEnabled(usb_spec), tls_insecure),
         width, height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
@@ -549,6 +753,12 @@ int main(int argc, char** argv) {
                            [&](const uint8_t* data, size_t size) {
                                rdpsnd.OnChannelData(data, size);
                            });
+    // D-A6 (recorded, P2): Client::Connect is a synchronous handshake on the UI
+    // thread, so a slow or dead peer freezes the message pump until the
+    // connection deadline. This batch records the limitation only; converting
+    // to an async handshake is a follow-up. The bounded Client::Connect
+    // deadline (30 s) is the only thing standing between a dead gateway and a
+    // frozen window.
     if (!client.Connect(*transport, error)) {
         std::printf("connection failed: %s\n", error.c_str());
         return 1;
@@ -874,6 +1084,14 @@ int main(int argc, char** argv) {
                         input.has_rtt = client.has_rtt();
                         input.rtt_ms = client.rtt_ms();
                         input.bandwidth_mbps = client.bandwidth_mbps();
+                        // Stage-2 (E): when tunnelled through an RD Gateway the
+                        // dialog reports the actual gateway + authentication
+                        // method instead of "没有在使用中".
+                        input.gateway_name = gateway_address;
+                        if (!gateway_address.empty()) {
+                            input.gateway_logon_method =
+                                "NTLM (RDGSP)";
+                        }
                         return rtsc::client::CollectSessionInfo(
                             input, std::time(nullptr));
                     };

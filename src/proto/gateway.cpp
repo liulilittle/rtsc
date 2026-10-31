@@ -9,6 +9,8 @@
 #include <cstring>
 #include <string_view>
 
+#include "rtsc/crypto/random.h"
+
 namespace rtsc::proto {
 
 namespace {
@@ -116,42 +118,6 @@ bool IsToken68Like(const std::string& s) {
     return true;
 }
 
-// RFC 4648 base64 encoding. The factory base64-encodes the user name before
-// writing RDG-User-Id (docs/spec/gateway-header-direction-ruling.md
-// :544/:568), so the builder applies the same transform to the raw name.
-std::string EncodeBase64(const std::string& bytes) {
-    static constexpr char kTable[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((bytes.size() + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 3 <= bytes.size(); i += 3) {
-        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
-                           (static_cast<unsigned char>(bytes[i + 1]) << 8) |
-                           static_cast<unsigned char>(bytes[i + 2]);
-        out.push_back(kTable[(v >> 18) & 0x3F]);
-        out.push_back(kTable[(v >> 12) & 0x3F]);
-        out.push_back(kTable[(v >> 6) & 0x3F]);
-        out.push_back(kTable[v & 0x3F]);
-    }
-    const size_t rest = bytes.size() - i;
-    if (rest == 1) {
-        const uint32_t v = static_cast<unsigned char>(bytes[i]) << 16;
-        out.push_back(kTable[(v >> 18) & 0x3F]);
-        out.push_back(kTable[(v >> 12) & 0x3F]);
-        out.push_back('=');
-        out.push_back('=');
-    } else if (rest == 2) {
-        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
-                           (static_cast<unsigned char>(bytes[i + 1]) << 8);
-        out.push_back(kTable[(v >> 18) & 0x3F]);
-        out.push_back(kTable[(v >> 12) & 0x3F]);
-        out.push_back(kTable[(v >> 6) & 0x3F]);
-        out.push_back('=');
-    }
-    return out;
-}
-
 // True when a configured value could smuggle a header or a request-line break:
 // CR, LF or a NUL byte. These must never reach the wire (header injection).
 bool ContainsCrlfOrNul(const std::string& s) {
@@ -213,6 +179,41 @@ Status CheckContentLength(const std::vector<HttpHeader>& headers,
 }
 
 }  // namespace
+
+// RFC 4648 base64 encoding (see the declaration in gateway.h). Used for
+// RDG-User-Id and for the NTLM / Basic Authorization tokens.
+std::string EncodeBase64(const std::string& bytes) {
+    static constexpr char kTable[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 3 <= bytes.size(); i += 3) {
+        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
+                           (static_cast<unsigned char>(bytes[i + 1]) << 8) |
+                           static_cast<unsigned char>(bytes[i + 2]);
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back(kTable[(v >> 6) & 0x3F]);
+        out.push_back(kTable[v & 0x3F]);
+    }
+    const size_t rest = bytes.size() - i;
+    if (rest == 1) {
+        const uint32_t v = static_cast<unsigned char>(bytes[i]) << 16;
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (rest == 2) {
+        const uint32_t v = (static_cast<unsigned char>(bytes[i]) << 16) |
+                           (static_cast<unsigned char>(bytes[i + 1]) << 8);
+        out.push_back(kTable[(v >> 18) & 0x3F]);
+        out.push_back(kTable[(v >> 12) & 0x3F]);
+        out.push_back(kTable[(v >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+    return out;
+}
 
 const char* to_string(TransportType t) {
     switch (t) {
@@ -390,7 +391,8 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
         ContainsCrlfOrNul(o.client_generation) ||
         ContainsCrlfOrNul(o.load_balancer_cookie) ||
         ContainsCrlfOrNul(o.app_build) || ContainsCrlfOrNul(o.auth_scheme) ||
-        ContainsCrlfOrNul(o.diagnostics_info)) {
+        ContainsCrlfOrNul(o.diagnostics_info) ||
+        ContainsCrlfOrNul(o.authorization)) {
         return {};
     }
     ByteWriter w;
@@ -463,6 +465,33 @@ std::vector<uint8_t> BuildRdgChannelRequest(const RdgChannelRequestOptions& o) {
     // on both channels.
     if (!o.auth_scheme.empty()) write_header(kRdgAuthSchemeHeader, o.auth_scheme);
 
+    // Optional client authentication (NTLM / Basic), added by RdgspTransport's
+    // 401 handling. The value is in the CRLF / NUL injection chain above.
+    if (!o.authorization.empty()) write_header("Authorization", o.authorization);
+
+    // Optional RFC 6455 upgrade ask on the OUT channel. The factory drives this
+    // with WinHTTP's UPGRADE_TO_WEB_SOCKET (which generates the exact headers
+    // implicitly), so this explicit client-side layout is standard [RFC 6455]
+    // framing and UNVERIFIED against the shipped binary.
+    if (o.request_websocket_upgrade) {
+        write_header("Connection", "Upgrade");
+        write_header("Upgrade", "websocket");
+        uint8_t key_bytes[16];
+        if (rtsc::crypto::RandomBytes(key_bytes, sizeof(key_bytes))) {
+            write_header("Sec-WebSocket-Key",
+                         EncodeBase64(std::string(
+                             reinterpret_cast<const char*>(key_bytes),
+                             sizeof(key_bytes))));
+        } else {
+            // CSPRNG failure: the upgrade still proceeds with a fixed ephemeral
+            // key (freshness, not a secret); failure is a local environment
+            // issue, not a protocol error.
+            write_header("Sec-WebSocket-Key",
+                         EncodeBase64("rtsc-gw-fallback-key!!"));
+        }
+        write_header("Sec-WebSocket-Version", "13");
+    }
+
     // IN-channel retry mode (ruling :264-269, IN-only + retry flag).
     if (o.direction == RdgChannelDirection::kIn && o.retry_count > 0) {
         write_header(kRdgInchannelRetryModeHeader,
@@ -502,6 +531,20 @@ std::vector<uint8_t> ChunkedEncode(const uint8_t* data, size_t size) {
     }
     w.u8('0');
     AppendCrLf(w);
+    AppendCrLf(w);
+    return w.take();
+}
+
+std::vector<uint8_t> ChunkedEncodeChunk(const uint8_t* data, size_t size) {
+    if (data == nullptr || size == 0) return {};
+    ByteWriter w;
+    char size_line[32];
+    std::snprintf(size_line, sizeof(size_line), "%zx",
+                  static_cast<size_t>(size));
+    const size_t line_len = std::strlen(size_line);
+    w.bytes(reinterpret_cast<const uint8_t*>(size_line), line_len);
+    AppendCrLf(w);
+    w.bytes(data, size);
     AppendCrLf(w);
     return w.take();
 }
@@ -712,6 +755,173 @@ uint32_t MapGatewayStatusToHresult(int status_code, bool password_expired) {
             return 0x80190000u |
                    static_cast<uint32_t>(status_code);
     }
+}
+
+// ---- RFC 6455 WebSocket framing -------------------------------------------
+
+bool IsWebSocketControlOpcode(WebSocketOpcode opcode) {
+    const auto raw = static_cast<uint8_t>(opcode);
+    return raw >= 0x08 && raw <= 0x0F;
+}
+
+const char* to_string(WebSocketError e) {
+    switch (e) {
+        case WebSocketError::kNone: return "none";
+        case WebSocketError::kNeedMoreData: return "need more data";
+        case WebSocketError::kTruncated: return "truncated";
+        case WebSocketError::kInvalidOpcode: return "invalid opcode";
+        case WebSocketError::kReservedBits: return "reserved bits";
+        case WebSocketError::kControlFrameNotFinal: return "control frame not final";
+        case WebSocketError::kControlFrameTooLarge: return "control frame too large";
+        case WebSocketError::kPayloadTooLarge: return "payload too large";
+        case WebSocketError::kNonMinimalLength: return "non-minimal length";
+    }
+    return "unknown";
+}
+
+std::vector<uint8_t> WebSocketEncodeClientFrame(WebSocketOpcode opcode,
+                                                const uint8_t* payload,
+                                                size_t size, uint32_t mask_key) {
+    // [RFC 6455] section 5.2: a frame header is FIN (this codec always sends
+    // complete frames) + RSV 0 + opcode, then the MASK bit and the payload
+    // length. Client frames are always masked (section 5.3).
+    ByteWriter w;
+    w.u8(static_cast<uint8_t>(0x80u | static_cast<uint8_t>(opcode)));
+    if (size <= 125) {
+        w.u8(static_cast<uint8_t>(0x80u | size));
+    } else if (size <= 0xFFFF) {
+        w.u8(static_cast<uint8_t>(0x80u | 126u));
+        w.u16be(static_cast<uint16_t>(size));
+    } else {
+        w.u8(static_cast<uint8_t>(0x80u | 127u));
+        w.u64be(static_cast<uint64_t>(size));
+    }
+    // [RFC 6455] section 5.3: the 32-bit mask is transmitted as its four
+    // octets most-significant byte first. The caller passes the mask as a
+    // value whose bytes, in memory order, are what the key bytes read on the
+    // wire (so mask 0x37FA213D writes 37 FA 21 3D, per the RFC example).
+    const uint8_t key[4] = {static_cast<uint8_t>((mask_key >> 24) & 0xFF),
+                            static_cast<uint8_t>((mask_key >> 16) & 0xFF),
+                            static_cast<uint8_t>((mask_key >> 8) & 0xFF),
+                            static_cast<uint8_t>(mask_key & 0xFF)};
+    w.bytes(key, sizeof(key));
+    for (size_t i = 0; i < size; ++i) {
+        w.u8(static_cast<uint8_t>(payload[i] ^ key[i % 4]));
+    }
+    return w.take();
+}
+
+std::vector<WebSocketFrame> WebSocketFrameDecoder::Feed(const uint8_t* data,
+                                                       size_t size) {
+    std::vector<WebSocketFrame> out;
+    if (data == nullptr || size == 0) return out;
+    if (error_ != WebSocketError::kNone) return out;
+
+    buffer_.insert(buffer_.end(), data, data + size);
+
+    for (;;) {
+        // Header byte 0: FIN | RSV1-3 | opcode.
+        if (buffer_.size() < 2) return out;
+        const uint8_t b0 = buffer_[0];
+        const bool fin = (b0 & 0x80) != 0;
+        const bool rsv = (b0 & 0x70) != 0;
+        const uint8_t opcode_raw = b0 & 0x0F;
+        if (rsv) {
+            error_ = WebSocketError::kReservedBits;
+            buffer_.clear();
+            return out;
+        }
+        if (opcode_raw != 0x0 && opcode_raw != 0x1 && opcode_raw != 0x2 &&
+            opcode_raw != 0x8 && opcode_raw != 0x9 && opcode_raw != 0xA) {
+            error_ = WebSocketError::kInvalidOpcode;
+            buffer_.clear();
+            return out;
+        }
+        const WebSocketOpcode opcode = static_cast<WebSocketOpcode>(opcode_raw);
+
+        // Header byte 1: MASK | 7-bit length (or an extended-length marker).
+        const uint8_t b1 = buffer_[1];
+        const bool masked = (b1 & 0x80) != 0;
+        const uint8_t len7 = b1 & 0x7F;
+        size_t header_size = 2;
+        uint64_t payload_len = len7;
+        if (len7 == 126 || len7 == 127) {
+            const size_t ext = len7 == 126 ? 2 : 8;
+            if (buffer_.size() < 2 + ext) return out;
+            uint64_t extended = 0;
+            for (size_t i = 0; i < ext; ++i) {
+                extended = (extended << 8) | buffer_[2 + i];
+            }
+            // [RFC 6455] section 5.2: the length encoding MUST be minimal.
+            if ((len7 == 126 && extended <= 125) ||
+                (len7 == 127 && extended <= 0xFFFF)) {
+                error_ = WebSocketError::kNonMinimalLength;
+                buffer_.clear();
+                return out;
+            }
+            header_size = 2 + ext;
+            payload_len = extended;
+        }
+
+        const bool control = IsWebSocketControlOpcode(opcode);
+        if (control) {
+            if (!fin) {
+                error_ = WebSocketError::kControlFrameNotFinal;
+                buffer_.clear();
+                return out;
+            }
+            // Control frames MUST carry at most 125 bytes ([RFC 6455] 5.5).
+            // With a minimal encoding, len7 == 126/127 is already proof of an
+            // oversized payload; an explicit check also covers the direct case.
+            if (payload_len > 125) {
+                error_ = WebSocketError::kControlFrameTooLarge;
+                buffer_.clear();
+                return out;
+            }
+        }
+
+        // The 16 MiB per-frame ceiling is enforced on the announced length,
+        // before any payload could be buffered in proportion to it.
+        if (payload_len > kMaxWebSocketPayloadBytes) {
+            error_ = WebSocketError::kPayloadTooLarge;
+            buffer_.clear();
+            return out;
+        }
+
+        const size_t key_size = masked ? 4 : 0;
+        const size_t frame_size = header_size + key_size +
+                                  static_cast<size_t>(payload_len);
+        if (buffer_.size() < frame_size) return out;
+
+        WebSocketFrame frame;
+        frame.fin = fin;
+        frame.opcode = opcode;
+        frame.payload.assign(
+            buffer_.begin() + static_cast<std::ptrdiff_t>(header_size + key_size),
+            buffer_.begin() + static_cast<std::ptrdiff_t>(frame_size));
+        if (masked) {
+            const uint8_t* key = buffer_.data() + header_size;
+            for (size_t i = 0; i < frame.payload.size(); ++i) {
+                frame.payload[i] ^= key[i % 4];
+            }
+        }
+        buffer_.erase(buffer_.begin(),
+                      buffer_.begin() + static_cast<std::ptrdiff_t>(frame_size));
+        ++frames_parsed_;
+        out.push_back(std::move(frame));
+        // Continue if more frames were buffered in this feed.
+    }
+}
+
+std::vector<WebSocketFrame> WebSocketFrameDecoder::Feed(
+    const std::vector<uint8_t>& bytes) {
+    return Feed(bytes.data(), bytes.size());
+}
+
+void WebSocketFrameDecoder::EndOfStream() {
+    if (failed()) return;
+    // A half-consumed frame (header or payload) is a mid-frame truncation.
+    if (!buffer_.empty()) error_ = WebSocketError::kTruncated;
 }
 
 // ---- authentication ----------------------------------------------------------

@@ -3,16 +3,19 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "rtsc/client/client.h"
+#include "rtsc/credssp/ntlm.h"
 #include "rtsc/net/gateway_transport.h"
 #include "rtsc/proto/connect_machine.h"
 #include "rtsc/proto/gateway.h"
@@ -47,6 +50,90 @@ class MockTransport : public Transport {
         return true;
     }
     void Close() override {}
+};
+
+// A scripted TLS backend for TlsByteTransport. `send_cap` limits how much of a
+// Send call is consumed (mirroring OpenSSL's WANT_READ partial write);
+// `read_extra` makes the first Receive over-produce beyond max_out, which the
+// TLS contract explicitly allows.
+class ScriptedTls : public rtsc::tls::TlsTransport {
+ public:
+    ScriptedTls(size_t send_cap, size_t read_extra)
+        : send_cap_(send_cap), read_extra_(read_extra) {}
+
+    int send_calls = 0;
+    size_t consumed_total = 0;
+
+    rtsc::tls::Error Handshake(const uint8_t*, size_t in_size, size_t& consumed,
+                               std::vector<uint8_t>& out) override {
+        consumed = in_size;
+        out.clear();
+        handshaken_ = true;
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Send(const uint8_t*, size_t size, size_t& consumed,
+                          std::vector<uint8_t>& out) override {
+        ++send_calls;
+        consumed = (send_cap_ == 0 || size <= send_cap_) ? size : send_cap_;
+        consumed_total += consumed;
+        out.assign(consumed, 0x5A);
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Receive(const uint8_t*, size_t,
+                             std::vector<uint8_t>& plaintext,
+                             size_t max_out) override {
+        if (served_) {
+            plaintext.clear();
+            return rtsc::tls::Error{};
+        }
+        served_ = true;
+        plaintext.assign((max_out == 0 ? 100u : max_out + read_extra_), 0x41);
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKeyInfo(
+        std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error negotiated(rtsc::tls::NegotiatedInfo& out) const override {
+        out = rtsc::tls::NegotiatedInfo{};
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::RecordSizes record_sizes() const override {
+        return rtsc::tls::RecordSizes{};
+    }
+    rtsc::tls::Error Shutdown(std::vector<uint8_t>& out) override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    bool handshake_complete() const noexcept override { return handshaken_; }
+    bool closed() const noexcept override { return false; }
+    size_t buffered_input() const noexcept override { return 0; }
+    const rtsc::tls::Error& last_error() const noexcept override { return ok_; }
+    const char* backend_name() const noexcept override { return "scripted"; }
+
+ private:
+    size_t send_cap_ = 0;
+    size_t read_extra_ = 0;
+    bool served_ = false;
+    bool handshaken_ = false;
+    rtsc::tls::Error ok_{};
 };
 
 // A loopback datagram socket pair: Send() delivers to the peer's queue.
@@ -242,6 +329,447 @@ class MockGateway {
     std::unique_ptr<rtsc::net::Listener> listener_;
     std::thread thread_;
     unsigned connect_requests_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Scripted transports and a real-loopback StubGateway for RdgspTransport.
+// ---------------------------------------------------------------------------
+
+// A scripted byte transport for the RDGSP seam: serves one canned response per
+// request, records each request's bytes. Read returns kReadTimeout once the
+// response queue is empty (a silent-but-alive peer, like a real socket).
+class ScriptedRdgsp : public Transport {
+ public:
+    void Reply(const std::string& head_and_body) {
+        replies_.push_back(ToVec(head_and_body));
+    }
+    void Reply(const std::vector<uint8_t>& bytes) {
+        replies_.push_back(bytes);
+    }
+    void CloseOnNextRead() { close_on_read_ = true; }
+
+    int Read(uint8_t* buf, size_t size) override {
+        // Close only after every queued reply has been served (a controlled
+        // EOF mid-body for the truncation tests).
+        if (replies_.empty()) return close_on_read_ ? 0 : kReadTimeout;
+        const size_t n = (std::min)(size, replies_.front().size());
+        std::memcpy(buf, replies_.front().data(), n);
+        replies_.front().erase(
+            replies_.front().begin(),
+            replies_.front().begin() + static_cast<std::ptrdiff_t>(n));
+        if (replies_.front().empty()) replies_.pop_front();
+        return static_cast<int>(n);
+    }
+    bool Write(const uint8_t* data, size_t size) override {
+        requests_.push_back(std::vector<uint8_t>(data, data + size));
+        return true;
+    }
+    void Close() override { closed_ = true; }
+    bool closed() const { return closed_; }
+    const std::vector<std::vector<uint8_t>>& requests() const {
+        return requests_;
+    }
+
+ private:
+    std::deque<std::vector<uint8_t>> replies_;
+    std::vector<std::vector<uint8_t>> requests_;
+    bool close_on_read_ = false;
+    bool closed_ = false;
+};
+
+std::string RequestText(const std::vector<uint8_t>& req) {
+    return std::string(req.begin(), req.end());
+}
+
+std::string StubNtlmType2Base64() {
+    rtsc::credssp::ChallengeMessage chg;
+    chg.flags = 0xE28A8235u;
+    for (int i = 0; i < 8; ++i) {
+        chg.server_challenge[static_cast<size_t>(i)] =
+            static_cast<uint8_t>(0x10 + i);
+    }
+    chg.target_name = "GW";
+    rtsc::credssp::AvPair ts;
+    ts.id = rtsc::credssp::AvId::kTimestamp;
+    ts.value = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    chg.av_pairs = {ts};
+    std::vector<uint8_t> raw;
+    const rtsc::credssp::Error e = chg.Encode(raw);
+    CHECK(e.ok());
+    return rtsc::proto::EncodeBase64(std::string(raw.begin(), raw.end()));
+}
+
+// Extracts the base64 token after "Authorization: NTLM " from a request.
+bool NtlmTokenFromRequest(const std::vector<uint8_t>& req, std::string& token) {
+    const std::string text = RequestText(req);
+    const std::string marker = "Authorization: NTLM ";
+    const size_t at = text.find(marker);
+    if (at == std::string::npos) return false;
+    const size_t nl = text.find("\r\n", at);
+    token = text.substr(at + marker.size(), nl - (at + marker.size()));
+    return !token.empty();
+}
+
+// Decodes the base64 NTLM AUTHENTICATE token in a request; returns true and
+// fills `auth` on success. Used to verify the client's type-3 is structurally
+// a valid NTLM exchange continuation.
+bool DecodeNtlmType3FromRequest(const std::vector<uint8_t>& req,
+                                rtsc::credssp::AuthenticateMessage& auth) {
+    std::string token;
+    if (!NtlmTokenFromRequest(req, token)) return false;
+    std::vector<uint8_t> raw;
+    // Local strict base64 decode for test-side verification.
+    auto nibble = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return 26 + (c - 'a');
+        if (c >= '0' && c <= '9') return 52 + (c - '0');
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    uint32_t acc = 0;
+    int bits = 0;
+    for (const char c : token) {
+        if (c == '=') break;
+        const int v = nibble(c);
+        if (v < 0) return false;
+        acc = (acc << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            raw.push_back(static_cast<uint8_t>((acc >> bits) & 0xFF));
+        }
+    }
+    return auth.Decode(raw.data(), raw.size()).ok();
+}
+
+// A real-loopback RDGSP stub: listens on 127.0.0.1:0, accepts TWO connections
+// (OUT first, then IN -- the client connects them in that order), and serves a
+// per-scenario handshake over cleartext http (the factory's +0x6a8==0 mode).
+// After a 200 the OUT handler echoes the client's IN-channel chunked body back
+// to the client as chunked OUT-body bytes, so byte round-trips are real.
+class StubGateway {
+ public:
+    enum class Scenario {
+        k200Chunked,  // OUT 200 TE:chunked; echo IN body back chunked
+        k200Plain,    // OUT 200 without TE; echo IN body back plain
+        kNtlm200,     // OUT: 401 NTLM -> 401+type2 -> 200
+        k401Always,   // OUT: always 401 NTLM
+        kStatus403,
+        kStatus407,
+        kStatus502,
+        kStatus504,
+        kStatus307,
+        kIn101,  // OUT 200; IN answers 101 -> client must hard-fail
+    };
+
+    explicit StubGateway(Scenario s) : scenario_(s) {}
+
+    bool Start(std::string& error) {
+        listener_ = rtsc::net::ListenTcp("127.0.0.1", 0, error);
+        if (!listener_) return false;
+        port_ = listener_->local_port();
+        worker_ = std::thread([this] { Run(); });
+        return true;
+    }
+
+    uint16_t bound_port() const { return port_; }
+
+    void Stop() {
+        if (listener_) listener_->Close();
+        {
+            std::lock_guard<std::mutex> lock(mux_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+        if (out_) out_->Close();
+        if (in_) in_->Close();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    size_t out_requests() const {
+        std::lock_guard<std::mutex> lock(mux_);
+        return out_requests_;
+    }
+    size_t in_requests() const {
+        std::lock_guard<std::mutex> lock(mux_);
+        return in_requests_;
+    }
+    bool type3_verified() const { return type3_verified_; }
+
+ private:
+    // Reads request bytes until the head's terminating blank line.
+    static std::vector<uint8_t> ReadHead(Transport& t, int timeout_ms = 4000) {
+        std::vector<uint8_t> head;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (EndsWithBlankLine(head)) return head;
+            uint8_t chunk[4096];
+            const int n = t.Read(chunk, sizeof(chunk));
+            if (n == kReadTimeout) continue;
+            if (n <= 0) return head;
+            head.insert(head.end(), chunk, chunk + n);
+        }
+        return head;
+    }
+
+    static bool EndsWithBlankLine(const std::vector<uint8_t>& buf) {
+        if (buf.size() < 4) return false;
+        return buf[buf.size() - 4] == '\r' && buf[buf.size() - 3] == '\n' &&
+               buf[buf.size() - 2] == '\r' && buf[buf.size() - 1] == '\n';
+    }
+
+    static size_t FindBlank(const std::vector<uint8_t>& buf) {
+        for (size_t i = 0; i + 3 < buf.size(); ++i) {
+            if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+                buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+                return i;
+            }
+        }
+        return std::string::npos;
+    }
+
+    static bool WriteText(Transport& t, const std::string& s) {
+        return t.Write(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    }
+    static bool WriteBytes(Transport& t, const std::vector<uint8_t>& b) {
+        return t.Write(b.data(), b.size());
+    }
+
+    void Run() {
+        out_ = listener_->Accept();
+        in_ = listener_->Accept();
+        if (!out_ || !in_) return;
+        std::thread tout([this] { HandleOut(*out_); });
+        std::thread tin([this] { HandleIn(*in_); });
+        tout.join();
+        tin.join();
+    }
+
+    void HandleOut(Transport& out) {
+        bool echo_mode = false;
+        int ntlm_round = 0;
+        for (int round = 0; round < 8; ++round) {
+            const std::vector<uint8_t> head = ReadHead(out);
+            if (!EndsWithBlankLine(head)) break;  // peer closed mid-request
+            {
+                std::lock_guard<std::mutex> lock(mux_);
+                ++out_requests_;
+            }
+            if (scenario_ == Scenario::k401Always) {
+                if (!WriteText(out, "HTTP/1.1 401 Unauthorized\r\n"
+                                   "WWW-Authenticate: NTLM\r\n"
+                                   "Content-Length: 0\r\n\r\n")) {
+                    return;
+                }
+                continue;
+            }
+            if (scenario_ == Scenario::kNtlm200) {
+                if (ntlm_round == 0) {
+                    // First request: no credentials yet.
+                    ++ntlm_round;
+                    if (!WriteText(out, "HTTP/1.1 401 Unauthorized\r\n"
+                                       "WWW-Authenticate: NTLM\r\n"
+                                       "Content-Length: 0\r\n\r\n")) {
+                        return;
+                    }
+                    continue;
+                }
+                if (ntlm_round == 1) {
+                    // Second request carries the type-1; challenge with type-2.
+                    ++ntlm_round;
+                    if (!WriteText(out, "HTTP/1.1 401 Unauthorized\r\n"
+                                       "WWW-Authenticate: NTLM " +
+                                           StubNtlmType2Base64() + "\r\n"
+                                       "Content-Length: 0\r\n\r\n")) {
+                        return;
+                    }
+                    continue;
+                }
+                // Third request carries the type-3: verify it decodes, then accept with
+                // the same 200+chunked response the plain scenarios use.
+                rtsc::credssp::AuthenticateMessage auth;
+                if (DecodeNtlmType3FromRequest(head, auth) &&
+                    !auth.nt_response.empty()) {
+                    type3_verified_ = true;
+                }
+                if (!WriteText(out, "HTTP/1.1 200 OK\r\n"
+                                   "Transfer-Encoding: chunked\r\n"
+                                   "Content-Type: application/octet-stream\r\n"
+                                   "RDG-Connection-Id: {stub}\r\n\r\n")) {
+                    return;
+                }
+                echo_mode = true;
+                break;
+            }
+            if (scenario_ == Scenario::kStatus403) {
+                WriteText(out, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+                return;
+            }
+            if (scenario_ == Scenario::kStatus407) {
+                WriteText(out, "HTTP/1.1 407 Proxy Authentication Required\r\n"
+                               "Content-Length: 0\r\n\r\n");
+                return;
+            }
+            if (scenario_ == Scenario::kStatus502) {
+                WriteText(out, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+                return;
+            }
+            if (scenario_ == Scenario::kStatus504) {
+                WriteText(out, "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n");
+                return;
+            }
+            if (scenario_ == Scenario::kStatus307) {
+                WriteText(out, "HTTP/1.1 307 Temporary Redirect\r\n"
+                               "Location: http://elsewhere/\r\n"
+                               "Content-Length: 0\r\n\r\n");
+                return;
+            }
+            // 200 scenarios.
+            if (scenario_ == Scenario::k200Chunked || scenario_ == Scenario::kIn101) {
+                if (!WriteText(out, "HTTP/1.1 200 OK\r\n"
+                                   "Transfer-Encoding: chunked\r\n"
+                                   "Content-Type: application/octet-stream\r\n"
+                                   "RDG-Connection-Id: {stub}\r\n\r\n")) {
+                    return;
+                }
+            } else if (scenario_ == Scenario::k200Plain) {
+                if (!WriteText(out, "HTTP/1.1 200 OK\r\n"
+                                   "Content-Type: application/octet-stream\r\n"
+                                   "RDG-Connection-Id: {stub}\r\n\r\n")) {
+                    return;
+                }
+            }
+            echo_mode = true;
+            break;
+        }
+        if (!echo_mode) return;
+        // Echo pump: wait for IN-decoded payloads, re-encode them downstream.
+        std::vector<uint8_t> payload;
+        const bool chunked =
+            scenario_ == Scenario::k200Chunked ||
+            (scenario_ == Scenario::kNtlm200);
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(mux_);
+                if (closed_) return;
+                if (echo_.empty()) {
+                    cv_.wait_for(lock, std::chrono::milliseconds(100));
+                    continue;
+                }
+                payload = std::move(echo_.front());
+                echo_.pop_front();
+            }
+            if (payload.empty()) continue;
+            if (chunked) {
+                const std::vector<uint8_t> frame = rtsc::proto::ChunkedEncodeChunk(
+                    payload.data(), payload.size());
+                if (!WriteBytes(out, frame)) return;
+            } else if (!WriteBytes(out, payload)) {
+                return;
+            }
+        }
+    }
+
+    void HandleIn(Transport& in) {
+        // Parse the first chunked frame(s) out of the stream; a real client
+        // streams indefinitely, so keep draining until the socket closes.
+        std::vector<uint8_t> head = ReadHead(in);
+        if (scenario_ == Scenario::kIn101) {
+            WriteText(in, "HTTP/1.1 101 Switching Protocols\r\n"
+                          "Upgrade: websocket\r\n"
+                          "Connection: Upgrade\r\n\r\n");
+            return;
+        }
+        WriteText(in, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        {
+            std::lock_guard<std::mutex> lock(mux_);
+            ++in_requests_;
+        }
+        // Read the rest as repeated "<hex>\r\n<data>\r\n" chunks; relay each
+        // decoded payload to the OUT echo queue. Everything before the head's
+        // terminating blank line is the request head, not chunk data.
+        std::vector<uint8_t> buf;
+        const size_t blank = FindBlank(head);
+        if (blank != std::string::npos) {
+            buf.assign(head.begin() + static_cast<ptrdiff_t>(blank) + 4,
+                       head.end());
+        } else {
+            buf = head;  // degenerate: no blank line observed; treat as data
+        }
+        for (;;) {
+            // Try to extract one complete chunk from the front.
+            size_t hex_end = 0;
+            while (hex_end + 1 < buf.size() &&
+                   !(buf[hex_end] == '\r' && buf[hex_end + 1] == '\n')) {
+                ++hex_end;
+            }
+            if (hex_end + 1 >= buf.size()) {
+                // Need more bytes.
+                uint8_t chunk[4096];
+                const int n = in.Read(chunk, sizeof(chunk));
+                if (n == kReadTimeout) {
+                    if (closed_) return;
+                    continue;
+                }
+                if (n <= 0) return;
+                buf.insert(buf.end(), chunk, chunk + n);
+                continue;
+            }
+            const std::string hex(buf.begin(),
+                                  buf.begin() + static_cast<ptrdiff_t>(hex_end));
+            const size_t data_off = hex_end + 2;
+            char* endp = nullptr;
+            const unsigned long len = std::strtoul(hex.c_str(), &endp, 16);
+            if (endp != hex.c_str() + hex.size()) {
+                buf.erase(buf.begin(), buf.begin() + data_off);
+                continue;  // junk: skip to the next line as best effort
+            }
+            if (len == 0) {
+                // Terminal 0-chunk.
+                return;
+            }
+            if (buf.size() < data_off + len + 2) {
+                uint8_t chunk[4096];
+                const int n = in.Read(chunk, sizeof(chunk));
+                if (n == kReadTimeout) {
+                    if (closed_) return;
+                    continue;
+                }
+                if (n <= 0) return;
+                buf.insert(buf.end(), chunk, chunk + n);
+                continue;
+            }
+            std::vector<uint8_t> payload(buf.begin() +
+                                             static_cast<ptrdiff_t>(data_off),
+                                         buf.begin() +
+                                             static_cast<ptrdiff_t>(data_off + len));
+            {
+                std::unique_lock<std::mutex> qlock(mux_);
+                echo_.push_back(std::move(payload));
+            }
+            cv_.notify_all();
+            // Consume "<hex>\r\n<data>\r\n".
+            buf.erase(buf.begin(),
+                      buf.begin() + static_cast<ptrdiff_t>(data_off + len + 2));
+        }
+    }
+
+    Scenario scenario_;
+    std::unique_ptr<rtsc::net::Listener> listener_;
+    uint16_t port_ = 0;
+    std::thread worker_;
+    std::shared_ptr<rtsc::net::Transport> out_;
+    std::shared_ptr<rtsc::net::Transport> in_;
+
+    mutable std::mutex mux_;
+    std::condition_variable cv_;
+    std::deque<std::vector<uint8_t>> echo_;
+    bool closed_ = false;
+    size_t out_requests_ = 0;
+    size_t in_requests_ = 0;
+    std::atomic<bool> type3_verified_{false};
 };
 
 }  // namespace
@@ -512,6 +1040,18 @@ RTSC_TEST(chunked_encode_is_byte_exact) {
 RTSC_TEST(chunked_encode_empty_is_just_the_terminator) {
     const std::vector<uint8_t> encoded = ChunkedEncode(nullptr, 0);
     CHECK(encoded == ToVec("0\r\n\r\n"));
+}
+
+RTSC_TEST(chunked_encode_chunk_omits_the_terminator) {
+    // The IN channel writes a persistent stream of chunks for the whole
+    // session; the 0-chunk would close the body, so per-write chunk framing
+    // omits it.
+    const std::string data = "hello";
+    const std::vector<uint8_t> chunk =
+        ChunkedEncodeChunk(reinterpret_cast<const uint8_t*>(data.data()),
+                           data.size());
+    CHECK(chunk == ToVec("5\r\nhello\r\n"));
+    CHECK(ChunkedEncodeChunk(nullptr, 0).empty());
 }
 
 RTSC_TEST(chunked_decode_external_wire_bytes) {
@@ -958,6 +1498,242 @@ RTSC_TEST(gateway_tunnel_connects_and_passes_through) {
 
     CHECK(tunnel.Write(payload.data(), payload.size()));
     CHECK_EQ(inner.written.size(), head.size() + payload.size());
+}
+
+// ---------------------------------------------------------------------------
+// RFC 6455 client frame codec (external wire bytes -> fields; never an
+// encode->decode self-round trip, which the project has recorded as a defect
+// pattern). Layout per [RFC 6455] section 5.2/5.3 (FIN / opcode / minimal
+// extended length / mask key / mask).
+// ---------------------------------------------------------------------------
+
+RTSC_TEST(websocket_encode_is_byte_exact_for_masked_hello) {
+    // The RFC 6455 "Hello" example: text frame (0x1), FIN set, mask bit set,
+    // 5-byte payload, mask key 37 fa 21 3d.
+    const std::vector<uint8_t> encoded =
+        WebSocketEncodeClientFrame(WebSocketOpcode::kText,
+                                   reinterpret_cast<const uint8_t*>("Hello"), 5,
+                                   0x37FA213Du);
+    CHECK(encoded == (std::vector<uint8_t>{0x81, 0x85, 0x37, 0xfa, 0x21,
+                                           0x3d, 0x7f, 0x9f, 0x4d, 0x51,
+                                           0x58}));
+}
+
+RTSC_TEST(websocket_encode_uses_minimal_126_length_form) {
+    // 200-byte binary payload: 126 extended (2-byte big-endian) length form.
+    std::vector<uint8_t> payload(200, 0xAB);
+    const std::vector<uint8_t> encoded =
+        WebSocketEncodeClientFrame(WebSocketOpcode::kBinary, payload.data(),
+                                   payload.size(), 0x01020304u);
+    CHECK_EQ(encoded.size(), static_cast<size_t>(2 + 2 + 4 + 200));
+    CHECK(encoded[0] == 0x82);
+    CHECK(encoded[1] == 0xFE);  // FIN+mask, 126 form
+    CHECK(encoded[2] == 0x00);
+    CHECK(encoded[3] == 0xC8);  // 200 big-endian
+    // The RFC 6455 mask: payload[i] XOR key[i % 4]. 2 header + 2 length
+    // + 4 key bytes precede the payload.
+    const uint8_t key[4] = {0x01, 0x02, 0x03, 0x04};
+    for (size_t i = 0; i < payload.size(); ++i) {
+        CHECK(encoded[8 + i] ==
+              static_cast<uint8_t>(payload[i] ^ key[i % 4]));
+    }
+}
+
+RTSC_TEST(websocket_encode_uses_minimal_127_length_form) {
+    // 70000-byte payload crosses 0xFFFF: 127 extended (8-byte big-endian).
+    const size_t n = 70000;
+    std::vector<uint8_t> payload(n, 0x01);
+    const std::vector<uint8_t> encoded =
+        WebSocketEncodeClientFrame(WebSocketOpcode::kBinary, payload.data(), n,
+                                   0u);
+    CHECK_EQ(encoded.size(), static_cast<size_t>(2 + 8 + 4 + n));
+    CHECK(encoded[0] == 0x82);
+    CHECK(encoded[1] == 0xFF);  // 127 form
+    CHECK(encoded[2] == 0x00);
+    CHECK(encoded[3] == 0x00);
+    CHECK(encoded[4] == 0x00);
+    CHECK(encoded[5] == 0x00);
+    CHECK(encoded[6] == 0x00);
+    CHECK(encoded[7] == 0x01);
+    CHECK(encoded[8] == 0x11);
+    CHECK(encoded[9] == 0x70);  // 70000 = 0x11170 big-endian
+}
+
+RTSC_TEST(websocket_decode_masked_hello_from_wire) {
+    // The RFC 6455 masked "Hello" example, decoded as opaque wire bytes.
+    // (Byte list form: adjacent "\xNN\xNN" hex escapes would merge in C++.)
+    WebSocketFrameDecoder decoder;
+    const std::vector<WebSocketFrame> frames =
+        decoder.Feed(std::vector<uint8_t>{
+            0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58});
+    CHECK(!decoder.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(1));
+    CHECK(frames[0].fin);
+    CHECK(frames[0].opcode == WebSocketOpcode::kText);
+    CHECK(frames[0].payload == ToVec("Hello"));
+    CHECK_EQ(decoder.frames_parsed(), static_cast<size_t>(1));
+}
+
+RTSC_TEST(websocket_decode_unmasked_binary_frame) {
+    // A server->client binary frame is NOT masked: opcode 2, 3 payload bytes.
+    WebSocketFrameDecoder decoder;
+    const std::vector<WebSocketFrame> frames =
+        decoder.Feed(std::vector<uint8_t>{0x82, 0x03, 0x01, 0x02, 0x03});
+    CHECK(!decoder.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(1));
+    CHECK(frames[0].opcode == WebSocketOpcode::kBinary);
+    const std::vector<uint8_t> want = {0x01, 0x02, 0x03};
+    CHECK(frames[0].payload == want);
+}
+
+RTSC_TEST(websocket_decode_126_length_frame_across_fragments) {
+    // 200-byte unmasked frame fed one byte at a time (incremental). Only the
+    // very last byte can complete the frame; every earlier feed is partial.
+    WebSocketFrameDecoder decoder;
+    std::vector<uint8_t> payload(200, 0x11);
+    std::vector<uint8_t> wire = {0x82, 0x7E, 0x00, 0xC8};
+    wire.insert(wire.end(), payload.begin(), payload.end());
+    bool completed = false;
+    for (size_t i = 0; i < wire.size(); ++i) {
+        const std::vector<WebSocketFrame> frames =
+            decoder.Feed(&wire[i], 1);
+        CHECK(!decoder.failed());
+        if (i + 1 != wire.size()) {
+            CHECK(frames.empty());  // still partial
+        } else if (!frames.empty()) {
+            completed = true;
+        }
+    }
+    CHECK(completed);
+    CHECK_EQ(decoder.frames_parsed(), static_cast<size_t>(1));
+}
+
+RTSC_TEST(websocket_decode_rejects_oversized_64bit_length) {
+    // 127 form announcing 2^56 payload bytes (well above the 16 MiB cap) must
+    // be rejected from the header alone, before any body could be buffered.
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0x82, 0x7F, 0x01, 0x00, 0x00, 0x00,
+                                      0x00, 0x00, 0x00, 0x00});
+    CHECK(decoder.failed());
+    CHECK(decoder.error() == WebSocketError::kPayloadTooLarge);
+}
+
+RTSC_TEST(websocket_decode_rejects_non_minimal_length_encoding) {
+    // A 2-byte payload carried in the 127 form (fits in the 7-bit form) is a
+    // non-minimal length encoding; a 200-byte payload in the 127 form (fits in
+    // 126 form) is too. Both are rejected.
+    WebSocketFrameDecoder first;
+    first.Feed(std::vector<uint8_t>{0x82, 0x7F, 0x00, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x02});
+    CHECK(first.error() == WebSocketError::kNonMinimalLength);
+
+    WebSocketFrameDecoder second;
+    second.Feed(std::vector<uint8_t>{0x82, 0x7E, 0x00, 0x01});
+    CHECK(second.error() == WebSocketError::kNonMinimalLength);
+}
+
+RTSC_TEST(websocket_decode_rejects_non_minimal_126_form) {
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0x82, 0x7E, 0x00, 0x01, 0xAB});
+    CHECK(decoder.error() == WebSocketError::kNonMinimalLength);
+    CHECK(decoder.failed());
+}
+
+RTSC_TEST(websocket_decode_rejects_invalid_opcode) {
+    // 0x3 is not in the whitelist {0,1,2,8,9,10}; 0xB is a reserved control
+    // ranking that is also not offered.
+    WebSocketFrameDecoder bad;
+    bad.Feed(std::vector<uint8_t>{0x83, 0x00});
+    CHECK(bad.error() == WebSocketError::kInvalidOpcode);
+
+    WebSocketFrameDecoder reserved;
+    reserved.Feed(std::vector<uint8_t>{0x8B, 0x00});
+    CHECK(reserved.error() == WebSocketError::kInvalidOpcode);
+}
+
+RTSC_TEST(websocket_decode_rejects_reserved_bits) {
+    // RSV1 set (0x40) but no extension was negotiated.
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0xC1, 0x00});
+    CHECK(decoder.error() == WebSocketError::kReservedBits);
+}
+
+RTSC_TEST(websocket_decode_rejects_control_frame_without_fin) {
+    // Ping (opcode 9) with FIN==0 is illegal: control frames MUST be FIN.
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0x09, 0x00});
+    CHECK(decoder.error() == WebSocketError::kControlFrameNotFinal);
+}
+
+RTSC_TEST(websocket_decode_rejects_oversized_control_frame) {
+    // A close frame (opcode 8) announcing 126 payload bytes: control frames
+    // MUST carry at most 125.
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0x88, 0x7E, 0x00, 0x7E});
+    CHECK(decoder.error() == WebSocketError::kControlFrameTooLarge);
+
+    // A ping with an extended 126 length but only the first two header bytes
+    // so far: the parse must wait for the extended length (still benign).
+    WebSocketFrameDecoder ping;
+    ping.Feed(std::vector<uint8_t>{0x89, 0x7E});
+    CHECK(!ping.failed());
+    CHECK(ping.error() == WebSocketError::kNone);
+}
+
+RTSC_TEST(websocket_decode_control_frame_ping_payload) {
+    // A valid ping with a 2-byte payload.
+    WebSocketFrameDecoder decoder;
+    const std::vector<WebSocketFrame> frames =
+        decoder.Feed(std::vector<uint8_t>{0x89, 0x02, 0xAB, 0xCD});
+    CHECK(!decoder.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(1));
+    CHECK(frames[0].opcode == WebSocketOpcode::kPing);
+    const std::vector<uint8_t> want = {0xAB, 0xCD};
+    CHECK(frames[0].payload == want);
+}
+
+RTSC_TEST(websocket_decode_truncation_latches_on_stream_end) {
+    WebSocketFrameDecoder decoder;
+    decoder.Feed(std::vector<uint8_t>{0x82, 0x05, 0x01, 0x02});  // 5 declared, 2 given
+    CHECK(!decoder.failed());
+    decoder.EndOfStream();
+    CHECK(decoder.failed());
+    CHECK(decoder.error() == WebSocketError::kTruncated);
+}
+
+RTSC_TEST(websocket_decode_racked_masked_frames) {
+    // Two masked frames back to back in one feed parse as two frames.
+    WebSocketFrameDecoder decoder;
+    const std::vector<WebSocketFrame> frames = decoder.Feed(
+        std::vector<uint8_t>{0x81, 0x81, 0x00, 0x00, 0x00, 0x00, 0x41,  // 'A'
+                             0x82, 0x81, 0x00, 0x00, 0x00, 0x00, 0x42});  // 'B'
+    CHECK(!decoder.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(2));
+    CHECK(frames[0].opcode == WebSocketOpcode::kText);
+    CHECK(frames[0].payload == ToVec("A"));
+    CHECK(frames[1].opcode == WebSocketOpcode::kBinary);
+    CHECK(frames[1].payload == ToVec("B"));
+}
+
+RTSC_TEST(gateway_tunnel_rejects_injected_request_with_clear_error) {
+    // D-A1/D-A4: a builder rejection (CRLF/NUL in a header value) must fail the
+    // handshake with a *distinguishable* error (contains "CRLF"/"reject"), never
+    // a silent empty Write() that burns the connection budget and ends with an
+    // unhelpful "timed out".
+    MockTransport inner;
+    inner.to_read = HttpResponse(200, "OK");  // never sent: the request is rejected
+    GatewayTunnel::Config config;
+    config.target = "server\r\nX-Injected: 1";
+    config.gateway_host = "gateway.example:443";
+    config.user_agent = "rtsc";
+    GatewayTunnel tunnel(inner, config);
+
+    CHECK(!tunnel.open());
+    CHECK(tunnel.error().find("CRLF") != std::string::npos ||
+          tunnel.error().find("reject") != std::string::npos);
+    CHECK(tunnel.error().find("timed out") == std::string::npos);
+    CHECK(tunnel.error().find("too many reads") == std::string::npos);
+    CHECK(inner.written.empty());  // noting reached the wire
 }
 
 RTSC_TEST(gateway_tunnel_rejects_non_200_response) {
@@ -1884,6 +2660,683 @@ RTSC_TEST(gateway_data_path_idle_is_not_a_peer_close) {
     // the inactivity one.
     CHECK(tunnel.error().find("no progress") == std::string::npos);
     CHECK(tunnel.error().empty());
+}
+
+// ---------------------------------------------------------------------------
+// RdgspTransport: scripted-seam unit tests (deterministic, no sockets).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using ConfigT = rtsc::net::RdgspTransport::Config;
+
+// The connector owns the alias; the alias keeps the shared ScriptedRdgsp alive
+// for the transport's lifetime, and the test's own shared_ptr outlives it, so
+// nothing is double-freed and the plug frees the ScriptedRdgsp.
+class ScriptedRdgspAlias : public Transport {
+ public:
+    explicit ScriptedRdgspAlias(std::shared_ptr<ScriptedRdgsp> inner)
+        : inner_(std::move(inner)) {}
+    int Read(uint8_t* buf, size_t size) override {
+        return inner_->Read(buf, size);
+    }
+    bool Write(const uint8_t* data, size_t size) override {
+        return inner_->Write(data, size);
+    }
+    void Close() override { inner_->Close(); }
+
+ private:
+    std::shared_ptr<ScriptedRdgsp> inner_;
+};
+
+std::function<std::unique_ptr<Transport>(std::string&)> AliasConnector(
+    const std::shared_ptr<ScriptedRdgsp>& sp) {
+    return [sp](std::string&) -> std::unique_ptr<Transport> {
+        return std::make_unique<ScriptedRdgspAlias>(sp);
+    };
+}
+
+ConfigT RdgspTestConfig(const std::shared_ptr<ScriptedRdgsp>& out,
+                        const std::shared_ptr<ScriptedRdgsp>& in) {
+    ConfigT c;
+    c.host = "gw.example";
+    c.port = 443;
+    c.connection_id = "{958F92D8-DA20-467a-BBE3-65E7E9B4EDCF}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 2000;
+    c.deadlines.auth_ms = 2000;
+    c.connect_out = AliasConnector(out);
+    c.connect_in = AliasConnector(in);
+    return c;
+}
+
+const char* kOutHead200Chunked =
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+    "Content-Type: application/octet-stream\r\n"
+    "RDG-Connection-Id: {stub}\r\n\r\n";
+
+const char* kInHead200 =
+    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+
+const char* kOutHead200Plain =
+    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+
+}  // namespace
+
+RTSC_TEST(rdgsp_connect_chunked_roundtrip) {
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply(kOutHead200Chunked);
+    out->Reply("3\r\nabc\r\n");
+    out->Reply("5\r\n12345\r\n");
+    in->Reply(kInHead200);
+
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.mode() == rtsc::net::RdgspTransport::Mode::kChunked);
+    CHECK(!t.upgraded());
+    CHECK(t.connected());
+
+    uint8_t buf[64] = {};
+    int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 3);
+    if (n == 3) CHECK(std::memcmp(buf, "abc", 3) == 0);
+    n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 5);
+    if (n == 5) CHECK(std::memcmp(buf, "12345", 5) == 0);
+
+    CHECK(t.Write(reinterpret_cast<const uint8_t*>("xyz"), 3));
+    // IN channel: write #1 is the request head, write #2 is the chunk frame.
+    CHECK_EQ(in->requests().size(), static_cast<size_t>(2));
+    const std::string in_head = RequestText(in->requests()[0]);
+    CHECK(in_head.find("Transfer-Encoding: chunked\r\n") != std::string::npos);
+    CHECK(RequestText(in->requests()[1]) == "3\r\nxyz\r\n");
+}
+
+RTSC_TEST(rdgsp_in_channel_streams_chunked_request_chunks) {
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply(kOutHead200Chunked);
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+
+    const std::string payload(20, 'B');
+    CHECK(t.Write(reinterpret_cast<const uint8_t*>(payload.data()),
+                  payload.size()));
+    // The body write is a single chunk ("14\r\n<20 bytes>\r\n"), never the
+    // terminating 0-chunk, and it is a separate write after the request head.
+    CHECK_EQ(in->requests().size(), static_cast<size_t>(2));
+    CHECK(RequestText(in->requests()[1]) == "14\r\n" + payload + "\r\n");
+}
+
+RTSC_TEST(rdgsp_rejects_injected_request_clearly) {
+    // D-A4/D-A1 for the RDGSP builder: a CRLF in a header value must fail
+    // Connect() with a distinguishable error ("CRLF"/"reject"), never a
+    // "timed out" / "too many reads".
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply(kOutHead200Chunked);
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    c.connection_id = "CID\r\nX-Injected: 1";  // hostile value
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK(err.find("CRLF") != std::string::npos ||
+          err.find("reject") != std::string::npos);
+    CHECK(err.find("timed out") == std::string::npos);
+    CHECK(err.find("too many reads") == std::string::npos);
+    CHECK(out->requests().empty());  // nothing reached the wire
+}
+
+RTSC_TEST(rdgsp_401_retry_cap_fails) {
+    // D-A8 / mutation probe: an always-401 gateway must exhaust max_auth_retries
+    // and fail with 0x80070005, never hang or (worse) succeed.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    for (int i = 0; i < 8; ++i) {
+        out->Reply("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: NTLM\r\n"
+                   "Content-Length: 0\r\n\r\n");
+    }
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    c.max_auth_retries = 3;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80070005u);
+    CHECK(err.find("retries") != std::string::npos);
+    CHECK_EQ(t.auth_retry_count(), 3);
+    // Exactly max_auth_retries 401 rounds were answered before the failure.
+    CHECK(out->requests().size() <= 5u);
+}
+
+RTSC_TEST(rdgsp_in_101_is_hard_error) {
+    // Evidence FUN_1801bfd60:158-170: a WebSocket upgrade on the IN channel is
+    // a hard error, never a silent mode switch.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply(kOutHead200Chunked);
+    in->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+              "Connection: Upgrade\r\n\r\n");
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80190000u | 101u);
+    CHECK(err.find("switch protocols for IN channel") != std::string::npos);
+    CHECK(!t.connected());
+}
+
+RTSC_TEST(rdgsp_307_is_not_followed) {
+    // Zero-follow (SSRF defence): a 307 is mapped, never retried elsewhere.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://evil/\r\n"
+               "Content-Length: 0\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80190000u | 307u);
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(1));  // felt once
+}
+
+RTSC_TEST(rdgsp_status_codes_map_to_hresult) {
+    const struct {
+        const char* head;
+        uint32_t hr;
+    } cases[] = {
+        {"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+         0x80190000u | 403u},
+        {"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+         0x800706C1u},
+        {"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n", 0x800706BAu},
+        {"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n",
+         0x800706BAu},
+    };
+    for (const auto& c : cases) {
+        auto out = std::make_shared<ScriptedRdgsp>();
+        auto in = std::make_shared<ScriptedRdgsp>();
+        out->Reply(c.head);
+        in->Reply(kInHead200);
+        ConfigT cfg = RdgspTestConfig(out, in);
+        rtsc::net::RdgspTransport t(cfg);
+        std::string err;
+        CHECK(!t.Connect(err));
+        CHECK_EQ(t.hresult(), c.hr);
+    }
+}
+
+RTSC_TEST(rdgsp_ntlm_three_legs_over_scripted_seam) {
+    // RFC 4559: 401 (no token) -> client type-1 -> 401+base64(type-2) -> client
+    // type-3 -> 200. The type-3 message must structurally decode and carry an
+    // NT response.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: NTLM\r\n"
+               "Content-Length: 0\r\n\r\n");
+    out->Reply("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: NTLM " +
+                   StubNtlmType2Base64() + "\r\nContent-Length: 0\r\n\r\n");
+    out->Reply(kOutHead200Plain);
+    in->Reply(kInHead200);
+
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(3));
+
+    {
+        std::string token;
+        CHECK(NtlmTokenFromRequest(out->requests()[1], token));
+        CHECK(!token.empty());
+    }
+    rtsc::credssp::AuthenticateMessage auth;
+    CHECK(DecodeNtlmType3FromRequest(out->requests()[2], auth));
+    CHECK(!auth.nt_response.empty());
+    CHECK(auth.user == "user");
+    CHECK(auth.domain == "DOM");
+
+    const std::string text = RequestText(out->requests()[0]);
+    CHECK(text.find("Authorization:") == std::string::npos);
+}
+
+RTSC_TEST(rdgsp_chunked_half_eof_reports_truncation) {
+    // A chunked body that ends mid-chunk is a hard error (-1), not an EOF.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply(kOutHead200Chunked);
+    out->Reply("5\r\nAB");  // declares 5 bytes, delivers 2
+    out->CloseOnNextRead();
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    if (!err.empty()) std::printf("  half-eof connect error: %s\n", err.c_str());
+
+    uint8_t buf[64];
+    // The two delivered bytes of the truncated chunk surface first...
+    const int partial = t.Read(buf, sizeof(buf));
+    CHECK_EQ(partial, 2);
+    if (partial == 2) CHECK(std::memcmp(buf, "AB", 2) == 0);
+    // ...then the mid-chunk EOF latches as a hard truncation error (-1).
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, -1);
+    CHECK(t.error().find("truncat") != std::string::npos);
+}
+
+RTSC_TEST(rdgsp_upgraded_101_reads_and_writes_websocket_frames) {
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\n\r\n");
+    // Server->client data frame: unmasked binary, 5-byte payload "hello".
+    out->Reply(std::vector<uint8_t>{0x82, 0x05, 'h', 'e', 'l', 'l', 'o'});
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.upgraded());
+    CHECK(t.mode() == rtsc::net::RdgspTransport::Mode::kUpgraded);
+
+    uint8_t buf[64] = {};
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 5);
+    if (n == 5) CHECK(std::memcmp(buf, "hello", 5) == 0);
+
+    // Client->server: a MASKED websocket binary frame lands on OUT as a write
+    // after the OUT request head.
+    CHECK(t.Write(reinterpret_cast<const uint8_t*>("hi"), 2));
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(2));
+    const std::vector<uint8_t>& frame_bytes = out->requests()[1];
+    rtsc::proto::WebSocketFrameDecoder dec;
+    const std::vector<rtsc::proto::WebSocketFrame> frames =
+        dec.Feed(frame_bytes.data(), frame_bytes.size());
+    CHECK(!dec.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(1));
+    if (frames.size() == 1) {
+        CHECK(frames[0].opcode == rtsc::proto::WebSocketOpcode::kBinary);
+        CHECK(frames[0].fin);
+        CHECK(frames[0].payload == ToVec("hi"));
+    }
+}
+
+RTSC_TEST(rdgsp_upgraded_each_frame_gets_a_fresh_mask) {
+    // RFC 6455 5.3: each client frame carries its own mask key. One Write that
+    // spans two frames (16 MiB + 1) used to reuse a single key for both.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.upgraded());
+
+    const size_t kPayload =
+        static_cast<size_t>(rtsc::proto::kMaxWebSocketPayloadBytes) + 1;
+    std::vector<uint8_t> payload(kPayload, 0x5A);
+    CHECK(t.Write(payload.data(), payload.size()));
+
+    // ScriptedRdgsp records one entry per Write: [0] = request head,
+    // [1] = first frame, [2] = second frame.
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(3));
+    if (out->requests().size() == 3) {
+        const std::vector<uint8_t>& first = out->requests()[1];
+        const std::vector<uint8_t>& second = out->requests()[2];
+        // Frame 1: 0x82, 0x80|127, 8-byte length, 4-byte mask, 16 MiB payload.
+        CHECK_EQ(first.size(), static_cast<size_t>(2 + 8 + 4) + kPayload - 1);
+        // Frame 2: 0x82, 0x80|1, 4-byte mask, 1-byte payload.
+        CHECK_EQ(second.size(), static_cast<size_t>(2 + 4 + 1));
+        if (first.size() >= 14 && second.size() >= 6) {
+            CHECK(std::memcmp(first.data() + 10, second.data() + 2, 4) != 0);
+        }
+    }
+}
+
+RTSC_TEST(rdgsp_upgraded_write_can_stay_on_in) {
+    // upgrade_steals_write=false: in kUpgraded the write side keeps using the
+    // IN channel (the "IN keeps a management stream" fallback, UNVERIFIED).
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    c.upgrade_steals_write = false;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.upgraded());
+
+    // The write must land on the IN transport (as a WS frame), not OUT; write #1
+    // on IN is the request head, write #2 is the frame.
+    CHECK(t.Write(reinterpret_cast<const uint8_t*>("in"), 2));
+    CHECK_EQ(out->requests().size(), static_cast<size_t>(1));  // only the head
+    CHECK_EQ(in->requests().size(), static_cast<size_t>(2));
+    rtsc::proto::WebSocketFrameDecoder dec;
+    const std::vector<rtsc::proto::WebSocketFrame> frames =
+        dec.Feed(in->requests()[1].data(), in->requests()[1].size());
+    CHECK(!dec.failed());
+    CHECK_EQ(frames.size(), static_cast<size_t>(1));
+    if (frames.size() == 1) CHECK(frames[0].payload == ToVec("in"));
+}
+
+RTSC_TEST(rdgsp_unsupported_auth_scheme_fails_explicitly) {
+    // Negotiate / Claims are not implemented: explicit 0x80004001, never a
+    // silent skip.
+    auto out = std::make_shared<ScriptedRdgsp>();
+    auto in = std::make_shared<ScriptedRdgsp>();
+    out->Reply("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Negotiate\r\n"
+               "Content-Length: 0\r\n\r\n");
+    in->Reply(kInHead200);
+    ConfigT c = RdgspTestConfig(out, in);
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80004001u);
+    CHECK(err.find("unsupported") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// StubGateway end-to-end over real loopback TCP (cleartext http, the factory's
+// +0x6a8==0 mode).
+// ---------------------------------------------------------------------------
+
+RTSC_TEST(stub_gateway_200_chunked_byte_roundtrip) {
+    StubGateway gw(StubGateway::Scenario::k200Chunked);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    CHECK(t.mode() == rtsc::net::RdgspTransport::Mode::kChunked);
+
+    const uint8_t payload[] = {'h', 'e', 'l', 'l', 'o', '!', 0x7F,
+                               0x00, 0xFF};
+    CHECK(t.Write(payload, sizeof(payload)));
+
+    uint8_t buf[64] = {};
+    size_t got = 0;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (got < sizeof(payload) && std::chrono::steady_clock::now() < deadline) {
+        const int n = t.Read(buf + got, sizeof(buf) - got);
+        if (n == kReadTimeout) continue;
+        if (n <= 0) break;
+        got += static_cast<size_t>(n);
+    }
+    CHECK_EQ(got, sizeof(payload));
+    if (got == sizeof(payload)) {
+        CHECK(std::memcmp(buf, payload, sizeof(payload)) == 0);
+    }
+    gw.Stop();
+}
+
+RTSC_TEST(stub_gateway_plain_response_falls_back_to_raw) {
+    // The OUT response carrying no Transfer-Encoding is passed through raw
+    // (plain fallback), so an echo round-trips without chunked framing.
+    StubGateway gw(StubGateway::Scenario::k200Plain);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+
+    const uint8_t payload[] = {'p', 'l', 'a', 'i', 'n'};
+    CHECK(t.Write(payload, sizeof(payload)));
+    uint8_t buf[32] = {};
+    size_t got = 0;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (got < sizeof(payload) && std::chrono::steady_clock::now() < deadline) {
+        const int n = t.Read(buf + got, sizeof(buf) - got);
+        if (n == kReadTimeout) continue;
+        if (n <= 0) break;
+        got += static_cast<size_t>(n);
+    }
+    CHECK_EQ(got, sizeof(payload));
+    if (got == sizeof(payload)) {
+        CHECK(std::memcmp(buf, payload, sizeof(payload)) == 0);
+    }
+    gw.Stop();
+}
+
+RTSC_TEST(stub_gateway_ntlm_three_legs_end_to_end) {
+    StubGateway gw(StubGateway::Scenario::kNtlm200);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+    if (!err.empty()) std::printf("  ntlm e2e connect error: %s\n", err.c_str());
+    CHECK(gw.type3_verified());
+
+    const uint8_t fb[] = {'N', 'T', 'L', 'M'};
+    CHECK(t.Write(fb, sizeof(fb)));
+    uint8_t buf[16] = {};
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    size_t got = 0;
+    while (got < sizeof(fb) && std::chrono::steady_clock::now() < deadline) {
+        const int n = t.Read(buf + got, sizeof(buf) - got);
+        if (n == kReadTimeout) continue;
+        if (n <= 0) break;
+        got += static_cast<size_t>(n);
+    }
+    CHECK_EQ(got, sizeof(fb));
+    gw.Stop();
+}
+
+RTSC_TEST(stub_gateway_in_101_is_hard_error) {
+    StubGateway gw(StubGateway::Scenario::kIn101);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80190000u | 101u);
+    CHECK(err.find("switch protocols for IN channel") != std::string::npos);
+    gw.Stop();
+}
+
+RTSC_TEST(stub_gateway_401_cap_end_to_end) {
+    StubGateway gw(StubGateway::Scenario::k401Always);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.max_auth_retries = 3;
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(!t.Connect(err));
+    CHECK_EQ(t.hresult(), 0x80070005u);
+    CHECK_EQ(t.auth_retry_count(), 3);
+    gw.Stop();
+}
+
+RTSC_TEST(stub_gateway_status_mapping_end_to_end) {
+    const struct {
+        StubGateway::Scenario s;
+        uint32_t hr;
+    } cases[] = {
+        {StubGateway::Scenario::kStatus403, 0x80190000u | 403u},
+        {StubGateway::Scenario::kStatus407, 0x800706C1u},
+        {StubGateway::Scenario::kStatus502, 0x800706BAu},
+        {StubGateway::Scenario::kStatus504, 0x800706BAu},
+        {StubGateway::Scenario::kStatus307, 0x80190000u | 307u},
+    };
+    for (const auto& c : cases) {
+        StubGateway gw(c.s);
+        std::string ger;
+        CHECK(gw.Start(ger));
+        ConfigT cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = gw.bound_port();
+        cfg.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+        cfg.domain = "DOM";
+        cfg.user_name = "user";
+        cfg.password = "pass";
+        cfg.deadlines.response_ms = 3000;
+        rtsc::net::RdgspTransport t(cfg);
+        std::string err;
+        CHECK(!t.Connect(err));
+        CHECK_EQ(t.hresult(), c.hr);
+        gw.Stop();
+    }
+}
+
+RTSC_TEST(stub_gateway_large_bidirectional_no_deadlock) {
+    // Dual-connection proof: sustained bidirectional traffic over one transport
+    // must never deadlock (each direction has its own connection). A time gate
+    // turns any stall into a test failure instead of a hang.
+    StubGateway gw(StubGateway::Scenario::k200Chunked);
+    std::string ger;
+    CHECK(gw.Start(ger));
+    ConfigT c;
+    c.host = "127.0.0.1";
+    c.port = gw.bound_port();
+    c.connection_id = "{75869ED5-4E6B-4E2E-a17a-e955e8b5c399}";
+    c.domain = "DOM";
+    c.user_name = "user";
+    c.password = "pass";
+    c.deadlines.response_ms = 3000;
+    rtsc::net::RdgspTransport t(c);
+    std::string err;
+    CHECK(t.Connect(err));
+
+    const size_t kBlock = 256 * 1024;
+    std::vector<uint8_t> payload(kBlock);
+    for (size_t i = 0; i < kBlock; ++i) {
+        payload[i] = static_cast<uint8_t>(i * 7 + 3);
+    }
+
+    std::atomic<bool> write_ok{false};
+    std::atomic<bool> read_ok{false};
+    std::thread writer([&] {
+        size_t off = 0;
+        while (off < payload.size()) {
+            const size_t n = (std::min)(static_cast<size_t>(16384),
+                                        payload.size() - off);
+            if (!t.Write(payload.data() + off, n)) return;
+            off += n;
+        }
+        write_ok.store(true);
+    });
+    std::thread reader([&] {
+        std::vector<uint8_t> got;
+        got.reserve(kBlock);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (got.size() < kBlock &&
+               std::chrono::steady_clock::now() < deadline) {
+            uint8_t buf[8192];
+            const int n = t.Read(buf, sizeof(buf));
+            if (n == kReadTimeout) continue;
+            if (n <= 0) return;
+            got.insert(got.end(), buf, buf + n);
+        }
+        if (got.size() == kBlock &&
+            std::memcmp(got.data(), payload.data(), kBlock) == 0) {
+            read_ok.store(true);
+        }
+    });
+    writer.join();
+    reader.join();
+    CHECK(write_ok.load());
+    CHECK(read_ok.load());
+    gw.Stop();
+}
+
+RTSC_TEST(tls_byte_transport_write_retries_until_all_consumed) {
+    // The TLS backend may consume only part of one Send call and still report
+    // kOk (OpenSSL WANT_READ). The adaptor must feed the tail until the whole
+    // buffer went out: claiming success after 40/100 bytes loses the stream.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    auto tls = std::make_unique<ScriptedTls>(40, 0);
+    ScriptedTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    std::vector<uint8_t> payload(100, 0x42);
+    const bool ok = t.Write(payload.data(), payload.size());
+    CHECK(ok);
+    CHECK_EQ(rawp->written.size(), static_cast<size_t>(100));
+    CHECK_EQ(tlsp->consumed_total, static_cast<size_t>(100));
+    CHECK(tlsp->send_calls > 1);
+}
+
+RTSC_TEST(tls_byte_transport_read_buffers_the_tail) {
+    // max_out is a soft threshold: the backend may return one extra record
+    // (516 bytes for a 16-byte buffer). The adaptor must retain the remainder
+    // and serve it on later reads instead of dropping it.
+    auto raw = std::make_unique<MockTransport>();
+    auto tls = std::make_unique<ScriptedTls>(0, 500);
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    uint8_t buf[16];
+    size_t delivered = 0;
+    for (int i = 0; i < 100 && delivered < 516; ++i) {
+        const int n = t.Read(buf, sizeof(buf));
+        if (n <= 0) break;
+        delivered += static_cast<size_t>(n);
+    }
+    CHECK_EQ(delivered, static_cast<size_t>(516));
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }

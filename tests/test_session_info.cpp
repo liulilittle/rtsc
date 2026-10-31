@@ -133,6 +133,19 @@ RTSC_TEST(session_info_gateway_is_not_in_use) {
     CHECK(si.gateway_logon_method == "没有在使用中");
 }
 
+RTSC_TEST(session_info_gateway_reflects_the_tunnel) {
+    // Stage-2 (E): with an RD Gateway in use the dialog reports the real
+    // gateway authority and the authentication method, not "没有在使用中".
+    SessionInfoInput in;
+    in.host = "target.example";
+    in.gateway_name = "gw.example:443";
+    in.gateway_logon_method = "NTLM (RDGSP)";
+    const SessionInfo si = CollectSessionInfo(in, 0);
+    CHECK(si.gateway_name == "gw.example:443");
+    CHECK(si.gateway_logon_method == "NTLM (RDGSP)");
+    CHECK(si.remote_computer == "target.example");
+}
+
 RTSC_TEST(session_info_client_version_matches_the_macro) {
     const SessionInfo si = CollectSessionInfo({}, 0);
     CHECK(Contains(si.client_version, RTSC_VERSION_STRING));

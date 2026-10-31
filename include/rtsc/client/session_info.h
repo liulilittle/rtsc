@@ -34,6 +34,11 @@ namespace rtsc::client {
 struct SessionInfoInput {
     std::string host;          // the remote computer (from the command line)
     std::string local_os;      // override for tests; empty asks LocalOsString()
+    // RD Gateway: when the connection was tunnelled through an RD Gateway, the
+    // gateway authority (host:port) and the authentication method it used.
+    // Empty means "no gateway", reported as "没有在使用中".
+    std::string gateway_name;
+    std::string gateway_logon_method;
     double frames_per_second = 0.0;
     bool has_rtt = false;
     double rtt_ms = 0.0;

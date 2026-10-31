@@ -94,4 +94,15 @@ void ByteWriter::u32le(uint32_t v) {
     buf_.push_back(static_cast<uint8_t>(v >> 24));
 }
 
+void ByteWriter::u64be(uint64_t v) {
+    buf_.push_back(static_cast<uint8_t>(v >> 56));
+    buf_.push_back(static_cast<uint8_t>((v >> 48) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>((v >> 40) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>((v >> 32) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    buf_.push_back(static_cast<uint8_t>(v & 0xFF));
+}
+
 }  // namespace rtsc::proto

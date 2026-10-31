@@ -52,6 +52,7 @@ public:
     void u16le(uint16_t v);
     void u32be(uint32_t v);
     void u32le(uint32_t v);
+    void u64be(uint64_t v);
     void bytes(const uint8_t* p, size_t n) { buf_.insert(buf_.end(), p, p + n); }
 
     size_t size() const { return buf_.size(); }

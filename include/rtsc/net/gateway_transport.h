@@ -21,10 +21,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "rtsc/net/tls.h"
 #include "rtsc/net/transport.h"
 #include "rtsc/proto/gateway.h"
 
@@ -214,6 +216,231 @@ class GatewayTunnel : public Transport {
     // Bytes that arrived after the CONNECT response head (the server may
     // pipeline the first RDP flight with its response).
     std::vector<uint8_t> leftover_;
+};
+
+// A byte transport wrapped in a TLS layer (the RD Gateway's OUTER TLS). The
+// gateway handshake and the inner RDP TLS/CredSSP run over the *plaintext* of
+// this transport. Pure composition: the TLS logic is deferred to rtsc::tls
+// backends (SChannel / OpenSSL), this class only shuttles bytes and drains
+// records after the handshake.
+class TlsByteTransport : public Transport {
+ public:
+    // Wraps `raw` and completes the TLS handshake before returning. On failure
+    // returns nullptr and fills `error` (the caller keeps ownership failure
+    // details, not the transport). `handshake_timeout_ms` bounds the whole
+    // handshake; a peer that goes silent burns the bound, never the caller.
+    static std::unique_ptr<Transport> Wrap(
+        std::unique_ptr<Transport> raw, const rtsc::tls::Config& tls_config,
+        std::string& error, int handshake_timeout_ms = 30000);
+
+    // Test seam: builds the adaptor from an already-created TLS stack (the
+    // tests inject a scripted TlsTransport) and completes the handshake now.
+    TlsByteTransport(std::unique_ptr<Transport> raw,
+                     std::unique_ptr<rtsc::tls::TlsTransport> tls,
+                     std::string& error,
+                     int handshake_timeout_ms = 30000);
+
+    TlsByteTransport(const TlsByteTransport&) = delete;
+    TlsByteTransport& operator=(const TlsByteTransport&) = delete;
+
+    int Read(uint8_t* buf, size_t size) override;
+    bool Write(const uint8_t* data, size_t size) override;
+    void Close() override;
+
+    // Drive the TLS handshake over `raw_`: pump the TLS stack with the raw
+    // transport's bytes and write the stack's handshake output. True on
+    // completion. `error_` is set on failure.
+    bool PerformHandshake(int handshake_timeout_ms);
+
+ private:
+    // Copies at most `size` bytes out of `plaintext` and keeps the remainder in
+    // pending_: the TLS contract calls max_out a soft threshold ("actual append
+    // may exceed it by up to one record"), so over-produced plaintext must be
+    // retained rather than discarded.
+    int ServePlaintext(uint8_t* buf, size_t size,
+                       const std::vector<uint8_t>& plaintext);
+    // Serves bytes buffered by ServePlaintext (possibly across several reads).
+    int DrainPending(uint8_t* buf, size_t size);
+
+    std::unique_ptr<Transport> raw_;
+    std::unique_ptr<rtsc::tls::TlsTransport> tls_;
+    std::string error_;
+    bool closed_ = false;
+    // Decrypted plaintext the backend produced beyond what the caller asked
+    // for. `pending_offset_` is the first unconsumed byte.
+    std::vector<uint8_t> pending_;
+    size_t pending_offset_ = 0;
+};
+
+// RD Gateway RDGSP transport ([MS-TSGU] 2.2.3): the client-side wrapper that
+// turns TWO plain byte connections into the single Transport the RDP client
+// consumes. The routing follows the factory topology ruling (docs/spec/
+// gateway-stage2-evidence.md section 10):
+//
+//   OUT connection : downlink (gateway -> client). HTTP request (RDG_OUT_DATA)
+//                    whose RESPONSE BODY is the RDP stream. 200 -> chunked
+//                    decode (+ plain fallback), 101 -> raw duplex RFC 6455
+//                    frames.
+//   IN  connection : uplink (client -> gateway). HTTP request (RDG_IN_DATA)
+//                    with a long-lived chunked REQUEST BODY carrying the RDP
+//                    uplink.
+//
+// The two connections are established independently (H0: connect OUT, connect
+// IN), the OUT channel authenticates first (401 -> NTLM three legs), then the
+// IN channel reuses the won Authorization and fails loudly if the server tries
+// to upgrade IT to WebSocket ("Server returned switch protocols for IN channel"
+// is a hard error, evidence FUN_1801bfd60:158-170).
+//
+// D-A2 (adjusted audit ruling, W11 stage 2): the original single-connection
+// model was disproven by the dual-connection evidence, so the old Defect is no
+// longer a write-boundary defect in the same sense. A note remains (see the
+// body below): under dual connections OUT saturation can still block Write;
+// the mitigation is an independent read thread draining OUT while the caller
+// writes. UNVERIFIED / follow-up: not implemented in this batch.
+//
+// D-A5 (recorded, P2): ConnectionDriver's plaintext-phase state machine is not
+// re-entrant, so a torn gateway can NOT be rebuilt by re-running Connect() on
+// the same RdgspTransport + driver pair. This batch records the limitation
+// only; reconnection is a follow-up.
+class RdgspTransport : public Transport {
+ public:
+    // The authentication scheme selector for the 401 handling. NTLM (default)
+    // runs the RFC 4559 three legs over the ntlm.h MESSAGE layer (never the
+    // CredsspClient state machine). Basic is the documented fallback when the
+    // server offers it under kStrict-equivalent HTTPS. Negotiate / Claims are
+    // NOT implemented and fail explicitly.
+    enum class AuthScheme { kNtlm, kBasic, kUnsupported };
+
+    // Data-plane routing selected by the OUT response: 200 -> chunked body,
+    // 101 -> upgraded raw duplex.
+    enum class Mode { kChunked, kUpgraded };
+
+    // Handshake / data deadlines (evidence table FUN_1801c6b44
+    // 120000/60000/30000/90000/30000 ms). The five values map to
+    // connect / response head / auth round-trip / IN write / OUT read in that
+    // order; the field-level mapping is UNVERIFIED against named factory
+    // fields, only the value set is evidenced.
+    struct Deadlines {
+        int connect_ms = 120000;
+        int response_ms = 60000;
+        int auth_ms = 30000;
+        int write_ms = 90000;
+        int read_ms = 30000;
+    };
+
+    struct Config {
+        // -- gateway identity (Scheme://host:port/remoteDesktopGateway/) -----
+        std::string host;              // gateway host (default plain-http connect)
+        uint16_t port = 443;           // default gateway port
+        std::string connection_id;     // client-generated GUID, both channels
+        std::string user_agent = "MS-RDGateway/1.0";  // factory string
+        // The RDP target hostname (used for the inner RDP TLS/CredSSP target
+        // by the caller; informational here).
+        std::string target_host;
+
+        // -- authentication -------------------------------------------------
+        std::string domain;
+        std::string user_name;
+        std::string password;
+        AuthScheme auth_scheme = AuthScheme::kNtlm;
+        // D-A8: the factory's 401 retry cap has NO source constant (field
+        // +0xd3c is externally configured, evidence FUN_1801c235c). Default 3,
+        // configurable. UNVERIFIED against the shipped binary.
+        int max_auth_retries = 3;
+
+        // -- routing switch ---------------------------------------------------
+        // When the OUT channel upgrades (101) the write side moves to OUT.
+        // false keeps IN writes in kUpgraded mode (the "IN carries management
+        // streams after upgrade" fallback; UNVERIFIED, see evidence section 11).
+        bool upgrade_steals_write = true;
+
+        Deadlines deadlines;
+
+        // -- connection factory seam (test / deployment injection) ----------
+        // Called once per channel during Connect(). A null connector falls back
+        // to ConnectTcp(host, port) -- the factory's built-in cleartext "http
+        // when the HTTPS switch is off" mode (+0x6a8 == 0, evidence
+        // FUN_1801bd574), which is exactly what the stub tests use.
+        using Connector =
+            std::function<std::unique_ptr<Transport>(std::string& error)>;
+        Connector connect_out;
+        Connector connect_in;
+    };
+
+    explicit RdgspTransport(const Config& config);
+
+    RdgspTransport(const RdgspTransport&) = delete;
+    RdgspTransport& operator=(const RdgspTransport&) = delete;
+
+    // The whole handshake (H0-H8). Explicitly separate from the constructor so
+    // failures produce a digestible error instead of an exception-ish state.
+    bool Connect(std::string& error);
+
+    bool connected() const { return connected_; }
+    Mode mode() const { return mode_; }
+    bool upgraded() const { return mode_ == Mode::kUpgraded; }
+    const std::string& error() const { return error_; }
+    // The mapped HRESULT of the failure, when one exists (see the status table
+    // in docs/spec/gateway-stage2-design.md section 7).
+    uint32_t hresult() const { return hresult_; }
+    int auth_retry_count() const { return auth_retry_count_; }
+    int in_retry_count() const { return in_retry_count_; }
+    const std::string& last_authorization() const {
+        return last_authorization_;
+    }
+
+    int Read(uint8_t* buf, size_t size) override;
+    bool Write(const uint8_t* data, size_t size) override;
+    void Close() override;
+
+ private:
+    // H1 / H5: writes one channel request and reads until the head parses.
+    // Returns the status code, or -1 with error_ set.
+    int SendAndReadResponse(Transport& t, const std::vector<uint8_t>& request,
+                            int timeout_ms, proto::HttpMessage& response,
+                            std::vector<uint8_t>& leftover);
+    // One 401 response: advances the NTLM legs / Basic / rejects unsupported
+    // schemes. Returns false with error_ set.
+    bool HandleChallenge(const proto::HttpMessage& response,
+                         std::string& authorization);
+    // H0-H4: establishes OUT (200/101 or authed 200/101).
+    bool EstablishOutChannel(std::string& error);
+    // H5-H7: establishes IN (RDG_IN_DATA, chunked body; IN 101 is a hard error).
+    bool EstablishInChannel(std::string& error);
+    void Fail(const std::string& reason, uint32_t hr);
+
+    // Read data plane helpers.
+    int ReadChunked(uint8_t* buf, size_t size);
+    int ReadUpgraded(uint8_t* buf, size_t size);
+    // Queues the data frames in `frames` for ReadUpgraded to deliver (control
+    // frames are consumed but not surfaced).
+    void ExtendFrames(const std::vector<proto::WebSocketFrame>& frames);
+
+    Config config_;
+    bool connected_ = false;
+    bool closed_ = false;
+    std::string error_;
+    uint32_t hresult_ = 0;
+    Mode mode_ = Mode::kChunked;
+
+    std::unique_ptr<Transport> out_;
+    std::unique_ptr<Transport> in_;
+
+    // OUT response head (kept for the challenge parser / chunked detection).
+    proto::HttpMessage out_response_;
+    std::vector<uint8_t> leftover_;
+
+    std::string last_authorization_;
+    int auth_retry_count_ = 0;
+    int in_retry_count_ = 0;
+
+    bool out_plain_ = false;  // OUT body is not chunked: pass through raw
+    proto::ChunkedDecoder chunked_decoder_{proto::kMaxChunkedChunkBytes,
+                                           ~static_cast<size_t>(0)};
+    std::vector<uint8_t> read_buffer_;
+    proto::WebSocketFrameDecoder websocket_decoder_;
+    std::vector<proto::WebSocketFrame> pending_frames_;
+    size_t pending_frame_index_ = 0;
 };
 
 }  // namespace rtsc::net

@@ -134,11 +134,15 @@ SessionInfo CollectSessionInfo(const SessionInfoInput& in, std::time_t now) {
     }
     si.quality = "你的连接质量" + level + "，且已启用 " + si.transport_protocol + "。";
 
-    // [Remote computer details]. No RD Gateway is configured (the connection is
-    // a direct TCP connection to the host), so both gateway fields say so.
+    // [Remote computer details]. The gateway fields report the real tunnel
+    // when one is in use (--gateway / RTSC_GATEWAY); empty input keeps the
+    // "no gateway in use" text a direct connection shows.
     si.remote_session_type = "远程桌面 (RDP)";
-    si.gateway_name = "没有在使用中";
-    si.gateway_logon_method = "没有在使用中";
+    si.gateway_name =
+        in.gateway_name.empty() ? "没有在使用中" : in.gateway_name;
+    si.gateway_logon_method =
+        in.gateway_logon_method.empty() ? "没有在使用中"
+                                        : in.gateway_logon_method;
     si.remote_computer = in.host;
 
     return si;
