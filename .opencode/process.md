@@ -325,3 +325,32 @@ clamped 255 -> 255 (sign preserved)
 ### 待甲
 甲仍未交付 Win32 注入取证（termsrv/rdpdd/win32kfull + SendInput 语义 + 多会话 + UIPI），
 那是本批定案的另一半（输入注入实现方案）。已两次催。
+
+## 第792轮：甲完整更正定案（滚轮单位/符号/clamp），主代理核实
+### 甲的四项回答（全部采纳）
+1. **认可 1 格 = 120 单位**，并核验本仓**三层**单位：
+   - `ui::InputEvent.wheel_delta` = 格数（`window.h:174-176`）
+   - Win32 后端 ÷120 出格数（`window_win32.cpp:505-507`）；X11 Button4=+1/Button5=-1（`:159-161`）；Wayland 反号（`:219`）
+   - `client.cpp:231-238` 直接把格数当单位 → **1 格只发 1 单位（1/120 格）**
+2. **同意 encode(-1)==0x0388**（不是 0x03FF）。分层链条明确：
+   `ui(格) → client encode 格×120=单位 → wire(9位二补码) → server decode=单位 → 注入 mouseData=单位（不再缩放）`
+3. **符号约定：wire 正 = 上滚**（与 mstsc/SendInput 同向）。甲指出我探针表里
+   "notch=+1→0x0278→reference 读 -1.0 notches" 是 **gnome 自己的 X 轴反号约定**，不是语义矛盾
+   —— 我们链路与 mstsc 同向，**无需在 server 侧镜像反号**。这一点我接受（我的探针只断言了量值，未断言符号）。
+   并加一条真机验证项：mstsc 滚一格，断言本地滚动方向与 mstsc 屏幕一致【UNVERIFIED】。
+4. **clamp 在单位域**：`±255 单位 = ±2 格`；3 格（360 单位）保号夹到 ±2 格。
+   **关键实现注**：clamp 必须在"格×120 之后"做，不能先在格域夹。
+
+### 连带修正（甲新发现，主代理已核实）
+`tests/test_gui_send.cpp:221-233` 现断言 hwheel `encode(+1) == 0x0401`：
+```cpp
+    // 0x0400 | 1 = 0x0401
+    CHECK_EQ(hwheel_pdu[3], 0x01);
+    CHECK_EQ(hwheel_pdu[4], 0x04);
+```
+**双重错误**：既是旧字节（magnitude+flag）又是旧单位（1 而非 120）。
+修复后应为 **`0x0478`**（0x0400 | 120）。
+
+### 待乙回执
+乙上一轮已认可"9 位二补码"，但未对"单位 = 120"表态。甲称已同步乙。
+若乙无异议，即可派执行。
