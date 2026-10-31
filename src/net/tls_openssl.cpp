@@ -194,6 +194,18 @@ class OpensslTransport final : public TlsTransport {
         } else {
             const int err = SSL_get_error(ssl_, rc);
             if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+                // A peer certificate that fails the chain check aborts the
+                // handshake here. tls.h requires the failure reason to be
+                // reportable, and a caller has to be able to tell "the
+                // certificate was rejected" from "the peer misbehaved", so
+                // map the verify result before falling back to a generic
+                // protocol error.
+                const long vr = SSL_get_verify_result(ssl_);
+                if (vr != X509_V_OK) {
+                    return Fail(Status::kCertRejected,
+                                std::string("certificate verify failed: ") +
+                                    X509_verify_cert_error_string(vr));
+                }
                 return Fail(Status::kProtocolError,
                             "handshake failed: " + OpensslError());
             }

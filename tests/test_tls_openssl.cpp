@@ -15,6 +15,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
+#include <array>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -64,14 +65,29 @@ struct Server {
     BIO* rbio = nullptr;
     BIO* wbio = nullptr;
     TestCert cert;
+    bool borrowed = false;
 
     ~Server() {
         if (ssl) SSL_free(ssl);
         if (ctx) SSL_CTX_free(ctx);
+        // A borrowed certificate belongs to the caller; do not free it twice.
+        if (borrowed) {
+            cert.key = nullptr;
+            cert.cert = nullptr;
+        }
     }
 
-    bool Start() {
-        if (!MakeSelfSigned(cert)) return false;
+    // `shared` lets several handshakes present the SAME certificate, which the
+    // pin tests need: MakeSelfSigned mints a fresh key on every call, so a pin
+    // computed from one server would never match another.
+    bool Start(TestCert* shared = nullptr) {
+        if (shared != nullptr) {
+            cert.key = shared->key;
+            cert.cert = shared->cert;
+            borrowed = true;
+        } else if (!MakeSelfSigned(cert)) {
+            return false;
+        }
         ctx = SSL_CTX_new(TLS_server_method());
         if (!ctx) return false;
         SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
@@ -216,6 +232,115 @@ RTSC_TEST(openssl_no_backend_when_disabled_by_name) {
     auto t = CreateTlsTransport("bogus", MakeClientConfig(), why);
     CHECK(t == nullptr);
     CHECK(!why.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Certificate policy. The loopback server always presents a self-signed
+// certificate for "localhost", so kStrict (chain validation) must reject it
+// and kTofu must accept it only when the pin matches.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Runs a loopback handshake with `cfg` against `shared`. Returns true when the
+// client reports handshake_complete(); a rejecting policy must return false.
+bool HandshakeWithPolicy(const Config& cfg, TestCert& shared,
+                         Status& rejected_with) {
+    Server server;
+    if (!server.Start(&shared)) return false;
+    std::string why;
+    auto client = CreateTlsTransport("openssl", cfg, why);
+    if (!client) return false;
+    const bool done = DriveHandshake(*client, server);
+    rejected_with = client->last_error().status;
+    return done;
+}
+
+// SHA-256 of the peer SPKI from `shared`, exactly as the pin compares it.
+bool SpkiDigest(TestCert& shared, std::array<uint8_t, 32>& digest) {
+    Server server;
+    if (!server.Start(&shared)) return false;
+    std::string why;
+    auto client = CreateTlsTransport("openssl", MakeClientConfig(), why);
+    if (!client) return false;
+    if (!DriveHandshake(*client, server)) return false;
+    std::vector<uint8_t> spki;
+    if (!client->PeerSubjectPublicKeyInfo(spki).ok() || spki.empty()) {
+        return false;
+    }
+    unsigned int len = 0;
+    return EVP_Digest(spki.data(), spki.size(), digest.data(), &len,
+                      EVP_sha256(), nullptr) == 1 &&
+           len == digest.size();
+}
+
+}  // namespace
+
+RTSC_TEST(openssl_kinsecure_accepts_self_signed) {
+    TestCert shared;
+    CHECK(MakeSelfSigned(shared));
+    Status rejected = Status::kOk;
+    CHECK(HandshakeWithPolicy(MakeClientConfig(), shared, rejected));
+    CHECK(rejected == Status::kOk);
+}
+
+RTSC_TEST(openssl_kstrict_rejects_self_signed_peer) {
+    TestCert shared;
+    CHECK(MakeSelfSigned(shared));
+    Config c;
+    c.peer_host = "localhost";
+    c.cert_policy = CertPolicy::kStrict;
+    Status rejected = Status::kOk;
+    const bool done = HandshakeWithPolicy(c, shared, rejected);
+    CHECK(!done);
+    CHECK(rejected == Status::kCertRejected);
+}
+
+RTSC_TEST(openssl_ktofu_without_pin_rejects_untrusted_chain) {
+    // Mirrors the SChannel semantics: kTofu without a pin still verifies the
+    // chain, so a self-signed peer is rejected.
+    TestCert shared;
+    CHECK(MakeSelfSigned(shared));
+    Config c;
+    c.peer_host = "localhost";
+    c.cert_policy = CertPolicy::kTofu;
+    Status rejected = Status::kOk;
+    const bool done = HandshakeWithPolicy(c, shared, rejected);
+    CHECK(!done);
+    CHECK(rejected == Status::kCertRejected);
+}
+
+RTSC_TEST(openssl_ktofu_pin_match_accepts_self_signed) {
+    TestCert shared;
+    CHECK(MakeSelfSigned(shared));
+    std::array<uint8_t, 32> digest{};
+    CHECK(SpkiDigest(shared, digest));
+
+    Config c;
+    c.peer_host = "localhost";
+    c.cert_policy = CertPolicy::kTofu;
+    c.pinned_spki_sha256 = digest;
+    c.pin_is_set = true;
+    Status rejected = Status::kOk;
+    CHECK(HandshakeWithPolicy(c, shared, rejected));
+}
+
+RTSC_TEST(openssl_ktofu_pin_mismatch_is_rejected) {
+    TestCert shared;
+    CHECK(MakeSelfSigned(shared));
+    std::array<uint8_t, 32> digest{};
+    CHECK(SpkiDigest(shared, digest));
+    digest[0] ^= 0xFF;  // corrupt one byte
+
+    Config c;
+    c.peer_host = "localhost";
+    c.cert_policy = CertPolicy::kTofu;
+    c.pinned_spki_sha256 = digest;
+    c.pin_is_set = true;
+    Status rejected = Status::kOk;
+    const bool done = HandshakeWithPolicy(c, shared, rejected);
+    CHECK(!done);
+    CHECK(rejected == Status::kCertRejected);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_tls_openssl_tests"); }
