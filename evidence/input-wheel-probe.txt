@@ -1,0 +1,19 @@
+  [INFO] delta=    1 -> flags=0x0201 -> decoded=    1
+[PASS] vertical wheel round-trips
+  [INFO] delta=   -1 -> flags=0x0301 -> decoded= -257
+[FAIL] vertical wheel round-trips
+  [INFO] delta=  120 -> flags=0x0278 -> decoded=  120
+[PASS] vertical wheel round-trips
+  [INFO] delta= -120 -> flags=0x0378 -> decoded= -376
+[FAIL] vertical wheel round-trips
+  [INFO] delta=  240 -> flags=0x02F0 -> decoded=  240
+[PASS] vertical wheel round-trips
+  [INFO] delta= -240 -> flags=0x03F0 -> decoded= -496
+[FAIL] vertical wheel round-trips
+  [INFO] delta=    0 -> flags=0x0200 -> decoded=    0
+  [INFO] HWHEEL flags=0x0401 -> decoded=1 horizontal=1
+[PASS] horizontal wheel is recognised
+  [INFO] release flags=0x1000 button=1, move flags=0x0800 button=0
+[PASS] a release is distinguishable from a move
+
+SUMMARY failures=3
