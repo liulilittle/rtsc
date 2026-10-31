@@ -798,3 +798,25 @@
   - 修复方案：OpenSSL 的 `kTofu+pin` 改 `SSL_VERIFY_NONE`（pin 即身份）；`tls.h` 补跨后端语义注释；**必须标 UNVERIFIED**（本机不编译 OpenSSL 后端）
 - 已 relay 执行 AI **先静默**，等丙审完当前已签版本再动手（避免审计期间工作树变动 → F5 类问题）。
 - 当前子代理：乙 ses_e716db85（idle，已盖章）、执行 ses_e70fdf49（idle，待命）、丙 ses_e708a4114（busy，终审中）。
+
+## 第766轮：冻结基线 SHA 记录（供丙审计比对）
+执行 AI 已确认静默待命（不动代码）。当前工作树为已签版本，SHA-256 前 16 位：
+```
+7559EBD2F49525DD  src/net/gateway_transport.cpp
+955E2407BCDB170C  include/rtsc/net/gateway_transport.h
+F376539AD59066D4  src/proto/gateway.cpp
+CF619F433DE9F541  include/rtsc/proto/gateway.h
+47F0515370573FC2  src/net/tls_schannel.cpp
+D8BAA71FC8DFAA32  tests/test_tls.cpp
+3649019D5826C220  tests/test_gateway.cpp
+A668FAA9588074F6  tools/rtsc_gui/main.cpp
+D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
+63D055BB865DE90D  tools/rtsc_bench/main.cpp
+419E001DCF00888E  src/client/session_info.cpp
+2B18EE010F212707  CMakeLists.txt
+```
+（注意：头文件路径为 `include/rtsc/...`，我第一次误写 `src/net/gateway_transport.h` 得到的是陈旧值，已纠正。）
+
+自此至丙审计结束，任何人不得写这些文件；若有变动，丙的复核作废。
+- 主代理已 pause 下一轮修复（OpenSSL kTofu+pin），避免破坏冻结。
+- 待丙盖章后：①应用 OpenSSL pin 修复（标 UNVERIFIED）②分两次提交 ③解散全部子代理。
