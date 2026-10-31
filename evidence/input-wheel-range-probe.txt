@@ -1,0 +1,25 @@
+9-bit sign-extended range: -256 .. +255 notches
+
+  raw=   120 ->   1 notch -> flags=0x0201 ->    1 ok
+[PASS] realistic scrolls round-trip
+  raw=  -120 ->  -1 notch -> flags=0x03FF ->   -1 ok
+[PASS] realistic scrolls round-trip
+  raw=   240 ->   2 notch -> flags=0x0202 ->    2 ok
+[PASS] realistic scrolls round-trip
+  raw=  -240 ->  -2 notch -> flags=0x03FE ->   -2 ok
+[PASS] realistic scrolls round-trip
+  raw=   360 ->   3 notch -> flags=0x0203 ->    3 ok
+[PASS] realistic scrolls round-trip
+  raw=  -360 ->  -3 notch -> flags=0x03FD ->   -3 ok
+[PASS] realistic scrolls round-trip
+  raw=  1200 ->  10 notch -> flags=0x020A ->   10 ok
+[PASS] realistic scrolls round-trip
+  raw= -1200 -> -10 notch -> flags=0x03F6 ->  -10 ok
+[PASS] realistic scrolls round-trip
+
+  raw= 32767 -> 273 notch (max int16) -> flags=0x0311 -> -239
+[PASS] 273 notches overflows the 9-bit field (needs clamping)
+  clamped to 255 -> back=255 (direction preserved)
+[PASS] clamping preserves the sign
+
+SUMMARY failures=0
