@@ -570,3 +570,28 @@ has co.uk / com.au / co.jp / co.in / ac.uk / gov.uk / co.nz / com.br /
 - 甲：把 `X509_check_host` 的 0 读成 1
 - 我自己：把"无 Accept"误读成"无 Key"
 → **立即纪律**：报告中的每个通过/失败结论必须逐条回抄探针原始输出，不得凭记忆转述。
+
+## 第786轮：验证乙的根因解释（成立）—— 两审误判的确切来源
+### 乙的解释
+它此前报告的"OpenSSL 裸域通配 `*.example.com`←`example.com` = 1"是按**多 SAN 证书**
+（`DNS:example.com,DNS:*.example.com`）实测的；该证书含**字面 `example.com` SAN**，
+`X509_check_host` 逐 SAN 首中即返回，于是把"字面命中"误记成"通配命中"。
+
+### 主代理独立验证（`evidence/openssl-multi-san-rootcause.txt`，786 轮）
+```
+multi-SAN              host=example.com      =>  1   ← 字面 SAN 命中（不是通配）
+multi-SAN              host=a.example.com    =>  1
+multi-SAN              host=a.b.example.com  =>  0
+wildcard-only          host=example.com      =>  0   ← 纯通配，拒绝裸域
+wildcard-only          host=a.example.com    =>  1
+wildcard-only          host=a.b.example.com  =>  0
+```
+**根因解释完全成立**：多 SAN 证书返回 1 是**字面 SAN 命中**，纯通配证书返回 0。
+这正是两位审计都误判的确切机制——不是"读反返回值"那么简单，而是**探针构造引入了污染样本**。
+
+### 教训（同型家族第 11 例，比"读反"更深刻）
+**对整证调用 `X509_check_host` 的返回值不可归属到某个具体 SAN（首中即返回）。
+逐项判定必须用"只含目标 SAN"的隔离证书。**
+- 甲的错：把 0 读成 1（读数错误）
+- 乙的错：多 SAN 污染（构造错误）
+两者表象相同、根因不同。**报告结论必须能追溯到一条可隔离复现的探针。**
