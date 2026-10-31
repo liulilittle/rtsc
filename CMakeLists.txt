@@ -571,12 +571,16 @@ add_executable(rtsc_connect tools/rtsc_connect/main.cpp)
 target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rtsc_util)
 
 # Full client: connection driver + graphics pipeline + window backend.
+# Windows only: the window backend, the connection-info dialog and the USB
+# redirection path are all Win32.
+if(WIN32)
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp)
 target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util)
 target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc)
 if(WIN32)
     target_link_libraries(rtsc_gui PRIVATE rtsc_audio rtsc_usb_win32)
+endif()
 endif()
 
 # Crash-guard self test. Not registered with ctest: it intentionally terminates

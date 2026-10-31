@@ -144,7 +144,8 @@ void Feed(RdpsndServer& s, SndMsgType type, const std::vector<uint8_t>& body) {
 // The client's Client Audio Formats PDU answering the server's offer.
 void FeedClientFormats(RdpsndServer& s, uint16_t version = 8, bool alive = true,
                        const SndAudioFormat& format = Advertised()) {
-    const uint32_t flags = alive ? kSndCapsAlive : 0;
+    const uint32_t flags =
+        alive ? static_cast<uint32_t>(kSndCapsAlive) : uint32_t{0};
     Feed(s, SndMsgType::kFormats,
          BuildClientFormatsBody(flags, 0xFFFFFFFF, 0, 0, version, {format}));
 }

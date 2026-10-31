@@ -386,25 +386,6 @@ void GatewayTunnel::Close() {
 
 // ---- outer TLS byte transport ----------------------------------------------
 
-namespace {
-
-std::string TlsStatusText(tls::Status s) {
-    switch (s) {
-        case tls::Status::kOk: return "ok";
-        case tls::Status::kNeedMoreInput: return "need more input";
-        case tls::Status::kPeerAlert: return "peer alert";
-        case tls::Status::kDecryptFailed: return "decrypt failed";
-        case tls::Status::kCertRejected: return "certificate rejected";
-        case tls::Status::kProtocolError: return "protocol error";
-        case tls::Status::kUnsupported: return "unsupported";
-        case tls::Status::kInternal: return "internal";
-        case tls::Status::kClosed: return "closed";
-    }
-    return "unknown";
-}
-
-}  // namespace
-
 TlsByteTransport::TlsByteTransport(std::unique_ptr<Transport> raw,
                                    std::unique_ptr<tls::TlsTransport> tls,
                                    std::string& error,

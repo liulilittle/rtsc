@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -53,7 +54,12 @@ public:
     void u32be(uint32_t v);
     void u32le(uint32_t v);
     void u64be(uint64_t v);
-    void bytes(const uint8_t* p, size_t n) { buf_.insert(buf_.end(), p, p + n); }
+    void bytes(const uint8_t* p, size_t n) {
+        if (n == 0) return;
+        const size_t at = buf_.size();
+        buf_.resize(at + n);
+        std::memcpy(buf_.data() + at, p, n);
+    }
 
     size_t size() const { return buf_.size(); }
     const std::vector<uint8_t>& data() const { return buf_; }

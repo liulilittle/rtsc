@@ -144,9 +144,11 @@ class StubEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
 // Scans the DYNVC-framed channel messages DrdynvcClient handed to its send
 // callback for one whose URBDRC payload carries `want_function`. This proves
 // the DrdynvcClient -> RdpUsbClient plumbing produced the announcement.
-bool FindDynvcUrbdcFunction(const std::vector<std::vector<uint8_t>>& messages,
-                            uint32_t want_function,
-                            std::vector<uint8_t>* rdp_payload) {
+// Only the Windows-only URBDRC test below uses it, so it is marked unused to
+// keep -Werror=unused-function quiet on the POSIX build.
+[[maybe_unused]] bool FindDynvcUrbdcFunction(
+    const std::vector<std::vector<uint8_t>>& messages, uint32_t want_function,
+    std::vector<uint8_t>* rdp_payload) {
     for (const auto& message : messages) {
         rtsc::proto::ChannelPduHeader cph;
         if (rtsc::proto::ChannelPduHeader::parse(message.data(),

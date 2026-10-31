@@ -2,6 +2,8 @@
 
 #include "rtsc/proto/rdp6.h"
 
+#include <cstring>
+
 namespace rtsc::proto {
 
 Status Rdp6FormatHeader::parse(uint8_t b, Rdp6FormatHeader& out) {

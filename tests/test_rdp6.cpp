@@ -870,7 +870,9 @@ RTSC_TEST(planar_decodes_bottom_up_scanline_order) {
     std::vector<uint8_t> data;
     data.push_back(header);
     for (int i = 0; i < 3; ++i) {
-        data.insert(data.end(), std::begin(plane), std::end(plane));
+        const size_t at = data.size();
+        data.resize(at + sizeof(plane));
+        std::memcpy(data.data() + at, plane, sizeof(plane));
     }
 
     DecodedBitmap bm;

@@ -192,10 +192,13 @@ RTSC_TEST(drop_files_parses_name_without_directory_part) {
 
 RTSC_TEST(drop_files_basename_strips_trailing_separator) {
     // A directory path that ends with a separator (Explorer usually strips it,
-    // but be tolerant): the basename must drop the trailing backslash.
+    // but be tolerant): the basename must drop the trailing separator. Use the
+    // platform separator so the stat below sees a directory on POSIX too.
     const std::filesystem::path dir = MakeTempDir();
     TempScope guard{dir};
-    const std::u16string with_trailing = dir.u16string() + u"\\";
+    const char16_t sep = static_cast<char16_t>(
+        std::filesystem::path::preferred_separator);
+    const std::u16string with_trailing = dir.u16string() + sep;
     auto p = CreateDropFileListFromBytes(MakeHdropWide({with_trailing}));
     if (!NeedProvider(p != nullptr)) return;
     rtsc::clipboard::FileInfo info;

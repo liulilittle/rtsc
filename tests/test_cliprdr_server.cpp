@@ -107,14 +107,6 @@ std::vector<CliprdrMsgType> SentTypes(
     return types;
 }
 
-bool HasSentType(const std::vector<std::vector<uint8_t>>& sent,
-                 CliprdrMsgType type) {
-    for (const auto& chunk : sent) {
-        if (DecodeChunk(chunk).header.msg_type == type) return true;
-    }
-    return false;
-}
-
 uint32_t ReadU32Le(const std::vector<uint8_t>& d) {
     return static_cast<uint32_t>(d[0]) | (static_cast<uint32_t>(d[1]) << 8) |
            (static_cast<uint32_t>(d[2]) << 16) |

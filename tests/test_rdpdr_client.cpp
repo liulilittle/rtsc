@@ -7,6 +7,7 @@
 
 #include "rtsc/channel/rdpdr_client.h"
 #include "rtsc/rdpdr/file_system.h"
+#include "rtsc/rdpdr/path_guard.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -283,9 +284,20 @@ std::vector<uint8_t> ReadWholeFile(const std::filesystem::path& path) {
     return out;
 }
 
+// These tests model a *Windows* drive redirector: the redirected drive root and
+// the server-supplied relative paths are Windows-form ("C:\\", "\\dir\\file.txt").
+// On POSIX that root is not a real directory, so the drive-dispatch cases are
+// skipped there; the portable path guard has its own POSIX cases below.
+#if defined(_WIN32)
+#define RTSC_RDPDR_DRIVE_TESTS 1
+#else
+#define RTSC_RDPDR_DRIVE_TESTS 0
+#endif
+
 // ---- state machine ---------------------------------------------------------
 
 RTSC_TEST(rdpdr_client_starts_awaiting_server_announce) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});
     CHECK(client.phase() == RdpdrClient::Phase::kAwaitServerAnnounce);
@@ -296,6 +308,7 @@ RTSC_TEST(rdpdr_client_starts_awaiting_server_announce) {
 }
 
 RTSC_TEST(rdpdr_client_announce_replies_and_advances_phase) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST1",
@@ -343,6 +356,7 @@ RTSC_TEST(rdpdr_client_announce_replies_and_advances_phase) {
 }
 
 RTSC_TEST(rdpdr_client_confirm_sends_capabilities_and_devices) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST1",
@@ -414,6 +428,7 @@ RTSC_TEST(rdpdr_client_confirm_sends_capabilities_and_devices) {
 // rejected by the length check and the state machine must not advance; the
 // spec 12-byte form still completes the handshake.
 RTSC_TEST(rdpdr_client_rejects_old_8_byte_clientid_confirm) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -448,6 +463,7 @@ RTSC_TEST(rdpdr_client_rejects_old_8_byte_clientid_confirm) {
 }
 
 RTSC_TEST(rdpdr_client_server_capability_and_user_logged_on) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});
 
@@ -473,6 +489,7 @@ RTSC_TEST(rdpdr_client_server_capability_and_user_logged_on) {
 }
 
 RTSC_TEST(rdpdr_client_device_reply_recorded) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});
 
@@ -484,6 +501,7 @@ RTSC_TEST(rdpdr_client_device_reply_recorded) {
 }
 
 RTSC_TEST(rdpdr_client_reassembles_chunked_announce) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});
 
@@ -502,6 +520,7 @@ RTSC_TEST(rdpdr_client_reassembles_chunked_announce) {
 }
 
 RTSC_TEST(rdpdr_client_ignores_short_and_garbage) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     RdpdrClient client(&fs, {}, "HOST", [](const std::vector<uint8_t>&) {});
     client.OnChannelData(nullptr, 0);
@@ -513,6 +532,7 @@ RTSC_TEST(rdpdr_client_ignores_short_and_garbage) {
 // ---- file I/O dispatch -----------------------------------------------------
 
 RTSC_TEST(rdpdr_client_create_maps_remote_path_and_opens) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -553,6 +573,7 @@ RTSC_TEST(rdpdr_client_create_maps_remote_path_and_opens) {
 }
 
 RTSC_TEST(rdpdr_client_create_openif_falls_back_to_create) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     fs.fail_open_once = true;
     std::vector<std::vector<uint8_t>> sent;
@@ -585,6 +606,7 @@ RTSC_TEST(rdpdr_client_create_openif_falls_back_to_create) {
 }
 
 RTSC_TEST(rdpdr_client_create_unknown_device_is_access_denied) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -614,6 +636,7 @@ RTSC_TEST(rdpdr_client_create_unknown_device_is_access_denied) {
 }
 
 RTSC_TEST(rdpdr_client_read_write_close_round_trip) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     fs.read_data = {0xDE, 0xAD, 0xBE, 0xEF};
     std::vector<std::vector<uint8_t>> sent;
@@ -655,8 +678,15 @@ RTSC_TEST(rdpdr_client_read_write_close_round_trip) {
             CHECK_EQ(U32At(*rsp, 20),
                      static_cast<uint32_t>(proto::kStatusSuccess));
             CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(4));
-            CHECK(std::vector<uint8_t>(rsp->begin() + 28, rsp->end()) ==
-                  fs.read_data);
+            // Guard the slice: an error completion is shorter than 28 bytes and
+            // rsp->begin() + 28 past the end is UB (it threw length_error on
+            // the POSIX build where the remote Windows path is rejected).
+            if (rsp->size() >= 28) {
+                CHECK(std::vector<uint8_t>(rsp->begin() + 28, rsp->end()) ==
+                      fs.read_data);
+            } else {
+                CHECK(false);
+            }
         }
     }
 
@@ -677,6 +707,7 @@ RTSC_TEST(rdpdr_client_read_write_close_round_trip) {
 }
 
 RTSC_TEST(rdpdr_client_query_directory_returns_entry) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     fs.query_data = {0xAA, 0xBB};
     std::vector<std::vector<uint8_t>> sent;
@@ -720,12 +751,18 @@ RTSC_TEST(rdpdr_client_query_directory_returns_entry) {
         CHECK_EQ(U32At(*rsp, 20),
                  static_cast<uint32_t>(proto::kStatusSuccess));
         CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(2));
-        CHECK(std::vector<uint8_t>(rsp->begin() + 28, rsp->end()) ==
-              fs.query_data);
+        // Guard the slice: an error completion is shorter than 28 bytes.
+        if (rsp->size() >= 28) {
+            CHECK(std::vector<uint8_t>(rsp->begin() + 28, rsp->end()) ==
+                  fs.query_data);
+        } else {
+            CHECK(false);
+        }
     }
 }
 
 RTSC_TEST(rdpdr_client_control_is_unsuccessful) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -767,6 +804,7 @@ void MakeReady(RdpdrClient& client) {
 }
 
 RTSC_TEST(rdpdr_path_rejects_parent_traversal_forms) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::string root = "C:\\share";
     const char* forms[] = {
         "..\\..\\Windows\\evil.dll",
@@ -793,6 +831,7 @@ RTSC_TEST(rdpdr_path_rejects_parent_traversal_forms) {
 }
 
 RTSC_TEST(rdpdr_path_rejects_absolute_drive_unc_and_device_forms) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::string root = "C:\\share";
     const char* forms[] = {
         "C:\\Windows\\evil.dll",
@@ -828,6 +867,7 @@ RTSC_TEST(rdpdr_path_rejects_absolute_drive_unc_and_device_forms) {
 }
 
 RTSC_TEST(rdpdr_path_accepts_legal_paths_under_root) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::string root = "C:\\share";
     std::string out;
 
@@ -848,6 +888,7 @@ RTSC_TEST(rdpdr_path_accepts_legal_paths_under_root) {
 }
 
 RTSC_TEST(rdpdr_client_create_rejects_traversal_path) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\share"}}, "HOST",
@@ -873,6 +914,7 @@ RTSC_TEST(rdpdr_client_create_rejects_traversal_path) {
 }
 
 RTSC_TEST(rdpdr_client_traversal_create_does_not_escape_root) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_7");
     const std::string escape_name = "rtsc_s3_7_escape.txt";
     const std::filesystem::path outside = dir.parent_path() / escape_name;
@@ -906,6 +948,7 @@ RTSC_TEST(rdpdr_client_traversal_create_does_not_escape_root) {
 // ---- read size limiting (S3-8) --------------------------------------------
 
 RTSC_TEST(rdpdr_client_read_rejects_oversized_length) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -940,6 +983,7 @@ RTSC_TEST(rdpdr_client_read_rejects_oversized_length) {
 }
 
 RTSC_TEST(rdpdr_filesystem_read_rejects_oversized_length) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("readcap");
     const std::filesystem::path file = dir / "big.txt";
     {
@@ -979,6 +1023,7 @@ RTSC_TEST(rdpdr_filesystem_read_rejects_oversized_length) {
 // ---- overwrite truncation (S3-9) ------------------------------------------
 
 RTSC_TEST(rdpdr_filesystem_overwrite_truncates_existing) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_9fs");
     const std::filesystem::path file = dir / "old.bin";
     {
@@ -1008,6 +1053,7 @@ RTSC_TEST(rdpdr_filesystem_overwrite_truncates_existing) {
 }
 
 RTSC_TEST(rdpdr_client_overwrite_dispositions_truncate_existing_file) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const uint32_t dispositions[] = {0x00000000u, 0x00000004u, 0x00000005u};
     for (const uint32_t disposition : dispositions) {
         const std::filesystem::path dir = MakeTempDir("s3_9");
@@ -1062,6 +1108,7 @@ RTSC_TEST(rdpdr_client_overwrite_dispositions_truncate_existing_file) {
 }
 
 RTSC_TEST(rdpdr_client_openif_does_not_truncate_existing_file) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_9open");
     const std::filesystem::path file = dir / "data.bin";
     {
@@ -1105,6 +1152,7 @@ RTSC_TEST(rdpdr_client_openif_does_not_truncate_existing_file) {
 // ---- DesiredAccess semantics (S3-7') --------------------------------------
 
 RTSC_TEST(rdpdr_client_create_read_access_opens_read_only) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1128,6 +1176,7 @@ RTSC_TEST(rdpdr_client_create_read_access_opens_read_only) {
 }
 
 RTSC_TEST(rdpdr_client_create_write_access_opens_for_write) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1144,6 +1193,7 @@ RTSC_TEST(rdpdr_client_create_write_access_opens_for_write) {
 }
 
 RTSC_TEST(rdpdr_client_create_openif_read_access_is_not_over_authorised) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1160,6 +1210,7 @@ RTSC_TEST(rdpdr_client_create_openif_read_access_is_not_over_authorised) {
 }
 
 RTSC_TEST(rdpdr_client_write_to_read_only_handle_is_denied) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_7p_ro");
     const std::filesystem::path file = dir / "data.bin";
     {
@@ -1213,6 +1264,7 @@ RTSC_TEST(rdpdr_client_write_to_read_only_handle_is_denied) {
 }
 
 RTSC_TEST(rdpdr_client_create_write_on_read_only_file_fails) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_7p_attr");
     const std::filesystem::path file = dir / "locked.bin";
     {
@@ -1249,6 +1301,7 @@ RTSC_TEST(rdpdr_client_create_write_on_read_only_file_fails) {
 }
 
 RTSC_TEST(rdpdr_client_create_existing_file_fails_without_truncating) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_create_exists");
     const std::filesystem::path file = dir / "exists.txt";
     {
@@ -1283,6 +1336,7 @@ RTSC_TEST(rdpdr_client_create_existing_file_fails_without_truncating) {
 }
 
 RTSC_TEST(rdpdr_path_accepts_drive_root) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     std::string out;
     CHECK(rtsc::channel::ResolvePathUnderRoot("C:\\share", "", out));
     CHECK(out == "C:\\share");
@@ -1293,6 +1347,7 @@ RTSC_TEST(rdpdr_path_accepts_drive_root) {
 }
 
 RTSC_TEST(rdpdr_client_create_maximum_allowed_is_write) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1346,6 +1401,7 @@ RTSC_TEST(rdpdr_client_create_maximum_allowed_is_write) {
 }
 
 RTSC_TEST(rdpdr_client_create_delete_only_is_not_data_write) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_7p_del");
     const std::filesystem::path file = dir / "d.bin";
     {
@@ -1402,6 +1458,7 @@ RTSC_TEST(rdpdr_client_create_delete_only_is_not_data_write) {
 }
 
 RTSC_TEST(rdpdr_client_open_and_overwrite_missing_file_fail) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("s3_missing");
     const uint32_t dispositions[] = {0x00000001u /* FILE_OPEN */,
                                     0x00000004u /* FILE_OVERWRITE */};
@@ -1438,6 +1495,7 @@ RTSC_TEST(rdpdr_client_open_and_overwrite_missing_file_fail) {
 // ---- truncate independent of access mode (R2) -----------------------------
 
 RTSC_TEST(rdpdr_filesystem_truncate_applies_without_write_access) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r2_fs");
     const std::filesystem::path file = dir / "keep.bin";
     {
@@ -1464,6 +1522,7 @@ RTSC_TEST(rdpdr_filesystem_truncate_applies_without_write_access) {
 }
 
 RTSC_TEST(rdpdr_client_read_only_overwrite_truncates_file) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r2_ch");
     const std::filesystem::path file = dir / "data.bin";
     {
@@ -1507,6 +1566,7 @@ RTSC_TEST(rdpdr_client_read_only_overwrite_truncates_file) {
 // ---- status codes for missing paths / unknown handles (R1, R4) ------------
 
 RTSC_TEST(rdpdr_client_open_missing_file_reports_name_not_found) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r1_missing");
     HostFileSystem fs;
     std::vector<std::vector<uint8_t>> sent;
@@ -1533,6 +1593,7 @@ RTSC_TEST(rdpdr_client_open_missing_file_reports_name_not_found) {
 }
 
 RTSC_TEST(rdpdr_client_write_open_denied_stays_access_denied) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r1_denied");
     const std::filesystem::path file = dir / "locked.bin";
     {
@@ -1565,6 +1626,7 @@ RTSC_TEST(rdpdr_client_write_open_denied_stays_access_denied) {
 }
 
 RTSC_TEST(rdpdr_client_unknown_handle_is_invalid_handle) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1599,6 +1661,7 @@ RTSC_TEST(rdpdr_client_unknown_handle_is_invalid_handle) {
 // F3: an I/O request received before the handshake reached kReady must be
 // answered with STATUS_UNSUCCESSFUL and never touch the file system.
 RTSC_TEST(rdpdr_client_io_request_before_ready_is_unsuccessful) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1622,6 +1685,7 @@ RTSC_TEST(rdpdr_client_io_request_before_ready_is_unsuccessful) {
 // F5: reading or querying a file id that was never handed out answers
 // STATUS_INVALID_HANDLE instead of running an unvalidated operation.
 RTSC_TEST(rdpdr_client_read_unknown_handle_is_invalid_handle) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1641,6 +1705,7 @@ RTSC_TEST(rdpdr_client_read_unknown_handle_is_invalid_handle) {
 }
 
 RTSC_TEST(rdpdr_client_query_directory_unknown_handle_is_invalid_handle) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1662,6 +1727,7 @@ RTSC_TEST(rdpdr_client_query_directory_unknown_handle_is_invalid_handle) {
 // F6: a write larger than the symmetric 1 MiB read cap is rejected with
 // STATUS_INVALID_PARAMETER and never reaches the file system.
 RTSC_TEST(rdpdr_client_write_rejects_oversized_payload) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
@@ -1697,6 +1763,7 @@ RTSC_TEST(rdpdr_client_write_rejects_oversized_payload) {
 // stat calls are skipped, the loop completes, and the surviving entry is still
 // returned.
 RTSC_TEST(rdpdr_filesystem_query_directory_dangling_symlink_skipped) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("f2_dangling");
     {
         std::ofstream out(dir / "a.txt", std::ios::binary);
@@ -1740,6 +1807,7 @@ RTSC_TEST(rdpdr_filesystem_query_directory_dangling_symlink_skipped) {
 // ---- reparse point escape (R3) --------------------------------------------
 
 RTSC_TEST(rdpdr_path_rejects_symlink_escape) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r3_root");
     const std::filesystem::path outside = MakeTempDir("r3_outside");
     {
@@ -1767,6 +1835,7 @@ RTSC_TEST(rdpdr_path_rejects_symlink_escape) {
 }
 
 RTSC_TEST(rdpdr_client_symlink_escape_create_is_denied) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("r3_ch");
     const std::filesystem::path outside = MakeTempDir("r3_ch_out");
     std::error_code ec;
@@ -1809,6 +1878,7 @@ RTSC_TEST(rdpdr_client_symlink_escape_create_is_denied) {
 // ---- HostFileSystem bridge -------------------------------------------------
 
 RTSC_TEST(rdpdr_filesystem_open_read_write_close) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("basic");
     const std::filesystem::path file = dir / "hello.txt";
     {
@@ -1835,6 +1905,7 @@ RTSC_TEST(rdpdr_filesystem_open_read_write_close) {
 }
 
 RTSC_TEST(rdpdr_filesystem_write_and_append) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("write");
     const std::filesystem::path file = dir / "out.bin";
 
@@ -1860,6 +1931,7 @@ RTSC_TEST(rdpdr_filesystem_write_and_append) {
 }
 
 RTSC_TEST(rdpdr_filesystem_query_directory_names) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("qdir");
     {
         std::ofstream out(dir / "a.txt", std::ios::binary);
@@ -1886,6 +1958,7 @@ RTSC_TEST(rdpdr_filesystem_query_directory_names) {
 }
 
 RTSC_TEST(rdpdr_filesystem_query_directory_full_info) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("qfull");
     {
         std::ofstream out(dir / "c.txt", std::ios::binary);
@@ -1907,6 +1980,7 @@ RTSC_TEST(rdpdr_filesystem_query_directory_full_info) {
 }
 
 RTSC_TEST(rdpdr_filesystem_stat) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     const std::filesystem::path dir = MakeTempDir("stat");
     const std::filesystem::path file = dir / "s.txt";
     {
@@ -1932,6 +2006,7 @@ RTSC_TEST(rdpdr_filesystem_stat) {
 // device B. Every operation that dereferences the handle table re-checks that
 // the handle's owning device matches the request.
 RTSC_TEST(rdpdr_client_io_checks_device_id_on_existing_handle) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     fs.read_data = {0xAA, 0xBB};
     std::vector<std::vector<uint8_t>> sent;
@@ -2014,6 +2089,7 @@ RTSC_TEST(rdpdr_client_io_checks_device_id_on_existing_handle) {
 // S2: the open handle table is capped at 256; the 257th create is refused with
 // STATUS_TOO_MANY_OPENED_FILES and already-open handles stay usable.
 RTSC_TEST(rdpdr_client_open_handle_limit_rejects_extra) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     constexpr uint32_t kTooManyOpenedFiles = 0xC0000041;
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
@@ -2058,6 +2134,7 @@ RTSC_TEST(rdpdr_client_open_handle_limit_rejects_extra) {
 // rejected up front and recorded, so ResolvePathUnderRoot can never fabricate a
 // lexical path underneath it.
 RTSC_TEST(rdpdr_client_create_rejects_missing_local_root) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
     MockFs fs;
     std::vector<std::vector<uint8_t>> sent;
     const std::filesystem::path missing =
@@ -2083,6 +2160,24 @@ RTSC_TEST(rdpdr_client_create_rejects_missing_local_root) {
         CHECK_EQ(U32At(*rsp, 20),
                  static_cast<uint32_t>(proto::kStatusAccessDenied));
     }
+}
+
+// The path guard itself is portable: with a POSIX root the redirected relative
+// path (which is always Windows-form, [MS-RDPEFS] 2.2.2.9) must stay inside the
+// root and the traversal/UNC/drive forms must still be rejected. This keeps the
+// security-relevant coverage on the POSIX build, where the drive-dispatch cases
+// above are skipped.
+RTSC_TEST(rdpdr_path_guard_is_portable) {
+    if (RTSC_RDPDR_DRIVE_TESTS) return;  // Windows has the full drive suite
+    std::string out;
+    CHECK(rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "\\dir\\file.txt", out));
+    CHECK(out == "/tmp/root/dir/file.txt");
+    CHECK(rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "dir/file.txt", out));
+    CHECK(out == "/tmp/root/dir/file.txt");
+    CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "..\\..\\etc\\passwd", out));
+    CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "dir\\..\\..\\escape", out));
+    CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "\\\\server\\share", out));
+    CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "C:\\Windows", out));
 }
 
 }  // namespace

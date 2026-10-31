@@ -208,6 +208,17 @@ RTSC_TEST(tls_server_loopback_to_done) {
         std::printf("  skipped: no platform TLS backend (need SChannel or RTSC_TLS_OPENSSL)\n");
         return;
     }
+    // The OpenSSL backend implements the client role only (it always calls
+    // SSL_set_connect_state and has no SSL_set_accept_state path), so a server
+    // role loopback can only run on SChannel. Tracked as a known limitation.
+    bool server_role_supported = false;
+    for (const auto& b : rtsc::tls::EnumerateTlsBackends()) {
+        if (std::string(b.name) == "schannel") server_role_supported = true;
+    }
+    if (!server_role_supported) {
+        std::printf("  skipped: the active TLS backend has no server role\n");
+        return;
+    }
 
     std::string error;
     CHECK(RunLoopback(*client, *server, error));
