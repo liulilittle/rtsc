@@ -7,13 +7,18 @@
 // emits the events serially.
 //
 // Queue policy (docs/spec/input-injection-seam.md 1.5):
-//   * keys, unicode characters, buttons and wheel events are never dropped;
 //   * consecutive pure movement for one session is coalesced, and output is
 //     capped at 250 Hz per session (the latest position always wins);
-//   * when the bounded queue is full the oldest pure movement is evicted
-//     first; if it holds no movement, a key/button is still accepted (the
-//     queue grows temporarily) because losing an up event produces a stuck
-//     key or button.
+//   * above the soft limit the oldest pure movement is evicted first; if the
+//     queue holds no movement, a key/button is still accepted (the queue grows
+//     temporarily) because losing an up event produces a stuck key or button;
+//   * growth is bounded by a hard limit (4x the soft limit): once the queue is
+//     there and no movement can be evicted, an incoming key/button/wheel is
+//     DROPPED (fail closed). Trading a lost input for a hard memory bound is
+//     deliberate: an unbounded queue driven by a hostile peer would exhaust
+//     memory. A dropped key cannot leave a stuck key because the sink also
+//     records what each session holds down and ReleaseSession emits the
+//     matching ups.
 //
 // Failures are counted and logged at most once per five seconds; the session is
 // never disconnected for an injection failure (UIPI and lock-screen failures
@@ -52,6 +57,11 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kMaxQueue = 256;
+// Absolute bound on queued platform inputs. The soft limit allows short
+// overruns for key/button state, but a peer must never be able to grow the
+// queue without bound: 1024 queued INPUTs is already far above what one
+// session can legitimately need between two worker drains.
+constexpr size_t kHardQueueLimit = 4 * kMaxQueue;
 constexpr Clock::duration kMoveInterval = std::chrono::milliseconds(4);  // 250 Hz
 constexpr Clock::duration kFailureLogInterval = std::chrono::seconds(5);
 // Marks the injected events for local diagnostics (see
@@ -114,12 +124,33 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     void ReleaseSession(uint32_t session_id) override {
         {
             std::lock_guard<std::mutex> lock(mu_);
+            // Forget the move-rate timestamp even when no session state exists:
+            // a restarted server restarts its input ids at 1, and a stale
+            // last_move_sent_[session_id] would throttle the new session's
+            // first move. The worker owns both move maps, so only record the
+            // request here; the worker drains it under the same mutex before it
+            // dispatches the next queued item.
+            forget_moves_.insert(session_id);
             const auto it = sessions_.find(session_id);
-            if (it == sessions_.end()) return;
+            if (it == sessions_.end()) {
+                cv_.notify_one();
+                return;
+            }
             AppendReleasesLocked(session_id, it->second);
             sessions_.erase(it);
         }
         cv_.notify_one();
+    }
+
+    InputStats Stats() const override {
+        InputStats stats;
+        stats.injected =
+            injected_ok_.load(std::memory_order_relaxed);
+        stats.dropped_queue_full =
+            dropped_queue_full_.load(std::memory_order_relaxed);
+        stats.send_failures =
+            injected_failed_.load(std::memory_order_relaxed);
+        return stats;
     }
 
  private:
@@ -151,22 +182,29 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             queue_.back().input = input;  // coalesce consecutive moves
             return;
         }
-        if (queue_.size() >= kMaxQueue) {
-            const auto oldest_move =
-                std::find_if(queue_.begin(), queue_.end(),
-                             [](const QueuedInput& queued) {
-                                 return queued.input.kind ==
-                                        PlatformInput::Kind::kMouseMove;
-                             });
-            if (oldest_move != queue_.end()) {
+        const auto oldest_move =
+            std::find_if(queue_.begin(), queue_.end(),
+                         [](const QueuedInput& queued) {
+                             return queued.input.kind ==
+                                    PlatformInput::Kind::kMouseMove;
+                         });
+        EnqueueState state;
+        state.size = queue_.size();
+        state.soft_limit = kMaxQueue;
+        state.hard_limit = kHardQueueLimit;
+        state.has_movable_move = oldest_move != queue_.end();
+        state.incoming_is_move =
+            input.kind == PlatformInput::Kind::kMouseMove;
+        switch (DecideEnqueue(state)) {
+            case EnqueueAction::kEvictMove:
                 queue_.erase(oldest_move);
                 dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
-            } else if (input.kind == PlatformInput::Kind::kMouseMove) {
-                // Nothing older to evict and the incoming event is itself
-                // disposable: drop it rather than displace key/button state.
+                break;
+            case EnqueueAction::kDrop:
                 dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
                 return;
-            }
+            case EnqueueAction::kAccept:
+                break;
         }
         queue_.push_back({session_id, input});
     }
@@ -174,7 +212,10 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     void AppendReleasesLocked(uint32_t session_id,
                               const SessionInputState& session) {
         // Win32 does not reset the keyboard state, so every key and button the
-        // session still holds must be released explicitly.
+        // session still holds must be released explicitly. These internal
+        // release events deliberately bypass the hard queue limit: they are
+        // bounded by the pressed-key/button set (not by peer traffic) and they
+        // are what makes a dropped key temporally harmless.
         for (const KeyId& key : session.pressed_keys) {
             PlatformInput up;
             up.kind = PlatformInput::Kind::kKey;
@@ -200,6 +241,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             bool stop = false;
             {
                 std::unique_lock<std::mutex> lock(mu_);
+                ForgetReleasedMovesLocked();
                 if (!queue_.empty()) {
                     item.emplace(std::move(queue_.front()));
                     queue_.pop_front();
@@ -219,6 +261,18 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             if (item) Dispatch(std::move(*item));
         }
         FlushMoves();
+    }
+
+    // Drops the move-rate timestamps recorded for sessions whose
+    // ReleaseSession has already run. Only the worker touches last_move_sent_,
+    // so this runs under mu_ (which also guards forget_moves_) and must be
+    // called before dispatching any queued item: that way a move enqueued
+    // after ReleaseSession cannot be throttled by the old session's timestamp.
+    void ForgetReleasedMovesLocked() {
+        for (const uint32_t session_id : forget_moves_) {
+            last_move_sent_.erase(session_id);
+        }
+        forget_moves_.clear();
     }
 
     Clock::time_point MoveDue(uint32_t session_id) const {
@@ -425,6 +479,9 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     std::condition_variable cv_;
     std::deque<QueuedInput> queue_;
     std::map<uint32_t, SessionInputState> sessions_;
+    // Sessions whose ReleaseSession asked the worker to forget their move-rate
+    // timestamp (guarded by mu_; the move maps themselves stay worker-only).
+    std::set<uint32_t> forget_moves_;
     bool stopping_ = false;
     std::thread worker_;
 

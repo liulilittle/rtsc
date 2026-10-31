@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -65,5 +66,36 @@ struct PlatformInput {
 //                would invert the state instead of setting it)
 std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
                                           const InjectGeometry& g);
+
+// What the bounded injection queue must do with one incoming platform input.
+// This decision is platform neutral and pure so the fail-closed policy can be
+// unit tested without SendInput or the Win32 worker thread.
+enum class EnqueueAction {
+    kAccept,     // push the incoming event onto the queue
+    kEvictMove,  // erase the oldest pure movement, then push the incoming event
+    kDrop,       // refuse the incoming event (counted as dropped_queue_full)
+};
+
+// Snapshot of the queue relevant to one EnqueueLocked decision. `size` and the
+// two limits are in queued events; `has_movable_move` is true when the queue
+// currently holds a pure movement that may be evicted; `incoming_is_move` is
+// true when the event being enqueued is itself pure movement.
+struct EnqueueState {
+    size_t size = 0;
+    size_t soft_limit = 0;  // evict/refuse disposables above this
+    size_t hard_limit = 0;  // absolute cap: never grow past this
+    bool has_movable_move = false;
+    bool incoming_is_move = false;
+};
+
+// Queue policy (see desktop_input_win32.cpp for the rationale):
+//   * below the soft limit: accept;
+//   * at/above the soft limit: evict the oldest pure movement when one exists;
+//   * with no movement to evict: a pure movement is disposable and is dropped;
+//   * with no movement to evict and a key/button/wheel arriving: accept while
+//     the queue is below the hard limit (losing an up event would leave a stuck
+//     key), but DROP at the hard limit (fail closed: a bound on injection
+//     memory beats an unbounded queue).
+EnqueueAction DecideEnqueue(const EnqueueState& state);
 
 }  // namespace rtsc::server

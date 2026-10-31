@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -30,6 +31,19 @@ namespace rtsc::server {
 struct InjectGeometry {
     uint16_t width = 0;
     uint16_t height = 0;
+};
+
+// Cumulative injection counters, readable at any time (relaxed atomics in the
+// Win32 backend). `injected` counts successful platform actions: for the Win32
+// sink one successful SendInput call (an event that translates to several
+// platform actions, e.g. a combined move+button, counts once per action); the
+// null sink counts every Inject call it accepted and then dropped.
+// `dropped_queue_full` counts events refused by the bounded injection queue and
+// `send_failures` counts SendInput calls that did not emit exactly one event.
+struct InputStats {
+    size_t injected = 0;
+    size_t dropped_queue_full = 0;
+    size_t send_failures = 0;
 };
 
 // Receives decoded input for injection. Every method runs on the session thread
@@ -52,7 +66,14 @@ class DesktopInputSink {
     // Called when the session ends: releases every key/button that session
     // still holds down. Win32 does not reset the keyboard state, so skipping
     // this leaves the local machine with a stuck modifier or mouse button.
+    // Also forgets the session's move-rate bookkeeping, so a later session that
+    // reuses the id (a restarted server restarts its input ids at 1) is not
+    // throttled by the previous session's last-sent timestamp.
     virtual void ReleaseSession(uint32_t session_id) = 0;
+
+    // Snapshot of the cumulative counters; never blocks and is safe to call
+    // from any thread.
+    virtual InputStats Stats() const = 0;
 };
 
 // Creates the platform sink. On Windows this is the SendInput backend; on other

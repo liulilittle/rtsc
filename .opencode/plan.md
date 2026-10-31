@@ -590,3 +590,14 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
       拒绝组合（`--no-enhanced`/`--allow-any-credentials`）+ `ReleaseSession` 补 keyup +
       纯函数 `Translate(InputEvent, InjectGeometry) -> PlatformInput`（不引 windows.h）
 - [ ] 批 4 真机验证：UIPI 落点、多会话、安全桌面、Pause、kSync、DPI/多屏（UNVERIFIED 清单）
+## 输入注入批次进展（round 800-801）
+- [x] 批 1 协议完整性 P-3/P-4/P-5/P-6/P-11 → `e0bee4b`
+- [x] 批 2 客户端滚轮切块 N1/N2/N3/N6 → `10b3b20`
+- [x] 批 3 慢路径 0x1C + 能力位 0x0008/0x0020 → `10b3b20`
+- [x] 批 5 切块上限可观测 → `e6c4ad7`
+- [x] 批 4 注入器骨架（DesktopInputSink，默认 off、危险组合 EXIT=2）→ `afb2a69`
+- [ ] 批 6 F-1 慢路径 MOUSEREL 解码 / F-4 队列硬上限 / F-5 Stats / F-6 last_move_sent_ /
+      F-7 SetInputSink 时序 / GAP② numberEvents 计数 / GAP④ was_share_data 白名单（在途）
+- [ ] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤；⑤ sink↔server 集成测试；
+      ⑥ `max_input_sessions=1` 单会话控制租约（设计文档要求，未实现）
+- [ ] 真机验证：按 `docs/spec/input-injection-real-machine-checklist.md` 逐项（UIPI/多会话/SAS/Pause/多屏）

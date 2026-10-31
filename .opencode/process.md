@@ -556,3 +556,74 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
   要求自建 `docs/spec/input-injection-review-B.md`）
 - 环境观察：本会话内子代理多次出现 TLS/证书类宿主错误（甲 2 次、乙 1 次、批 2 一次），
   错因在宿主到 provider 的链路，非任务内容；已按"技术故障须恢复并继续"处理
+## 第800轮：批 4 注入器骨架盖章 `afb2a69`
+### 交付（执行 AI `ses_e6ca5a01dffev0jAbAmzlThKIa`，已 delete 解散）
+- 新增 `desktop_input.h`（`InjectGeometry`/`DesktopInputSink`/`MakeWin32DesktopInputSink`）、
+  `desktop_input_map.h` + `desktop_input_map.cpp`（`TranslateInput` 纯函数）、
+  `desktop_input_win32.cpp`（单工作线程、队列 256、250Hz 移动合并、满队先丢最旧移动、
+  `ReleaseSession` 补 up、`SendInput` 失败计数 + 5s 限流、`dwExtraInfo=0x52545343`）、
+  `desktop_input_null.cpp`、`tests/test_desktop_input.cpp`（14 用例）
+- `server.h:144` `enable_desktop_input=false`；`server.cpp:1173` SetGeometry、
+  `:1720/:1848` 快/慢路径 Inject（均在 `input_callback_` 之前，且以
+  `config_.enable_desktop_input && input_sink_ != nullptr` 门控）、`:2011` SetInputSink、
+  `:2171/:2238` teardown 调 `ReleaseInput`（`input_released_` 幂等）
+- `main.cpp`：`--allow-input`（默认 off）、`--allow-input-unverified`；
+  危险组合拒绝启动（EXIT=2）
+
+### 主代理独立复验（不采信子代理）
+- `[BASH: cmake --build]` exit=0, warn=0, err=0
+- `[BASH: ctest 全量]` **63/63 passed**（65.46 s；新增 desktop_input 套件）
+- `[BASH: rtsc_server_host.exe --allow-input --no-enhanced]` → **EXIT=2** + 三条拒绝说明
+- `[BASH: ... --allow-input --allow-any-credentials]` → **EXIT=2**
+- `[BASH: 默认启动]` → `input=off`
+- `[READ:server.cpp:1719-1720]` 注入门控正确；`[READ:server.cpp:695-701]` `ReleaseInput` 幂等
+- `[READ:desktop_input_map.cpp]` kWheel 注释明确"**不得再乘 120**"
+- 提交 `afb2a69`
+
+### 未验证（真机才可验，如实记录）
+- Win32 sink 运行时行为（250Hz 合并/满队丢移动/补 up/限流日志）—— 会动真实键鼠，未实跑
+- `--monitor N` 非默认虚拟屏下的多显示器原点偏移；`InjectGeometry` 仅有 w/h
+- 注入会话 id 归属无集成测试（`tests/test_server.cpp` 属其他批次）
+## 第801轮：审计乙（替身）复核完成 → 无 FAIL，7 条残余发现；批 6 已派
+### 乙报告（`docs/spec/input-injection-review-B.md` 418 行，独立，未读甲文档）
+- 规范逐值核对（自 webfetch）：`inputFlags` 规范无 0x0002、代码默认 `0x013D` PASS；
+  慢路径 7 个 messageType + 6 字节事件体（总 12B）逐值一致 PASS；
+  `TS_RELPOINTER_EVENT` 的 PTRXFLAGS_BUTTON1/2 合法、代码正确 PASS
+- 语义零分叉（慢路径 MOUSE/MOUSEX 与 fast-path 共用 `DecodePointerEvent`）
+- 变异红证：慢路径 `0x8001→0x8003` → `test_server.cpp:1612 got 0 want 2`（40/425/1）→ 恢复 40/433/0；
+  `wheel_delta*120` → 4 用例红（14/57/4）→ 恢复 14/57/0；均 SHA256 双证
+  （**并如实记录：首次增量构建未重编 server.cpp，强制重编后才红，排除假绿**）
+- `afb2a69`：映射/队列/安全门（EXIT=2 实测）/生命周期 PASS
+- 残余：F-1 慢路径 MOUSEREL 只计数不解码（**与我的提交信息「0x8004 解码」不符**）、
+  F-4 满队且无移动可驱逐时键事件可无界增长、F-5 注入计数无访问器、F-6 `last_move_sent_` 未清、
+  F-7 `SetInputSink` 未注明须 Start 前调用；另有 GAP② numberEvents 不符不计数、GAP④ `was_share_data` 误判
+- 乙任务完成 → delete 解散
+
+### 批 6 已派 `ses_e6c42f2ccffeyE0TdeJePOYUxQ`（裁决 6 项）
+1. F-1/GAP③：慢路径 MOUSEREL 用与 fast-path 同一套 `kMouseRel` 语义解码，**不再计入 unknown**
+2. F-4：新增 `kHardQueueLimit`（4×kMaxQueue=1024），满且无可驱逐移动时**丢弃新事件并计数**（fail-closed）
+   建议抽出纯函数 `DecideEnqueue` 以便单测
+3. F-5：`DesktopInputSink::Stats()`（injected/dropped_queue_full/send_failures）
+4. F-6：`ReleaseSession` 清除 `last_move_sent_`
+5. F-7：`SetInputSink` 注释写明"必须在 Start 之前、server 不拥有 sink"
+6. GAP②：`numberEvents` 不符时计数；GAP④：`was_share_data` 只对白名单 `ShareDataPduType` 置位
+### 第801轮：甲2 复核文档落地 + 真机验证清单
+- `docs/spec/input-injection-review-A.md`（32,733 B）已落地，含 A.1-A.8：
+  映射/绝对归一化/按钮 1..5/wheel 直通/kMouseRel 空/门禁默认值/危险组合拒绝/注入门控/
+  ReleaseInput 幂等/live 前释放/借用指针/id 单调/队列线程/tag/CMake；
+  本地变异（`wheel_delta*120`）→ `FAIL test_desktop_input.cpp:147/159/172/207`（14/57/4）→ 恢复 14/57/0；
+  另跑 `server 40/433/0`、`multisession 7/184/0`
+- 主代理新增 `docs/spec/input-injection-real-machine-checklist.md`：
+  把全部 UNVERIFIED 项整理为可执行清单（键盘/鼠标/UIPI/多会话/安全隐私/慢路径/设计不注入）
+### 第801轮：甲2 复核完成 → 7 项全 PASS，无阻断 FAIL；已 delete 解散
+- 映射/门禁实跑（`input=off` EXIT=0；`--no-enhanced` EXIT=2；`--allow-any-credentials` EXIT=2；
+  `--allow-input-unverified` 启动+显著 WARNING）/门控与生命周期/线程队列/tag 全 PASS
+- 独立变异：`git archive afb2a69` → `wheel_delta*120` → `FAIL test_desktop_input.cpp:147/159/172/207`
+  （got 14400 want 120）→ 恢复 14/14 绿；干净构建 host EXIT=0；`server_tests 40/40`、`multisession 7/7`
+- **甲2 新增残余（非阻断）**：
+  ① 多显示器：`VIRTUALDESK` 但 `InjectGeometry` 只有 w/h，多屏坐标会偏 → UNVERIFIED
+  ② `scancode==0` 未在映射层过滤（解码层已不产幻影 kKey）
+  ⑤ 无 sink/服务器集成测试
+  ⑥ 设计文档要求 `max_input_sessions=1`（单会话控制租约）**未实现**
+  ③④ 与乙的 F-4/F-6 同（队列软上限、`last_move_sent_`）→ 已在批 6
+- 处理：②⑤⑥ 与批 6 同文件冲突 → 排入批 7（待批 6 落地）

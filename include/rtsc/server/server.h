@@ -289,12 +289,17 @@ class RdpServer {
     // the session thread, once per decoded Fast-Path input event.
     void SetInputCallback(InputCallback cb);
 
-    // Sets the desktop input sink (nullptr clears it). The sink is consulted
-    // only when ServerConfig::enable_desktop_input is true: every decoded input
-    // event is then injected before the observation callback runs. Borrowed
-    // pointer with the same lifetime contract as SetClipboard: it must outlive
-    // the server (including Stop()), because session threads call it until they
-    // are joined. The server does not take ownership.
+    // Sets the desktop input sink (nullptr clears it). MUST be called before
+    // Start() (or Run()/ServeOne()): a session snapshots the pointer when it is
+    // launched, so a sink installed while sessions are already running is not
+    // picked up by them. The server does not own the sink: it is a borrowed
+    // pointer with the same lifetime contract as SetClipboard, so it must
+    // outlive the server (including Stop()), because session threads call it
+    // until they are joined.
+    //
+    // The sink is consulted only when ServerConfig::enable_desktop_input is
+    // true: every decoded input event is then injected before the observation
+    // callback runs.
     void SetInputSink(DesktopInputSink* sink);
 
     // Sets the local clipboard served by every session's cliprdr virtual
@@ -353,8 +358,18 @@ class RdpServer {
     // only counts, so a capture can be used to identify the offending client
     // version without losing the session. Events that are recognised and
     // deliberately produce no callback (e.g. the QoE timestamp) are NOT
-    // counted here.
+    // counted here, and neither are slow-path MOUSEREL events (they decode to
+    // a real kMouseRel event).
     size_t unknown_input_event_count() const;
+
+    // Number of slow-path input PDUs (PDUTYPE2_INPUT) abandoned because their
+    // numberEvents does not match the payload (a short header, a truncated
+    // event body, or a count that runs past the PDU), over the life of this
+    // server (monotonic, never reset). Such a PDU cannot be resynchronised, so
+    // only the decode is dropped; the session stays alive. Kept separate from
+    // unknown_input_event_count(): a malformed length is a framing error, not
+    // an unknown event type.
+    size_t malformed_input_pdu_count() const;
 
  private:
     struct Impl;

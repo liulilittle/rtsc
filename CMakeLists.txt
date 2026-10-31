@@ -674,6 +674,11 @@ add_library(rtsc_server_desktop_input_map STATIC src/server/desktop_input_map.cp
 target_include_directories(rtsc_server_desktop_input_map PUBLIC include)
 
 add_executable(rtsc_desktop_input_tests tests/test_desktop_input.cpp)
+# The null sink is built into this test on every platform -- including Windows,
+# where the production factory is the SendInput backend -- so the sink's
+# Stats()/Inject accounting can be asserted without injecting real input or
+# starting the Win32 worker thread.
+target_sources(rtsc_desktop_input_tests PRIVATE src/server/desktop_input_null.cpp)
 target_link_libraries(rtsc_desktop_input_tests PRIVATE rtsc_server_desktop_input_map rtsc_util)
 target_include_directories(rtsc_desktop_input_tests PRIVATE tests)
 

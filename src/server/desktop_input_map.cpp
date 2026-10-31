@@ -99,4 +99,12 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
     return out;
 }
 
+EnqueueAction DecideEnqueue(const EnqueueState& state) {
+    if (state.size < state.soft_limit) return EnqueueAction::kAccept;
+    if (state.has_movable_move) return EnqueueAction::kEvictMove;
+    if (state.incoming_is_move) return EnqueueAction::kDrop;
+    if (state.size >= state.hard_limit) return EnqueueAction::kDrop;
+    return EnqueueAction::kAccept;
+}
+
 }  // namespace rtsc::server

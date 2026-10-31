@@ -541,6 +541,43 @@ std::vector<uint8_t> BuildLicenseError() {
 
 // ---- Session ---------------------------------------------------------------
 
+// True only for the sharedPDUType values [MS-RDPBCGR] 2.2.8.1.1.1.2 actually
+// defines. A length-based parse alone is not enough to call a payload a share
+// data PDU: a fast-path input PDU whose bytes happen to form a valid
+// TS_SHAREDATAHEADER (e.g. byte2=0x17/byte3=0x00 make pduType=DATA|version 1)
+// must still reach the fast-path decoder. The whitelist is therefore consulted
+// before marking the payload as consumed.
+bool IsKnownShareDataPduType(proto::ShareDataPduType type) {
+    switch (type) {
+        case proto::ShareDataPduType::kUpdate:
+        case proto::ShareDataPduType::kControl:
+        case proto::ShareDataPduType::kPointer:
+        case proto::ShareDataPduType::kInput:
+        case proto::ShareDataPduType::kSynchronize:
+        case proto::ShareDataPduType::kRefreshRect:
+        case proto::ShareDataPduType::kPlaySound:
+        case proto::ShareDataPduType::kSuppressOutput:
+        case proto::ShareDataPduType::kShutdownRequest:
+        case proto::ShareDataPduType::kShutdownDenied:
+        case proto::ShareDataPduType::kSaveSessionInfo:
+        case proto::ShareDataPduType::kFontList:
+        case proto::ShareDataPduType::kFontMap:
+        case proto::ShareDataPduType::kSetKeyboardIndicators:
+        case proto::ShareDataPduType::kPersistentKeyList:
+        case proto::ShareDataPduType::kBitmapCacheError:
+        case proto::ShareDataPduType::kSetKeyboardImeStatus:
+        case proto::ShareDataPduType::kOffscreenCacheError:
+        case proto::ShareDataPduType::kSetErrorInfo:
+        case proto::ShareDataPduType::kDrawNineGridError:
+        case proto::ShareDataPduType::kDrawGdiPlusError:
+        case proto::ShareDataPduType::kArcStatus:
+        case proto::ShareDataPduType::kStatusInfo:
+        case proto::ShareDataPduType::kMonitorLayout:
+            return true;
+    }
+    return false;
+}
+
 // Decodes the button bits of a TS_FP_POINTER_EVENT / TS_FP_POINTERX_EVENT /
 // TS_FP_RELPOINTER_EVENT ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.3/.4). A button bit is
 // meaningful on its own: a release carries the same bit as the press and only
@@ -609,7 +646,8 @@ class RdpSession {
                DesktopInputSink* input_sink, uint32_t input_session_id,
                clipboard::Clipboard* clipboard,
                clipboard::FileListProvider* file_provider,
-               std::shared_ptr<std::atomic<size_t>> unknown_input_events)
+               std::shared_ptr<std::atomic<size_t>> unknown_input_events,
+               std::shared_ptr<std::atomic<size_t>> malformed_input_pdus)
         : transport_(std::move(transport)),
           config_(config),
           source_(source),
@@ -618,7 +656,8 @@ class RdpSession {
           session_id_(session_id),
           input_sink_(input_sink),
           input_session_id_(input_session_id),
-          unknown_input_events_(std::move(unknown_input_events)) {
+          unknown_input_events_(std::move(unknown_input_events)),
+          malformed_input_pdus_(std::move(malformed_input_pdus)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
         // session's thread. The send lambda reads cliprdr_channel_id_ at send
@@ -1580,6 +1619,12 @@ class RdpSession {
             Status::Ok) {
             return true;  // not a share data PDU (e.g. fast-path input)
         }
+        // Only a defined sharedPDUType marks the payload as consumed. A
+        // fast-path input PDU can pass ShareDataHeader::parse by coincidence
+        // (its bytes form a DATA/version-1 header but pduType2 is not a real
+        // share data type); treating that as share data would swallow the
+        // client's input. Unknown types fall through to HandleInputPdu.
+        if (!IsKnownShareDataPduType(hdr.pdu_type2)) return true;
         if (handled != nullptr) *handled = true;
         if (hdr.pdu_type2 == proto::ShareDataPduType::kRefreshRect) {
             proto::RefreshRectPdu refresh;
@@ -1633,18 +1678,34 @@ class RdpSession {
     // wire formats yield the same InputEvent.
     //
     // Malformed input never reads past `n`: a short header or event body
-    // abandons the PDU. An unknown messageType is counted (P-11) and the rest
-    // of the PDU is abandoned because that event's length is unknown -- the
-    // same policy as an unknown fast-path eventCode.
+    // abandons the PDU, and the abandonment is counted separately
+    // (malformed_input_pdus_) because numberEvents disagreeing with the payload
+    // is a framing error, not an unknown event type. An unknown messageType is
+    // counted (P-11) and the rest of the PDU is abandoned because that event's
+    // length is unknown -- the same policy as an unknown fast-path eventCode.
     void ParseSlowPathInput(const uint8_t* p, size_t n) {
-        if (n < 4) return;
+        const auto mark_malformed = [this]() {
+            if (malformed_input_pdus_) {
+                malformed_input_pdus_->fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+        if (n < 4) {
+            mark_malformed();
+            return;
+        }
         const uint16_t count = static_cast<uint16_t>(p[0] | (p[1] << 8));
         size_t pos = 4;  // numberEvents(2) + pad2Octets(2)
         for (uint16_t i = 0; i < count; ++i) {
-            if (pos + proto::kSlowPathInputEventHeaderSize > n) return;
+            if (pos + proto::kSlowPathInputEventHeaderSize > n) {
+                mark_malformed();
+                return;
+            }
             const uint16_t message_type = static_cast<uint16_t>(
                 p[pos + 4] | (p[pos + 5] << 8));  // eventTime is ignored
-            if (pos + proto::kSlowPathInputEventSize > n) return;
+            if (pos + proto::kSlowPathInputEventSize > n) {
+                mark_malformed();
+                return;
+            }
             const uint8_t* body = p + pos + proto::kSlowPathInputEventHeaderSize;
             pos += proto::kSlowPathInputEventSize;
 
@@ -1698,15 +1759,33 @@ class RdpSession {
                 case proto::SlowPathInputEventType::kUnused:
                     continue;  // TS_UNUSED_EVENT: nothing to deliver
                 case proto::SlowPathInputEventType::kMouseRel:
-                    // The length is known, so the event can be skipped, but the
-                    // relative-mouse semantic belongs to the dedicated
-                    // kMouseRel workstream; count it rather than create a
-                    // second semantic here.
-                    if (unknown_input_events_) {
-                        unknown_input_events_->fetch_add(
-                            1, std::memory_order_relaxed);
+                    // TS_RELPOINTER_EVENT: pointerFlags(2) + xDelta(2) +
+                    // yDelta(2); the deltas are SIGNED i16, unlike the
+                    // unsigned absolute x/y of TS_POINTER_EVENT
+                    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.7). Its pointerFlags are
+                    // IDENTICAL to TS_FP_RELPOINTER_EVENT's, so this fills the
+                    // same InputEvent the fast-path branch produces (P-10):
+                    // kind=kMouseRel, rel_x/rel_y signed, is_move false, and
+                    // the X1/X2 fallback in the PTRXFLAGS namespace. It is a
+                    // real input event, never counted as unknown.
+                    ev.kind = InputEvent::Kind::kMouseRel;
+                    {
+                        const uint16_t pf = static_cast<uint16_t>(
+                            body[0] | (body[1] << 8));
+                        ev.rel_x = static_cast<int16_t>(
+                            static_cast<uint16_t>(body[2] | (body[3] << 8)));
+                        ev.rel_y = static_cast<int16_t>(
+                            static_cast<uint16_t>(body[4] | (body[5] << 8)));
+                        DecodePointerButtons(pf, false, ev);
+                        if (ev.button == 0) {
+                            if ((pf & proto::kPtrXButton2) != 0) {
+                                ev.button = 5;
+                            } else if ((pf & proto::kPtrXButton1) != 0) {
+                                ev.button = 4;
+                            }
+                        }
                     }
-                    continue;
+                    break;
                 default:
                     // Unknown messageType: its length is unknown, so this PDU
                     // cannot be resynchronised.
@@ -1866,6 +1945,9 @@ class RdpSession {
     // Server-level counter shared with every session: an unknown eventCode is
     // counted here so the operator can observe it without logs (P-11).
     std::shared_ptr<std::atomic<size_t>> unknown_input_events_;
+    // Server-level counter for slow-path input PDUs abandoned on a
+    // numberEvents/payload mismatch (a framing error, not an unknown event).
+    std::shared_ptr<std::atomic<size_t>> malformed_input_pdus_;
 
     std::vector<uint8_t> read_buf_;
     std::vector<uint8_t> pending_;
@@ -1976,6 +2058,9 @@ struct RdpServer::Impl {
     // Unknown fast-path input eventCodes, counted per server (P-11). A
     // shared_ptr so a detached session thread cannot outlive the counter.
     std::shared_ptr<std::atomic<size_t>> unknown_input_events =
+        std::make_shared<std::atomic<size_t>>(0);
+    // Slow-path input PDUs abandoned on a numberEvents/payload mismatch.
+    std::shared_ptr<std::atomic<size_t>> malformed_input_pdus =
         std::make_shared<std::atomic<size_t>>(0);
     // One-shot guard for the accept-all WARNING. Intentionally a plain bool:
     // Start()/Run()/ServeOne() may be called concurrently only by embedding
@@ -2097,7 +2182,8 @@ void RdpServer::Run() {
                 input_callback_, 0, input_sink_,
                 impl_->next_input_session_id.fetch_add(
                     1, std::memory_order_relaxed) + 1,
-                clipboard_, file_list_provider_, impl_->unknown_input_events);
+                clipboard_, file_list_provider_, impl_->unknown_input_events,
+                impl_->malformed_input_pdus);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2223,7 +2309,8 @@ bool RdpServer::ServeOne() {
         std::move(transport), config_, source_, authenticator_, input_callback_,
         0, input_sink_,
         impl_->next_input_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
-        clipboard_, file_list_provider_, impl_->unknown_input_events);
+        clipboard_, file_list_provider_, impl_->unknown_input_events,
+        impl_->malformed_input_pdus);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it.
     try {
@@ -2284,6 +2371,10 @@ size_t RdpServer::total_session_count() const {
 
 size_t RdpServer::unknown_input_event_count() const {
     return impl_->unknown_input_events->load(std::memory_order_relaxed);
+}
+
+size_t RdpServer::malformed_input_pdu_count() const {
+    return impl_->malformed_input_pdus->load(std::memory_order_relaxed);
 }
 
 // ---- Test pattern ----------------------------------------------------------

@@ -29,6 +29,15 @@ class NullDesktopInputSink final : public DesktopInputSink {
 
     void ReleaseSession(uint32_t session_id) override { (void)session_id; }
 
+    InputStats Stats() const override {
+        // The null sink "injects" nothing but accepts every event, so the
+        // accepted count is what the counters expose (see desktop_input.h).
+        InputStats stats;
+        stats.injected = static_cast<size_t>(
+            dropped_.load(std::memory_order_relaxed));
+        return stats;
+    }
+
  private:
     std::atomic<uint64_t> dropped_{0};
 };

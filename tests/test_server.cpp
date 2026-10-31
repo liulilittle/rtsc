@@ -1402,6 +1402,17 @@ std::vector<uint8_t> SlowPathPointerBody(uint16_t flags, uint16_t x,
     return w.take();
 }
 
+// TS_RELPOINTER_EVENT: pointerFlags(2) + xDelta(2) + yDelta(2), where the
+// deltas are SIGNED i16 ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.7).
+std::vector<uint8_t> SlowPathRelativeBody(uint16_t flags, int16_t dx,
+                                          int16_t dy) {
+    ByteWriter w;
+    w.u16le(flags);
+    w.u16le(static_cast<uint16_t>(dx));
+    w.u16le(static_cast<uint16_t>(dy));
+    return w.take();
+}
+
 // TS_SYNC_EVENT: pad2Octets(2) + toggleFlags(4).
 std::vector<uint8_t> SlowPathSyncBody(uint32_t toggle_flags) {
     ByteWriter w;
@@ -1680,6 +1691,59 @@ RTSC_TEST(server_decodes_slowpath_mousex) {
     runner.join();
 }
 
+RTSC_TEST(server_decodes_slowpath_mouse_relative) {
+    // F-1/GAP-3: INPUT_EVENT_MOUSEREL (0x8004) carries TS_RELPOINTER_EVENT
+    // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.7): pointerFlags(2) + xDelta(2) +
+    // yDelta(2), with SIGNED deltas. It must decode to the same kMouseRel
+    // InputEvent the fast-path branch produces -- never just be counted as an
+    // unknown event. (10, -5) -> rel_x=10, rel_y=-5, is_move=false.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    const size_t unknown_before = server.unknown_input_event_count();
+    CHECK(SendSlowPathPdu(
+        r, ShareDataPduType::kInput,
+        SlowPathInputBody({SlowPathInputEvent(
+            0x8004, SlowPathRelativeBody(0x0000, 10, -5))})));
+
+    std::vector<rtsc::server::InputEvent> got;
+    for (int i = 0; i < 100 && got.size() < 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        got = events;
+    }
+    CHECK_EQ(got.size(), static_cast<size_t>(1));
+    if (got.size() == 1) {
+        CHECK(got[0].kind == rtsc::server::InputEvent::Kind::kMouseRel);
+        CHECK_EQ(got[0].rel_x, static_cast<int16_t>(10));
+        CHECK_EQ(got[0].rel_y, static_cast<int16_t>(-5));
+        CHECK(!got[0].is_move);
+    }
+    // A decoded relative event is not an unknown event.
+    CHECK_EQ(server.unknown_input_event_count(), unknown_before);
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_decodes_slowpath_unicode) {
     // P-10: INPUT_EVENT_UNICODE (0x0005) carries TS_UNICODE_KEYBOARD_EVENT
     // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.2): keyboardFlags(2) + unicodeCode(2) +
@@ -1811,6 +1875,133 @@ RTSC_TEST(server_slowpath_malformed_input_is_survivable) {
     CHECK(send_fast_key(0x2E));  // C
     CHECK(saw_scancode(0x2E));
     CHECK_EQ(server.unknown_input_event_count(), unknown_before + 1);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_slowpath_event_count_mismatch_is_counted) {
+    // GAP-2: when numberEvents disagrees with the payload (here: count 2 but
+    // only one 12-byte event), the decoder abandons the PDU. That framing
+    // error must be observable: malformed_input_pdu_count() increments (it is
+    // deliberately NOT conflated with unknown_input_event_count()).
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    const size_t malformed_before = server.malformed_input_pdu_count();
+    const size_t unknown_before = server.unknown_input_event_count();
+    ByteWriter w;
+    w.u16le(2);  // numEvents says two...
+    w.u16le(0);  // pad2Octets
+    const auto one =
+        SlowPathInputEvent(0x0004, SlowPathKeyboardBody(0x0000, 0x1E));
+    for (uint8_t b : one) w.u8(b);  // ...but only one event is present
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kInput, w.take()));
+
+    // A following fast-path key proves the session kept running and pins the
+    // ordering: the malformed PDU was decoded before the key.
+    CHECK(WriteAll(*r.transport,
+                   McsSendData::build_request(
+                       r.user_channel, r.io_channel,
+                       EncodeFastPathInputPdu(
+                           {EncodeKeyboardEvent(0x2C, false, false)}))));
+    bool saw_key = false;
+    for (int i = 0; i < 100 && !saw_key; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        for (const auto& ev : events) {
+            if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
+                ev.scancode == static_cast<uint8_t>(0x2C)) {
+                saw_key = true;
+                break;
+            }
+        }
+    }
+    CHECK(saw_key);
+    CHECK_EQ(server.malformed_input_pdu_count(), malformed_before + 1);
+    CHECK_EQ(server.unknown_input_event_count(), unknown_before);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_fastpath_pdu_resembling_share_header_is_not_swallowed) {
+    // GAP-4: a fast-path input PDU can pass ShareDataHeader::parse by
+    // coincidence. This payload's bytes 2..3 are 0x17/0x00 (pduType=DATA with
+    // protocol version 1) and it is >= 18 bytes, but byte14 (pduType2) is 0x17,
+    // which is NOT a defined ShareDataPduType. Without the whitelist the PDU
+    // was marked "share data" and never reached the fast-path decoder, so the
+    // encoded key was swallowed. With the whitelist it must still decode.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    // Fast-path input PDU, 18 bytes (header+length = 2, body = 16):
+    //   [0] 0x04        fpInputHeader: FASTPATH, numEvents=1
+    //   [1] 0x12        length = 18
+    //   [2] 0x17        eventHeader code 0 (scancode); this is also the low
+    //                   byte of the fake SHAREDATAHEADER pduType
+    //   [3] 0x00        keyCode 0; also the high byte of the fake pduType
+    //   [4] 0x00 [5] 0x1E  scancode 0x1E down (the event of interest)
+    //   [6] 0xC0 [7..10] 0  QoE timestamp event (consumed, no callback)
+    //   [11] 0xC0 [12]0 [13]0 [14]0x17 [15]0  QoE; byte14 is the fake pduType2
+    //   [16] 0x00 [17] 0x00  scancode 0
+    const std::vector<uint8_t> payload = {
+        0x04, 0x12, 0x17, 0x00, 0x00, 0x1E, 0xC0, 0x00, 0x00,
+        0x00, 0x00, 0xC0, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00,
+    };
+    CHECK(WriteAll(*r.transport,
+                   McsSendData::build_request(r.user_channel, r.io_channel,
+                                              payload)));
+
+    bool saw_key = false;
+    for (int i = 0; i < 100 && !saw_key; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        for (const auto& ev : events) {
+            if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
+                ev.scancode == static_cast<uint8_t>(0x1E)) {
+                saw_key = true;
+                break;
+            }
+        }
+    }
+    CHECK(saw_key);
 
     server.Stop();
     runner.join();

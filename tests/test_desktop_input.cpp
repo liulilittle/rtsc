@@ -15,8 +15,12 @@
 
 namespace {
 
+using rtsc::server::DecideEnqueue;
+using rtsc::server::EnqueueAction;
+using rtsc::server::EnqueueState;
 using rtsc::server::InjectGeometry;
 using rtsc::server::InputEvent;
+using rtsc::server::MakeWin32DesktopInputSink;
 using rtsc::server::PlatformInput;
 using rtsc::server::TranslateInput;
 
@@ -216,6 +220,87 @@ RTSC_TEST(desktop_input_mouse_without_move_or_button_is_empty) {
     ev.button = 0;
     const std::vector<PlatformInput> out = TranslateInput(ev, InjectGeometry{});
     CHECK(out.empty());
+}
+
+// ---- Bounded injection queue policy (DecideEnqueue) -------------------------
+//
+// The Win32 sink cannot be exercised here (it posts real SendInput calls from a
+// worker thread), so the queue decision is a pure function. These cases pin the
+// fail-closed rule: key/button events may grow the queue past the soft limit
+// (losing an up event leaves a stuck key) but never past the hard limit.
+
+EnqueueState QueueState(size_t size, bool movable_move, bool incoming_is_move) {
+    EnqueueState state;
+    state.size = size;
+    state.soft_limit = 4;
+    state.hard_limit = 16;
+    state.has_movable_move = movable_move;
+    state.incoming_is_move = incoming_is_move;
+    return state;
+}
+
+RTSC_TEST(desktop_input_queue_accepts_below_soft_limit) {
+    CHECK(DecideEnqueue(QueueState(0, false, true)) == EnqueueAction::kAccept);
+    CHECK(DecideEnqueue(QueueState(3, false, false)) == EnqueueAction::kAccept);
+}
+
+RTSC_TEST(desktop_input_queue_evicts_move_when_available) {
+    // Above the soft limit the oldest movement is the preferred victim, both
+    // for a moving and for a non-moving incoming event.
+    CHECK(DecideEnqueue(QueueState(4, true, true)) ==
+          EnqueueAction::kEvictMove);
+    CHECK(DecideEnqueue(QueueState(10, true, false)) ==
+          EnqueueAction::kEvictMove);
+    CHECK(DecideEnqueue(QueueState(16, true, false)) ==
+          EnqueueAction::kEvictMove);
+}
+
+RTSC_TEST(desktop_input_queue_drops_move_without_victim) {
+    // A movement is disposable: with nothing older to evict it is dropped
+    // instead of displacing key/button state, at any size.
+    CHECK(DecideEnqueue(QueueState(4, false, true)) == EnqueueAction::kDrop);
+    CHECK(DecideEnqueue(QueueState(15, false, true)) == EnqueueAction::kDrop);
+}
+
+RTSC_TEST(desktop_input_queue_grows_between_limits_for_key) {
+    // Above the soft limit, a key/button is still accepted while the hard limit
+    // leaves room: an eventual key-up must not be lost.
+    CHECK(DecideEnqueue(QueueState(4, false, false)) ==
+          EnqueueAction::kAccept);
+    CHECK(DecideEnqueue(QueueState(15, false, false)) ==
+          EnqueueAction::kAccept);
+}
+
+RTSC_TEST(desktop_input_queue_hard_limit_drops_key) {
+    // At the hard limit with no movement to evict, a key/button MUST be
+    // dropped: the queue is bounded, a dropped key is released by
+    // ReleaseSession, and an unbounded queue would let a hostile peer exhaust
+    // memory.
+    CHECK(DecideEnqueue(QueueState(16, false, false)) ==
+          EnqueueAction::kDrop);
+    CHECK(DecideEnqueue(QueueState(17, false, false)) ==
+          EnqueueAction::kDrop);
+}
+
+RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
+    // This test target links the null sink on every platform (see
+    // CMakeLists.txt), so Stats() accounting is asserted without touching the
+    // local desktop. The null sink accepts each event and drops it.
+    auto sink = MakeWin32DesktopInputSink();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    CHECK_EQ(sink->Stats().injected, static_cast<size_t>(0));
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kKey;
+    ev.scancode = 0x1E;
+    sink->Inject(1, ev);
+    CHECK_EQ(sink->Stats().injected, static_cast<size_t>(1));
+    sink->Inject(1, ev);
+    CHECK_EQ(sink->Stats().injected, static_cast<size_t>(2));
+    CHECK_EQ(sink->Stats().dropped_queue_full, static_cast<size_t>(0));
+    CHECK_EQ(sink->Stats().send_failures, static_cast<size_t>(0));
+    sink->ReleaseSession(1);
+    CHECK_EQ(sink->Stats().injected, static_cast<size_t>(2));
 }
 
 int main() { return rtsc::test::run_all("rtsc_desktop_input_tests"); }
