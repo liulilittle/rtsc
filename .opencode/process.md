@@ -857,3 +857,24 @@ D23D6A0B85FDB8D7  tools/rtsc_connect/main.cpp
 - Windows：build 0err/0warn；ctest **62/62**
   （注：首次全量跑时 `view` 失败，单跑即过 —— 系 WSL `-j16` 编译争用 CPU 导致的已知基准抖动，非回归）
 - 提交 `a2cfebe`。
+
+## 第770轮：性能基准记录 + 派 W11 审计 OpenSSL server 角色
+### 性能基准（已入库 `de8f66b`）
+`rtsc_bench.exe` 实测 1920x1080：
+- 解码：raw-32bpp 4.994ms(200.2fps) / rle-16bpp 9.115ms(109.7fps) / rdp6-argb 6.034ms(165.7fps) / rdp6-aycocg 7.332ms(136.4fps) / nsc 6.479ms(154.3fps)
+- 端到端 loopback：往返 0.800ms，**5.168ms = 193.5 fps**，10373 MB/s
+- CPU：2.0s 墙钟 / 2.007s CPU = **100.0%**（单核饱和，无多核空转，符合单线程解码预期）
+- `view_scale_benchmark_budget` 7 种缩放形状全通过
+
+### 服务器模式现状核实
+- **多用户已实现**：`rtsc_server_multisession_tests` 7 tests/184 checks 全绿，含 **8 会话并发压力测试**（2480ms，251 本地变更/88 远程请求/163 剪贴板写/109 读）。
+- `include/rtsc/server/server.h`：每会话独立线程（one thread per session）、会话隔离 D1（各自 X.224/MCS 状态）、`SessionThreadLauncher` 可注入。
+- **家庭版解禁**：`src/server/` 零 termsrv/WTS 依赖（既有结论）。
+
+### 新缺口（主代理取证）
+- `src/net/tls_openssl.cpp:158` **无条件** `SSL_set_connect_state` → 无 `Role::kServer` 分支。
+- `:334-345` `LocalCertificateDer`/`LocalSubjectPublicKey` 恒返回 `kUnsupported "server role is not wired"`。
+- 对照 SChannel 已实现（临时自签 `CertCreateSelfSignCertificate` CN=rtsc-rdp-server + `SECPKG_CRED_INBOUND`）。
+- 后果：**Linux 上 `rtsc_server` 无法提供 TLS/CredSSP**，只能 Standard RDP Security；且 `test_server_security.cpp` 的 server-role loopback 在非 SChannel 后端被跳过 → **Linux 上该路径零测试覆盖**。
+- 已派双审计（甲 ses_e70232b5 / 乙 ses_e7023156），已互告 ID。
+- 特别要求两审判定：**临时自签证书的稳定性**——若每次握手换证书，客户端 `kTofu`+pin 每次都不匹配，TOFU 失效（可能是阻断项）。
