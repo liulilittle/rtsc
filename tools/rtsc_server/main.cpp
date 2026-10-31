@@ -121,6 +121,9 @@ struct Options {
     // Escape hatch for the deliberately unsafe combination of --allow-input
     // with --no-enhanced / --allow-any-credentials.
     bool allow_input_unverified = false;
+    // How many sessions may control the shared local desktop at once. 0 means
+    // unlimited; the default is 1 (one remote peer operates the desktop).
+    size_t max_input_sessions = 1;
 };
 
 void usage() {
@@ -132,6 +135,7 @@ void usage() {
         "                       [--monitor N] [--width W] [--height H]\n"
         "                       [--once] [--seconds N] [--audio off|sine]\n"
         "                       [--allow-input] [--allow-input-unverified]\n"
+        "                       [--max-input-sessions N]\n"
         "                       [--tls-cert FILE] [--tls-key FILE]\n"
         "                       [--log FILE]\n",
         kVersion);
@@ -179,6 +183,33 @@ bool ParseDimension(const std::string& text, const char* name, uint16_t* out) {
         return false;
     }
     *out = static_cast<uint16_t>(value);
+    return true;
+}
+
+// Parses a non-negative decimal count (0 is meaningful for
+// --max-input-sessions: it disables the limit). A cap keeps a typo from
+// overflowing size_t before the value reaches the server.
+bool ParseCount(const std::string& text, const char* name, size_t* out) {
+    if (text.empty()) {
+        std::printf("invalid %s: empty value (expected a non-negative integer)\n",
+                    name);
+        return false;
+    }
+    size_t value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            std::printf("invalid %s: '%s' is not a non-negative integer\n", name,
+                        text.c_str());
+            return false;
+        }
+        value = value * 10 + static_cast<size_t>(c - '0');
+        if (value > 1000000) {
+            std::printf("invalid %s: '%s' is too large (max 1000000)\n", name,
+                        text.c_str());
+            return false;
+        }
+    }
+    *out = value;
     return true;
 }
 
@@ -245,6 +276,13 @@ bool ParseOptions(int argc, char** argv, Options& opt) {
             opt.allow_input = true;
         } else if (arg == "--allow-input-unverified") {
             opt.allow_input_unverified = true;
+        } else if (arg == "--max-input-sessions") {
+            std::string v;
+            if (!need(v)) return false;
+            if (!ParseCount(v, "--max-input-sessions",
+                            &opt.max_input_sessions)) {
+                return false;
+            }
         } else if (arg == "--seconds") {
             std::string v;
             if (!need(v)) return false;
@@ -360,6 +398,10 @@ int main(int argc, char** argv) {
     // The server only consults an installed sink when this is true; the flag
     // mirrors --allow-input so the default configuration never injects.
     cfg.enable_desktop_input = opt.allow_input;
+    // Sessions share one physical desktop, so by default only one may hold the
+    // input lease at a time. --max-input-sessions 0 is the explicit unlimited
+    // setting; values above 1 let several peers operate the same desktop.
+    cfg.max_input_sessions = opt.max_input_sessions;
     cfg.tls_config.role = rtsc::tls::Role::kServer;
     cfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
     cfg.credssp_version = 6;
@@ -442,7 +484,8 @@ int main(int argc, char** argv) {
              " audio=" +
              std::string(opt.audio == Options::AudioSource::kSine ? "sine"
                                                                    : "off") +
-             " input=" + (opt.allow_input ? "on" : "off"));
+             " input=" + (opt.allow_input ? "on" : "off") +
+             " max-input-sessions=" + std::to_string(opt.max_input_sessions));
     if (opt.allow_any_credentials) {
         log.line(
             "WARNING: credential validation is DISABLED "
@@ -457,7 +500,11 @@ int main(int argc, char** argv) {
             "WARNING: desktop input injection is ENABLED (--allow-input): the "
             "remote client can move the pointer, type into the foreground "
             "window and operate this machine. Every session shares the same "
-            "physical desktop.");
+            "physical desktop; at most " +
+            (opt.max_input_sessions == 0
+                 ? std::string("all sessions (unlimited)")
+                 : std::to_string(opt.max_input_sessions)) +
+            " session(s) may hold the input lease at once.");
     }
     if (unsafe_input && opt.allow_input_unverified) {
         log.line(

@@ -627,3 +627,24 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
   ⑥ 设计文档要求 `max_input_sessions=1`（单会话控制租约）**未实现**
   ③④ 与乙的 F-4/F-6 同（队列软上限、`last_move_sent_`）→ 已在批 6
 - 处理：②⑤⑥ 与批 6 同文件冲突 → 排入批 7（待批 6 落地）
+## 第802轮：批 6 盖章 `4eb3344`；批 7（租约）派发
+### 批 6 交付（执行 AI `ses_e6c42f2ccffeyE0TdeJePOYUxQ`，已 delete 解散）
+- F-1 慢路径 MOUSEREL 复用 `kMouseRel` 语义（`server.cpp:1886`，`rel_x/rel_y` 有符号）
+- F-4 `DecideEnqueue` 纯策略（`desktop_input_map.cpp:102`）：`size<soft → accept`；
+  `has_movable_move → evict`；`incoming_is_move → drop`；`size>=hard(1024) → drop`；否则 accept
+- F-5 `DesktopInputSink::Stats`（injected/dropped/send_failures），null sink 也实现并进测试
+- F-6 `ReleaseSession` 清 `last_move_sent_` + worker 锁内先 drain
+- F-7 `server.h:292` 注释"必须 Start 前调用、server 不拥有 sink"
+- GAP② `malformed_input_pdu_count()`（`server.h:372`/`server.cpp:2376`）
+- GAP④ `IsKnownShareDataPduType`（`server.cpp:550`）白名单，`non-known` 不再吞 fast-path 输入
+- 变异：MOUSEREL 收回、删硬上限、删 GAP②/GAP④ 均红；第三次变异因 Win32 时序不可测改为纯函数替代（如实记录）
+### 主代理复验
+- `[BASH: cmake --build]` exit=0 warn=0 err=0；`[BASH: ctest 全量]` **63/63 passed**（63.53 s）
+- `[READ:server.cpp:1886]` kMouseRel 解码就位；`[READ:server.cpp:550/1627]` GAP④ 白名单就位；
+  `[READ:desktop_input_map.cpp:102-109]` DecideEnqueue 逻辑与裁决一致
+- 提交 `4eb3344`
+### 批 7 已派 `ses_e6c0f1016ffeiljLXtRWhCoIOc`
+- `max_input_sessions=1` 控制租约（默认 1，0=不限制）+ `input_lease_denied_count()`
+- `TranslateInput` 过滤 `scancode==0`
+- sink↔server 集成测试（不含注入真实桌面）：关=从不调用；两会话只有一个到达；
+  断开后移交；`ReleaseSession` 幂等一次

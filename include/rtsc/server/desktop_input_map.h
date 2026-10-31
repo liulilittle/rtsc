@@ -54,7 +54,8 @@ struct PlatformInput {
 
 // Translates one decoded RDP input event into zero or more platform actions.
 //
-//   kKey      -> one kKey (scancode copied verbatim, never offset by 0x100)
+//   kKey      -> one kKey (scancode copied verbatim, never offset by 0x100);
+//                a zero scan code is dropped (SendInput has no wScan=0 key)
 //   kUnicode  -> one kKey with `unicode` set (drops a zero code point)
 //   kMouse    -> kMouseMove when is_move is set, and/or kMouseButton when a
 //                button identity is present; neither -> empty

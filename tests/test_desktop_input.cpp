@@ -71,6 +71,23 @@ RTSC_TEST(desktop_input_extended_key_keeps_scancode) {
     CHECK(!out[0].release);
 }
 
+RTSC_TEST(desktop_input_zero_scancode_is_not_injected) {
+    // A kKey event carrying scan code 0 has no valid Win32 scan code: SendInput
+    // would be asked for wScan=0, which the system does not turn into a key
+    // (only KEYEVENTF_UNICODE uses a zero scan code). The pure mapper must drop
+    // it instead of enqueueing an unusable platform event.
+    const std::vector<PlatformInput> down =
+        TranslateInput(KeyEvent(0x00, false, false), InjectGeometry{});
+    CHECK(down.empty());
+    const std::vector<PlatformInput> up =
+        TranslateInput(KeyEvent(0x00, false, true), InjectGeometry{});
+    CHECK(up.empty());
+    // An extended zero scan code is equally unusable.
+    const std::vector<PlatformInput> extended =
+        TranslateInput(KeyEvent(0x00, true, false), InjectGeometry{});
+    CHECK(extended.empty());
+}
+
 RTSC_TEST(desktop_input_unicode) {
     InputEvent ev;
     ev.kind = InputEvent::Kind::kUnicode;

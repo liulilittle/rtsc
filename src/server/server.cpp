@@ -27,6 +27,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -635,6 +636,27 @@ void DecodePointerEvent(uint16_t pf, uint16_t x_pos, uint16_t y_pos,
     DecodePointerButtons(pf, mouse_x, ev);
 }
 
+// Server-wide desktop input control lease.
+//
+// Every session injects into the same physical desktop, so letting several
+// sessions inject at once interleaves two peers' pointer/keyboard streams into
+// one machine. ServerConfig::max_input_sessions caps how many sessions may hold
+// the lease simultaneously (default 1). The first decoded input event from a
+// session acquires the lease; a session that arrives while every slot is taken
+// is refused (and counted) for that event. There is deliberately no wait queue:
+// the refused session tries again on its next event, so the lease moves to it as
+// soon as a holder disconnects and releases.
+struct InputLease {
+    explicit InputLease(size_t max_sessions)
+        : max_sessions(max_sessions),
+          denied(std::make_shared<std::atomic<size_t>>(0)) {}
+
+    std::mutex mu;
+    std::set<uint32_t> holders;  // input session ids currently injecting
+    const size_t max_sessions;   // 0 = unlimited (explicit opt-out)
+    std::shared_ptr<std::atomic<size_t>> denied;
+};
+
 // One accepted peer. Owns its transport, its X.224/MCS state, its security
 // state, its capability sets and its framebuffer. Nothing mutable is shared
 // with another session: this is the D1 single-writer-per-session model.
@@ -647,7 +669,8 @@ class RdpSession {
                clipboard::Clipboard* clipboard,
                clipboard::FileListProvider* file_provider,
                std::shared_ptr<std::atomic<size_t>> unknown_input_events,
-               std::shared_ptr<std::atomic<size_t>> malformed_input_pdus)
+               std::shared_ptr<std::atomic<size_t>> malformed_input_pdus,
+               std::shared_ptr<InputLease> input_lease)
         : transport_(std::move(transport)),
           config_(config),
           source_(source),
@@ -657,7 +680,8 @@ class RdpSession {
           input_sink_(input_sink),
           input_session_id_(input_session_id),
           unknown_input_events_(std::move(unknown_input_events)),
-          malformed_input_pdus_(std::move(malformed_input_pdus)) {
+          malformed_input_pdus_(std::move(malformed_input_pdus)),
+          input_lease_(std::move(input_lease)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
         // session's thread. The send lambda reads cliprdr_channel_id_ at send
@@ -728,12 +752,20 @@ class RdpSession {
         if (transport_) transport_->Close();
     }
 
-    // Releases every key/button this session still holds. Called exactly once
-    // from the teardown paths, before the session leaves the registry, so the
-    // borrowed sink is never used after the host has destroyed it.
+    // Releases the desktop input lease and every key/button this session still
+    // holds. Called exactly once from the teardown paths, before the session
+    // leaves the registry, so the borrowed sink is never used after the host has
+    // destroyed it. A session that never acquired the lease never injected, so
+    // it has nothing to release and does not call the sink.
     void ReleaseInput() {
         if (input_released_) return;
         input_released_ = true;
+        if (!input_lease_held_) return;
+        input_lease_held_ = false;
+        {
+            std::lock_guard<std::mutex> lock(input_lease_->mu);
+            input_lease_->holders.erase(input_session_id_);
+        }
         if (config_.enable_desktop_input && input_sink_ != nullptr) {
             input_sink_->ReleaseSession(input_session_id_);
         }
@@ -765,6 +797,40 @@ class RdpSession {
     ~RdpSession() { ScrubCredentials(); }
 
  private:
+    // Returns true when this session may inject the current event. The first
+    // call takes a lease slot (unless the configured limit is already reached,
+    // in which case the event is counted as denied); later calls are cheap
+    // while the lease is held. A refused session retries on its next event, so
+    // it takes over when an earlier holder disconnects -- no waiter queue is
+    // needed and a session that stops typing does not block the hand-off.
+    bool AcquireInputLease() {
+        if (input_sink_ == nullptr || !config_.enable_desktop_input) return false;
+        if (input_lease_held_) return true;
+        if (input_lease_ == nullptr) return false;
+        bool acquired = false;
+        {
+            std::lock_guard<std::mutex> lock(input_lease_->mu);
+            // max_sessions == 0 is the explicit "unlimited" setting; otherwise
+            // a slot must still be free.
+            if (input_lease_->max_sessions == 0 ||
+                input_lease_->holders.size() < input_lease_->max_sessions) {
+                input_lease_->holders.insert(input_session_id_);
+                acquired = true;
+            }
+        }
+        if (!acquired) {
+            input_lease_->denied->fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        input_lease_held_ = true;
+        // The sink learns the geometry only for the session that may inject;
+        // the negotiation stored it while the lease was still unheld.
+        if (inject_geometry_known_) {
+            input_sink_->SetGeometry(input_session_id_, inject_geometry_);
+        }
+        return true;
+    }
+
     // ---- transport helpers -------------------------------------------------
     bool Send(const std::vector<uint8_t>& frame) {
         if (frame.empty()) return false;
@@ -1206,13 +1272,12 @@ class RdpSession {
                                                      : config_.desktop_height,
                          &desktop_width_, &desktop_height_);
         // The negotiated framebuffer is the coordinate space of the inbound
-        // pointer events, so tell the injection sink about it once it is final
-        // (the clamp above is what Demand Active announces).
-        if (config_.enable_desktop_input && input_sink_ != nullptr) {
-            input_sink_->SetGeometry(input_session_id_,
-                                     InjectGeometry{desktop_width_,
-                                                    desktop_height_});
-        }
+        // pointer events (the clamp above is what Demand Active announces).
+        // Remember it here; the sink is told only once this session actually
+        // acquires the input lease, so a non-holder never appears in the
+        // sink's geometry bookkeeping.
+        inject_geometry_ = InjectGeometry{desktop_width_, desktop_height_};
+        inject_geometry_known_ = true;
 
         std::vector<proto::GccUserData::Block> blocks;
         blocks.push_back({kScCore, BuildServerCoreBody(requested_protocols_)});
@@ -1795,7 +1860,7 @@ class RdpSession {
                     }
                     return;
             }
-            if (config_.enable_desktop_input && input_sink_ != nullptr) {
+            if (AcquireInputLease()) {
                 input_sink_->Inject(input_session_id_, ev);
             }
             if (input_callback_) input_callback_(ev);
@@ -1923,7 +1988,7 @@ class RdpSession {
                     }
                     return;
             }
-            if (config_.enable_desktop_input && input_sink_ != nullptr) {
+            if (AcquireInputLease()) {
                 input_sink_->Inject(input_session_id_, ev);
             }
             if (input_callback_) input_callback_(ev);
@@ -1941,6 +2006,12 @@ class RdpSession {
     // wire shareId): making the wire id per-session would change Demand Active.
     DesktopInputSink* input_sink_ = nullptr;
     uint32_t input_session_id_ = 0;
+    // Server-wide lease (shared with every session) and this session's state:
+    // whether it holds a slot, and the geometry to announce if/when it does.
+    std::shared_ptr<InputLease> input_lease_;
+    bool input_lease_held_ = false;
+    InjectGeometry inject_geometry_;
+    bool inject_geometry_known_ = false;
     bool input_released_ = false;
     // Server-level counter shared with every session: an unknown eventCode is
     // counted here so the operator can observe it without logs (P-11).
@@ -2024,7 +2095,9 @@ class RdpSession {
 // ---- RdpServer -------------------------------------------------------------
 
 struct RdpServer::Impl {
-    explicit Impl(const ServerConfig& config) : config(config) {}
+    explicit Impl(const ServerConfig& config)
+        : config(config),
+          input_lease(std::make_shared<InputLease>(config.max_input_sessions)) {}
 
     // State shared with the detached session threads. It is a shared_ptr so a
     // thread that is still finishing after Stop() cannot touch a destroyed
@@ -2043,6 +2116,8 @@ struct RdpServer::Impl {
     };
 
     ServerConfig config;
+    // Desktop input control lease shared by every session of this server.
+    std::shared_ptr<InputLease> input_lease;
     std::unique_ptr<net::Listener> listener;
     // The port the listening socket is actually bound to; captured at bind time
     // so it survives the listener's destruction. Non-zero whenever `listener`
@@ -2183,7 +2258,7 @@ void RdpServer::Run() {
                 impl_->next_input_session_id.fetch_add(
                     1, std::memory_order_relaxed) + 1,
                 clipboard_, file_list_provider_, impl_->unknown_input_events,
-                impl_->malformed_input_pdus);
+                impl_->malformed_input_pdus, impl_->input_lease);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2310,7 +2385,7 @@ bool RdpServer::ServeOne() {
         0, input_sink_,
         impl_->next_input_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
         clipboard_, file_list_provider_, impl_->unknown_input_events,
-        impl_->malformed_input_pdus);
+        impl_->malformed_input_pdus, impl_->input_lease);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it.
     try {
@@ -2375,6 +2450,10 @@ size_t RdpServer::unknown_input_event_count() const {
 
 size_t RdpServer::malformed_input_pdu_count() const {
     return impl_->malformed_input_pdus->load(std::memory_order_relaxed);
+}
+
+size_t RdpServer::input_lease_denied_count() const {
+    return impl_->input_lease->denied->load(std::memory_order_relaxed);
 }
 
 // ---- Test pattern ----------------------------------------------------------

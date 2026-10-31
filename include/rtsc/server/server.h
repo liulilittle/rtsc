@@ -143,6 +143,16 @@ struct ServerConfig {
     // explicit opt-in; see docs/spec/input-injection-seam.md section 2.
     bool enable_desktop_input = false;
 
+    // Upper bound on sessions that may hold the desktop input lease at the same
+    // time. The default is 1 because every session injects into the same
+    // physical desktop: two peers typing at once would interleave into one
+    // keyboard/mouse stream. A session acquires the lease on its first decoded
+    // input event and releases it when it ends; a session that finds no free
+    // slot keeps its events out of the sink (counted by
+    // input_lease_denied_count()) and tries again on its next event. 0 disables
+    // the limit explicitly (every session may inject) and is not the default.
+    size_t max_input_sessions = 1;
+
     // The server tells the client how many times it may reconnect with a saved
     // frame. Kept at zero for the first milestone.
     uint32_t session_id = 0;
@@ -370,6 +380,13 @@ class RdpServer {
     // unknown_input_event_count(): a malformed length is a framing error, not
     // an unknown event type.
     size_t malformed_input_pdu_count() const;
+
+    // Number of decoded input events that were NOT injected because this
+    // session did not hold the desktop input lease and every slot allowed by
+    // ServerConfig::max_input_sessions was taken, over the life of this server
+    // (monotonic, never reset). Events stay visible through SetInputCallback();
+    // only the injection attempt is dropped.
+    size_t input_lease_denied_count() const;
 
  private:
     struct Impl;

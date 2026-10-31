@@ -32,6 +32,10 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
     std::vector<PlatformInput> out;
     switch (ev.kind) {
         case InputEvent::Kind::kKey: {
+            // A zero scan code has no platform meaning: SendInput takes wScan=0
+            // only for a KEYEVENTF_UNICODE event, and this branch is the scan
+            // code path. Dropping it keeps an unusable INPUT out of the queue.
+            if (ev.scancode == 0) return out;
             // The RDP keyCode is already the set-1 scan code; the 0xE0 prefix
             // is a separate flag, so the value must never be offset by 0x100.
             PlatformInput key;

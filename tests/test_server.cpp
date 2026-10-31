@@ -22,9 +22,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,6 +49,7 @@
 #include "rtsc/proto/rdpdr.h"
 #include "rtsc/proto/share.h"
 #include "rtsc/proto/tpkt.h"
+#include "rtsc/server/desktop_input.h"
 #include "rtsc/server/server.h"
 #include "test_framework.h"
 #include "test_main.h"
@@ -528,6 +531,96 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
     r.transport = std::move(transport);
     r.reader = std::move(reader);
     return r;
+}
+
+// ---- Desktop input sink test double ---------------------------------------
+
+// Records every sink call so a test can prove which session actually reached
+// the injection seam. All methods copy under one mutex: Inject runs on a
+// session thread while the test reads the snapshots.
+class RecordingInputSink final : public rtsc::server::DesktopInputSink {
+ public:
+    void SetGeometry(uint32_t session_id,
+                     const rtsc::server::InjectGeometry& g) override {
+        std::lock_guard<std::mutex> lock(mu_);
+        geometry_ids_.push_back(session_id);
+        geometry_width_ = g.width;
+        geometry_height_ = g.height;
+    }
+
+    void Inject(uint32_t session_id,
+                const rtsc::server::InputEvent& ev) override {
+        std::lock_guard<std::mutex> lock(mu_);
+        inject_ids_.push_back(session_id);
+        last_event_ = ev;
+    }
+
+    void ReleaseSession(uint32_t session_id) override {
+        std::lock_guard<std::mutex> lock(mu_);
+        release_ids_.push_back(session_id);
+    }
+
+    rtsc::server::InputStats Stats() const override { return {}; }
+
+    std::vector<uint32_t> inject_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return inject_ids_;
+    }
+    std::vector<uint32_t> geometry_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return geometry_ids_;
+    }
+    std::vector<uint32_t> release_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return release_ids_;
+    }
+    uint16_t geometry_width() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return geometry_width_;
+    }
+    uint16_t geometry_height() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return geometry_height_;
+    }
+
+ private:
+    mutable std::mutex mu_;
+    std::vector<uint32_t> inject_ids_;
+    std::vector<uint32_t> geometry_ids_;
+    std::vector<uint32_t> release_ids_;
+    uint16_t geometry_width_ = 0;
+    uint16_t geometry_height_ = 0;
+    rtsc::server::InputEvent last_event_;
+};
+
+size_t DistinctIds(const std::vector<uint32_t>& ids) {
+    return std::set<uint32_t>(ids.begin(), ids.end()).size();
+}
+
+size_t CountId(const std::vector<uint32_t>& ids, uint32_t id) {
+    size_t n = 0;
+    for (const uint32_t v : ids) {
+        if (v == id) ++n;
+    }
+    return n;
+}
+
+bool WaitUntil(const std::function<bool()>& pred, int timeout_ms = 5000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return pred();
+}
+
+bool SendTestInput(const HandshakeResult& r) {
+    return WriteAll(*r.transport,
+                    McsSendData::build_request(
+                        r.user_channel, r.io_channel,
+                        EncodeFastPathInputPdu(
+                            {EncodeKeyboardEvent(0x1E, false, false)})));
 }
 
 // ---- Server harness --------------------------------------------------------
@@ -3288,6 +3381,182 @@ RTSC_TEST(server_rdpdr_channel_routes_to_rdpdr_handler) {
         }
     }
     CHECK(!rdpdr_seen);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_input_sink_disabled_by_config) {
+    // enable_desktop_input=false is the default and must keep the sink
+    // completely untouched: no geometry, no injection, no release, even when a
+    // peer sends input and a sink is installed.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = false;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    CHECK(SendTestInput(r));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    CHECK(sink.inject_ids().empty());
+    CHECK(sink.geometry_ids().empty());
+    CHECK(sink.release_ids().empty());
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    server.Stop();
+    runner.join();
+    // The session ended; with injection disabled ReleaseSession must still not
+    // have been called.
+    CHECK(sink.release_ids().empty());
+}
+
+RTSC_TEST(server_input_lease_one_session_then_handoff) {
+    // Two live sessions share one physical desktop. With the default limit of 1
+    // only the first session that sends input acquires the lease; the second is
+    // denied (and counted) until the holder disconnects. After the holder is
+    // gone the next input event from the survivor acquires the lease.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult first =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(first.reached_active);
+    HandshakeResult second =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(second.reached_active);
+
+    // The first session sends input: it must become the sole lease holder.
+    CHECK(SendTestInput(first));
+    CHECK(WaitUntil([&sink]() { return !sink.inject_ids().empty(); }));
+    const std::vector<uint32_t> inject_after_first = sink.inject_ids();
+    CHECK_EQ(DistinctIds(inject_after_first), static_cast<size_t>(1));
+    if (inject_after_first.empty()) {
+        server.Stop();
+        runner.join();
+        return;
+    }
+    const uint32_t holder = inject_after_first.front();
+
+    // Geometry is announced for the lease holder only, with the negotiated
+    // framebuffer size.
+    const std::vector<uint32_t> geometry_after_first = sink.geometry_ids();
+    CHECK_EQ(DistinctIds(geometry_after_first), static_cast<size_t>(1));
+    CHECK(!geometry_after_first.empty() &&
+          geometry_after_first.front() == holder);
+    CHECK_EQ(sink.geometry_width(), static_cast<uint16_t>(64));
+    CHECK_EQ(sink.geometry_height(), static_cast<uint16_t>(48));
+
+    // The second session sends input while the lease is held: nothing reaches
+    // the sink under its id, and the denial counter records the attempts.
+    for (int i = 0; i < 5; ++i) CHECK(SendTestInput(second));
+    CHECK(WaitUntil(
+        [&server]() { return server.input_lease_denied_count() >= 5; }));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(5));
+    for (const uint32_t id : sink.inject_ids()) CHECK_EQ(id, holder);
+
+    // Disconnect the holder. Its lease is released and ReleaseSession runs
+    // exactly once for it (idempotent teardown).
+    first.reader.reset();
+    first.transport->Close();
+    first.transport.reset();
+    CHECK(WaitUntil([&sink, holder]() {
+        return CountId(sink.release_ids(), holder) == 1;
+    }));
+
+    // The survivor's next input event acquires the lease: a different session
+    // id now reaches Inject and SetGeometry.
+    bool handed_off = false;
+    for (int i = 0; i < 300 && !handed_off; ++i) {
+        CHECK(SendTestInput(second));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        handed_off = DistinctIds(sink.inject_ids()) == 2;
+    }
+    CHECK(handed_off);
+    const std::vector<uint32_t> geometry_after_handoff = sink.geometry_ids();
+    CHECK_EQ(DistinctIds(geometry_after_handoff), static_cast<size_t>(2));
+    uint32_t survivor = 0;
+    for (const uint32_t id : sink.inject_ids()) {
+        if (id != holder) survivor = id;
+    }
+    CHECK(survivor != 0);
+    CHECK_EQ(CountId(geometry_after_handoff, survivor), static_cast<size_t>(1));
+
+    // ReleaseSession stays once-per-session: the holder was not released again.
+    CHECK_EQ(CountId(sink.release_ids(), holder), static_cast<size_t>(1));
+    CHECK_EQ(CountId(sink.release_ids(), survivor), static_cast<size_t>(0));
+
+    server.Stop();
+    runner.join();
+    CHECK_EQ(CountId(sink.release_ids(), holder), static_cast<size_t>(1));
+    CHECK_EQ(CountId(sink.release_ids(), survivor), static_cast<size_t>(1));
+}
+
+RTSC_TEST(server_input_lease_zero_means_unlimited) {
+    // max_input_sessions=0 is the explicit "unlimited" value: both sessions
+    // acquire and inject, and nothing is denied.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 0;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult first =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(first.reached_active);
+    HandshakeResult second =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(second.reached_active);
+
+    bool both_injected = false;
+    for (int i = 0; i < 300 && !both_injected; ++i) {
+        CHECK(SendTestInput(first));
+        CHECK(SendTestInput(second));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        both_injected = DistinctIds(sink.inject_ids()) == 2;
+    }
+    CHECK(both_injected);
+    CHECK_EQ(DistinctIds(sink.geometry_ids()), static_cast<size_t>(2));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
 
     server.Stop();
     runner.join();
