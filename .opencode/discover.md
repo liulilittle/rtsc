@@ -634,3 +634,36 @@ SUMMARY failures=3
 ### 测试盲区（乙判定 FAIL）
 4 处 `SetInputCallback` 用例（`test_server:615/655/2017`、`test_gui_send:200`）**只断言"收到事件/计数"**，
 0 断解码语义、0 断注入 → 负滚轮、横向滚轮、相对移动全部无覆盖。
+
+## 第789轮：滚轮字段正确编码定案 —— 9 位符号扩展（推翻"幅值+独立标志"）
+### 规范锚（web 核验 [MS-RDPBCGR] TS_POINTER_EVENT）
+> PTRFLAGS_WHEEL_NEGATIVE 0x0100："The wheel rotation value (contained in the **WheelRotationMask bit field**)
+> is negative and **MUST be sign-extended** before injection at the server."
+> WheelRotationMask 0x01FF："The bit field describing the number of rotation units."
+
+**0x01FF 是 9 位宽，0x0100 就是这 9 位的符号位**，不是独立标志。同时当"标志"和"幅值"用就是重复计数 → 本仓 bug 根因。
+
+### 探针实证（`evidence/input-wheel-signed-probe.txt`，3b17a2e）
+```
+今天（幅值+独立负号）:   -1 -> 0x0301 -> -257   FAIL
+                       -120 -> 0x0378 -> -376   FAIL
+9 位符号扩展:           -1 -> 0x03FF ->   -1   PASS
+                       -120 -> 0x0388 -> -120   PASS
+                       -240 -> 0x0310 -> -240   PASS
+                       -255 -> 0x0301 -> -255   PASS
+```
+正确算法：`encode(d) = (d>=0) ? d : (0x200+d)`；`decode(f) = (f&0x100) ? f-0x200 : f`
+
+### 反直觉推论（必须记住）
+修正后 `encode(-255)==0x0301`，而今天 `encode(-1)==0x0301`。
+**同一个线上字节 0x0301：今天的实现解成 -257，正确实现解成 -255。**
+→ 任何断言必须锚定**规范位布局**（`encode(-1)==0x03FF`），不能锚在"今天 encoder 的输出"上。
+
+### 推翻了两审的一个隐含假设
+乙说"编码 -1 → 0x0301"，当成"编码器对、解码器错"。实际**编码器也错**（应为 0x03FF）。
+甲说"client_encodes_mouse_wheel 断言 encode(-1)=0x0301"——**这条断言把 bug 固化成了契约**
+（本项目第 5 次出现"测试固化缺陷"：USB 守卫方向 / 单测自造布局 / 层间掩盖 / 守卫固化 / 本例）。
+
+### 已 relay 两审
+要求：①有异议给字节级证据（mstsc 抓包/FreeRDP 实际 flags）；②同意则 encoder+decoder 双侧修 +
+规范锚断言；③横向滚轮同 9 位字段 + WHEEL 优先于 HWHEEL；④甲的 Win32 注入取证报告仍缺，需补。
