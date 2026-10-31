@@ -1,4 +1,4 @@
-# RTSC 计划（plan.md）
+﻿# RTSC 计划（plan.md）
 
 ## 目标
 以 REA/Ghidra 对 mstsc.exe / mstscax.dll 的静态取证 + 官方规范 [MS-RDPBCGR] 为双重依据，
@@ -644,6 +644,5 @@ WSL `Ubuntu-24.04`：cmake 3.28.3、g++ 13.3.0、OpenSSL 3.0.13、32 核。
   影响：Linux 服务器模式只能走 Standard RDP Security（无 TLS/CredSSP）。**这是 Linux 服务器模式的前置缺口。**
 
 ## 仍未验证（W5）
-- `kTofu + pin` 的**行为**未验证：`tests/test_tls_openssl.cpp` 无 pin 用例（只有编译通过）。
-  验证方法：为该套件补自签证书 + pin 用例，或真机自签网关 + `--gateway-trust` 实测。
+- ~~`kTofu + pin` 行为未验证~~ → **已验证**（第769轮，`a2cfebe`）：`tests/test_tls_openssl.cpp` 补齐 5 条策略用例（pin 匹配接受自签 / pin 不匹配拒绝 / kStrict 与 kTofu 无 pin 拒绝），Linux 实跑全绿；顺带修复 OpenSSL 不查 `SSL_get_verify_result` 导致链校验失败误报 `kProtocolError` 的缺陷。
 - `rdpdr` 驱动器重定向的 Linux 行为未覆盖（测试为 Windows 路径语义）；仅路径守卫有 POSIX 用例。
