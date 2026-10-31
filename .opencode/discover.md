@@ -1540,3 +1540,38 @@ bounded：55MB peak / 1.36s，确认 34GB 根因已被存量 HttpLimits+offset �
 **实测数据留档**（供将来申请解除时参考，不构成解除依据）：
 Linux `/usr/bin/time -v ./build-linux/rtsc_gateway_tests` → 峰值 RSS 55,584 KB、墙钟 1.37 s、
 112 tests/1139 checks 全绿。
+
+## 第779轮：双审双章终稿（主机名 + Accept）—— 主代理纠正自己两处取证错误
+### 主代理的取证更正（必须记录）
+1. 我此前用 `grep 'Sec-WebSocket-Accept|accept_key|WebSocketAccept'` 零命中，据此推断
+   "101 升级是伪实现"。**错误**：请求头完整存在于 `src/proto/gateway.cpp:476-493`：
+   `Connection: Upgrade`(477) / `Upgrade: websocket`(478) / `Sec-WebSocket-Key`(479-491，
+   16 随机字节→base64) / `Sec-WebSocket-Version: 13`(492)。我搜的是 Accept，不是 Key，
+   却把"没有 Accept"误读成"没有 Key"。
+   **教训**：字符串缺失只能证明"该字面量不存在"，不能推断"相关机制不存在"——
+   与家族第 4 例（用字符串缺席否定 101）同型复发。
+2. 乙单独在 Linux 实测 OpenSSL `X509_check_host`：
+   - `*.com` ← `x.com` → **拒**
+   - `*.co.uk` ← `x.co.uk` → **过**（OpenSSL 也不拒 ccSLD）
+   - `*.example.com` ← `a.b.example.com` → 拒
+   → **证实 D-H3：两后端语义不一致**（SChannel 接受 `*.com`，OpenSSL 拒绝）。
+
+### 双章定案
+- **请求完整**（PASS）：101 升级请求头齐全，"伪实现"结论撤销。
+- **Sec-WebSocket-Accept 缺失**：判定 **P3**（外层 TLS 已认证端点，持有合法证书的网关本就控制流；
+  价值在 RFC 合规 + 纵深防御）。
+- **D-H1 `*.com`**：判定 **P2**（不是因为可利用率，而是**同一证书同一目标在 Linux 拒 / Windows 过，
+  信任裁决随构建平台漂移**，且修复成本极低）。
+- **D-H2 尾点**：P3 假阴性。
+- **D-H3 两后端一致性**（乙首提，主代理实测确认）：`*.com` 跨端分歧；另 `*.co.uk`、裸域通配、
+  尾点三处仍会单侧差异（修复后需注释）。
+- **D-H4 验证名分歧**（乙）：`tls_openssl.cpp:260-267` 用 `sni ?: peer_host`，
+  `tls_schannel.cpp:891-892` 用 `peer_host ?: sni` → sni 与 peer_host 都设且不同时验证不同名字。P3。
+
+### 修复方案（双审共识）
+- `DnsNameMatches` 硬化：两侧各剥**一个**尾点（剥后空/仍以 `.` 结尾 → 拒）→ 非通配全等 →
+  通配需 rest 含至少一个 `.`（结构拒 `*.com`）+ rest 在 ccSLD 表（拒 `*.co.uk`）+ 前缀单标签非空。
+- `Sec-WebSocket-Accept`：key 生命周期打通（`RdgChannelRequestOptions.websocket_key` 空=builder 生成，
+  出参回传）+ transport 存 key + 101 时算 `base64(SHA1(key||GUID))` 精确比较 +
+  连带校验 `Upgrade: websocket` / `Connection: Upgrade` + 失败硬错关闭 + 401 重试刷新 key。
+- 两后端验证名统一（D-H4）。
