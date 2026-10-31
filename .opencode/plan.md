@@ -489,23 +489,24 @@
 - 性能（1920x1080）：解码 109-200 fps；端到端 **193.5 fps**（5.168 ms）；CPU 100%（单核饱和）
 - 服务器模式：**8 会话并发压力测试通过**（`server_multisession` 7 tests/184 checks）
 
-## 进行中：OpenSSL 后端 server 角色（待双审复核）
-- 已落地：D1（`consumed = in_size`，`tls_openssl.cpp:325`）、server 角色分支（`:196/:257`）、
-  A2 进程级临时 RSA-2048 自签（`:161 call_once`）、B 可选 PEM 层（`:583-592`）、
-  `Local*` 实现、`tls.h` 注释修正、Linux server-role 测试放开、`--tls-cert/--tls-key`
-- 新增：`tls_openssl` 15 tests/123 checks、`server_security` 7 tests/60 checks；变异红证 3/3
+## 已完成：OpenSSL 后端 server 角色（84cf12b）
+Linux 上 
+tsc_server 现可提供 TLS/CredSSP。本批修复 3 个 P0：
+1. **D1** Handshake 的 consumed 语义错误（模拟 SSPI EXTRA，OpenSSL EXTRA 恒 0）→ 重放同记录 → **AES-GCM nonce 重用**
+2. **drain 门控死锁**：pending_cipher_ 为空时跳过 drain → 合段的 CredSSP NEGOTIATE 滞留 → 客户端等 CHALLENGE、服务端等字节
+3. **server 角色缺失**：TLS_client_method 无条件 → Linux 服务器只能走 Standard RDP Security
+
+实现要点：A2 进程级临时 RSA-2048 自签（call_once，只缓存 DER 字节）+ B 可选 PEM 层；
+Local* 用 i2d_X509 / X509_PUBKEY_get0_param（禁固定偏移）；policy 校验仅 kClient。
+测试：	ls_openssl 16/134、server_security 8/67；变异 4/4 + 双审各 2 项独立复现。
 
 ## 待处理
 
-### P0 —— D1 的耦合问题（主代理发现，乙判定 P0 死锁，已采纳）
-`server_security_layer.cpp:186-193` 的 `while (buffered_input() > 0) Receive(nullptr,0,...)` **被包在
-`if (!pending_cipher_.empty())`（`:178`）里**。D1 修好后握手完成时 `pending_cipher_` 已清空
-→ 合段的 CredSSP 记录（NEGOTIATE）滞留在 OpenSSL rbio 无人取出 → 返回 `Want::kRead`。
-**死锁机制**：客户端此时在等服务器 CHALLENGE，不会发新字节；服务端等新字节 → 双向互等。
-违反 `tls.h:182-185` 的 Drain obligation（必须持续 Receive 直到 `buffered_input()==0`）。
-乙实测红证（产品 kServer + 裸 TLS1.3 client，Finished+首记录 119B 合段）：`buffered_input()=39`；hoist 后一次取出 17B 明文、`buffered_input()==0`。
-`security_layer.cpp:224-229` 同形（client 侧良性但对称修复）。
-**修法**：drain 移到 `if` 外面（两端）+ 补 **server 侧合段用例**。修复中。
+### ~~P0 —— D1 的耦合问题~~ 已修（84cf12b）
+server_security_layer.cpp:194 与 security_layer.cpp:244 的 drain 已移出 if；保留 kNeedMoreInput break。
+P0 回归用例 	ls_server_regression_coalesced_first_record_no_stall 锁层集成，
+openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异证明两层分离成立）。
+残留 P3：security_layer.cpp:321 DriveEuar 的 drain 仍门控，但 EUAR 是 step5 后独立消息，无死锁路径。
 
 ### P3（记录）
 - 主机名硬化：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
