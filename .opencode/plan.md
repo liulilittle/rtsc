@@ -508,10 +508,15 @@ P0 回归用例 	ls_server_regression_coalesced_first_record_no_stall 锁层集�
 openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异证明两层分离成立）。
 残留 P3：security_layer.cpp:321 DriveEuar 的 drain 仍门控，但 EUAR 是 step5 后独立消息，无死锁路径。
 
-### P3（记录）
-- 主机名硬化：拒 public-suffix 通配（`*.com`）、IDN/punycode 归一、尾点归一
-  （`tls_schannel.cpp:93-102`；均为假阴性或需公有后缀才可利用）
-- `Sec-WebSocket-Accept` 未校验（RFC 6455 §4.1，UNVERIFIED）
+### ~~主机名硬化 + Sec-WebSocket-Accept~~ 已修（`407d03e`）
+- `DnsNameMatches` 尾点归一 + 结构拒 `*.com` + ccSLD 表（447 条）拒 `*.co.uk`；探针 9/9 PASS（原 4 FAIL 全转绿）。
+- WebSocket 101 三条件校验 + key 生命周期打通 + 401 刷新；RFC 官方样例锁定。
+- 两后端验证名统一；两处单侧差异（ccSLD / 尾点）双端注释。
+
+### P3（记录，未修）
+- ccSLD 表为**手工维护的简化集**（非全 PSL），漏项则公共后缀通配仍可能过（已注释）
+- OpenSSL 后端未引入 ccSLD 检查（`*.co.uk` 在 Linux 仍过；SChannel 更严，安全方向正确）
+- IDN/punycode 归一未做（假阴性）
 - `0x6a4`/`0x6a6` 异值场景 UNVERIFIED
 - USB：P2 AddDevice 异步反馈；P3 复合设备/kIoControl/控制 URB 合成/热插拔/Isoch/hresult/NoAck
 
