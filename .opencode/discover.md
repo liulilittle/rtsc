@@ -493,3 +493,28 @@ SAN example.com      <- host example.com        =>  1 (MATCH)
 **两名审计一致 = 不等于正确。** 本项目的"双章"是流程保证，不是真理保证；
 最终裁决必须由**独立探针**给出。甲/乙的 OpenSSL 结论很可能是从另一处（如多 SAN 证书、
 或 `X509_check_host` 的 flags 差异）误推的，没有各自独立复现。
+
+## 第783轮：执行交付 + 主代理独立裁决"裸域通配"分歧（两审错、执行对）
+### 执行交付（9 文件）
+- 修1 `tls_schannel.cpp:198-243` DnsNameMatches 硬化；`:102-166` ccSLD 表 447 条 + `kCcSldIsSorted()` 编译期守卫
+- 修2 `gateway.cpp:525-533` ComputeWebSocketAccept；`:434` 重复 Connection 头收敛；`gateway_transport.cpp:930-951` ValidateWebSocketUpgrade 三条件
+- 修3 `tls_openssl.cpp:270-274` `verify_name = peer_host ?: sni`（与 SChannel `:1032-1033` 一致）
+
+### 主代理独立验证
+- 主机名探针 **9/9 PASS**（原 4 FAIL 全转绿）→ `evidence/tls-hostmatch-probe-GREEN.txt`（97d7a0f）
+- Windows：build 0 err/0 warn，`ctest -R "tls|tls_openssl|gateway|proto|net|security|server_security"` **6/6**
+- Linux：build 0 err（-Werror），同范围 **5/5**
+
+### 关键裁决（`evidence/openssl-x509-bare-domain-adjudication.txt`，5403909）
+**两审（甲+乙）一致声称** OpenSSL 对 `SAN *.example.com` ← `host example.com` 返回 **1（过）**，
+并据此要求写"单侧差异"注释。
+**执行 AI 反驳说 0（拒），并拒绝写那条注释。**
+
+主代理自建探针（OpenSSL 3.0.13，内存 SAN 证书 + 直调 `X509_check_host`）实测：**0（no-match，拒）**。
+→ **执行 AI 正确，两名审计都错了**。裸域通配两后端本来就一致拒绝，不存在差异。
+若照两审的说法写注释，会**伪造一处不存在的不一致**，后续审计可能照假注释去"修"不存在的问题。
+
+### 教训（同型家族第 10 例）
+**两名审计一致 ≠ 正确。** "双章"是流程保证，不是真理保证；最终裁决必须由**独立探针**给出。
+已要求两审回答"当时探针是怎么得出 1 的"——这关系到他们其余 OpenSSL 结论的可信度
+（`*.co.uk`=1 我实测一致，所以只有裸域那条错）。
