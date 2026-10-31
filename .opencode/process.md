@@ -778,3 +778,13 @@
 - **抓到执行 AI 变异中途态**：`tls_schannel.cpp:835` `return MakeError(Status::kOk, 0, "");  // MUTATION-F2A`
   —— 为证明新用例转红而临时插入，**不可验收不可提交**。已在 `:831-833` 看到修 A 的新注释（"Mirrors OpenSSL: kTofu verifies the chain (SSL_VERIFY_PEER) but does not compare the hostname"），说明意图已写入，仅实现行仍是变异态。
 - 已补单给执行 AI：补1 清除变异并附 grep 空输出证据（USB 批次曾因残留 `// MUTATION 2` 被退回）；补2 修 `rtsc_bench:400`（同款 kStrict + --tls-insecure），但若 bench 默认会跑不通须先报告不改。
+
+## 第764轮：修A/F2/bench 交付 + 主代理独立核实 + 派第二审计丙
+- 执行 AI 交付四项，主代理逐项独立核实：
+  1. **修 A**：`tls_schannel.cpp:830-836` kTofu 分支 = `if (pin_is_set) return VerifySpkiPin(); return VerifyChainOnly();` ✅；`:868-889` VerifyChainOnly 判据 `dwChainErrorStatus==0 && SUCCEEDED(hrVerifyChainStatus)`；`:860-866` VerifyStrictPeer = VerifyChainOnly + VerifyHostname
+  2. **F2**：`tools/rtsc_connect/main.cpp:118-120` 默认 kStrict、仅 `tls_insecure` 时 kInsecure ✅；`:56-69` 解析 `--tls-insecure`；usage 同步
+  3. **补1**：MUTATION 全仓 **0 处**（主代理 grep 复核）✅；`:835` 现为 `return VerifyChainOnly();`
+  4. **补2**：`tools/rtsc_bench/main.cpp:398-405` 默认 kStrict、`:590/595` 透传、`:756-759` 解析开关 ✅
+- **主代理自建自跑**：`BUILD_RC=0`；`ctest -R tls|credssp|client|security|gateway|server` **6/6 passed**；tls 套件 **42 tests/193 checks/0 failing**（+1 新用例 `schannel_ktofu_without_pin_rejects_untrusted_chain`）。
+- 执行 AI 关键说明（已接受）：bench 的 TLS 全程脚本化（`main.cpp:600 SetTlsTransportForTest(ScriptedTls)`），证书策略不参与基准行为 → 改 kStrict 后 bench 默认仍 EXIT=0，CI 不受影响。
+- **审计甲已解散 → 新建第二审计丙 `ses_e708a4114ffeGnULsV7hJaB0Wu`** 做独立终审（13 项：TLS 安全 8 项 + 数据完整性 4 项 + 阶段2 行为 5 项 + 构建测试 3 项 + 文档一致性），要求变异抽验 2 项。
