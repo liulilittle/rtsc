@@ -746,3 +746,25 @@
   - 探针 **2/2 RED**（`evidence/gateway-tlsadapt-probe.txt`，b6ed7f0）。已 relay 给 F1 执行同批修。
 - P3 记录（`plan.md`，b14b15b）：D-T3 升级路径 WS mask 单次 Write 内复用（RFC 6455 5.3，实际影响小）；D-T4 Sec-WebSocket-Accept 未校验（UNVERIFIED）。
 - 待：F1（SChannel 校验 + TLS 适配丢包，ses_e70fdf49）→ 双审 → F2（rtsc_connect）→ 阶段2 签章提交。
+
+## 第762轮：F1+P1 双章（乙盖章 + 主代理独立验证）+ 追加 kTofu 语义缺口与 F2
+### F1+P1 已验证通过
+- 乙盖章（独立复现两组变异红证、全量 build RC=0、tls 41/191/0、gateway 111/1132/0）。
+- 主代理独立验证：修正后的探针 → `Write 100/100 PASS`、`repeated reads delivered 516 PASS`、SUMMARY failures=0；`ctest -R tls|credssp|client|security|server|gateway` **6/6 passed**；tls 套件 **41 tests/191 checks/0 failing**；六个新用例在 `test_tls.cpp:455/462/474/483/490/547`。
+- 执行 AI 用探针推翻我的两处 API 错误（已入 `tls-schannel-p0-verification.md` §8，356da3d）：
+  1. `ISC_REQ_DEFERRED_CRED_VALIDATION`=0x0000000200000000 是 64 位，`fContextReq` 是 32 位 → 截断为 0；正解是凭据级 `SCH_CRED_DEFERRED_CRED_VALIDATION`=0x04000000（schannel.h:678）
+  2. `SECPKG_ATTR_CERT_CHECK_RESULT` 结构是 `{DWORD dwChainErrorStatus; HRESULT hrVerifyChainStatus;}`（我写的字段名不存在）
+- **教训（同型家族第 6 例）**：没有实测的修复指令本身就是缺陷来源。
+
+### 新发现（乙非阻塞建议 1，主代理判为真缺口 → 必修）
+- `tls_schannel.cpp:830-832`：`kTofu` 且 `!pin_is_set` → **直接放行**；
+  而 `tls_openssl.cpp:122-125`：`kTofu` 与 `kStrict` 都 `SSL_VERIFY_PEER`。
+- 即**同一枚举值在 Windows 上零校验、在 OpenSSL 上做链校验**。而 `tls.h:118` 的**库默认就是 kTofu 无 pin**。
+- 这与刚修掉的 P0 同类 → 修 A：kTofu 无 pin 时做链校验但不做主机名（对齐 OpenSSL `SSL_VERIFY_PEER` 无 `set1_host`）。
+- 已核实：`pin_is_set` 仅 `main.cpp:382`（`--gateway-trust`）置位，无 TOFU 持久化存储。
+
+### F2（P0）已核实
+- `tools/rtsc_connect/main.cpp:109` `cert_policy = kInsecure`，且该工具**只有 `--rdp`**（`:56`），无逃生门 → 默认改 kStrict + 新增 `--tls-insecure`。
+
+两项已派执行 `ses_e70fdf49`，要求 A/B 分开报告以便分两次提交。
+另：执行 AI 三次投递 `ses_e715ef629ffeVtq4ItCnidsCDU` 失败 —— 该会话是已解散的阶段2执行者，无需转投。
