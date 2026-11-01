@@ -627,3 +627,23 @@ ReleaseSession/teardown: AppendReleasesLocked(session) // pressed_ 已空 → �
   一次性告警"，实现为"软 256 + 硬 1024 且硬限丢键 / kMouseRel 已上送 / 无限流 / 无告警"
   → 文档与实现偏离，须回写或补实现（批 9）。
 - `ReleaseInput` 先 erase 租约再 `ReleaseSession` → 交接窗口旧会话 up 可误抬新持有者同键（F2）。
+## 第807轮：我的修复指令本身制造了无界队列（审计 C 判 F1 FAIL）
+### 事故链
+批 8 我下的指令是「`incoming_is_release` 在硬限返回 `kAccept`」——**按事件类别豁免**。
+后果（审计 C 探针证据）：`DecideEnqueue(size=5,000,000, release=true)==kAccept`；`EnqueueLocked` 对
+`kAccept` 无条件 `push_back`；`ParseInputEvents` 不校验 `numEvents`，单条 32767B PDU 可带 ~16,382 个
+keyup 全部入队；每事件还要 `find_if` 全队列 → O(N²)。**硬上限 1024 被彻底绕开**。
+执行 AI 与我都只验证了"keyup 不再被丢"（正确），没人验证"豁免本身是否有界"（错误）。
+
+### 教训（第 19 例：**豁免必须由有界状态集合定界，禁止按事件类别豁免**）
+- 任何"某类事件绕过容量/限流/配额"的设计，豁免条件必须写成**有限集合的成员判定**
+  （这里是 `pressed_` 里的键/按钮），而不是事件类别的谓词（`is_release`）。
+- 判据：给每个 bypass 写出**上界公式**并在测试里构造"远超上界"的输入验证会被拒。
+  `if (X) accept;` 若 X 不引用任何有界状态，即为无界入口。
+- 我作为调度者下达的修法也是设计输入，**必须同样接受审计追问**；不接受"修复方向来自上级"作为豁免理由。
+
+### 附带发现
+- 变异 5 类里，`TrackPressedLocked` 位置回退**没有任何测试转红**（覆盖缺口）→ 已要求补"硬限丢 press 后
+  `pressed_` 不含该键"的 sink 级测试。
+- 并发跑 ctest 会伪失败（本轮 `tls` 假红）：判定绿必须独占运行。
+- 子代理 relay 到已解散会话会 `SEND_TIMEOUT`（正常现象，不是传输缺陷）；派发前必须核对目标会话存活。

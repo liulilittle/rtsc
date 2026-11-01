@@ -520,3 +520,10 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
 ### 已派
 - 批 9 `ses_e6ab06c78ffeQTe3h03doOnxm7`：限流 400/1000（释放豁免）+ `dropped_rate_limited` + 启动行/首发拒绝 WARN + seam 文档回写（§1.5/§2.3/§2.4）
 - 审计批 8 `ses_e6ab05ac0ffe2Kl0U2SjT4zrPu`：独立复核 334d5a1（release 有界性/白名单完备/IsInjectable 锁步/回归），产出 `docs/spec/input-lease-review-C.md`
+## 第807轮：审计 C 判 F1 FAIL（release 恒接受 → 硬限失效）→ 已并入批 9
+- 审计 C（`docs/spec/input-lease-review-C.md`）：F4/F3/F4-甲3/回归 PASS；**F1 FAIL**：
+  `DecideEnqueue(size=5e6, release)` 仍 `kAccept`（探针），单条 32KB PDU ≈16,382 keyup 入队，O(N²)
+- 修法（已下发给批 9 会话，同文件避免并发）：`held_release` 仅在 `pressed_` 中仍持有该键/按钮时才豁免
+- 另要求：补"硬限丢 press 后 `pressed_` 不含该键"测试（遮盖 `TrackPressed` 变异缺口）；
+  禁止"5000 release 全允许"断言；`server_undefined_share_data_type` 先轮询计数再断言空
+- 审计 A/B 会话均已解散，其 relay 超时属正常
