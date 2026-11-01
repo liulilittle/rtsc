@@ -844,3 +844,24 @@ C4 零滚轮不产出 + 3 变异
 追加「批 16 验收判据」节、明确"4 事件是否同 PDU"的证据要求、给出 2 个变异的确切变异点，然后 relay parent 停止
 ### 在途
 审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`（teardown 复验 + 测试缝风险）+ 批 16
+## 第831轮：批 16 验收提交 `c315ff8`（PAUSE 整体不注入）
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_desktop_input_tests` → `47 tests, 13760 checks, 0 failing`
+- `rtsc_server_tests` → `50 tests, 574 checks, 0 failing`
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（67.46s）
+### 逐行核对（W5）
+- `map.h:84-114` `PauseSequenceFilter::ShouldDrop`：非 kKey 不丢不动状态（注释说明"丢失的 PDU 不得吞掉后续 NumLock"）；
+  `extended1` → arm 且丢（down/up 都置位，因 0x45 up 在 ctrl up 之后）；`ctrl_armed_ && 0x45 && !extended` → 丢，
+  release 关窗；其它键关窗且不丢 → **上界：孤立 E1 最多吞一次 NumLock tap**，绝不吞光所有 0x45
+- `server.cpp:836` 过滤点在 `input_sink_ == nullptr` 之后、**租约门之前**（`:837-840`）→ PAUSE 不占租约/不入队/不耗令牌 ✅
+- `server.cpp:769-771` `ReleaseInput` 在 `input_released_` 置位后立即 `pause_filter_.Reset()`（早退路径也覆盖）✅
+- 测试：`test_desktop_input.cpp:119`（四事件全丢/0 动作；tap=2；lone E1 只吞一次）、
+  `test_server.cpp:1418`（PAUSE PDU → 注入 0 次 + 不抢租约；裸 NumLock → 恰好 2 次）✅
+### 变异（执行方，%TEMP% 副本）
+- M1 只丢 extended1（半修回退）→ `all_dropped`/`actions got 2 want 0`/`lone_actions got 4 want 2` 红
+- M2 全局丢 0x45 → `tap_kept`/`tap_actions got 0 want 2` 红（证明确实能区分"误杀"）
+### 未验证
+真机 SendInput 下 NumLock 是否翻转（审计角色不动本机键鼠）→ 仍 UNVERIFIED，已列入真机清单
+### 状态
+批 16 会话已 delete；在途：审计 J（teardown + 测试缝）、审计 K（收口）
