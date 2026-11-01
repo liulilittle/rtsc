@@ -600,3 +600,22 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
 - 已向批 10 追加：E6 实现 + `seam.md:252-254` 与 map.h 注释同步（Allow 自计数，caller 不得再计）+ E7 峰值口径与"平台动作"口径 + E3 若未修必须修
 ### 双审会话状态
 审计 D、审计 E 均已完成并 delete 解散。当前在途仅批 10 `ses_e6a3704cdffeVfAuA0Txe5uDnq`。
+## 第814轮：批 10 提交 `63e3cc6`；双审 F/G 并行派出
+### 主代理独立验收（不采信执行方数字）
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `ctest --test-dir build -C Release` **独占** → `100% tests passed, 0 tests failed out of 63`（64.46s）
+### 逐行核对（W5）
+- D-C：`desktop_input_map.h:204-237` `AdmitOutcome` + 模板 `AdmitAndTrack`（①held 判定 ②限流闸 ③通过后才 `AdmitInput`）；
+  `desktop_input_win32.cpp:211-216` 接线，闸门 lambda 传 `held_release` ✅
+- E1：`map.h:264-268` `Allow(session_id, held_release, now)`；注释明确"必须传 IsHeldRelease 而非 IsReleaseInput"、
+  "拒绝由 Allow 自己计数，caller 不得重复计数" ✅
+- E2：`AdmitAndTrack` 内限流先于记账 → 被限流的 press 不入 `pressed` ✅
+- E3：`win32.cpp:120-127` `forget_sessions_` 命中即丢弃并计 `dropped_unsupported`，不复活 session/桶 ✅
+- E6：`main.cpp:657-665` 5s 采样 Stats + 1s lease 汇总，仅计数变化才打印 ✅
+### 决策记录
+- 执行 AI 报告 `e6f57fd`（我的记忆提交）把其 `docs/spec/input-injection-seam.md` 改动一并入库 —— 属我 `git add -A docs` 的副作用，
+  内容本身是执行方按我指令写的，无冲突；已确认代码/测试 7 文件当时仍未提交，现已随 `63e3cc6` 入库。
+  **教训：`git add -A docs` 会把子代理正在写的文档一起提交，提交前应逐个文件确认归属。**
+### 已派（并行）
+- 审计 F `ses_e6a12ff22ffeOCGAtI9LBFGDR6`：队列/记账/生命周期侧（D-A/D-B/D-C + E2/E3/E4/E8）
+- 审计 G `ses_e6a12f026ffeby215OzUpiyD2S`：限流/可观测/文档侧（E1/E5/E6/E7）
