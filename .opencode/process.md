@@ -759,3 +759,12 @@ C4 零滚轮不产出 + 3 变异
 避免与两个执行方同时改 seam.md
 ### 子代理
 审计 I 已 delete 解散。在途：批 13（N-1..N-6）、批 14（P-6/C3/C4）。
+## 第825轮：批 13 遭 `upstream_rejected` 终止（仅部分落盘）→ 已重派
+- 现状核查：批 13 仅改 `include/rtsc/server/desktop_input.h`（`InputStats` 增 `release_failures` 字段 + 注释），
+  `win32.cpp` 无任何 `release_failures`/`noexcept` 命中，`Shutdown`/`ReleaseSession` 未修 [BASH: Select-String]
+- 处置：错误态会话已 `delete`；按任务调度经 `task` 新开 `ses_e69544b0effewGwtRR0Dimrtmo`，
+  提示中明确"保留已有的 `release_failures` 字段并接通"，避免重复定义
+- 并行状态：批 14 `ses_e695daf83ffea99Y2dp6plWJZC`（map.cpp/map.h/test_desktop_input.cpp）busy
+- 文件隔离确认：批 13' 改 win32.cpp/desktop_input.h/server.cpp/rdpsnd/rdpdr/main.cpp + 两处文档；
+  批 14 只改 map.cpp/map.h/test_desktop_input.cpp → 无重叠
+- 环境：`upstream_rejected` 累计第 3 次（本会话宿主错误总数已超 12 次），仍未更换模型
