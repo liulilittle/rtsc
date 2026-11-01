@@ -734,3 +734,28 @@ F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、
 N-1/N-2/N-3/N-4/N-5/N-6 + `release_failures` 计数 + `input_release_failures=` 日志 + 两处文档修正 + 2 变异
 ### 子代理
 审计 H 已 delete 解散；审计 I（seam 全文对账）仍在途。
+## 第824轮：审计 I 完成（发现 P-6 行为缺陷：extended1 会切 NumLock）→ 批 14 已派
+### 审计 I（`docs/spec/input-batch12-review-I.md`，seam.md 全文对账）
+- **C1（最严重）P-6 未实现**：`extended1`（0xE1/PAUSE）已解码，但
+  `desktop_input_map.cpp:31-49` 的 `kKey` 分支不看它、`desktop_input_map.h:132-147` `IsInjectable` 仍判可注入
+  ⇒ 注入裸 Ctrl/NumLock ⇒ **PAUSE 会真的切换本机 NumLock**，违反 P-6④。T15/M6 无实现无测试。
+- C2 §1.7 第 2 条成立：`desktop_input.h:31-34` 无 origin/virtual_desk，用协商几何（`server.cpp:1303-1308`），
+  恒 `VIRTUALDESK`（`win32.cpp:413-421`），测试固化 64x48 ⇒ `--monitor N` 子矩形会错位
+- C3 `map.cpp:21-27` `extent<=1` 1:1 透传（设计 T6 要求空+计数）；C4 `wheel_delta==0` 仍产出（T10 要求空）
+- T4 中点期望 32767/32768 实为 32785；T12 前提过期；T13/T14/T15 未实现
+- 状态列过期：P-1/P-2/P-3解码/P-4/P-5/P-9/P-10 已修（P-9 flags=0x013D 含 0x0020）
+- §1.3/§1.4 接口名整体失效（实际 `DesktopInputSink`/`desktop_input.h`/`MakeWin32DesktopInputSink`/`Shutdown()`；
+  文档无 `InputSink`/`CreatePlatformInputSink`/`ReleaseAll`）；文档内 `Inject` 返回值自相矛盾（§1.3 bool vs §1.6 void）
+- §1.8 是全文**唯一**行号全对的小节（与审计 H 独立复核一致）
+- 常量全部一致（256/1024、400/800/1000/2000、515/1539、kRefreshInterval=1000ms、kWheelStep=255、
+  kWheelUnitsPerNotch=120、kMaxWheelChunksPerEvent=8、kInjectTag=0x52545343）；漂移只在行号/状态
+- 约 75 条行号引用中约 48 条失效/过期；§2.5 诊断全未实现；`--input-share`/`--input-owner` 不存在（实际 `--max-input-sessions`）
+- §4.4：M1/M4 有真实用例；M2/M3 部分（BuildNative 变异存活）；M5/M6 无覆盖，**M6 的"变异"当前就是实现**
+### 批 14 `ses_e695daf83ffea99Y2dp6plWJZC`（仅 map.cpp/map.h/test_desktop_input.cpp，禁改 docs 以免与批 13 冲突）
+C1 extended1 不注入（`TranslateInput` 返回空 + `IsInjectable` 排除）、C3 `width/height<=1` 不产出绝对移动、
+C4 零滚轮不产出 + 3 变异
+### 待办排期
+批 15（文档全文重写：§0/§1.3/§1.4/§1.7/§4.1/§4.4 + 48 条失效行号 + 状态列）需在批 13/14 落地后单独立项，
+避免与两个执行方同时改 seam.md
+### 子代理
+审计 I 已 delete 解散。在途：批 13（N-1..N-6）、批 14（P-6/C3/C4）。
