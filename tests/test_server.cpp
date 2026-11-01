@@ -1415,6 +1415,70 @@ RTSC_TEST(server_input_extended_flags_are_prefixes) {
     runner.join();
 }
 
+RTSC_TEST(server_pause_sequence_is_not_injected) {
+    // P-6/K1: the whole PAUSE sequence (04 1D / 00 45 / 05 1D / 01 45) is
+    // unrepresentable. Dropping only the two 0xE1-prefixed CTRL halves still
+    // injects the bare NUMLOCK(0x45) down/up, which toggles the local NumLock.
+    // The session filter must swallow all four BEFORE the lease gate, so the
+    // sink sees none of them -- and a real NumLock tap right after is still
+    // injected twice, proving the filter is sequence state, not "drop 0x45".
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::mutex mu;
+    size_t decoded = 0;
+    server.SetInputCallback([&](const rtsc::server::InputEvent&) {
+        std::lock_guard<std::mutex> lock(mu);
+        ++decoded;
+    });
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    const HandshakeResult r = DriveToActive(server.bound_port(), false, 64, 48,
+                                            /*expect_frame=*/false);
+    CHECK(r.reached_active);
+
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(EncodePauseKey()))));
+    // Wait until the whole PDU is decoded: the input callback still observes
+    // every event (suppression happens only at the injection seam).
+    CHECK(WaitUntil([&mu, &decoded]() {
+        std::lock_guard<std::mutex> lock(mu);
+        return decoded >= 4;
+    }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // None of the four events reached the sink and none took the lease.
+    CHECK(sink.inject_ids().empty());
+    CHECK(sink.geometry_ids().empty());
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    // A standalone NumLock tap is a real key: it must inject twice.
+    CHECK(WriteAll(*r.transport, McsSendData::build_request(
+                                     r.user_channel, r.io_channel,
+                                     EncodeFastPathInputPdu(
+                                         {EncodeKeyboardEvent(0x45, false, false),
+                                          EncodeKeyboardEvent(0x45, false, true)}))));
+    CHECK(WaitUntil([&sink]() { return sink.inject_ids().size() >= 2; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK_EQ(sink.inject_ids().size(), static_cast<size_t>(2));
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_input_unknown_event_code_is_counted) {
     // P-11: [MS-RDPBCGR] 2.2.8.1.2.2 says the server SHOULD drop the
     // connection for an unknown eventCode. This repo deliberately stays

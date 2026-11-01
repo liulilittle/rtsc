@@ -766,6 +766,9 @@ class RdpSession {
     void ReleaseInput() {
         if (input_released_) return;
         input_released_ = true;
+        // Drop any half-open PAUSE window so a later lease on this session
+        // cannot inherit it.
+        pause_filter_.Reset();
         if (!input_lease_held_) return;
         input_lease_held_ = false;
         // Release the sink BEFORE freeing the lease slot. ReleaseSession
@@ -826,6 +829,11 @@ class RdpSession {
     // counting it.
     void InjectIfLeasable(const InputEvent& ev) {
         if (input_sink_ == nullptr) return;
+        // The PAUSE sequence (0xE1 envelope) has no faithful SendInput form and
+        // must be dropped as a WHOLE, before the lease gate: otherwise it would
+        // inject a bare NumLock down/up (toggling the local NumLock) and take
+        // the single lease slot without producing a real action.
+        if (pause_filter_.ShouldDrop(ev)) return;
         if (!input_lease_held_) {
             if (!IsInjectable(ev)) return;
             if (!AcquireInputLease()) return;
@@ -2054,6 +2062,8 @@ class RdpSession {
     InjectGeometry inject_geometry_;
     bool inject_geometry_known_ = false;
     bool input_released_ = false;
+    // Per-session PAUSE (0xE1) envelope state; see PauseSequenceFilter.
+    PauseSequenceFilter pause_filter_;
     // Server-level counter shared with every session: an unknown eventCode is
     // counted here so the operator can observe it without logs (P-11).
     std::shared_ptr<std::atomic<size_t>> unknown_input_events_;

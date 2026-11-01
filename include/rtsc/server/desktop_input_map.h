@@ -76,6 +76,43 @@ struct PlatformInput {
 std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
                                           const InjectGeometry& g);
 
+// Per-session PAUSE (0xE1) envelope. Only the two CTRL halves carry 0x04 on the
+// wire; the NUMLOCK(0x45) halves belong to the same sequence but are unflagged,
+// so dropping only the flagged events would still inject a bare NumLock pair and
+// toggle the local NumLock. Expects the 4 wire events in order:
+//   04 1D / 00 45 / 05 1D / 01 45
+class PauseSequenceFilter {
+ public:
+    // true = this event is part of an unrepresentable PAUSE sequence; drop it.
+    bool ShouldDrop(const InputEvent& ev) {
+        // Only key events are part of the envelope. A mouse/wheel event between
+        // the halves must be injected and must NOT close an open window (the
+        // wire sequence does not interleave, but a lost PDU must not swallow a
+        // following NumLock).
+        if (ev.kind != InputEvent::Kind::kKey) return false;
+        // Arm on the CTRL down AND on the CTRL up: the 0x45 up comes after the
+        // CTRL up on the wire, so the window has to survive that second flag.
+        if (ev.extended1) {
+            ctrl_armed_ = true;
+            return true;
+        }
+        if (ctrl_armed_ && ev.scancode == 0x45 && !ev.extended) {
+            // The window closes on the NumLock up; the down must keep it open.
+            if (ev.release) ctrl_armed_ = false;
+            return true;
+        }
+        // Any other key closes a stale window and is injected normally. This is
+        // what bounds the suppression: a lone 0xE1 can eat at most one NumLock
+        // tap, never every 0x45.
+        ctrl_armed_ = false;
+        return false;
+    }
+    void Reset() { ctrl_armed_ = false; }
+
+ private:
+    bool ctrl_armed_ = false;
+};
+
 // True for a platform input that lifts a previously pressed state: a key-up
 // (scan code or unicode) or a mouse-button-up. This is only the "is an up"
 // half of the question: neither the queue exemption nor the rate-limiter

@@ -38,6 +38,7 @@ using rtsc::server::IsReleaseInput;
 using rtsc::server::KeyId;
 using rtsc::server::MakeWin32DesktopInputSink;
 using rtsc::server::PlatformInput;
+using rtsc::server::PauseSequenceFilter;
 using rtsc::server::PressedInputs;
 using rtsc::server::TranslateInput;
 
@@ -113,6 +114,72 @@ RTSC_TEST(desktop_input_extended1_is_not_injected) {
     const InputEvent e0 = KeyEvent(0x1D, true, false);
     CHECK_EQ(TranslateInput(e0, InjectGeometry{}).size(), 1u);
     CHECK(IsInjectable(e0));
+}
+
+RTSC_TEST(desktop_input_pause_sequence_is_fully_suppressed) {
+    // P-6: Pause is the 0xE1 envelope 04 1D / 00 45 / 05 1D / 01 45. Only the
+    // two CTRL halves carry the 0x1E1 prefix on the wire; the NUMLOCK(0x45)
+    // halves are unflagged but belong to the same sequence. Dropping only the
+    // flagged events leaves a bare NumLock down/up, which toggles the local
+    // NumLock -- exactly what P-6 item 4 forbids. PauseSequenceFilter must
+    // consume all four, and must not consume a real NumLock key.
+    InputEvent ctrl_down = KeyEvent(0x1D, false, false);
+    ctrl_down.extended1 = true;
+    InputEvent num_down = KeyEvent(0x45, false, false);
+    InputEvent ctrl_up = KeyEvent(0x1D, false, true);
+    ctrl_up.extended1 = true;
+    InputEvent num_up = KeyEvent(0x45, false, true);
+    const std::vector<InputEvent> pause = {ctrl_down, num_down, ctrl_up, num_up};
+
+    const InjectGeometry usable{1920, 1080};
+    PauseSequenceFilter filter;
+    bool all_dropped = true;
+    size_t actions = 0;
+    for (const InputEvent& ev : pause) {
+        const bool drop = filter.ShouldDrop(ev);
+        all_dropped = all_dropped && drop;
+        if (!drop) actions += TranslateInput(ev, usable).size();
+    }
+    // Every event of the sequence is dropped (not just the two CTRL halves).
+    CHECK(all_dropped);
+    // And nothing of the sequence can reach the platform.
+    CHECK_EQ(actions, static_cast<size_t>(0));
+
+    // Control 1: a standalone NumLock tap is a real key and must survive.
+    PauseSequenceFilter tap_filter;
+    const std::vector<InputEvent> tap = {KeyEvent(0x45, false, false),
+                                         KeyEvent(0x45, false, true)};
+    size_t tap_actions = 0;
+    bool tap_kept = true;
+    for (const InputEvent& ev : tap) {
+        if (tap_filter.ShouldDrop(ev)) {
+            tap_kept = false;
+        } else {
+            tap_actions += TranslateInput(ev, usable).size();
+        }
+    }
+    CHECK(tap_kept);
+    CHECK_EQ(tap_actions, static_cast<size_t>(2));
+
+    // Control 2: a lone E1 opens the window only until the following NumLock
+    // up. A second tap is an ordinary NumLock and must be injected (bounded
+    // suppression, never an "eat every 0x45" rule).
+    PauseSequenceFilter lone_filter;
+    bool lone_dropped = lone_filter.ShouldDrop(ctrl_up);
+    CHECK(lone_dropped);
+    size_t lone_actions = 0;
+    for (const InputEvent& ev : {num_down, num_up, num_down, num_up}) {
+        if (!lone_filter.ShouldDrop(ev)) {
+            lone_actions += TranslateInput(ev, usable).size();
+        }
+    }
+    CHECK_EQ(lone_actions, static_cast<size_t>(2));
+
+    // Reset closes an open window (ReleaseInput reuses the session).
+    PauseSequenceFilter reset_filter;
+    CHECK(reset_filter.ShouldDrop(ctrl_down));
+    reset_filter.Reset();
+    CHECK(!reset_filter.ShouldDrop(num_down));
 }
 
 RTSC_TEST(desktop_input_zero_scancode_is_not_injected) {
