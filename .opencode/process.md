@@ -796,3 +796,20 @@ C4 零滚轮不产出 + 3 变异
 - 批 14 会话 `ses_e695daf8` 任务已完成（其产物已于第826轮验收提交 `805428b`）→ 已 delete
 - 批 13' `ses_e69544b0` 仍 busy（`wrote` 时间戳新），等其 relay 报告后统一验收
 - 本主代理本轮不碰上述文件（避免与在写方冲突）
+## 第828轮：批 13' 工作树中间态验证（未提交，等其收尾）
+### 主代理实测（对当前工作树，非最终态）
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_server_tests` → `49 tests, 563 checks, 0 failing`
+- `rtsc_desktop_input_tests` → `46 tests, 13752 checks, 0 failing`（原 44 → 46，新增 2 条 = N-1/N-2 红证用例）
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（57.95s）
+### 逐行核对（W5）
+- N-1：`win32.cpp:174-196` `forget_sessions_.insert` 与 `AppendReleasesLocked` 各自 try/catch，
+  `sessions_.erase(it)` 在 try 外**无条件**执行，`cv_.notify_one()` 在锁外无条件执行 ✅
+- N-2：`win32.cpp:601-650` `Shutdown() noexcept`；注释"skipped join makes ~std::thread call std::terminate"；
+  逐会话 append try/catch + `pressed` 清空 try/catch + `sessions_.clear()` try/catch；
+  **notify_all + join 在锁外无条件**（`:640-641`）；`pending_moves_/last_move_sent_` 清理 try/catch ✅
+- N-3：`win32.cpp:335 WorkerMain() noexcept` + `:369/376` catch ✅
+- 计数：`:682 atomic<uint64_t> release_failures_`、`:208-209` Stats 接出 ✅
+### 未提交原因
+批 13' 会话仍 busy（`wrote` 时间戳新），文件仍可能变动；按"不与他人在写文件冲突"原则，
+主代理本轮只做只读验证，不 `git add`。待其 relay 报告后统一提交。
