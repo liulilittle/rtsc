@@ -581,3 +581,8 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
 E1 两审独立同证 FAIL（未持有 up 全放行）。E2 被 D 降级为低（上界仍 515/1539，非 128× 膨胀）。
 ### 批 10 范围（合并 D+E）
 D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流前移 → 抽纯函数 → 回写文档 → 重跑 M1-M4 变异
+## 第812轮：审计 D 已终结解散；批 10 执行在途
+- 审计 D 最终报告要点（已并入第811轮记录）：峰值上界 1539 闭合 F1；pressed=515；M3/M4 变异存活；win32 零覆盖
+- D 已 relay E 并已完成，按第12条 delete 解散
+- 批 10 会话 `ses_e6a3704cdffeVfAuA0Txe5uDnq`：D-A/D-B/D-C + E1-E7，顺序 补测试→限流前移→抽纯函数→文档→M1-M4 变异
+- 审计 E 会话 `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：已令其与 D 交叉定案（D 已回），待终稿
