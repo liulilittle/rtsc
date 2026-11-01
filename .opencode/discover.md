@@ -676,32 +676,22 @@ wire_reachable_presses=510            // 255×2（含 0xE0）+ 5 按钮
 - **核心接线零覆盖**：`desktop_input_win32.cpp` 不在任何测试 target 的编译/链接闭包（`CMakeLists.txt:676-682`
   只编 null sink + map）。这是本项目反复出现的结构性问题——**平台层永远测不到**，必须把决策与记账
   抽到 map 层纯函数（可测），平台层只留薄壳。
-## 第811轮：我用字段宽度当值域——`uint16_t scancode` 实际只有 8 位可达（第 20 例）
+
+## 第812轮：我用 Latin-1 往返写 UTF-8 文件，把 56KB 撑成 89KB（第 21 例）
 ### 事故链
-我据 `KeyId.scancode` 是 `uint16_t` + `extended` 位，推断 `pressed.keys` 上界 ~131,072，
-并把它写成"待审计确认的疑点"。审计 D 用探针证伪：
-```
-sizeof(InputEvent::scancode)=1        // server.h:229 —— 字段本身就是 uint8_t
-wire_reachable_presses=510            // 255×2（含 0xE0）+ 5 按钮
-0x1234 truncates to 0x34
-```
-⇒ 真实上界 **515**，恶意对端无法伪造 65536 个 scancode。**我的疑点是错的。**
+为删除 `discover.md` 里重复追加的「第811轮」块，我用
+`[Text.Encoding]::GetEncoding(28591)` 把原始字节解码成字符串、`-split "`n"` 切片、
+再 `WriteAllText(..., UTF8Encoding($false))` 写回。
+后果：latin1 把**每个字节映射成一个 U+0000–U+00FF 字符**，写回时这些字符被 UTF-8 重新编码成
+2 字节 → 文件 59114 → **89787 字节**，所有中文变成双重编码（`invalid-markers` 检查为 0，
+所以**肉眼与 UTF-8 校验都不会报错**）。
+发现方式：写后立刻比对 `$b.Length -> $b2.Length` 字节数变化方向（删内容却变大 = 立刻报警）。
+恢复：写前已 `Copy-Item` 到 `.opencode/backups/discover.md.dup811`，整文件还原到 59114 字节。
 
-### 教训（第 20 例：**值域必须追到唯一写入源的实际类型，不能用容器元素类型推断**）
-- `std::set<KeyId>` 的元素类型宽度 ≠ 可达取值数。可达性由**唯一写入源**决定：
-  这里是 `InputEvent::scancode`（uint8_t，快路径 1 字节 `server.cpp:1925`、慢路径低字节 `:1826`）。
-- 判据：给出"某集合上界 N"的论断前，必须回答三问：①元素类型的**每个字段**宽度？②**唯一写入源**是什么类型、
-  经过哪些截断？③wire 上对端能否构造全部取值？三问缺一即为臆测。
-- 同型风险：`uint16_t`/`uint32_t` 字段被 `uint8_t` 来源填充、枚举底层类型宽于实际枚举值、
-  `size_t` 计数被 `int` 回填——都属"类型宽度幻觉"。
-
-### 同轮其它（审计 D 的新发现）
-- **字面不变式被证伪**：`queue ≤ hard + |pressed| + pending_moves` 瞬时违反 774 次（释放后 pressed=0 而
-  queue=1534）。真实成立的是**峰值**不变式 `peak(queue) ≤ hard + |pressed|@饱和 = 1024+515 = 1539`。
-  → 文档必须改成峰值口径，否则下一个人会拿字面公式做断言并"发现"假缺陷。
-- **变异存活 = 覆盖缺口**：M3（`IsHeldRelease` 忽略 0xE0）与 M4（evict 路径不 track）全绿存活；
-  `test:384` 的 extended 断言因 `pressed` 为空而**恒真**（空集合上任何 count 断言都真）→ 假测试。
-  判据：**断言必须建立在非空/非默认状态上**；在空集合上断言"不存在某元素"永远通过。
-- **核心接线零覆盖**：`desktop_input_win32.cpp` 不在任何测试 target 的编译/链接闭包（`CMakeLists.txt:676-682`
-  只编 null sink + map）。这是本项目反复出现的结构性问题——**平台层永远测不到**，必须把决策与记账
-  抽到 map 层纯函数（可测），平台层只留薄壳。
+### 教训（第 21 例：**字节级操作用字节，字符串级操作用字符串，禁止混用**）
+- 任何"按字节裁剪/去重"的需求，必须全程 `byte[]`（`[Array]::Copy` + `WriteAllBytes`），
+  或全程字符串（先 `ReadAllText(UTF8)`，再 `WriteAllText(UTF8)`）。**禁止 latin1/28591 中转**。
+- 判定写入正确性的三个必查项：①字节数变化方向符合预期（删内容必须变小）②解码后
+  `U+FFFD` 计数为 0 ③结构性记号（标题数、分隔符数）符合预期。三者缺一不得继续。
+- 附带：`[Text.Encoding]::Latin1` 在 PowerShell 5.1（.NET Framework）**不存在**，会返回 `$null`
+  并抛 "Null 值表达式" —— 这也是我改用 28591 的直接原因；正确做法是根本不做字符串中转。
