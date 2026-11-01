@@ -938,3 +938,27 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
 ### 剩余待办
 - 审计 J 补交（在途，busy）
 - 真机验证（用户环境）
+## 第837轮：审计 J 完成（N-1/N-2/N-3 已闭合，4 个未闭合点）→ 批 19 已派
+### 审计 J（`docs/spec/input-batch13-review-J.md`，241 行）
+已闭合（带红证）：
+- N-1 `win32.cpp:159-197`（`:191 erase`/`:196 notify` 在 try 外，M1 红 `test_desktop_input.cpp:1105`）
+- N-2 `:604-650`（M2 回退 → **进程被杀** `0xE06D7363 EXIT=3`；M2b 只跳 join → 干净红 `:1136`）
+- N-3 `:335-379`（`stopping_` 改原子无新缺陷，relaxed 足够）
+- N-5/N-6 语义正确（rdpdr 逐项 catch）；测试缝三条风险中两条 PASS
+未闭合（必修）：
+- **J-1（High）** `server.cpp:2496-2508`：`sessions` 拷贝 / `unique_lock` / `cv.wait` 三个可抛点未隔离 →
+  `~RdpServer:2210` 无 try → terminate。实证 `EXIT=3 0xE06D7363`
+- **J-2（Medium）** `win32.cpp:708-710` `AsWin32` 裸 `static_cast`：喂 null sink 四种结局（含 AV/挂死）
+- **J-3（Medium）** a) `worker_failures_` 只写不读（`:370/377/684`，无 Stats/无断言）；
+  b) N-1 的 `drained` 断言**钉不住 notify**（删 notify 仍 30+20+100 次全绿，竞态）
+- **J-4（Medium）** rdpdr 逐项 catch 无用例（`test_rdpdr_server_io.cpp:511-534` 只 1 个 IRP）
+- **J-5（Low）** `seam.md` §1.8 仍称"任何变异都无法让 ctest 转红"（与 M1/M2b/M5 矛盾）+ 七处行号全部漂移；
+  `review-F.md:340` 的 `776-787` 应为 `776-791`
+计数语义：`RdpServer::input_release_failure_count()` 计"ReleaseSession 整体抛出"，出厂 sink 自己吞 append 异常
+⇒ 该计数恒 0 时 ups 仍可能丢；真实可观测点是 `InputStats.release_failures`
+### 批 19 `ses_e66c8ff12ffeQrlk0HjTcC5TBm`
+J-1（三处 try + `~RdpServer` 兜底）、J-2（dynamic_cast 或 tag 检查）、J-3a（`worker_failures` 接线）、
+J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP 用例）、J-5（§1.8 改部分闭合 + 零行号）
++ 3 变异
+### 子代理
+审计 J 已 delete 解散。

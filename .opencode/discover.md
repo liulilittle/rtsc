@@ -771,3 +771,27 @@ PAUSE 的语义是"E1 CTRL 按住期间的那个 0x45 不是 NumLock"。两种�
 - C（最小且安全）：**只要一条输入 PDU 内出现 extended1 事件，就把该 PDU 内所有 0x45 事件一并丢弃**
   （PAUSE 的 4 个事件总在同一 PDU 里发出）——仍然依赖"同一 PDU"这一假设，**需证据**。
 未定案前**不得**声称 P-6 已修。
+## 第837轮：审计 J——"隔离了虚调用"不等于"隔离了整条 teardown 路径"（第 25 例）
+### 事实
+`RdpServer::Stop()` 我给批 13 的修法只包了两个**虚调用**（`listener->Close()`、`s->Stop()`）。
+审计 J 指出同一函数里还有三个可抛点没隔离：`sessions = registry->sessions`（vector 拷贝分配）、
+`std::unique_lock` 构造、`cv_.wait`。它们逃出 `Stop()` → `~RdpServer() { Stop(); }` → `std::terminate`。
+实证（env-gated bad_alloc 探针）：不注入 `EXIT=0`；注入 `EXIT=3 unhandled-seh 0xE06D7363`。
+
+### 教训（第 25 例：**noexcept 语义要按"整条路径"证明，不能按"危险调用点"点数**）
+- 我上一轮的判据是"找出会抛的虚调用并包住"，这是**枚举式**思维，必然漏项。
+  正确判据是**补集式**：析构可达的整条路径上，"不能抛的地方"必须逐个证明不抛；
+  无法证明的（分配、锁、`wait`）一并隔离。
+- 具体检查清单（teardown 路径必查的五类可抛点）：①**内存分配**（vector/map/string 拷贝、push_back）
+  ②**锁构造**（`unique_lock`/`lock_guard` 可能抛 `system_error`）③**条件变量 wait**（同上）
+  ④外部回调/虚函数 ⑤`join`（`EDEADLK`）。
+- 验证方法：**必须用注入异常的实证**（bad_alloc 探针/替身），不能靠读码；本仓审计 J 正是靠
+  `EXIT=3 unhandled-seh` 才把这条钉死的。
+
+### 同轮其它（审计 J 的测试质量发现，值得单列）
+- **断言钉不住竞态**：删掉 `cv_.notify_one()` 后，`drained` 断言 30+20+100 次**全绿**——
+  因为 worker 未 park 时首轮 drain 自己就把 forget 队列抽干了。加 `sleep(200ms)` 让 worker 先 park，
+  同一变异立刻转红。⇒ **测"唤醒"必须先把被唤醒方置入等待态**；否则测的是"恰好没进入等待"。
+- **变异只能证明"能抓住这一类"，不能证明"覆盖全"**：M1/M2/M5 能在 ctest 转红，但
+  M3b（打断生产 factory）只有 `rtsc_server_host` 构建能抓 → 文档里"任何变异都不能让 ctest 转红"
+  是**错的陈述**，必须写成"部分闭合"。
