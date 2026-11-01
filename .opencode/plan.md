@@ -649,3 +649,31 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - `ctest --test-dir build -C Release` 独占 63/63
 - mutC 红 → 恢复绿 + `Get-FileHash` 双证
 - 文档与代码逐条对照，禁止保留任何"文档说 X、代码是 Y"的句子
+## 批 17 定案（round 833 预写）：kSync 终止 PAUSE 窗口 + seam.md 全文重写
+### A. 代码（1 行 + 1 测试）
+审计 K §9.3 观察：`PauseSequenceFilter::ShouldDrop` 只处理 `kKey`，`kSync` 不清 `ctrl_armed_`
+→ "E1 → SYNC → NumLock tap" 整组被吞。按 P-7 语义 `kSync` = 按键状态重置，应视作序列终止。
+- `include/rtsc/server/desktop_input_map.h:92` 之后加：
+  `if (ev.kind == InputEvent::Kind::kSync) { ctrl_armed_ = false; return false; }`
+- 测试：`desktop_input_pause_window_closed_by_sync` —— armed 后发 kSync，再发 NumLock tap → tap 产出 2 个动作
+  （变异：删掉该分支 → 红）。
+
+### B. 文档（`docs/spec/input-injection-seam.md` 全文对账后重写）
+依据 `docs/spec/input-batch12-review-I.md`（48 条失效引用清单）与后续各批进展：
+1. §0 结论过期（P 项状态）→ 按当前实现重写状态表。
+2. §1.3/§1.4 接口名整体失效 → 改为实际名称：`DesktopInputSink`（`include/rtsc/server/desktop_input.h`）、
+   `desktop_input_map.{h,cpp}`、`MakeWin32DesktopInputSink()`、`Shutdown()`；
+   删 `InputSink`/`input_inject*.h`/`CreatePlatformInputSink`/`ReleaseAll`。
+3. §1.3 与 §1.6 的 `Inject` 返回值自相矛盾 → 统一为 **void**。
+4. §1.7 第 2 条（几何）保持 OPEN，并写明实测错位点：无 origin、恒 `VIRTUALDESK`、`--monitor N` 子矩形。
+5. §1.8 Win32 缺口清单：**已部分闭合**（`RTSC_DESKTOP_INPUT_TESTING` 测试缝已覆盖 N-1/N-2），改为现状描述。
+6. §2.3 限流：补 `held_release` 语义、`kGlobalBurst=2000` 的理由、`release_failures` 计数。
+7. §3 P-1…P-12 状态列按实现更新（P-1/P-2/P-3解码/P-4/P-5/P-6/P-9/P-10 已修；P-7/P-8/P-11 保持）。
+8. §4.1 T 表按实现修正（T4 中点期望、T6 几何不可用=不产出、T10 零滚轮=不产出、T15 Pause=整序列不注入）。
+9. §4.4 变异表 M1-M6 标注"有真实用例/无覆盖"。
+10. §7 追加「与甲/各轮审计的收敛记录」（H/I/K/J 的结论与处置）。
+11. 全文行号引用重新核对（禁止保留失效行号；无法确定的行号宁可写符号名不写行号）。
+
+### 验收
+- 代码：build 0/0；两套件 `0 failing`（**不钉 checks 数**，见 memory 第 74 条）；ctest 独占 63/63；变异 1 个红/绿 + 哈希
+- 文档：与代码逐条对照，逐项在报告中列出"文档断言 → 代码事实"
