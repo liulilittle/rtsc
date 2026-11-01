@@ -586,3 +586,17 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
 - D 已 relay E 并已完成，按第12条 delete 解散
 - 批 10 会话 `ses_e6a3704cdffeVfAuA0Txe5uDnq`：D-A/D-B/D-C + E1-E7，顺序 补测试→限流前移→抽纯函数→文档→M1-M4 变异
 - 审计 E 会话 `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：已令其与 D 交叉定案（D 已回），待终稿
+## 第813轮：审计 E 终稿（两审交叉定案完成，双审均已解散）
+### 审计 E 终稿（`docs/spec/input-rate-limit-review-E.md` 451 行）
+- PASS：1a 桶参数、1b steady_clock、1c Refill 倒退封顶、2 拒绝不扣令牌、4 移动每移动只 Emit 一次（≤400/1000/s）、5a Stats 双后端、5b 两 dropped 不重复、7a 指定变异
+- FAIL：1d/E3（`sessions_` 泄漏，每次高负载断连泄漏 1 桶 sizeof=48）、3/E1+E2（未持有 up 无速率上界，100 万条全放行；限流丢弃的 press 仍记 held）、5c/E6（生产代码从不读 Stats）、6/E7（上界瞬时 vs 峰值、事件 vs 平台动作口径）、7b/E8（M3/M4 变异存活）
+- **审计 E 自纠**：撤回上一轮 `|pressed| ≤ 131,077`（与 D 一致为 515）；撤销 E4（`ServeOne` 无 try/catch，无红证且非本批引入）→ 降为 W5 观察
+### 两审交叉定案
+- 一致：E1 FAIL、E2 现象真但低、E3 低、`|pressed|=515`、峰值 1539、瞬时不变式不成立、E6、M3/M4 存活、win32 零覆盖
+- 分歧已裁定：`seam.md:263-264` 归属为 `b369d75`（非 27cf199），判定不变（实现与既有文档冲突）
+### 批 10 工作树复验（审计 E 独立快照）
+- 已达成：E1/E2（`100000 unheld ups: accepted=0 rate_limited=100000`；held up 豁免；`rate_limited press: tracked_keys=0`）、E8（M3/M4 已转红）、win32 `cl /W4 /WX` exit=0
+- **仍红**：E6 未实现（`40 tests, 9602 checks, 1 failing, 7 failed checks`，缺 main.cpp 的 Stats 打印串）
+- 已向批 10 追加：E6 实现 + `seam.md:252-254` 与 map.h 注释同步（Allow 自计数，caller 不得再计）+ E7 峰值口径与"平台动作"口径 + E3 若未修必须修
+### 双审会话状态
+审计 D、审计 E 均已完成并 delete 解散。当前在途仅批 10 `ses_e6a3704cdffeVfAuA0Txe5uDnq`。

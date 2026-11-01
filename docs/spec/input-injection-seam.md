@@ -130,17 +130,18 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 | 事件类 | 策略 |
 |---|---|
 | `kKey` / `kUnicode` / 按钮按下抬起 | FIFO，不与移动合并 |
-| `kMouse` 纯移动（无按钮位） | **合并**：同会话只保留最新位置（移动是状态量，不是事件量），上限 250 Hz 输出 |
-| `kWheel` | FIFO，不与移动合并（离散事件） |
+| `kMouse` 纯移动（无按钮位） | **合并**：同会话只保留最新位置（移动是状态量，不是平台动作量）。定时发送路径每 4 ms（250 Hz）一次；同会话的按键/按钮/滚轮会**立即 flush** 待发移动，因此瞬时输出可以高于 250 Hz。移动还和所有平台动作一样受 §2.3 的 400/1000 限流 |
+| `kWheel` | FIFO，不与移动合并（离散平台动作） |
 | 队列达到软上限 256 | 先驱逐**最旧的一条纯移动**并计数（`dropped_queue_full++`） |
-| 队列达到硬上限 1024 且无可驱逐的移动 | 只豁免 **held release**：该 key/按钮仍在会话 `pressed` 集合中（口径 = scancode + 0xE0 标志 / 按钮号）；其余事件（按下、移动、**未持有的释放**）一律 `kDrop` 并计数 |
-| 队列上界 | `hard_limit` + pressed 集合大小：held release 的条数被 pressed 集合限界，因此队列仍是有界的 |
+| 队列达到硬上限 1024 且无可驱逐的移动 | 只豁免 **held release**：该 key/按钮仍在会话 `pressed` 集合中（口径 = scancode + 0xE0 标志 / 按钮号）；其余平台动作（按下、移动、**未持有的释放**）一律 `kDrop` 并计数 |
+| 队列上界（**峰值**口径） | `peak(queue) ≤ hard_limit + 饱和时刻的 pressed 集合大小 = 1024 + 515 = 1539`。pressed 的结构上限是 510 键（`scancode` 是 `uint8_t`，255 × 0xE0 两位）+ 5 按钮。**不要**把它读成瞬时不变式：每次越限接受同时擦除一个 pressed 项，释放后队列仍可能是 1534 而 pressed 已为 0（探针 774 次违反瞬时公式） |
+| 饱和引理 | `size > soft_limit ⇒ 队列内无纯移动`：`size ≥ soft` 时任何事件都先走 `kEvictMove`（只替换不增长），每来一个按下就吃掉一条移动；移动被驱逐光后新移动走 `kDrop`。因此饱和时无移动可驱逐，硬限的 `kDrop` 不会被 evict 绕过 |
 | `kSync` | 不注入（v1 无"设置 toggle 状态"的注入形式；见 §3 P-7） |
 | `kMouseRel` | **已上送**（`InputEvent::Kind::kMouseRel`，带符号 `rel_x/rel_y`）；v1 不注入（相对位移受系统鼠标加速度污染），按 `dropped_unsupported` 计数 |
 
 `unicode` 释放不豁免：`KEYEVENTF_UNICODE`（`wVk = 0`）只输入字符、不按下物理键，不进入 pressed 集合，
-因此也没有可清的物理状态。**未持有的 keyup（重复 up，或被硬限丢弃的按下的 up）也不豁免**——否则
-单条 32 KiB 输入 PDU 的数千个 keyup 就能让队列无限增长。
+因此也没有可清的物理状态。**未持有的 keyup 也不豁免队列硬限**（重复 up，或被硬限/限流丢弃的按下的 up）——
+否则单条 32 KiB 输入 PDU 的数千个 keyup 就能让队列无限增长；这些 up 同时也**不免限流**（见 §2.3）。
 
 ### 1.6 失败传播：计数 + 限流日志，**不断连**
 
@@ -157,9 +158,14 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 
 对外可观测面：实现以 `InputStats`（`include/rtsc/server/desktop_input.h`）暴露
 `injected`、`dropped_queue_full`、`dropped_rate_limited`、`send_failures`；`dropped_unsupported`
-（含 `kMouseRel`）在注入器内部计数但当前未接出结构体。`last_error` 只进 5 s 限流日志，
-结构体不存 Win32 错误码，也不存按键内容。`SendInput` 失败日志只在"首次失败/失败率 >50% 持续 5 s/恢复"
-三态变化时输出，避免 8 会话刷屏；限流丢弃不打印日志（只经 `dropped_rate_limited` 可见）。
+（含 `kMouseRel`、零码事件与已释放会话的迟到事件）在注入器内部计数但当前未接出结构体。
+`last_error` 只进 5 s 限流日志，结构体不存 Win32 错误码，也不存按键内容。
+`SendInput` 失败日志的**实际**行为是：任意一次失败后，若距上一条失败日志已满 5 s 就打印一行
+（`desktop_input_win32.cpp` 的 `LogFailure`）；没有"失败率 >50% 持续 5 s"的判定，也没有"恢复"行。
+限流丢弃不打印日志（只经 `dropped_rate_limited` 可见）。主机（`tools/rtsc_server/main.cpp`）
+每 5 s 采样一次 `Stats()`，仅在任一计数变化时打印
+`input stats (periodic): input_injected=… input_dropped_queue=… input_rate_limited=… input_send_failures=…`，
+退出前再打印一条 `(final)` 终值。
 
 **回压**：`Inject` 返回 false 仅表示"已丢弃"，会话不做重传（输入是实时语义，重传旧键位比丢掉更糟）。
 
@@ -207,7 +213,8 @@ flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | (geom.virtual_desktop ? MOUSE
 - 默认 off 的具体形态：不加 `--allow-input` 时 `SetInputSink(nullptr)`，`main.cpp:453-463` 的日志回调
   原样保留（会话可观测性不丢）。启动行增加 `input=off|on` 与 `input_max_sessions=N` 字段，与现有
   `audio=` 字段并列（`tools/rtsc_server/main.cpp` 的启动日志）；运行期首次租约拒绝时打印一次
-  `WARNING: input lease denied (input_lease_denied_count=N)`，不按事件打印。
+  `WARNING: input lease denied (input_lease_denied_count=N)`，此后按"计数变化且距上一条汇总 ≥1 s"
+  打印 `WARNING: input lease denied summary: input_lease_denied_count=N`，不按事件打印。
 - 为什么不是"默认 on 但可关"：RDP 输入是**单向权限跃迁**——从"看屏幕"到"操作整个交互会话"
   （文件、浏览器、UAC 之后的提权面、Ctrl+Alt+Del 面）。默认 on 等于每个部署点默认把桌面交出去，
   且用户很难察觉（本机用户只会看到鼠标自己动）。默认值必须是**安全的那一侧**。
@@ -245,26 +252,37 @@ session"），注入也落在**同一个**输入桌面 → 两个会话同时发
 
 | 模式 | 行为 | 默认 |
 |---|---|---|
-| `first`（**默认**） | 第一个发起输入的会话取得"控制租约"；其他会话的输入被丢弃并计数 + 一次性告警；租约在持有点断连时释放给下一个等待者（先到先得）。键盘/按钮状态按租约持有者单独跟踪 | ✅ |
+| `first`（**默认**） | 第一个发起输入的会话取得"控制租约"；其他会话的输入被丢弃并计数 + 告警（首次一条 + 之后按周期汇总）；租约在持有点断连时释放给下一个等待者（先到先得）。键盘/按钮状态按租约持有者单独跟踪 | ✅ |
 | `all` | 所有会话都注入（"共享白板"语义），靠队列串行 + 限流降低破坏 | 仅 `--input-share` 时 |
 | `none` | 只观测不注入（今天的等价物） | `--allow-input` 未给时 |
 
-限流（与模式无关的硬上限，防单会话饿死其他会话/刷爆输入流）。实现在注入器单 worker 线程内
-（`include/rtsc/server/desktop_input_map.h` 的 `InputRateLimiter`，无额外锁），按
-`std::chrono::steady_clock` 单调时间补充令牌，事件出队后、`SendInput` 前判定：
+限流（与模式无关的硬上限，防单会话饿死其他会话/刷爆输入流）。实现在注入器的 `Inject()` 内、
+与队列共用同一临界区（`include/rtsc/server/desktop_input_map.h` 的 `InputRateLimiter` 自身无锁），
+按 `std::chrono::steady_clock` 单调时间补充令牌，**事件入队前**判定（因此被限流的平台动作
+既不进队列，也不进 held 记账）：
 
-- 单会话：`kSessionEventsPerSecond = 400`，桶容量 `kSessionBurst = 800`（2 s 突发；
-  交互式打字 < 20 evt/s，快速拖拽 + 移动合并后 < 300 evt/s）。
-- 全局：`kGlobalEventsPerSecond = 1000`，桶容量 `kGlobalBurst = 2000`（8 × 400 的 1/3，确保队列不会长期打满）。
-- 纯移动输出频率：250 Hz 上限（合并后），与 `kRefreshInterval`（约 1 s 桌面刷新，`server.cpp:1410-1412`）
+- 单会话：`kSessionEventsPerSecond = 400` 平台动作/s，桶容量 `kSessionBurst = 800`（2 s 突发；
+  交互式打字 < 20 动作/s，快速拖拽 + 移动合并后 < 300 动作/s）。
+- 全局：`kGlobalEventsPerSecond = 1000` 平台动作/s，桶容量 `kGlobalBurst = 2000`（8 × 400 的约 1/3，
+  确保队列不会长期打满）。
+- 口径是**平台动作**而不是 RDP 事件：一个 `kMouse` 移动+按钮事件翻译成两个动作、扣两个令牌，
+  因此这类事件的稳态上限是 200/s。
+- 纯移动输出频率：合并后的定时路径每 4 ms 一次（250 Hz）；同会话的按键/按钮/滚轮会立即 flush
+  待发移动，瞬时可以高于 250 Hz。它与 `kRefreshInterval`（约 1 s 桌面刷新，`server.cpp:1410-1412`）
   无关——注入频率不必与刷新率绑定。
-- 超限：丢弃该事件 + `InputStats::dropped_rate_limited++`；不排队、不断连、**不逐事件打日志**
-  （限流只经计数可见；`SendInput` 失败才走 §1.6 的 5 s 限流日志）。
-- 例外：**释放类事件（keyup / 按钮 up）不受限流，也不消耗令牌**——丢释放比丢按下危险，
-  且释放数量被"该会话按住的键/按钮集合"限界。
+- 超限：丢弃该平台动作 + `InputStats::dropped_rate_limited++`；不排队、不断连、**不逐事件打日志**
+  （限流只经计数可见；`SendInput` 失败才走 §1.6 的 5 s 限流日志）。限流先于队列判定，
+  同一个动作只会被其中一个计数器记一次。
+- 例外：只有 **held release（该会话确实按住的 key/按钮的 up）不受限流，也不消耗令牌**——
+  丢这种释放比丢按下危险，且其数量被 pressed 集合限界（最多 510 键 + 5 按钮）。
+  **未持有的 up（重复 up、被限流或硬限丢弃的按下的 up、unicode up）不免限流**，
+  它们和按下一样消耗令牌；队列硬限对它们同样生效。
+- 清理用合成 up（`ReleaseSession`/`Shutdown` 补发的键/按钮 up）绕过 `Inject()`，
+  因此既不受队列策略也不受限流。
 - 全局桶拒绝时不扣会话桶的令牌，否则一个忙碌会话会静默抽干其他会话的配额。
-- **锁**：只有一个锁——注入器内部队列的互斥量；限流状态归 worker 线程独占。不引入
-  "每会话一把 SendInput 锁"（那会把跨会话交错变成随机顺序，比单队列合并更差）。
+- **锁**：只有一个锁——注入器内部队列的互斥量；`Allow`/`Forget` 都在该锁内，
+  `Stats()` 只读 relaxed 原子的丢弃计数。不引入"每会话一把 SendInput 锁"（那会把跨会话
+  交错变成随机顺序，比单队列合并更差）。
 
 ### 2.4 输入回显 / 隐私
 
@@ -546,7 +564,7 @@ std::vector<PlatformInput>                       --Emit()-->       SendInput(...
 | T17 队列合并 | 3 次纯移动 → 1 次输出（保留最新坐标） | §1.5 |
 | T18 队列不丢键 | 满队列下压入按键 → 键仍在，且被丢的是最旧移动 | §1.5 |
 | T19 ReleaseSession | 按下 Ctrl+左键后 `ReleaseSession` → 产出 `CTRLUP` + `LEFTUP` | §2.6（SendInput 不重置键盘状态） |
-| T20 限流 | 单会话 > 400 evt/s → 超出部分被计数丢弃；释放事件不受限流 | §2.3 |
+| T20 限流 | 单会话 > 400 平台动作/s → 超出部分被计数丢弃；held release 不受限流，未持有的 up 受限流 | §2.3 |
 
 ### 4.2 仓库内可做的集成测试（脚本化 peer，无需真机）
 
