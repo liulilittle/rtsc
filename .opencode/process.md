@@ -962,3 +962,11 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 + 3 变异
 ### 子代理
 审计 J 已 delete 解散。
+## 第838轮：真机清单补 PAUSE 验收点（与批 19 文件不重叠）
+- 批 19 正在改 `server.cpp`/`win32.cpp`/`main.cpp`/`desktop_input.h`/null/两个测试/`seam.md`/`review-F.md`
+  → 主代理本轮只改 `docs/spec/input-injection-real-machine-checklist.md`（无冲突）
+- 新增三条真机验收（原"Pause 可能无效"已过期，改为"整序列丢弃"）：
+  1. 按 Pause 后**本机 NumLock 状态必须不变**（翻转即回归）
+  2. Pause 之后再单独按 NumLock **必须正常切换**（抑制不误伤，上界=一次 tap）
+  3. Pause 后紧接 `kSync`，随后 NumLock 仍生效（批 17 的窗口终止）
+- 文件 92 行、`U+FFFD`=0
