@@ -548,3 +548,36 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
 - 审计 E `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：限流语义/时钟/`sessions_` 增长/移动绕过/文档一致
 ### 环境
 批 9 结束后再次 TLS 证书错误（累计第 6 次），任务已完成并已 delete。
+## 第810轮：审计 E 第 1 轮结论（4 类 FAIL）→ 待与 D 交叉后定案
+审计 E 报告 `docs/spec/input-rate-limit-review-E.md`（35 tests/3759 checks 基线绿，`/W4 /WX` 零错）：
+| 项 | 判定 | 要点 |
+|---|---|---|
+| 1a/1b/1c 桶参数/steady_clock/时钟倒退 | PASS | 800=2s、2000=2s；`now<=last` 直接返回 |
+| 2 拒绝不扣令牌 | PASS | 两桶任一不足即返回，不部分扣减 |
+| 4 移动绕过限流 | PASS（有漂移） | `Dispatch` 先 `Allow` 再入 `pending_moves_`；`Emit` 不再过限流 |
+| 5a/5b Stats 双后端 | PASS | 字段一致；两计数器不重复计数同一平台动作 |
+| 7 变异真实性 | PASS | 去释放豁免 / 速率设无穷 均转红 |
+| **1d sessions_ 增长** | **FAIL（E3/E4）** | 断开会话仍有排队项 → `Dispatch→Allow` 重新 `sessions_[id]` 插入，且该 id 不再被 Forget；`pending_moves_` 残留导致断开会话的过时移动仍被注入 |
+| **3 释放豁免语义不一致** | **FAIL（E1/E2）** | 限流用 `IsReleaseInput`（不看是否 held）→ **100 万条未持有 up 全放行**（实测 `allowed=1000000`）；且"限流丢弃的按下仍被 `TrackInput` 记为 held" → `pressed` 可涨到 131,077，`hard_limit + 2×|pressed|` 实测上界远大于文档承诺 |
+| **5c 运行期不可观测** | **FAIL（E6）** | 生产代码**从不调用** `Stats()`（全仓唯一调用在测试），`dropped_rate_limited`/`dropped_queue_full`/`send_failures` 对外不可见；`lease_denied_reported` 只打印一次，与 plan 的"周期性汇总"不符 |
+| **6 文档漂移** | **FAIL（E7）** | a 上界漏 `2×`；b 漏"未注入按下的 up 仍豁免"；c 移动 250Hz 表述不实；d 失败日志无"恢复"态；e §2.3 释放豁免前提错；f "事件"口径实为"平台动作" |
+- 关键量化：限流后未持有 up 仍可达 worker 满速（10^4–10^5 evt/s）→ **限流对"非 held 释放"完全失效**
+- 最小修法（审计建议 A 方案）：`QueuedInput.exempt_release` 由入队决定写入（`held_release` / 合成 up = true），
+  `Dispatch` 用该字段而非 `IsReleaseInput`；`IsReleaseInput` 降级为"仅用于识别释放类型"
+- 下一步：等审计 D（上界证明）→ 两者交叉 → 批 10 修 E1/E2/E3/E4/E5/E6/E7
+## 第811轮：审计 D 完成（上界闭合，我的疑点被驳回）→ 批 10 可派
+### 审计 D 结论（`docs/spec/input-lease-review-D.md`）
+| 要点 | 结论 |
+|---|---|
+| 1 所有 push_back 有界 | PASS（峰值口径） |
+| 2 pressed 上界 | PASS = **515**（scancode 是 uint8_t，非 131k） |
+| 3 键身份互逆 | PASS |
+| 4 其它丢弃点 | PASS（teardown 兜底） |
+| 5 变异真实性 | 目标测试必红，但 **M3/M4 存活 = 覆盖缺口 FAIL** |
+- 峰值不变式：`peak(queue) ≤ 1024 + 515 = 1539`（探针 3 轮一致）；字面公式瞬时违反 774 次
+- 必修：D-A 文档改峰值口径；D-B 补 2 条用例使 M3/M4 转红；D-C 抽纯函数解决 win32 零覆盖；
+  E1 限流前移到 `Inject()`（已持 `mu_`，可一并消 E2）；D-G 生产代码从不调用 `Stats()`
+### 与审计 E 的一致点
+E1 两审独立同证 FAIL（未持有 up 全放行）。E2 被 D 降级为低（上界仍 515/1539，非 128× 膨胀）。
+### 批 10 范围（合并 D+E）
+D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流前移 → 抽纯函数 → 回写文档 → 重跑 M1-M4 变异
