@@ -652,3 +652,22 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
   旧套件 `40/9602/0` 在 mutC 下仍绿 → 只有新用例能钉住"held up 不耗令牌"
 - 已把 mutC 细节 relay 给批 11 执行会话
 - 审计 G 已 delete 解散；当前在途仅审计 F + 批 11
+## 第818轮：批 11 验收提交 `b6fcaac`；主代理另发现 §1.7 过期描述
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `build\Release\rtsc_desktop_input_tests.exe` → `41 tests, 11611 checks, 0 failing`
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（54.58s）
+### 逐行核对
+- `seam.md:137` 峰值两段式完整（① 1024+515=1539 限"对端可入队事件" ② 合成 up `+Σ|pressed| ≤ 会话数×515`
+  ③ "不得读作瞬时不变式"+774 次探针事实）；`:138` 饱和引理限定；`:142-144` 未持有 up 双不豁免；
+  `:168-169` final 限正常退出；`:171` 删返回值口径 ✅
+- `desktop_input.h:41-50` `dropped_queue_full` 含 session-end purge；含"仅 HELD release 免限流" ✅
+- `win32.cpp:25-35` 注释两段峰值 + PEAK 非瞬时 ✅
+- 新测试 `tests/test_desktop_input.cpp:681-744` 含"未持有 up 会花令牌"对照 ✅
+### 我另发现的文档过期（未在批 11 范围）
+`seam.md` §1.7 第 1 条声称"`session_id` 恒为 0、多会话仲裁形同虚设"——**已过期**：
+`server.cpp:2160` `next_input_session_id` 原子递增，`:2286-2287`/`:2414` 两条构造路径均传 `fetch_add(1)+1`，
+0 仅作哨兵（`:2036`）。已修正为"已实现 + 剩余日志无 session_id 的可观测性缺口"。
+§1.7 第 2 条（几何取自协商尺寸而非捕获矩形）**仍成立**（`server.cpp:1303` 用 `desktop_width_/height_`）→ 保持 OPEN。
+### 子代理
+批 11 `ses_e69f47a9` 已完成（其 relay 审计 G 失败属正常：G 已解散）。审计 F `ses_e6a12ff2` 仍在途。
