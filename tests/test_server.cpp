@@ -672,6 +672,55 @@ class ReleaseOrderingSink final : public rtsc::server::DesktopInputSink {
     size_t injects_during_release_ = 0;
 };
 
+// A sink whose ReleaseSession can be made to throw, like the real backend when
+// the synthetic-up append hits std::bad_alloc. Teardown must survive that
+// exception AND still free the lease slot: a leaked slot denies every later
+// session forever.
+class ReleaseThrowingSink final : public rtsc::server::DesktopInputSink {
+ public:
+    explicit ReleaseThrowingSink(bool throw_on_release)
+        : throw_on_release_(throw_on_release) {}
+
+    void SetGeometry(uint32_t session_id,
+                     const rtsc::server::InjectGeometry& g) override {
+        (void)session_id;
+        (void)g;
+    }
+
+    void Inject(uint32_t session_id,
+                const rtsc::server::InputEvent& ev) override {
+        (void)ev;
+        std::lock_guard<std::mutex> lock(mu_);
+        inject_ids_.push_back(session_id);
+    }
+
+    void ReleaseSession(uint32_t session_id) override {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            release_ids_.push_back(session_id);
+        }
+        if (throw_on_release_) throw std::bad_alloc();
+    }
+
+    rtsc::server::InputStats Stats() const override { return {}; }
+
+    std::vector<uint32_t> inject_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return inject_ids_;
+    }
+
+    std::vector<uint32_t> release_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return release_ids_;
+    }
+
+ private:
+    mutable std::mutex mu_;
+    std::vector<uint32_t> inject_ids_;
+    std::vector<uint32_t> release_ids_;
+    bool throw_on_release_;
+};
+
 size_t DistinctIds(const std::vector<uint32_t>& ids) {
     return std::set<uint32_t>(ids.begin(), ids.end()).size();
 }
@@ -700,6 +749,72 @@ bool SendTestInput(const HandshakeResult& r) {
                         r.user_channel, r.io_channel,
                         EncodeFastPathInputPdu(
                             {EncodeKeyboardEvent(0x1E, false, false)})));
+}
+
+// One lease hand-off cycle: the first session takes the single lease and
+// injects, then disconnects; the survivor must be able to take the freed slot.
+// Returns true when the holder reached the sink at least once. `released`
+// reports that the holder's ReleaseSession ran, `handed_off` that the survivor
+// then acquired the lease.
+bool RunLeaseHandoffProbe(bool throw_on_release, bool* released,
+                          bool* handed_off) {
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    ReleaseThrowingSink sink(throw_on_release);
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    if (!server.Start(error)) return false;
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult first =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    HandshakeResult second =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    if (!first.reached_active || !second.reached_active) {
+        server.Stop();
+        runner.join();
+        return false;
+    }
+
+    // The first session takes the lease and reaches the sink.
+    bool holder_injected = false;
+    for (int i = 0; i < 300 && !holder_injected; ++i) {
+        SendTestInput(first);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        holder_injected = !sink.inject_ids().empty();
+    }
+    const std::vector<uint32_t> injected = sink.inject_ids();
+    const uint32_t holder = injected.empty() ? 0 : injected.front();
+
+    // Disconnect the holder: teardown calls ReleaseSession (which may throw).
+    first.reader.reset();
+    first.transport->Close();
+    first.transport.reset();
+    *released = holder != 0 && WaitUntil([&sink, holder]() {
+        return CountId(sink.release_ids(), holder) == 1;
+    });
+
+    // The survivor must acquire the freed slot. A leaked slot denies it on
+    // every attempt, so a distinct session id never reaches Inject.
+    *handed_off = false;
+    for (int i = 0; i < 200 && !*handed_off; ++i) {
+        SendTestInput(second);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        *handed_off = DistinctIds(sink.inject_ids()) == 2;
+    }
+
+    server.Stop();
+    runner.join();
+    return holder_injected;
 }
 
 // ---- Server harness --------------------------------------------------------
@@ -3743,6 +3858,26 @@ RTSC_TEST(server_release_session_precedes_lease_handoff) {
 
     server.Stop();
     runner.join();
+}
+
+RTSC_TEST(server_release_input_frees_lease_slot_when_release_throws) {
+    // F-1: ReleaseInput calls sink->ReleaseSession before it frees the lease
+    // slot (F3). That call can throw (the real backend appends the synthetic
+    // ups to a queue). The exception must not skip holders.erase: the flags are
+    // already set, teardown is never retried, so a skipped erase leaks the slot
+    // and permanently denies every later session. The first probe is the
+    // control (well-behaved sink); the second must behave the same.
+    bool released = false;
+    bool handed_off = false;
+    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/false, &released, &handed_off));
+    CHECK(released);
+    CHECK(handed_off);
+
+    released = false;
+    handed_off = false;
+    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/true, &released, &handed_off));
+    CHECK(released);
+    CHECK(handed_off);
 }
 
 RTSC_TEST(server_non_injectable_input_does_not_hold_lease) {

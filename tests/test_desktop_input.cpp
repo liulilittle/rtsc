@@ -741,6 +741,24 @@ RTSC_TEST(desktop_input_rate_limit_held_release_keeps_token) {
     CHECK_EQ(unheld.dropped(), static_cast<size_t>(0));
     CHECK(!unheld.Allow(2, false, t0));
     CHECK_EQ(unheld.dropped(), static_cast<size_t>(1));
+
+    // The same must hold for the GLOBAL bucket: a held up must not spend the
+    // shared token either. Exhaust the global bucket to exactly one token
+    // (800 + 800 + 399 = 1999 of 2000), lift 100 held keys of session 4, and
+    // prove the shared token still buys one press.
+    InputRateLimiter shared;
+    PressedInputs shared_pressed;
+    shared_pressed.keys.insert(KeyId{0x1D, false});
+    for (int i = 0; i < 800; ++i) CHECK(shared.Allow(1, false, t0));
+    for (int i = 0; i < 800; ++i) CHECK(shared.Allow(2, false, t0));
+    for (int i = 0; i < 399; ++i) CHECK(shared.Allow(3, false, t0));
+    const size_t shared_dropped_before = shared.dropped();
+    for (int i = 0; i < 100; ++i) {
+        CHECK(shared.Allow(4, IsHeldRelease(KeyUp(0x1D), shared_pressed), t0));
+    }
+    CHECK_EQ(shared.dropped(), shared_dropped_before);
+    CHECK(shared.Allow(4, false, t0));   // the kept global token survived
+    CHECK(!shared.Allow(4, false, t0));  // ...and it was only one
 }
 
 RTSC_TEST(desktop_input_rate_limit_global_bucket) {

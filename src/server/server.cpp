@@ -770,7 +770,12 @@ class RdpSession {
         // it and queue a key-down that the worker can emit before those ups,
         // lifting the new holder's key.
         if (config_.enable_desktop_input && input_sink_ != nullptr) {
-            input_sink_->ReleaseSession(input_session_id_);
+            try {
+                input_sink_->ReleaseSession(input_session_id_);
+            } catch (...) {
+                // Teardown must still free the slot below: the flags above are
+                // already set, so a skipped erase would leak it permanently.
+            }
         }
         {
             std::lock_guard<std::mutex> lock(input_lease_->mu);

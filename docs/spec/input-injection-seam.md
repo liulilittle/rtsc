@@ -134,7 +134,7 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 | `kWheel` | FIFO，不与移动合并（离散平台动作） |
 | 队列达到软上限 256 | 先驱逐**最旧的一条纯移动**并计数（`dropped_queue_full++`） |
 | 队列达到硬上限 1024 且无可驱逐的移动 | 只豁免 **held release**：该 key/按钮仍在会话 `pressed` 集合中（口径 = scancode + 0xE0 标志 / 按钮号）；其余平台动作（按下、移动、**未持有的释放**）一律 `kDrop` 并计数 |
-| 队列上界（**峰值**口径） | 必须分两段，且**不得读作瞬时不变式**。① **对端可入队事件**：`peak(queue) ≤ kHardQueueLimit + \|pressed\|@饱和 = 1024 + 515 = 1539`；pressed 的结构上限是 510 键（`scancode` 是 `uint8_t`，255 × 0xE0 两位）+ 5 按钮。② **合成 up 额外**：`ReleaseSession`/`Shutdown` 补发的合成 up 由 `AppendReleasesLocked` 按 `pressed` 直接入队、不过 `DecideEnqueue`（`desktop_input_win32.cpp:232-254`），且 purge 明确保留 `synthetic` 项（`:307-315`）⇒ 再 `+ Σ_会话 \|pressed\| ≤ 会话数 × 515`，全局峰值 `≤ 1539 + 会话数 × 515`。瞬时更不成立：每次越限接受同时擦除一个 pressed 项，释放后队列仍可能是 1534 而 pressed 已为 0（探针 774 次违反瞬时公式） |
+| 队列上界（**峰值**口径） | 必须分两段，且**不得读作瞬时不变式**。① **对端可入队事件**：`peak(queue) ≤ kHardQueueLimit + \|pressed\|@饱和 = 1024 + 515 = 1539`；pressed 的结构上限是 510 键（`scancode` 是 `uint8_t`，255 × 0xE0 两位）+ 5 按钮。② **合成 up 额外**：`ReleaseSession`/`Shutdown` 补发的合成 up 由 `AppendReleasesLocked` 按 `pressed` 直接入队、不过 `DecideEnqueue`（`desktop_input_win32.cpp:232-254`），且 purge 明确保留 `synthetic` 项（`:307-315`）⇒ 二者的增量**共用同一配额**：越限接受一条 held release 同时擦掉一个 `pressed` 项，`AppendReleasesLocked` 补发的只是剩余的 `pressed`，故每个会话对超过硬限的增量 `≤ 515`，全局峰值 `≤ kHardQueueLimit + 515·K`（`K` = 同时持租、`pressed` 非空的会话数）；默认 `max_input_sessions=1` ⇒ `K=1` ⇒ **1539**，仅 `--input-share`/unlimited/`max_input_sessions≥2` 时才更高。不可写成 `1539 + 会话数 × 515`（重复计基线）。瞬时更不成立：每次越限接受同时擦除一个 pressed 项，释放后队列仍可能是 1534 而 pressed 已为 0（探针 774 次违反瞬时公式） |
 | 饱和引理（**仅对端可入队事件**） | `size > soft_limit ⇒ 队列内无纯移动`：`size ≥ soft` 时任何事件都先走 `kEvictMove`（只替换不增长），每来一个按下就吃掉一条移动；移动被驱逐光后新移动走 `kDrop`。因此饱和时无移动可驱逐，硬限的 `kDrop` 不会被 evict 绕过。合成 up 不参与驱逐且由 `AppendReleasesLocked` 直推（见上一行），可使 `size > soft` 时队列仍含移动，故本引理不覆盖合成 up 注入的队列状态 |
 | `kSync` | 不注入（v1 无"设置 toggle 状态"的注入形式；见 §3 P-7） |
 | `kMouseRel` | **已上送**（`InputEvent::Kind::kMouseRel`，带符号 `rel_x/rel_y`）；v1 不注入（相对位移受系统鼠标加速度污染），按 `dropped_unsupported` 计数 |
@@ -198,6 +198,27 @@ flags |= MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | (geom.virtual_desktop ? MOUSE
 
 边界：`x/y` 越界（客户端可发 0..65535 的 `u16`，`server.cpp:1567-1568`）必须**钳制**而不是回绕；
 `width/height <= 1` 视为几何不可用 → 拒绝注入并计数（避免除零）。
+
+### 1.8 已知测试缺口：Win32 接线
+
+`src/server/desktop_input_win32.cpp` **不在任何测试 target 的编译/链接闭包内**：
+`rtsc_desktop_input_tests` 只编 `tests/test_desktop_input.cpp` + `desktop_input_null.cpp`
+并链 `rtsc_server_desktop_input_map`（`CMakeLists.txt:676-682`）；生产后端只进
+`rtsc_server_desktop_input`（`:691`），该库只被 `rtsc_server_host` 链接（`:704`），
+而 `rtsc_server_tests` 链接的是 `rtsc_server`（`:608-609`），闭包内没有它。
+因此对该文件的任何变异都无法让 ctest 转红，下列判定点**仅靠读码审查**
+（详见 `docs/spec/input-batch10-review-F.md` §2.1 的变异 M6/M7/M8 存活证据）：
+
+- 合并移动：队尾同会话纯移动只更新位置、不增长（`desktop_input_win32.cpp:197-203`）；
+- 驱逐受害者的选择：`oldest_move` 迭代器在 `AdmitAndTrack` 之前取得（`:204-209`）；
+- `kEvictMove`/`kDrop` 的计数与 `erase` 语义（`:221-228`）；
+- 合成 up 追加：`AppendReleasesLocked` 绕过 `DecideEnqueue` 直接 `push_back`（`:236-258`）；
+- `forget_sessions_` 清理：桶 / 待发移动 / 非合成积压（`ForgetReleasedSessionsLocked`，`:301-322`）；
+- `Dispatch` 顺序：先 flush 同会话待发移动再发出队项（`:368-384`）；
+- `BuildNative`：`0xE0` / `UNICODE` / 按钮号翻译（`:388-476`）。
+
+要真正覆盖这些点，需把入队/排队/`Dispatch` 抽成平台中立单元（编进 `rtsc_desktop_input_tests`），
+或给 `Emit` 一个可注入的 `SendInput` 函数指针让测试编译真实 sink；本批不要求重构。
 
 ---
 
@@ -264,8 +285,8 @@ session"），注入也落在**同一个**输入桌面 → 两个会话同时发
 
 - 单会话：`kSessionEventsPerSecond = 400` 平台动作/s，桶容量 `kSessionBurst = 800`（2 s 突发；
   交互式打字 < 20 动作/s，快速拖拽 + 移动合并后 < 300 动作/s）。
-- 全局：`kGlobalEventsPerSecond = 1000` 平台动作/s，桶容量 `kGlobalBurst = 2000`（8 × 400 的约 1/3，
-  确保队列不会长期打满）。
+- 全局：`kGlobalEventsPerSecond = 1000` 平台动作/s，桶容量 `kGlobalBurst = 2000` = 全局 2 s 突发量，
+  确保队列不会长期打满。
 - 口径是**平台动作**而不是 RDP 事件：一个 `kMouse` 移动+按钮事件翻译成两个动作、扣两个令牌，
   因此这类事件的稳态上限是 200/s。
 - 纯移动输出频率：合并后的定时路径每 4 ms 一次（250 Hz）；同会话的按键/按钮/滚轮会立即 flush
