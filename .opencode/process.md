@@ -619,3 +619,22 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
 ### 已派（并行）
 - 审计 F `ses_e6a12ff22ffeOCGAtI9LBFGDR6`：队列/记账/生命周期侧（D-A/D-B/D-C + E2/E3/E4/E8）
 - 审计 G `ses_e6a12f026ffeby215OzUpiyD2S`：限流/可观测/文档侧（E1/E5/E6/E7）
+## 第815轮：审计 G 完成（E1/E5/E6 PASS；E7 低危文档漂移 4 处 + 测试缺口 E1-T）
+### 审计 G 结论（`docs/spec/input-batch10-review-G.md`）
+- E1 PASS：probe9 `800 presses → 5000 unheld ups allowed=0 dropped=5001`；`799 presses → 100000 held ups allowed、dropped_delta=0`；
+  保留的 1 令牌仍可花；unicode up 受限；全局拒绝后 1s 会话 1 仍花 401（400+保留 1）
+- E5 PASS：probe10 `10 条限流移动 dropped_delta=10`（无 caller 二次计数）；`kEvictMove` 决策 `rate_limited=0 tracked=1`
+- E6 PASS（2 条低危保留）：实跑 `host --seconds 2` → `input stats (final)` 四计数=0
+- 变异真实性 PASS：mutA/mutA2/mutB 各自指定测试红 → restored `40/9602/0` 绿
+- **E7 FAIL（低）**：4 处文档/注释漂移（见下）
+- **E1-T 测试缺口**：mutC（held up 豁免但扣令牌）40/9602/0 **存活** → "held up 不耗令牌"无用例钉住
+### E7 四处（均不动产品逻辑）
+1) `seam.md:137` + `win32.cpp:26-27`：peak 1539 只对"对端可入队事件"成立；`AppendReleasesLocked`（`win32.cpp:232-254`）
+   无上限 push 合成 up 且 purge 保留 synthetic（`307-315`）→ 必须补"合成 up 额外 ≤ 会话数×515"
+2) `desktop_input.h:41-43`：`dropped_queue_full` 定义漏"会话结束时 purge"（`win32.cpp:310`）
+3) `seam.md:168`："退出前终值"须限定为正常退出（`--seconds`/`--once`）；无界模式 Ctrl+C 无 SIGINT 处理
+4) `seam.md:170`："Inject 返回 false" 过期（`Inject` 是 void，`desktop_input.h:71`）
+### E1-T 修法
+补用例"799 presses → 100 held ups → 保留令牌仍可花"，使 mutC 转红。
+### 状态
+审计 G 独立稿已出，已 relay 审计 F 请求交叉验证；审计 F 仍在途。
