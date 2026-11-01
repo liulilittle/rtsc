@@ -188,10 +188,11 @@ void InputRateLimiter::Refill(Bucket& bucket, double per_second, double burst,
     bucket.tokens = std::min(burst, bucket.tokens + elapsed * per_second);
 }
 
-bool InputRateLimiter::Allow(uint32_t session_id, bool is_release,
+bool InputRateLimiter::Allow(uint32_t session_id, bool held_release,
                              Clock::time_point now) {
-    // Releases are never limited and never spend a token (see the header).
-    if (is_release) return true;
+    // Only a HELD release is exempt and spends no token (see the header); any
+    // other up is limited like a press.
+    if (held_release) return true;
 
     Refill(global_, kGlobalEventsPerSecond, kGlobalBurst, now);
     Bucket& session = sessions_[session_id];

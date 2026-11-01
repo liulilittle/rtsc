@@ -2415,7 +2415,10 @@ bool RdpServer::ServeOne() {
         clipboard_, file_list_provider_, impl_->unknown_input_events,
         impl_->malformed_input_pdus, impl_->input_lease);
     // Same containment as the threaded path: a failing session (e.g.
-    // std::bad_alloc) must not take the caller down with it.
+    // std::bad_alloc) must not take the caller down with it. Teardown is
+    // contained step by step too: Close() is not noexcept, so a throwing Stop()
+    // must not skip ScrubCredentials()/ReleaseInput() (that would leak the
+    // input lease slot and the session's rate-limit bucket).
     try {
         session.Run();
     } catch (const std::exception& e) {
@@ -2423,9 +2426,18 @@ bool RdpServer::ServeOne() {
     } catch (...) {
         std::fprintf(stderr, "[rtsc-server] session failed: unknown exception\n");
     }
-    session.Stop();
-    session.ScrubCredentials();
-    session.ReleaseInput();
+    try {
+        session.Stop();
+    } catch (...) {
+    }
+    try {
+        session.ScrubCredentials();
+    } catch (...) {
+    }
+    try {
+        session.ReleaseInput();
+    } catch (...) {
+    }
     return true;
 }
 

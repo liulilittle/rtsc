@@ -18,7 +18,9 @@
 
 namespace {
 
+using rtsc::server::AdmitAndTrack;
 using rtsc::server::AdmitInput;
+using rtsc::server::AdmitOutcome;
 using rtsc::server::DecideEnqueue;
 using rtsc::server::EnqueueAction;
 using rtsc::server::EnqueueState;
@@ -26,6 +28,7 @@ using rtsc::server::InjectGeometry;
 using rtsc::server::InputEvent;
 using rtsc::server::IsHeldRelease;
 using rtsc::server::IsReleaseInput;
+using rtsc::server::KeyId;
 using rtsc::server::MakeWin32DesktopInputSink;
 using rtsc::server::PlatformInput;
 using rtsc::server::PressedInputs;
@@ -379,9 +382,47 @@ RTSC_TEST(desktop_input_queue_held_release_is_accepted_and_untracked) {
     CHECK(AdmitInput(QueueState(16, false, false), pressed, KeyUp(0x1D, false),
                      IsHeldRelease(KeyUp(0x1D, false), pressed)) ==
           EnqueueAction::kDrop);
+}
+
+RTSC_TEST(desktop_input_queue_extended_identity_is_not_confused) {
     // The identity includes the 0xE0 flag: an extended key is not the same
-    // physical key as the non-extended scan code.
+    // physical key as the non-extended scan code. The pressed set must be
+    // non-empty, otherwise "not held" is trivially true for every key and the
+    // assertion protects nothing (the previous version of this check ran on an
+    // empty set and survived a mutation that ignored `extended`).
+    PressedInputs pressed;
+    const PlatformInput down = KeyDown(0x1D, false);
+    CHECK(AdmitInput(QueueState(0, false, false), pressed, down,
+                     IsHeldRelease(down, pressed)) == EnqueueAction::kAccept);
+    CHECK_EQ(pressed.keys.size(), static_cast<size_t>(1));
+    // The extended 0x1D up lifts a DIFFERENT physical key, so it is not held.
     CHECK(!IsHeldRelease(KeyUp(0x1D, true), pressed));
+    // The non-extended up is the one that lifts the press we made.
+    CHECK(IsHeldRelease(KeyUp(0x1D, false), pressed));
+
+    // Reverse direction: a held extended key is not lifted by the plain code.
+    PressedInputs extended_pressed;
+    const PlatformInput extended_down = KeyDown(0x1D, true);
+    CHECK(AdmitInput(QueueState(0, false, false), extended_pressed,
+                     extended_down,
+                     IsHeldRelease(extended_down, extended_pressed)) ==
+          EnqueueAction::kAccept);
+    CHECK(!IsHeldRelease(KeyUp(0x1D, false), extended_pressed));
+    CHECK(IsHeldRelease(KeyUp(0x1D, true), extended_pressed));
+}
+
+RTSC_TEST(desktop_input_queue_evict_move_still_tracks_press) {
+    // Above the soft limit a press is accepted by evicting a movable movement.
+    // It is still injected, so it must be recorded as held: if the evict path
+    // skipped TrackInput, its up would no longer be exempt at the hard limit
+    // and the key would stay stuck for the rest of the session.
+    PressedInputs pressed;
+    const PlatformInput down = KeyDown(0x1E);
+    CHECK(AdmitInput(QueueState(4, true, false), pressed, down,
+                     IsHeldRelease(down, pressed)) ==
+          EnqueueAction::kEvictMove);
+    CHECK_EQ(pressed.keys.size(), static_cast<size_t>(1));
+    CHECK(IsHeldRelease(KeyUp(0x1E), pressed));
 }
 
 RTSC_TEST(desktop_input_queue_held_button_release_is_exempt) {
@@ -450,12 +491,103 @@ RTSC_TEST(desktop_input_queue_dropped_press_is_not_tracked) {
     CHECK(pressed.keys.empty());
 }
 
+// ---- Sink admission pipeline (AdmitAndTrack) -------------------------------
+//
+// The Win32 sink does not run any of this logic itself any more: it only builds
+// the queue snapshot and applies the returned action to its container. Keeping
+// "decide held release -> rate gate -> queue policy -> track" here means the
+// wiring is covered by these platform-neutral tests instead of being untested
+// code in desktop_input_win32.cpp.
+
+RTSC_TEST(desktop_input_queue_rate_gate_gets_held_release_flag) {
+    PressedInputs pressed;
+    const auto allow = [](bool) { return true; };
+    const PlatformInput down = KeyDown(0x1E);
+    CHECK(AdmitAndTrack(QueueState(0, false, false), pressed, down, allow)
+              .action == EnqueueAction::kAccept);
+    CHECK_EQ(pressed.keys.size(), static_cast<size_t>(1));
+
+    // The gate must be told the HELD flag (not "is a release"): the rate
+    // limiter's exemption is exactly the queue's exemption.
+    bool called = false;
+    bool seen = false;
+    const auto probe = [&](bool held_release) {
+        called = true;
+        seen = held_release;
+        return true;
+    };
+    CHECK(AdmitAndTrack(QueueState(16, false, false), pressed, KeyUp(0x1E),
+                        probe)
+              .action == EnqueueAction::kAccept);
+    CHECK(called);
+    CHECK(seen);  // held up -> exempt candidate
+    CHECK(pressed.keys.empty());
+
+    // An up for a key that is not held is told false, so the limiter treats it
+    // like a press (and the queue hard limit still applies to it).
+    called = false;
+    seen = true;
+    CHECK(AdmitAndTrack(QueueState(16, false, false), pressed, KeyUp(0x1F),
+                        probe)
+              .action == EnqueueAction::kDrop);
+    CHECK(called);
+    CHECK(!seen);
+
+    // Unicode key-ups carry no physical state: never held.
+    PlatformInput unicode_up;
+    unicode_up.kind = PlatformInput::Kind::kKey;
+    unicode_up.unicode = 0x6F22;
+    unicode_up.release = true;
+    seen = true;
+    AdmitAndTrack(QueueState(16, false, false), pressed, unicode_up, probe);
+    CHECK(!seen);
+}
+
+RTSC_TEST(desktop_input_queue_rate_limited_input_is_not_tracked) {
+    // E2: the rate gate runs BEFORE the queue bookkeeping. A press the limiter
+    // refused was never queued or injected, so it must not enter the held set
+    // (otherwise its up would be exempt even though no press ever happened).
+    PressedInputs pressed;
+    const auto deny = [](bool) { return false; };
+    const AdmitOutcome refused =
+        AdmitAndTrack(QueueState(0, false, false), pressed, KeyDown(0x1E),
+                      deny);
+    CHECK(refused.rate_limited);
+    CHECK(refused.action == EnqueueAction::kDrop);
+    CHECK(!refused.held_release);
+    CHECK(pressed.keys.empty());
+    // Its later up is therefore not held and is dropped at the hard limit.
+    bool seen = true;
+    const auto probe = [&](bool held_release) {
+        seen = held_release;
+        return true;
+    };
+    const AdmitOutcome up = AdmitAndTrack(QueueState(16, false, false),
+                                          pressed, KeyUp(0x1E), probe);
+    CHECK(!seen);
+    CHECK(!up.held_release);
+    CHECK(up.action == EnqueueAction::kDrop);
+
+    // A HELD release refused by the limiter stays held: it was not injected,
+    // so the key/button must still be released later (teardown or next up).
+    PressedInputs held;
+    const auto allow = [](bool) { return true; };
+    CHECK(AdmitAndTrack(QueueState(0, false, false), held, KeyDown(0x1D),
+                        allow)
+              .action == EnqueueAction::kAccept);
+    const AdmitOutcome denied_up =
+        AdmitAndTrack(QueueState(16, false, false), held, KeyUp(0x1D), deny);
+    CHECK(denied_up.rate_limited);
+    CHECK(denied_up.held_release);
+    CHECK_EQ(held.keys.size(), static_cast<size_t>(1));
+}
+
 // ---- Injection rate limiting (token buckets) -------------------------------
 //
-// The Win32 sink applies the limiter on its single worker thread, so the
-// limiter itself carries no lock. These cases drive it with explicit timestamps
-// so the 400 evt/s + 800 burst session bucket and the 1000 evt/s + 2000 burst
-// global bucket are pinned exactly, without sleeping.
+// The Win32 sink applies the limiter inside Inject(), under the same mutex as
+// the queue. These cases drive it with explicit timestamps so the 400 evt/s +
+// 800 burst session bucket and the 1000 evt/s + 2000 burst global bucket are
+// pinned exactly, without sleeping.
 
 namespace {
 using RateClock = std::chrono::steady_clock;
@@ -510,6 +642,40 @@ RTSC_TEST(desktop_input_rate_limit_release_is_exempt) {
     // The press is still limited: releases did not replenish the bucket.
     CHECK(!limiter.Allow(1, false, t0));
     CHECK_EQ(limiter.dropped(), static_cast<size_t>(2));
+}
+
+RTSC_TEST(desktop_input_rate_limit_unheld_release_is_limited) {
+    // E1: only a HELD release is exempt. A key-up for a key the session never
+    // pressed is an ordinary platform action: it spends a token and is dropped
+    // once the bucket is empty (previously every key-up was exempt, so one
+    // session could inject an unbounded stream of up events).
+    InputRateLimiter limiter;
+    PressedInputs pressed;  // nothing held
+    const RateClock::time_point t0 = RateTime(7000);
+    for (int i = 0; i < 800; ++i) {
+        CHECK(limiter.Allow(1, false, t0));
+    }
+    CHECK(!limiter.Allow(1, false, t0));
+
+    size_t allowed = 0;
+    for (int i = 0; i < 5000; ++i) {
+        const bool held_release = IsHeldRelease(KeyUp(0x1E), pressed);
+        CHECK(!held_release);
+        if (limiter.Allow(1, held_release, t0)) ++allowed;
+    }
+    CHECK_EQ(allowed, static_cast<size_t>(0));
+
+    // A held release is still exempt and spends no token.
+    pressed.keys.insert(KeyId{0x1D, false});
+    CHECK(IsHeldRelease(KeyUp(0x1D), pressed));
+    CHECK(limiter.Allow(1, IsHeldRelease(KeyUp(0x1D), pressed), t0));
+    // Unicode ups are not held either, so they are limited too.
+    PlatformInput unicode_up;
+    unicode_up.kind = PlatformInput::Kind::kKey;
+    unicode_up.unicode = 0x6F22;
+    unicode_up.release = true;
+    CHECK(!IsHeldRelease(unicode_up, pressed));
+    CHECK(!limiter.Allow(1, IsHeldRelease(unicode_up, pressed), t0));
 }
 
 RTSC_TEST(desktop_input_rate_limit_global_bucket) {
@@ -658,8 +824,12 @@ RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
     // linked into this suite, so the two observability points are guarded
     // structurally (the same way tests/test_ui.cpp guards the GUI dispatch).
     //   1. the startup line carries "input=on|off" and "input_max_sessions=N";
-    //   2. the first denied input lease logs exactly one WARNING that includes
-    //      the running input_lease_denied_count() -- never one line per event.
+    //   2. the first denied input lease logs a WARNING that includes the
+    //      running input_lease_denied_count(), and the count is summarized
+    //      periodically afterwards -- never one line per event;
+    //   3. the host actually reads DesktopInputSink::Stats() and prints the
+    //      four counters (otherwise dropped_rate_limited is invisible in the
+    //      shipped binary).
 #ifdef RTSC_SOURCE_DIR
     const std::string path =
         std::string(RTSC_SOURCE_DIR) + "/tools/rtsc_server/main.cpp";
@@ -677,6 +847,16 @@ RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
     CHECK(src.find("\" input_max_sessions=\"") != std::string::npos);
     CHECK(src.find("input_lease_denied_count()") != std::string::npos);
     CHECK(src.find("WARNING: input lease denied") != std::string::npos);
+    // Periodic lease-denied summary (not only the first denial).
+    CHECK(src.find("input lease denied summary") != std::string::npos);
+    // Production call site of Stats() and the four printed counters.
+    CHECK(src.find("->Stats()") != std::string::npos);
+    CHECK(src.find("input_injected=") != std::string::npos);
+    CHECK(src.find("input_dropped_queue=") != std::string::npos);
+    CHECK(src.find("input_rate_limited=") != std::string::npos);
+    CHECK(src.find("input_send_failures=") != std::string::npos);
+    // The final value is printed before the process exits.
+    CHECK(src.find("\"final\"") != std::string::npos);
 #else
     std::printf(
         "  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");

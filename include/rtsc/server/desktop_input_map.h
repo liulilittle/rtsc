@@ -73,8 +73,11 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
                                           const InjectGeometry& g);
 
 // True for a platform input that lifts a previously pressed state: a key-up
-// (scan code or unicode) or a mouse-button-up. This is the rate limiter's
-// exemption and the first half of the queue's held-release test.
+// (scan code or unicode) or a mouse-button-up. This is only the "is an up"
+// half of the question: neither the queue exemption nor the rate-limiter
+// exemption uses it, because both exempt only a HELD release
+// (IsHeldRelease below). A release for a key/button this session never pressed
+// is treated like a press by both gates.
 inline bool IsReleaseInput(const PlatformInput& input) {
     if (input.kind == PlatformInput::Kind::kKey) return input.release;
     if (input.kind == PlatformInput::Kind::kMouseButton) {
@@ -98,8 +101,9 @@ struct KeyId {
 };
 
 // Keys and buttons a session has injected a press for and not yet released.
-// The sink tracks ONLY events the queue accepted: a press refused by the hard
-// limit was never injected, so it must never be "held" or released later.
+// The sink tracks ONLY events that passed both gates: a press refused by the
+// rate limiter or by the queue hard limit was never injected, so it must never
+// be "held" or released later.
 struct PressedInputs {
     std::set<KeyId> keys;
     std::set<uint8_t> buttons;
@@ -187,7 +191,7 @@ EnqueueAction DecideEnqueue(const EnqueueState& state);
 // applies DecideEnqueue, and updates `pressed` ONLY when the queue accepted the
 // event (kAccept or kEvictMove). `held_release` must be computed by the caller
 // immediately before this call, against the pressed set it passes in (the sink
-// does exactly that in Inject()).
+// uses AdmitAndTrack below, which does exactly that).
 //
 // The "track only when accepted" rule is load bearing: tracking a press the
 // hard limit dropped would make its later release look held, so the sink would
@@ -196,18 +200,57 @@ EnqueueAction DecideEnqueue(const EnqueueState& state);
 EnqueueAction AdmitInput(EnqueueState state, PressedInputs& pressed,
                          const PlatformInput& input, bool held_release);
 
+// Outcome of one trip through AdmitAndTrack.
+struct AdmitOutcome {
+    EnqueueAction action = EnqueueAction::kDrop;
+    // True when the input lifts a key/button the session currently holds.
+    bool held_release = false;
+    // True when the caller's rate gate refused the input. Nothing was queued
+    // and nothing was tracked in that case.
+    bool rate_limited = false;
+};
+
+// The sink's entire per-input pipeline, kept platform neutral so it is covered
+// by the mapping tests instead of living untested in desktop_input_win32.cpp:
+//
+//   1. decide `held_release` against the pressed set as it stands now;
+//   2. ask the caller's rate gate (the token-bucket limiter) whether this
+//      platform action may be injected at all;
+//   3. only when the gate allows it, apply DecideEnqueue and the held-key
+//      bookkeeping (AdmitInput).
+//
+// Ordering is load bearing: the rate gate runs BEFORE any tracking, so a press
+// the limiter refuses never enters `pressed` (it was never injected, so its up
+// must not be treated as held). The gate receives the held flag, not "is a
+// release": an up for a key the session never pressed is limited like a press.
+template <typename RateGate>
+AdmitOutcome AdmitAndTrack(EnqueueState state, PressedInputs& pressed,
+                           const PlatformInput& input, RateGate&& rate_gate) {
+    AdmitOutcome outcome;
+    outcome.held_release = IsHeldRelease(input, pressed);
+    if (!rate_gate(outcome.held_release)) {
+        outcome.rate_limited = true;
+        return outcome;
+    }
+    outcome.action = AdmitInput(state, pressed, input, outcome.held_release);
+    return outcome;
+}
+
 // Token-bucket rate limiter for the injection queue (docs/spec/
-// input-injection-seam.md 2.3). It runs on the sink's single worker thread, so
-// it takes no lock; `now` is caller-supplied steady_clock time so the policy is
-// unit testable without sleeping.
+// input-injection-seam.md 2.3). It is called from the sink's Inject() under the
+// same mutex that guards the queue, so it needs no lock of its own; `now` is
+// caller-supplied steady_clock time so the policy is unit testable without
+// sleeping.
 //
-//   * one session: 400 events/s, burst 800 (two seconds of traffic);
-//   * all sessions together: 1000 events/s, burst 2000.
+//   * one session: 400 platform actions/s, burst 800 (two seconds of traffic);
+//   * all sessions together: 1000 platform actions/s, burst 2000.
 //
-// Two exemptions mirror the queue policy: a RELEASE (key-up / button-up) is
-// never limited and spends no token, because losing one leaves the local key or
-// button stuck and the number of releases is bounded by what the session holds
-// down. An event refused by the GLOBAL bucket does not spend the session's
+// One exemption mirrors the queue policy: a HELD release (the up of a key or
+// button this session actually holds down) is never limited and spends no
+// token, because losing one leaves the local key or button stuck and the
+// number of such releases is bounded by the pressed set. Any other up (a
+// repeated up, or the up of a press that was never injected) is limited like a
+// press. An event refused by the GLOBAL bucket does not spend the session's
 // token either, so one busy peer cannot drain another session's allowance.
 class InputRateLimiter {
  public:
@@ -218,10 +261,11 @@ class InputRateLimiter {
     static constexpr double kGlobalEventsPerSecond = 1000.0;
     static constexpr double kGlobalBurst = 2000.0;
 
-    // Returns true when one event may be injected. Only the worker thread calls
-    // this; a false result is expected to be counted by the caller (the sink
-    // adds it to InputStats::dropped_rate_limited).
-    bool Allow(uint32_t session_id, bool is_release, Clock::time_point now);
+    // Returns true when one platform action may be injected. `held_release`
+    // must be IsHeldRelease(input, pressed) -- not IsReleaseInput(input). A
+    // refusal is counted here (InputStats::dropped_rate_limited reads
+    // dropped()); the caller must not count it again.
+    bool Allow(uint32_t session_id, bool held_release, Clock::time_point now);
 
     // Forgets a session's bucket (ReleaseSession), so a later session that
     // reuses the id starts with a full burst instead of inheriting a drained

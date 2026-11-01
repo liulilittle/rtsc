@@ -600,6 +600,33 @@ int main(int argc, char** argv) {
         log.line(std::string("session active: ") + kind + " event forwarded");
     });
 
+    // Cumulative injection counters are only useful if the shipped host prints
+    // them: sample Stats() periodically and log a line only when a counter
+    // changed, plus one final line on exit. Without this the rate-limit and
+    // queue drops are invisible to whoever runs rtsc_server_host.
+    rtsc::server::InputStats printed_input{};
+    auto log_input_stats = [&](const char* reason) {
+        if (!input_sink) return;
+        const rtsc::server::InputStats stats = input_sink->Stats();
+        log.line(std::string("input stats (") + reason + "): input_injected=" +
+                 std::to_string(stats.injected) + " input_dropped_queue=" +
+                 std::to_string(stats.dropped_queue_full) +
+                 " input_rate_limited=" +
+                 std::to_string(stats.dropped_rate_limited) +
+                 " input_send_failures=" +
+                 std::to_string(stats.send_failures));
+        printed_input = stats;
+    };
+    auto input_stats_changed = [&]() {
+        if (!input_sink) return false;
+        const rtsc::server::InputStats stats = input_sink->Stats();
+        return stats.injected != printed_input.injected ||
+               stats.dropped_queue_full != printed_input.dropped_queue_full ||
+               stats.dropped_rate_limited !=
+                   printed_input.dropped_rate_limited ||
+               stats.send_failures != printed_input.send_failures;
+    };
+
     std::string error;
     if (!server.Start(error)) {
         std::printf("server start failed: %s\n", error.c_str());
@@ -610,6 +637,7 @@ int main(int argc, char** argv) {
     if (opt.once) {
         log.line("serving one connection");
         const bool served = server.ServeOne();
+        log_input_stats("final");
         log.line(served ? "session served; exiting" : "no connection accepted");
         server.Stop();
         return served ? 0 : 1;
@@ -622,9 +650,19 @@ int main(int argc, char** argv) {
     size_t seen_live = 0;
     size_t seen_total = 0;
     bool lease_denied_reported = false;
+    size_t reported_lease_denied = 0;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(opt.seconds);
     const bool bounded = opt.seconds > 0;
+    // Sample the injection counters every few seconds and the lease-denied
+    // counter at most once a second; both only log when the value changed, so
+    // a busy peer cannot flood the log.
+    constexpr auto kInputStatsInterval = std::chrono::seconds(5);
+    constexpr auto kLeaseSummaryInterval = std::chrono::seconds(1);
+    auto next_input_stats =
+        std::chrono::steady_clock::now() + kInputStatsInterval;
+    auto next_lease_summary =
+        std::chrono::steady_clock::now() + kLeaseSummaryInterval;
     for (;;) {
         // session_count() is the number of sessions alive right now;
         // total_session_count() is the monotonic count of sessions launched
@@ -640,11 +678,14 @@ int main(int argc, char** argv) {
         }
         // A denied input lease means a session is sending input that the
         // configured cap keeps off the shared desktop. Report the first
-        // denial once -- the counter alone would be silent -- and keep
-        // counting without one line per event.
+        // denial once -- the counter alone would be silent -- and then keep
+        // summarizing the growing count periodically (at most once a second),
+        // never one line per event.
+        const auto now = std::chrono::steady_clock::now();
         const size_t lease_denied = server.input_lease_denied_count();
         if (!lease_denied_reported && lease_denied != 0) {
             lease_denied_reported = true;
+            reported_lease_denied = lease_denied;
             log.line(
                 "WARNING: input lease denied (input_lease_denied_count=" +
                 std::to_string(lease_denied) + "): at most " +
@@ -654,7 +695,22 @@ int main(int argc, char** argv) {
                 " session(s) may inject input at once; the other session's "
                 "events are observed but not injected.");
         }
-        if (bounded && std::chrono::steady_clock::now() >= deadline) {
+        if (now >= next_lease_summary) {
+            next_lease_summary = now + kLeaseSummaryInterval;
+            if (lease_denied != reported_lease_denied) {
+                reported_lease_denied = lease_denied;
+                log.line(
+                    "WARNING: input lease denied summary: "
+                    "input_lease_denied_count=" +
+                    std::to_string(lease_denied) +
+                    " (events observed but not injected)");
+            }
+        }
+        if (now >= next_input_stats) {
+            next_input_stats = now + kInputStatsInterval;
+            if (input_stats_changed()) log_input_stats("periodic");
+        }
+        if (bounded && now >= deadline) {
             log.line("run window elapsed; stopping");
             break;
         }
@@ -662,5 +718,6 @@ int main(int argc, char** argv) {
     }
     server.Stop();
     runner.join();
+    log_input_stats("final");
     return 0;
 }
