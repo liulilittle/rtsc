@@ -892,3 +892,8 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
    按 P-7 语义（kSync = 按键状态重置）应视作序列终止。一行修法：kSync 分支 `ctrl_armed_ = false; return false;`
 ### 子代理
 审计 K 已 delete 解散。在途：审计 J（teardown + 测试缝风险）。
+## 第833轮：批 17 已派（kSync 关窗 + seam.md 全文重写）
+- 设计定案写入 `plan.md` 末尾「批 17 定案」（A 代码 1 行 + 1 测试；B 文档 11 项逐条重写）
+- 执行会话 `ses_e670a548affer01q7CAdv99mRX`
+- 关键约定：**文档中禁止保留失效行号**（无法确认的改写为符号名）；验收**只钉 `0 failing` + 用例名**（memory 第 74 条）
+- 在途：审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`（teardown + 测试缝风险，busy）
