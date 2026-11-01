@@ -783,3 +783,16 @@ C4 零滚轮不产出 + 3 变异
 ### 并行
 批 13' `ses_e69544b0` 上一轮零输出（win32.cpp 无任何 `release_failures`/`noexcept`），已 `prompt` 补发完整任务摘要，
 并提示"`InputStats.release_failures` 字段已存在，勿重复定义"
+## 第827轮：批 13' 已落盘大量 teardown 修复（待其 relay 收尾）
+### 现状（[BASH: Select-String win32.cpp]）
+- `win32.cpp:176/184` `ReleaseSession` 两处 catch + `:185 release_failures_++`
+- `:208-209` `Stats()` 接出 `release_failures`
+- `:335` `WorkerMain() noexcept` + `:369/376` catch
+- `:601-604` `Shutdown() noexcept` 注释"Teardown must be noexcept: it runs from the destructor" + `:615-648` 五处 catch
+- `:682 std::atomic<uint64_t> release_failures_{0}`
+- 同时改了 `rdpsnd_server.cpp`/`rdpdr_server.cpp`/`server.cpp`/`server.h`/`main.cpp`/`desktop_input_null.cpp`/CMakeLists
+- 新增 `tests/desktop_input_win32_test_hooks.h`（把 Win32 层判定暴露给测试 —— 部分回应 F-2 覆盖缺口）
+### 调度
+- 批 14 会话 `ses_e695daf8` 任务已完成（其产物已于第826轮验收提交 `805428b`）→ 已 delete
+- 批 13' `ses_e69544b0` 仍 busy（`wrote` 时间戳新），等其 relay 报告后统一验收
+- 本主代理本轮不碰上述文件（避免与在写方冲突）
