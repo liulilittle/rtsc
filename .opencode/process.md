@@ -828,3 +828,19 @@ C4 零滚轮不产出 + 3 变异
 ### 已派双审
 - 审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`：teardown 复验 + **测试缝风险**（宏误定义/factory 编译掉/全局 hook 污染）
 - 审计 K `ses_e676f3ab6ffelV9lFbyt3lo9Ea`：映射语义复验 + **PAUSE 全序列**追问（已明确要求实跑 4 事件序列并报告产出）
+## 第830轮：审计 K 第 1 轮确认 P-6 FAIL(High)；批 16 已派
+### 审计 K（`docs/spec/input-batch14-review-K.md`）
+- **P-6 FAIL(High)**：4 事件产出 2 个 `0x45` 动作 → **NumLock 仍翻转**；"每次远程 Pause = 一次 NumLock 反转"
+- 几何 PASS（按键/按钮保留正确；`NormalizeAxis extent<=1` 为不可达但有意保留的防御分支）
+- 零滚轮 PASS（`IsInjectable` 同批已改 `!=0`，无矛盾）
+- **测试覆盖 FAIL(Medium)**：变异 B（全局丢 0x45）**全绿存活** → 现有用例分不清"半修"与"NumLock 失效"
+- 回归 PASS（`--clean-first` 零警告 + ctest 独占 63/63，两次）
+- 修法：`PauseSequenceFilter` 平台中立状态机（照抄 K §1.4），在 `RdpSession` 中于 `InjectIfLeasable` **之前**过滤
+  （PAUSE 不占租约、不入队、不耗令牌）；`ReleaseInput` 调 `Reset()`；`map.cpp:47`/`map.h:139` 的 E1 丢弃保留为第二道防线
+- K 自跑红/绿：BASELINE（只丢 E1）→ `PAUSE actions got=2 want=0` 红；PROPOSED → 0 动作、单独 NumLock tap = 2、lone E1+2 taps = 2 全绿
+### 批 16 `ses_e6743097dffe4H8z0Ie9fcxSqN`
+`PauseSequenceFilter` + server 层过滤 + `Reset` + 2 条测试（desktop_input / server 端到端）+ 2 变异（回退半修 / 全局丢 0x45）
+### 已令审计 K 收口
+追加「批 16 验收判据」节、明确"4 事件是否同 PDU"的证据要求、给出 2 个变异的确切变异点，然后 relay parent 停止
+### 在途
+审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`（teardown 复验 + 测试缝风险）+ 批 16
