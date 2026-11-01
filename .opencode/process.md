@@ -768,3 +768,18 @@ C4 零滚轮不产出 + 3 变异
 - 文件隔离确认：批 13' 改 win32.cpp/desktop_input.h/server.cpp/rdpsnd/rdpdr/main.cpp + 两处文档；
   批 14 只改 map.cpp/map.h/test_desktop_input.cpp → 无重叠
 - 环境：`upstream_rejected` 累计第 3 次（本会话宿主错误总数已超 12 次），仍未更换模型
+## 第826轮：批 14 验收提交 `805428b`（P-6/几何/零滚轮）；批 13' 补发继续
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_desktop_input_tests.exe` → `44 tests, 13741 checks, 0 failing`（原 41 → 44，新增 3 条）
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（70.43s）
+### 逐行核对（W5）
+- P-6 修复：`desktop_input_map.cpp:41-47` `if (ev.extended1) return out;`，注释明确"裸 scancode 会按到**另一个**物理键
+  （裸 CTRL/NumLock）→ 切换本机键盘状态"；`desktop_input_map.h:139` `IsInjectable` 改为
+  `ev.scancode != 0 && !ev.extended1`（与 TranslateInput 锁步）✅
+- C3 几何：`map.cpp:78` 改为 `if (ev.is_move && g.width > 1 && g.height > 1)`，注释说明 1:1 透传会把指针放到错误位置 ✅
+- C4 零滚轮：`map.cpp:105` `if (ev.wheel_delta == 0) return out;`，注释给出"滥发零滚轮可驱逐移动、饿死真实输入"的理由 ✅
+- 新测试：`tests:85 extended1_is_not_injected`、`:260 zero_wheel_is_not_injected`、几何不可用用例（含 64x48 固化点的复核）
+### 并行
+批 13' `ses_e69544b0` 上一轮零输出（win32.cpp 无任何 `release_failures`/`noexcept`），已 `prompt` 补发完整任务摘要，
+并提示"`InputStats.release_failures` 字段已存在，勿重复定义"
