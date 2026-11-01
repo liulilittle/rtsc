@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -507,12 +508,17 @@ RTSC_TEST(rdpdr_server_io_timeout_reaps_expired_irp) {
 }
 
 // R7: destroying the handler while IRPs are in flight fails every outstanding
-// callback and clears the table (the session died under their feet).
+// callback and clears the table (the session died under their feet). Two IRPs
+// are in flight and the first callback throws: the per-entry isolation must
+// still fail the second one (a "fail the first, then give up" mutation has to
+// turn this red -- with a single IRP that mutation is indistinguishable).
 RTSC_TEST(rdpdr_server_io_destructor_fails_outstanding) {
     const std::filesystem::path dir = MakeTempDir("teardown");
     std::error_code ec;
     unsigned fires = 0;
-    uint32_t status = 0;
+    unsigned threw = 0;
+    uint32_t status1 = 0;
+    uint32_t status2 = 0;
     {
         HostFileSystem fs;
         Pair p;
@@ -522,13 +528,25 @@ RTSC_TEST(rdpdr_server_io_destructor_fails_outstanding) {
             kDeviceId, "\\tsclient\\C\\a.txt", kGenericReadWrite, kFileOpenIf,
             [&](uint32_t st, const std::vector<uint8_t>&) {
                 ++fires;
-                status = st;
+                status1 = st;
+                // The first pending callback belongs to the embedder and may
+                // throw; that must not skip the remaining pending IRPs.
+                ++threw;
+                throw std::runtime_error("embedder callback failed");
             });
-        CHECK_EQ(p.server->outstanding_count(), static_cast<size_t>(1));
+        p.server->CreateFile(
+            kDeviceId, "\\tsclient\\C\\b.txt", kGenericReadWrite, kFileOpenIf,
+            [&](uint32_t st, const std::vector<uint8_t>&) {
+                ++fires;
+                status2 = st;
+            });
+        CHECK_EQ(p.server->outstanding_count(), static_cast<size_t>(2));
         // Pair (and the RdpdrServer) goes out of scope here.
     }
-    CHECK_EQ(fires, static_cast<unsigned>(1));
-    CHECK_EQ(status, static_cast<uint32_t>(proto::kStatusUnsuccessful));
+    CHECK_EQ(threw, static_cast<unsigned>(1));
+    CHECK_EQ(fires, static_cast<unsigned>(2));
+    CHECK_EQ(status1, static_cast<uint32_t>(proto::kStatusUnsuccessful));
+    CHECK_EQ(status2, static_cast<uint32_t>(proto::kStatusUnsuccessful));
 
     std::filesystem::remove_all(dir, ec);
 }

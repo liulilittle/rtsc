@@ -396,6 +396,13 @@ class RdpServer {
     // threw, over the life of this server (monotonic, never reset). Teardown
     // still frees the lease slot; the count only makes a possibly-lost
     // synthetic key/button release observable (the local keys may stay down).
+    //
+    // This counts exactly one event: ReleaseSession() itself throwing on the
+    // way out. The shipped Win32 sink swallows its own append failure (it
+    // counts it in InputStats::release_failures instead), so for that backend
+    // this counter stays 0 even when synthetic ups were lost. The observable
+    // signal for a lost release is DesktopInputSink::Stats().release_failures,
+    // not this count; a zero here does not mean no key was dropped.
     size_t input_release_failure_count() const;
 
  private:

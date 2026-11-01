@@ -40,6 +40,8 @@ class NullDesktopInputSink final : public DesktopInputSink {
         // No queue, so no synthetic up can ever fail to be queued. Explicit so
         // the field is never left to an aggregate default.
         stats.release_failures = 0;
+        // No worker thread either, so no iteration can fail.
+        stats.worker_failures = 0;
         return stats;
     }
 

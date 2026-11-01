@@ -616,7 +616,9 @@ int main(int argc, char** argv) {
                  " input_send_failures=" +
                  std::to_string(stats.send_failures) +
                  " input_release_failures=" +
-                 std::to_string(stats.release_failures));
+                 std::to_string(stats.release_failures) +
+                 " input_worker_failures=" +
+                 std::to_string(stats.worker_failures));
         printed_input = stats;
     };
     auto input_stats_changed = [&]() {
@@ -627,7 +629,8 @@ int main(int argc, char** argv) {
                stats.dropped_rate_limited !=
                    printed_input.dropped_rate_limited ||
                stats.send_failures != printed_input.send_failures ||
-               stats.release_failures != printed_input.release_failures;
+               stats.release_failures != printed_input.release_failures ||
+               stats.worker_failures != printed_input.worker_failures;
     };
 
     std::string error;

@@ -210,6 +210,8 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             injected_failed_.load(std::memory_order_relaxed);
         stats.release_failures =
             release_failures_.load(std::memory_order_relaxed);
+        stats.worker_failures =
+            worker_failures_.load(std::memory_order_relaxed);
         return stats;
     }
 
@@ -234,6 +236,9 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     }
     void ShutdownForTest() { Shutdown(); }
     bool WorkerJoinableForTest() { return worker_.joinable(); }
+    bool WorkerWaitingForTest() {
+        return worker_waiting_.load(std::memory_order_acquire);
+    }
 #endif
 
  private:
@@ -355,11 +360,19 @@ class Win32DesktopInputSink final : public DesktopInputSink {
                     } else {
                         const std::optional<Clock::time_point> deadline =
                             NextMoveDeadline();
+                        // Published while mu_ is held and before the wait
+                        // releases it: a reader that observes true can only
+                        // take mu_ once the worker is actually parked, which
+                        // makes "the worker is asleep" a deterministic
+                        // precondition for the test seam (see
+                        // desktop_input_win32_test_hooks.h).
+                        worker_waiting_.store(true, std::memory_order_release);
                         if (deadline) {
                             cv_.wait_until(lock, *deadline);
                         } else {
                             cv_.wait(lock);
                         }
+                        worker_waiting_.store(false, std::memory_order_release);
                     }
                 }
                 if (stop) break;
@@ -664,6 +677,11 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     // exception path, so it is atomic (relaxed suffices: the mutex provides the
     // ordering for the state it guards).
     std::atomic<bool> stopping_{false};
+    // True while the worker is parked in cv_.wait (or wait_until): set under
+    // mu_ before the wait releases the lock, cleared after it returns. Only read
+    // by the test seam, which needs "the worker is asleep" as a deterministic
+    // precondition.
+    std::atomic<bool> worker_waiting_{false};
     std::thread worker_;
 
     // Move state: owned by the worker thread. `pending_moves_` and
@@ -705,8 +723,13 @@ std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSinkForTest() {
 
 namespace {
 
+// Downcast with a runtime type check. The test hooks take a DesktopInputSink*,
+// and the native factory in this build is the null sink, so a bare static_cast
+// made every hook undefined behaviour when handed anything else (observed:
+// garbage reads, 0xC0000005, 0xC0000409 and a hang). dynamic_cast returns
+// nullptr for a foreign dynamic type and every caller already handles nullptr.
 Win32DesktopInputSink* AsWin32(DesktopInputSink* sink) {
-    return static_cast<Win32DesktopInputSink*>(sink);
+    return dynamic_cast<Win32DesktopInputSink*>(sink);
 }
 
 }  // namespace
@@ -744,6 +767,12 @@ bool DesktopInputTestWorkerJoinable(DesktopInputSink* sink) {
     auto* win32 = AsWin32(sink);
     if (win32 == nullptr) return false;
     return win32->WorkerJoinableForTest();
+}
+
+bool DesktopInputTestWorkerWaiting(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return false;
+    return win32->WorkerWaitingForTest();
 }
 
 #else

@@ -2207,7 +2207,14 @@ struct RdpServer::Impl {
 RdpServer::RdpServer(const ServerConfig& config)
     : impl_(std::make_unique<Impl>(config)), config_(config) {}
 
-RdpServer::~RdpServer() { Stop(); }
+RdpServer::~RdpServer() {
+    // Stop() is isolated step by step, but the destructor must not rely on that
+    // for correctness: an escaping exception here is std::terminate.
+    try {
+        Stop();
+    } catch (...) {
+    }
+}
 
 void RdpServer::SetDesktopSource(DesktopSource* source) { source_ = source; }
 
@@ -2493,10 +2500,16 @@ void RdpServer::Stop() {
     // live session, then waits for their threads). Detached threads cannot be
     // joined, so the wait is on the registry's live count -- the same
     // guarantee the join used to give.
+    //
+    // The snapshot copy allocates, so it is isolated too: losing it only means
+    // this side does not actively Stop() the sessions (each one notices the
+    // closed transport and tears itself down), which is strictly better than
+    // letting std::bad_alloc escape into ~RdpServer.
     std::vector<std::shared_ptr<RdpSession>> sessions;
-    {
+    try {
         std::lock_guard<std::mutex> lock(registry->mu);
         sessions = registry->sessions;
+    } catch (...) {
     }
     for (const auto& s : sessions) {
         try {
@@ -2504,8 +2517,15 @@ void RdpServer::Stop() {
         } catch (...) {
         }
     }
-    std::unique_lock<std::mutex> lock(registry->mu);
-    registry->cv.wait(lock, [&registry]() { return registry->live == 0; });
+    // The wait is the last step and may throw too (std::system_error on mutex
+    // misuse). Teardown is already done at this point, so swallowing it is
+    // correct: Stop() must never let anything escape, because ~RdpServer calls
+    // it and an escaping exception would terminate the process.
+    try {
+        std::unique_lock<std::mutex> lock(registry->mu);
+        registry->cv.wait(lock, [&registry]() { return registry->live == 0; });
+    } catch (...) {
+    }
     // Dropping `sessions` releases any session the thread had not released yet;
     // it also frees its credentials with the object.
 }

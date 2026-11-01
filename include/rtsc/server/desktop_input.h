@@ -51,13 +51,18 @@ struct InjectGeometry {
 // and button ups could not be queued (an allocation failure while appending
 // them): the released keys stay physically down, so the counter is the only
 // way an operator can observe a release that was lost. The null backend, which
-// has no queue, always reports zero.
+// has no queue, always reports zero. `worker_failures` counts platform actions
+// dropped because one worker iteration threw (an allocation failure while
+// dispatching or emitting): the worker survives and keeps draining, but that
+// action is lost, so the counter is the only visible signal. The null backend
+// has no worker and always reports zero.
 struct InputStats {
     size_t injected = 0;
     size_t dropped_queue_full = 0;
     size_t dropped_rate_limited = 0;
     size_t send_failures = 0;
     size_t release_failures = 0;
+    size_t worker_failures = 0;
 };
 
 // Receives decoded input for injection. Every method runs on the session thread

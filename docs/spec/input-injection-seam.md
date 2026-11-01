@@ -233,30 +233,40 @@ void SetInputSink(DesktopInputSink* sink);  // nullptr 关闭注入；指针必�
 注意**第二条引文正是 §1.7#2 缺口的根源**：后端恒开 `VIRTUALDESK`，归一化却按协商 framebuffer 做，
 于是"归一化分母"与"映射目标"不是同一个矩形。
 
-### 1.8 已知测试缺口：Win32 接线（**已部分闭合**）
+### 1.8 已知测试缺口：Win32 接线（**部分闭合**）
+
+**结论先写**：`src/server/desktop_input_win32.cpp` 现在**在 `rtsc_desktop_input_tests` 的编译/链接闭包内**，
+所以对该文件的变异**可以**让 ctest 转红（批 13 的 M1 / M2b / M5 均已在 ctest 上实测转红）。不再有
+"该文件不在任何测试 target 内、任何变异都无法转红"的结论。
 
 `src/server/desktop_input_win32.cpp` 现在**同时**存在于两处构建：
 
 - 生产：`rtsc_server_desktop_input`（编**不带** `RTSC_DESKTOP_INPUT_TESTING` 的同一文件，
   且只被 `rtsc_server_host` 链接）。该库不受测试宏影响，工厂正常提供。
-- 测试：`CMakeLists.txt` 在 `WIN32` 下把同一文件编进 `rtsc_desktop_input_tests` 并定义
+- 测试：`CMakeLists.txt` 的 `WIN32` 分支把同一文件编进 `rtsc_desktop_input_tests` 并定义
   `RTSC_DESKTOP_INPUT_TESTING`，同时链 `user32`。该宏下：
 
   - 生产工厂 `MakeWin32DesktopInputSink` **编译掉**，改由 null sink 提供（避免测试触碰真实桌面）；
   - 暴露 `MakeWin32DesktopInputSinkForTest()` 与 `tests/desktop_input_win32_test_hooks.h` 的只读视图 /
     注入钩子（`SetDesktopInputAppendFailureHook`、`DesktopInputTestSeedPressedKey`、
-    `DesktopInputTestSessionCount/PendingForgetCount/WorkerFinished/WorkerJoinable`、`DesktopInputTestShutdown`）。
+    `DesktopInputTestSessionCount/PendingForgetCount/WorkerFinished/WorkerJoinable/WorkerWaiting`、
+    `DesktopInputTestShutdown`）。
 
-**已由测试缝覆盖的点（批 13'，用例 `desktop_input_release_session_clears_state_when_append_throws` /
-`desktop_input_shutdown_joins_worker_when_append_throws`）**：
+**已由测试缝覆盖的点（用例 `desktop_input_release_session_clears_state_when_append_throws` /
+`desktop_input_shutdown_joins_worker_when_append_throws` / `desktop_input_test_hooks_reject_foreign_sink`）**：
 
 - `ReleaseSession` 的合成 up 追加抛异常时，`sessions_.erase` 仍无条件执行、`forget_sessions_` 请求仍被 worker 抽干、
   `cv_.notify_one()` 无条件执行，且 `release_failures` +1；
-- `Shutdown()`（`noexcept`）在追加抛异常时仍 `notify_all` + `join`，不遗留 joinable 线程。
+  - notify 一条是**确定性**钉住的：用例先用 `DesktopInputTestWorkerWaiting` 等到 worker 已 park
+    （`worker_waiting_` 在 `cv_.wait` 前置位、醒来清位），再触发 `ReleaseSession`，所以删掉
+    `cv_.notify_one()` 必红（批 13 之前是竞态假绿：worker 首轮自己抽干 forget）。
+- `Shutdown()`（`noexcept`）在追加抛异常时仍 `notify_all` + `join`，不遗留 joinable 线程；
+- 测试缝的类型安全：`AsWin32` 用 `dynamic_cast`，把 null / 外来 sink 传给任何 hook 都返回 0/false 且不写对象
+  （原 `static_cast` 是未定义行为，实测 AV / fail-fast / 挂死）。
 
 **仍只靠读码审查的点**（`BuildNative` 与 `Dispatch`/`Emit` 未由用例驱动，`Emit` 会真的调 `SendInput`）：
 
-- 移动合并与 `oldest_move` 的取得时机（`EnqueueLocked`）；
+- 移动合并与 oldest move 的取得时机（`EnqueueLocked`）；
 - `kEvictMove`/`kDrop` 的计数与 `erase`；
 - `AppendReleasesLocked` 的遍历与 `synthetic` 标记（用例只证明"被调用 + 可抛"，不校验键位与方向）；
 - `ForgetReleasedSessionsLocked` 的 purge（桶 / 待发移动 / 非合成积压）；
@@ -686,7 +696,7 @@ std::vector<PlatformInput>                       --BuildNative()+Emit()-->  Send
 | D5b | T4/T12/T13/T14/T15 | 本版 §4.1：T4 中点改为 32785/32798、T12 改新解码形态、T13/T14 标未实现、T15 改"整序列不注入" |
 | D6 | §4.2 I1–I8 待做口径 | 本版换成当前用例名 |
 | D7 | §4.4 M1–M6 | 本版加"覆盖现状"列 + 新增 M7 |
-| D8 | `232-254`/`307-315` 行号 | 本版全部改用符号名（`AppendReleasesLocked` / `ForgetReleasedSessionsLocked`） |
+| D8 | `AppendReleasesLocked` / `ForgetReleasedSessionsLocked` 的旧行号引用 | 本版删除全部旧行号，全部改用符号名（`desktop_input_win32.cpp:AppendReleasesLocked` / `desktop_input_win32.cpp:ForgetReleasedSessionsLocked`） |
 | D9/D15 | 全部行号 | 本版**不写行号** |
 | D10 | "只有一个锁"/"等待者"/`--input-share` | 本版 §2.3 改为 `mu_` + `log_mu_` 两把锁、无等待队列、`--max-input-sessions` |
 | D11 | "5 行 banner + 日志首行" | 本版 §2.2 改为 7 行 banner，位于启动/凭证行之后 |

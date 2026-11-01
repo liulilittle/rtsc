@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -49,6 +50,16 @@ InputEvent KeyEvent(uint8_t scancode, bool extended, bool release) {
     ev.extended = extended;
     ev.release = release;
     return ev;
+}
+
+bool WaitUntil(const std::function<bool()>& pred, int timeout_ms = 5000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return pred();
 }
 
 }  // namespace
@@ -1145,6 +1156,8 @@ RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
     CHECK(src.find("input_send_failures=") != std::string::npos);
     // Teardown releases that could not be queued are only visible here.
     CHECK(src.find("input_release_failures=") != std::string::npos);
+    // Worker iterations that threw and were skipped are only visible here.
+    CHECK(src.find("input_worker_failures=") != std::string::npos);
     // The final value is printed before the process exits.
     CHECK(src.find("\"final\"") != std::string::npos);
 #else
@@ -1177,6 +1190,8 @@ RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
     // The null backend has no queue, so a teardown release can never fail to
     // be queued: the counter is explicitly zero, not merely defaulted.
     CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(0));
+    // ... and it has no worker, so a worker iteration can never fail either.
+    CHECK_EQ(sink->Stats().worker_failures, static_cast<size_t>(0));
     sink->ReleaseSession(1);
     CHECK_EQ(sink->Stats().injected, static_cast<size_t>(2));
 }
@@ -1193,6 +1208,13 @@ RTSC_TEST(desktop_input_release_session_clears_state_when_append_throws) {
         rtsc::server::MakeWin32DesktopInputSinkForTest();
     CHECK(sink != nullptr);
     if (!sink) return;
+    // Deterministic precondition: the worker must already be parked in the
+    // queue wait. Otherwise its first loop drains the forget request by itself
+    // and a removed notify_one still looks green (J-3b: the mechanism behind
+    // the 30/20/100-run false-green mutation).
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestWorkerWaiting(sink.get());
+    }));
     rtsc::server::DesktopInputTestSeedPressedKey(sink.get(), 7, 0x1E, false);
     CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(sink.get()),
              static_cast<size_t>(1));
@@ -1205,16 +1227,43 @@ RTSC_TEST(desktop_input_release_session_clears_state_when_append_throws) {
              static_cast<size_t>(0));
     CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(1));
     // The lost release must be observable and the worker must still be woken:
-    // the forget request is drained by the worker under the mutex.
-    bool drained = false;
-    for (int i = 0; i < 300; ++i) {
-        if (rtsc::server::DesktopInputTestPendingForgetCount(sink.get()) == 0) {
-            drained = true;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    CHECK(drained);
+    // the forget request is drained by the worker under the mutex. The worker
+    // was parked before ReleaseSession ran, so only notify_one can wake it.
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestPendingForgetCount(sink.get()) == 0;
+    }));
+}
+
+RTSC_TEST(desktop_input_test_hooks_reject_foreign_sink) {
+    // J-2: the test hooks used to `static_cast` a DesktopInputSink* down to
+    // Win32DesktopInputSink*. Feeding them anything else -- a null pointer, or
+    // the null sink this suite's own factory returns -- was undefined
+    // behaviour (observed: wrong values, 0xC0000005, 0xC0000409, a hang). The
+    // hooks must detect a foreign dynamic type and report "not a Win32 sink".
+    // All calls must return 0/empty and not touch anything.
+    CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(nullptr),
+             static_cast<size_t>(0));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(nullptr),
+             static_cast<size_t>(0));
+    CHECK(!rtsc::server::DesktopInputTestWorkerJoinable(nullptr));
+    CHECK(!rtsc::server::DesktopInputTestWorkerWaiting(nullptr));
+    rtsc::server::DesktopInputTestSeedPressedKey(nullptr, 1, 0x1E, false);
+    rtsc::server::DesktopInputTestShutdown(nullptr);
+
+    std::unique_ptr<rtsc::server::DesktopInputSink> foreign =
+        rtsc::server::MakeWin32DesktopInputSink();
+    CHECK(foreign != nullptr);
+    if (!foreign) return;
+    CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(foreign.get()),
+             static_cast<size_t>(0));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(foreign.get()),
+             static_cast<size_t>(0));
+    CHECK(!rtsc::server::DesktopInputTestWorkerJoinable(foreign.get()));
+    CHECK(!rtsc::server::DesktopInputTestWorkerWaiting(foreign.get()));
+    rtsc::server::DesktopInputTestSeedPressedKey(foreign.get(), 1, 0x1E, false);
+    rtsc::server::DesktopInputTestShutdown(foreign.get());
+    // Shutdown on a foreign sink is a no-op: the object is still usable.
+    CHECK_EQ(foreign->Stats().injected, static_cast<size_t>(0));
 }
 
 RTSC_TEST(desktop_input_shutdown_joins_worker_when_append_throws) {
@@ -1234,6 +1283,7 @@ RTSC_TEST(desktop_input_shutdown_joins_worker_when_append_throws) {
     rtsc::server::SetDesktopInputAppendFailureHook(nullptr);
     CHECK(!rtsc::server::DesktopInputTestWorkerJoinable(sink.get()));
     CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(1));
+    CHECK_EQ(sink->Stats().worker_failures, static_cast<size_t>(0));
     CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(sink.get()),
              static_cast<size_t>(0));
     if (rtsc::server::DesktopInputTestWorkerJoinable(sink.get())) {

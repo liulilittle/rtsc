@@ -49,6 +49,13 @@ void DesktopInputTestShutdown(DesktopInputSink* sink);
 bool DesktopInputTestWorkerFinished(DesktopInputSink* sink);
 bool DesktopInputTestWorkerJoinable(DesktopInputSink* sink);
 
+// True while the worker is parked in the queue wait (set under the queue mutex
+// before cv_.wait, cleared after it returns). Lets a case establish "the worker
+// is asleep" as a deterministic precondition instead of racing it: without that
+// the worker's first loop can drain the request on its own, and a removed
+// notify_one would still look green.
+bool DesktopInputTestWorkerWaiting(DesktopInputSink* sink);
+
 }  // namespace rtsc::server
 
 #endif  // RTSC_DESKTOP_INPUT_TESTING
