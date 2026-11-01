@@ -742,3 +742,32 @@ holders.erase(...);                // :777 抛异常时被跳过
   ③析构路径上的调用一律要求 `noexcept` 语义（调用点 try/catch 或保证不抛）。
 - 另一条：**`catch(...)` 静默 = 不可诊断**。异常被吞但状态已不可回退（`input_released_=true`）时，
   必须有计数或限流日志，否则现场只看到"键卡住"却无任何线索。
+## 第829轮：修好一半的 P-6——只丢带 0xE1 的事件，NumLock 仍被注入（第 24 例）
+### 事实（本主代理亲自读码）
+`src/proto/input.cpp:90-102` `EncodePauseKey()` 的 PAUSE 序列是：
+```
+04 1D   CTRL down  (extended1=true)
+00 45   NUMLOCK down (extended1=FALSE)
+05 1D   CTRL up    (extended1=true)
+01 45   NUMLOCK up   (extended1=FALSE)
+```
+批 14 的修法是 `desktop_input_map.cpp:47 if (ev.extended1) return out;`——只丢掉**两个 CTRL**。
+剩下的 `NUMLOCK down` + `NUMLOCK up` 照常注入 ⇒ **NumLock 被切换一次** ⇒ P-6 描述的副作用**依然存在**。
+
+### 教训（第 24 例：**修"症状所在的那一半"≠修好；必须按事件的完整序列验证**）
+- 审计 I 报的是"extended1 被忽略"，我就只让 extended1 不注入。但 extended1 只是**序列里的标记**，
+  副作用来自**同序列中不带标记的其余事件**。单一事件视角永远看不见这一点。
+- 判据：修复某"序列/事务/协议交换"类缺陷后，必须用**该序列的完整编码器输出**（这里是
+  `EncodePauseKey()` 的 4 个事件）跑一遍端到端映射，逐个断言"应产出/不应产出"，而不是只断言
+  "带标记的那个不产出"。
+- 同型风险：多包协议（RDP 分片）、代理对（surrogate pair）、多段 PDU 的最后一个带标志位、
+  拖拽的 down/move/up 三段——**标志位往往只在首/尾包上**。
+
+### 该缺陷的正确修法方向（待审计 K 独立确认后定案）
+PAUSE 的语义是"E1 CTRL 按住期间的那个 0x45 不是 NumLock"。两种可选：
+- A（推荐，纯粹）：在 `TranslateInput` 层维护**极小的序列状态**，但映射层目前是无状态的 →
+  需要把状态提到 sink 的 per-session 状态里；
+- B（更简单）：识别 `extended1` CTRL down 之后的 `0x45` down/up 并丢弃——仍需要状态；
+- C（最小且安全）：**只要一条输入 PDU 内出现 extended1 事件，就把该 PDU 内所有 0x45 事件一并丢弃**
+  （PAUSE 的 4 个事件总在同一 PDU 里发出）——仍然依赖"同一 PDU"这一假设，**需证据**。
+未定案前**不得**声称 P-6 已修。

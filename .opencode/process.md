@@ -813,3 +813,18 @@ C4 零滚轮不产出 + 3 变异
 ### 未提交原因
 批 13' 会话仍 busy（`wrote` 时间戳新），文件仍可能变动；按"不与他人在写文件冲突"原则，
 主代理本轮只做只读验证，不 `git add`。待其 relay 报告后统一提交。
+## 第829轮：批 13' 验收提交 `6fc5614`；我自行发现 P-6 只修了一半
+### 主代理验收（批 13'）
+- 构建 exit=0 / warn=0 / err=0；`rtsc_server_tests 49/563/0`；`rtsc_desktop_input_tests 46/13752/0`；
+  全量 ctest **63/63**（55.73s 执行方、57.95s 我复跑）
+- 逐行核对：N-1 `win32.cpp:174-196`、N-2 `:604-653`（`noexcept` + 无条件 notify/join）、N-3 `:335-379`
+  （`WorkerMain() noexcept` + `stopping_` 改原子）、N-4/N-5/N-6 三处析构/Stop catch、`release_failures` 三处接通
+- 测试缝：`CMakeLists.txt:684-694` 仅 WIN32 + `RTSC_DESKTOP_TESTING` 下把 win32.cpp 编进测试并链 user32
+- 已提交 `6fc5614`；批 13' 会话已 delete
+### **我发现的未闭合缺陷（P-6 只修一半）**
+`EncodePauseKey()`（`proto/input.cpp:90-102`）产生 `04 1D / 00 45 / 05 1D / 01 45`——**只有两个 CTRL 带 extended1**，
+`0x45`(NUMLOCK) down/up 不带。批 14 只丢 extended1 ⇒ **NUMLOCK 仍被注入 ⇒ NumLock 仍被切换**。
+已写入 `discover.md` 第 24 例；已把该追问下发给审计 K（`ses_e676f3ab6ffelV9lFbyt3lo9Ea`）独立确认。
+### 已派双审
+- 审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`：teardown 复验 + **测试缝风险**（宏误定义/factory 编译掉/全局 hook 污染）
+- 审计 K `ses_e676f3ab6ffelV9lFbyt3lo9Ea`：映射语义复验 + **PAUSE 全序列**追问（已明确要求实跑 4 事件序列并报告产出）
