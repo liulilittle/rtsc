@@ -695,3 +695,31 @@ wire_reachable_presses=510            // 255×2（含 0xE0）+ 5 按钮
   `U+FFFD` 计数为 0 ③结构性记号（标题数、分隔符数）符合预期。三者缺一不得继续。
 - 附带：`[Text.Encoding]::Latin1` 在 PowerShell 5.1（.NET Framework）**不存在**，会返回 `$null`
   并抛 "Null 值表达式" —— 这也是我改用 28591 的直接原因；正确做法是根本不做字符串中转。
+## 第819轮：我 5 轮都没发现的「异常路径泄漏租约槽」（第 22 例）
+### 缺陷
+`src/server/server.cpp:762-779` `ReleaseInput()`：
+```
+input_released_ = true;            // :764 幂等哨兵已置真
+input_lease_held_ = false;         // :766 已置假
+input_sink_->ReleaseSession(...);  // :773 可抛（Close() 非 noexcept）
+holders.erase(...);                // :777 抛异常时被跳过
+```
+⇒ `holders` 里永久残留该会话 ⇒ **单会话租约（max=1）此后拒绝所有人**。
+红证（审计 F 探针）：`throw 时 releases=1 denied=101 second_injects=0`；不抛 `denied=1 second_injects=1`。
+
+### 为什么我 5 轮都没看见
+- 第 810 轮我专门核过这段并写下"F3：先 `ReleaseSession` 再 erase ✅"——**只核了顺序，没核异常路径**。
+- 第 813 轮执行 AI 主动加了 `ServeOne` 三段 try/catch（E4），我核了"三段都在"就放行——
+  **try/catch 的位置覆盖了 `Close/Scrub/ReleaseInput` 的调用点，却没有覆盖 `ReleaseInput` 内部**。
+  外层 try/catch 保护的是"异常不逃出函数"，不保护"函数内部状态一致"。
+- 两次审计（D/E）也没抓；F 抓到是因为它构造了"抛异常的 sink"。
+
+### 教训（第 22 例：**幂等哨兵与资源释放必须在同一条不抛路径上**）
+- 模式：`if (done) return; done = true; <可抛调用>; <真正的清理>` —— 一旦可抛调用抛出，
+  `done` 已经为真，清理**永远不会再执行**。这是"幂等哨兵把失败变成永久损坏"。
+- 判据：①先列出函数内**每一个可抛调用**；②检查"哨兵置位"是否早于"清理完成"；
+  ③若有，清理必须 `try/catch` 且**无条件执行**（catch 后仍需清理，或把清理提到哨兵之前）。
+- 审查方法：**读码永远抓不到异常路径**，必须构造"让 X 抛异常"的测试替身（本次是 throwing sink）。
+  我此前所有"逐行核对"都是读码，因此对异常路径系统性失明。
+- 同型风险清单（本仓）：任何 `~dtor`/`Stop()`/`Close()` 里"先置标志再释放"的写法；
+  `ReleaseSession`、`ReleaseInput`、剪贴板/通道关闭、`std::thread::join` 前的标志置位。

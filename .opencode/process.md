@@ -671,3 +671,21 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
 §1.7 第 2 条（几何取自协商尺寸而非捕获矩形）**仍成立**（`server.cpp:1303` 用 `desktop_width_/height_`）→ 保持 OPEN。
 ### 子代理
 批 11 `ses_e69f47a9` 已完成（其 relay 审计 G 失败属正常：G 已解散）。审计 F `ses_e6a12ff2` 仍在途。
+## 第819轮：审计 F 终稿（F-1 租约槽泄漏必修）→ 批 12 已派
+### 审计 F（`docs/spec/input-batch10-review-F.md`）
+| 项 | 判定 |
+|---|---|
+| D-C 纯函数化 | PASS（闸先于记账、单一接线、生产唯一 `TrackInput` 在 `map.cpp:170`） |
+| E2 记账修正 | PASS（探针：被限流按下 `downs=0 ups=0`；held up 不花令牌且清键） |
+| E3 生命周期 | PASS（`forget_sessions_` 每轮清空；purge 保留 synthetic）+ 2 条低危 |
+| **E4 teardown** | **FAIL（F-1）**：`ReleaseSession` 抛异常 ⇒ `holders.erase` 跳过 + `input_released_` 已真 ⇒ 租约槽永久泄漏（`denied=101 second_injects=0`） |
+| E8 变异 | PASS（M1-M5 全红）；但 **M6/M7/M8（win32 层）全绿存活** |
+| 回归 | PASS（`Dispatch` 无 `Allow`；合成 up 上界 `hard + 515·K`） |
+### 交叉定案（F vs G）
+- mutC 存活两审独立复现 → E1-T 有效；但 **mutC2（只扣全局桶）仍存活** → 需补全局桶用例
+- 峰值公式**收紧为 `kHardQueueLimit + 515·K`**（K=持租会话数）；G 写的 `1539+会话数×515` **重复计基线**
+- final 时点/Ctrl+C/双计/漂移 a-d 一致；**新增 `seam.md:266` 算术错误**（"8×400 的约 1/3" ≠ 2000）
+### 批 12 `ses_e69d8d008ffeVtgyOfZLmw7i4l`
+F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、峰值公式与算术修正、F-2 已知缺口文档
+### 子代理
+审计 F 已 delete 解散（其 relay 审计 G 失败属正常：G 已解散）。
