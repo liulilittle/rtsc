@@ -865,3 +865,30 @@ C4 零滚轮不产出 + 3 变异
 真机 SendInput 下 NumLock 是否翻转（审计角色不动本机键鼠）→ 仍 UNVERIFIED，已列入真机清单
 ### 状态
 批 16 会话已 delete；在途：审计 J（teardown + 测试缝）、审计 K（收口）
+## 第832轮：审计 K 收口（批 16 盖章）+ 一条待办(kSync 不清 arm)
+### 审计 K 复验（`docs/spec/input-batch14-review-K.md` §9/§10）
+- 逐行复核全部 PASS：`map.h:84-114`、`server.cpp:836`（sink 空判后、租约门前）、`:771`（Reset 在
+  `input_released_` 早退之后、`input_lease_held_` 早退之前）、`:2066` 每会话成员、
+  `map.cpp:47`+`map.h:176` E1 兜底保留、**全仓唯一 `input_sink_->Inject` 出口 = `server.cpp:841`**（过滤器无法绕过）、
+  `input_callback_` 独立调用（`:1916-1917`/`:2042-2043`）故诊断不被遮蔽
+- 独立复跑：build exit=0 / 0 warn 0 err；ctest **63/63**（60.40s）；`47/13760/0` + `50/574/0`；四个文件 SHA256 与执行方逐字节一致
+- **加固探针（10 断言，用仓库头文件实跑）**：per-event 漏 NumLock=2（复现 bug）、per-session 整序列=0、
+  **拆成 4 个 PDU 仍=0**、独立 tap=2、lone E1+2 taps=2、`E1,A,tap`=2、`Reset()` 后 tap=2、
+  **窗口内插入 mouse move 仍注入=1**、紧随的 NumLock=0、`SYNC` 时 armed 后 tap=0
+- 变异 4 项（第16条）：M1 删 0x45 分支→红；M2a 全局丢 0x45→红；M2b map.cpp 全局丢→红；
+  **M3 把过滤移到租约门之后→红**（证明"租约门前"是可测约束而非风格）；对照 ShouldDrop 恒 false→红；恢复全绿
+### K 的 §10 验收判据 AC-1..AC-7（已全部满足）
+AC-1 四事件全丢且动作 0；AC-2 独立 tap=2 且 `IsInjectable(0x45)=true`；AC-3 lone E1+2 taps=2（有上界）；
+AC-4 `Reset()` 后 tap 可注入；AC-5 `ReleaseInput` 无条件 Reset；AC-6 PAUSE 不占租约/不进 sink/不耗令牌且 callback 仍收 4 事件；
+AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
+### "4 事件是否同 PDU"的取证结论（K 给出，重要）
+修复**不依赖**该假设（过滤器是会话级，探针已证拆 4 PDU 仍 0）。安全论证只需更弱性质，且已有仓库证据：
+客户端同 PDU（`proto/input.cpp:90-102` + `client.cpp:357-360`，`tests/test_input.cpp:115-116` 断言 `0x10`=numEvents 4）；
+`FastPathPdu::parse` 全有全无（`share.cpp:277-280`）；服务端不分片重组（`share.h:209-214` 仅枚举，全仓零使用点）
+⇒ 截断的 PAUSE 整条丢弃。唯一 UNVERIFIED：第三方客户端是否也单 PDU（需真机抓包）。
+### 待办（K 的两条非阻塞观察）
+1) `rtsc_server_tests` 的 checks 数随 `WaitUntil` 轮次浮动（565/566/574）→ **验收只钉 `0 failing` + 用例名，禁止钉 checks 数**
+2) `kSync` 不清 `ctrl_armed_`（`map.h:92` 只处理 kKey）→ "E1→SYNC→NumLock" 整组被吞；
+   按 P-7 语义（kSync = 按键状态重置）应视作序列终止。一行修法：kSync 分支 `ctrl_armed_ = false; return false;`
+### 子代理
+审计 K 已 delete 解散。在途：审计 J（teardown + 测试缝风险）。

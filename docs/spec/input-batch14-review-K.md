@@ -24,6 +24,8 @@
 
 一句话：**几何与零滚轮两处修对了；P-6 修错了一半，必须回到执行环。**
 
+> **更新（批 16 已落地）**：执行 AI 已在当前工作树实现 K1 修复（会话级 `PauseSequenceFilter` + `InjectIfLeasable` 租约门前过滤 + `ReleaseInput` 的 `Reset()` + 序列级/服务端级测试）。本审计已独立复验：全量 63/63 绿、零警告、3 个变异（M1/M2/M3）+ 1 个无过滤器对照全部转红、恢复后转绿，10 条加固断言全绿。详见 §9（实现复核）与 §10（**批 16 验收判据**，逐条可勾选）。§1、§4 的 FAIL 判定**保留为对被审对象 `805428b` 的历史结论**，已由批 16 闭合。
+
 ---
 
 ## 1. P-6 / extended1（FAIL，High）
@@ -280,3 +282,169 @@ J 的 teardown/测试缝结论不影响本报告的代码证据（均为本工�
 2. **未做真机 SendInput**：`NumLock` 翻转是"`wScan=0x45` + `KEYEVENTF_SCANCODE` 即 NumLock"的确定性推理（Win32 文档与仓库 `[READ:include/rtsc/proto/input.h:96]` 的注释），未在本机实际按键复现（审计角色不动本机键鼠状态）。标 **【UNVERIFIED-真机】**，但线上字节与翻译层的两个动作是**已实测**的。
 3. 未验证 `PauseSequenceFilter` 在 `ReleaseSession` 中途被打断的边界（建议 `ReleaseSession` 或 `kSync` 时 `Reset()`，实现时补一行即可）。
 4. 未重跑 J 负责的 teardown/测试缝主题。
+
+---
+
+## 9. 批 16 实现复核（已提交 `c315ff8`）
+
+父代理已于批 16 派发执行 AI（`ses_e6743097dffe4H8z0Ie9fcxSqN`），本审计对实现独立复验。第 1–8 节对 `805428b` 的 FAIL 判定保持有效（那是被审对象），本节记录修复后的状态。
+
+提交：`[BASH: git show --stat --oneline c315ff8]` → `4 files changed, 178 insertions(+)`（`desktop_input_map.h` 37 / `server.cpp` 10 / `test_desktop_input.cpp` 67 / `test_server.cpp` 64），下一次提交 `9efc02e` 只写 `process.md`（记忆），不再改代码。工作树在复核时仅剩本审计文件未提交。
+
+### 9.1 实现位置（逐行核对）
+
+| 项 | 位置 | 内容 | 判定 |
+|---|---|---|---|
+| 过滤器 | `[READ:include/rtsc/server/desktop_input_map.h:84-114]` | 非 kKey→false 且不改状态；`extended1`→arm+丢；`ctrl_armed_ && 0x45 && !extended`→丢，`release` 清 arm；其它键→清 arm 不丢；`Reset()` | 与 K §1.4 一致 |
+| 调用点 | `[READ:src/server/server.cpp:836]` | `if (pause_filter_.ShouldDrop(ev)) return;`，位于 `input_sink_==nullptr` 之后（`:831`）、租约门（`:837-840`）**之前** | 正确 |
+| Reset | `[READ:src/server/server.cpp:771]` | 在 `input_released_` 早退（`:767-768`）之后、`input_lease_held_` 早退（`:772`）之前 | 覆盖"未持租约"分支 |
+| 成员 | `[READ:src/server/server.cpp:2066]` | `PauseSequenceFilter pause_filter_;` 每会话一份 | 正确 |
+| E1 兜底保留 | `[READ:src/server/desktop_input_map.cpp:47]`、`[READ:include/rtsc/server/desktop_input_map.h:176]` | 未改（`IsInjectable` 仍为 `scancode != 0 && !extended1`，0x45 仍可注入） | 正确 |
+| 唯一注入出口 | `[READ:src/server/server.cpp:841]` | 全仓唯一 `input_sink_->Inject(...)`（`[BASH: Select-String src\server\*.cpp -Pattern "input_sink_->Inject"]` 仅命中 1 处） | 过滤器无法被绕过 |
+
+要点：`input_callback_` 在 `InjectIfLeasable` **之后**独立调用（`[READ:src/server/server.cpp:1916-1917]` / `[READ:src/server/server.cpp:2042-2043]`），所以过滤器不遮蔽诊断回调；`dropped_unsupported` 也不再加 4（这些事件到不了 sink），与 K §1.4 的说明一致。
+
+### 9.2 复验证据（本轮实跑）
+
+```
+[BASH: cmake --build build --config Release]                       BUILD_EXIT=0
+[BASH: Select-String build.log -Pattern "warning C|error C"]        0 命中
+[BASH: ctest --test-dir build -C Release]                          100% tests passed, 0 failed out of 63 (60.70 s)
+[BASH: build\Release\rtsc_desktop_input_tests.exe]                 47 tests, 13760 checks, 0 failing
+[BASH: build\Release\rtsc_server_tests.exe]                        50 tests, 0 failing（check 数 565/566/574 随 WaitUntil 轮次浮动，见 9.3）
+```
+
+文件哈希与执行 AI 报告完全一致（W5 交叉核对），且与当前 HEAD `c315ff8` 一致：
+`map.h 850760BB…FA694` / `server.cpp 0094F9FF…DCC7E` / `test_desktop_input.cpp 855D9660…E35637` / `test_server.cpp DEC5F5E2…C32DB21`。
+
+用例级复跑（HEAD 二进制）：
+```
+[BASH: rtsc_desktop_input_tests.exe]  [  OK  ] desktop_input_pause_sequence_is_fully_suppressed   47 tests, 0 failing
+[BASH: rtsc_server_tests.exe]         [  OK  ] server_pause_sequence_is_not_injected              50 tests, 0 failing
+```
+
+### 9.3 观察（非 FAIL）
+
+- **check 计数不稳定**：`rtsc_server_tests` 三次运行分别报 565/566/574 checks。原因是 `WaitUntil` 之类的轮询循环里 `CHECK` 的调用次数取决于时序（如 `[READ:tests/test_server.cpp:1458-1461]`）。**验收判据不要钉死 check 总数**，只钉 `0 failing` 与具体用例。
+- **SYNC 不清 window（Low，行为符合"已声明但未处理"）**：kSync 不是 kKey，过滤器保持 arm（`[READ:include/rtsc/server/desktop_input_map.h:92]`）。实测"E1 down → SYNC → NumLock tap"整组被吞（见 9.4 第 10 条）。P-7 的裁决本就是"SYNC 重置按键状态"，因此把 SYNC 当作序列终止更严谨；但这属于既有 P-7 未实现范畴，**不阻塞批 16**。最小可选修法：在 `ShouldDrop` 的 `ev.kind == kSync` 分支 `ctrl_armed_ = false; return false;`。
+
+### 9.4 真实过滤器加固探针（对当前工作树头文件，10 断言全绿）
+
+探针 `C:\Users\liulilte\AppData\Local\Temp\opencode\kprobe\b16_hardening.cpp`（编译命令含 `/I F:\rtsc\include`，直接使用仓库的 `PauseSequenceFilter`）：
+
+```
+[ OK ] per-event filter leaks NumLock (expected 2 = the bug)      got=2 want=2
+[ OK ] per-session filter, whole sequence                         got=0 want=0
+[ OK ] split into 4 PDUs                                          got=0 want=0
+[ OK ] standalone NumLock tap                                     got=2 want=2
+[ OK ] lone E1 + 2 taps                                           got=2 want=2
+[ OK ] E1, then 'A', then NumLock tap                             got=2 want=2
+[ OK ] Reset() then NumLock tap                                   got=2 want=2
+[ OK ] mouse move inside the window still injects                 got=1 want=1
+[ OK ] NumLock right after that mouse move                        got=0 want=0
+[ OK ] SYNC while armed, then NumLock tap (documented gap = 0)    got=0 want=0
+GREEN (0 unexpected assertions)
+```
+
+第一条（`per-event filter` = 每事件新建过滤器）复现出 2 个动作，**正好就是批 14 的缺陷**：它证明"动作数为 0"只能由**会话级**状态取得，不能被单事件实现冒充。
+
+---
+
+## 10. 批 16 验收判据（给执行 AI 与复核审计直接勾选）
+
+判定方式：每条都写"给定 / 当 / 则"。**除 AC-7 外全部可在纯映射层或现有 ctest 内判定；AC-7 需真机。**
+
+- [ ] **AC-1 PAUSE 全序列不产出任何平台动作**
+  给定 `PauseSequenceFilter` 的一个实例（会话级）与本会话几何 `{1920,1080}`；
+  当 按 `04 1D` → `00 45` → `05 1D` → `01 45` 的顺序喂 4 个 `InputEvent`（`extended1` 仅前两个为真）；
+  则 4 次 `ShouldDrop` **全部返回 true**，且累计 `TranslateInput(...).size()` **== 0**。
+  证据锚点：`[READ:tests/test_desktop_input.cpp:144,146]`；实测 0 动作。
+
+- [ ] **AC-2 独立 NumLock 仍然可注入（反"一刀切"）**
+  给定 同一过滤器的**新实例**（或对同一会话从未出现过 `extended1`）；
+  当 喂 `00 45`（down）与 `01 45`（up）；
+  则 两次 `ShouldDrop` 均返回 false，动作数 **== 2**，且 `IsInjectable(0x45 down) == true`。
+  证据锚点：`[READ:tests/test_desktop_input.cpp:148-162]`；`[BASH: pause_probe.exe]` 输出 `wire 00 45 ... IsInjectable=1`。
+
+- [ ] **AC-3 孤立 0xE1 的抑制有上界（对抗）**
+  给定 新过滤器；
+  当 先喂一个 `extended1=true` 的 `0x1D` down，再喂两次 NumLock tap（`00 45`/`01 45`，共 4 个事件）；
+  则 只有**第一组** tap 被吞，累计动作数 **== 2**（不是 0，也不是 4）。
+  证据锚点：`[READ:tests/test_desktop_input.cpp:164-176]`；实测 2。
+
+- [ ] **AC-4 `Reset()` 真正清空已 arm 的窗口**
+  给定 过滤器刚被 `0xE1` down arm；
+  当 调用 `Reset()` 后再喂 NumLock tap；
+  则 两次 `ShouldDrop` 均 false，动作数 **== 2**。
+  证据锚点：`[READ:tests/test_desktop_input.cpp:178-182]`；`[READ:include/rtsc/server/desktop_input_map.h:110]`。
+
+- [ ] **AC-5 `ReleaseInput()` 无条件调用 `Reset()`（含未持租约）**
+  给定 一个**从未取得租约**（`input_lease_held_ == false`）的 `RdpSession`，其过滤器已被 `0xE1` arm；
+  当 调用 `ReleaseInput()`；
+  则 `Reset()` 在 `input_lease_held_` 早退**之前**执行（静态：`[READ:src/server/server.cpp:771]` 位于 `:772` 之前），且 `input_released_` 早退不重复执行（`:767`）；随后任何 0x45 事件都不被吞。
+  验收手段：静态行序（已核）+（可选）在 `release_session_precedes_lease_handoff` 类用例中加一条"release 后 NumLock 可注入"的断言。
+
+- [ ] **AC-6 PAUSE 不占租约、不进 sink、不耗令牌**
+  给定 `ServerConfig{enable_desktop_input=true, max_input_sessions=1}` + `RecordingInputSink`；或纯层等价物（`InjectIfLeasable` 的语义副本）；
+  当 送一条 `EncodeFastPathInputPdu(EncodePauseKey())`；
+  则 `sink.inject_ids().empty()`、`sink.geometry_ids().empty()`、租约拒绝计数 **== 0**，且 `input_callback_` 仍收到 **4** 个事件；随后独立 NumLock tap 使 `inject_ids().size() == 2`。
+  证据锚点：`[READ:tests/test_server.cpp:1453-1476]`；`[READ:src/server/server.cpp:836-841]`（过滤在 `AcquireInputLease()` 之前，且 `rate_limiter_.Allow` 只在 sink 的 `Inject`/`EnqueueLocked` 内被调用：`[READ:src/server/desktop_input_win32.cpp:133-155,267-272]`）。
+
+- [ ] **AC-7（真机，UNVERIFIED）NumLock 物理状态不变**
+  给定 一台 Windows，`--allow-input` 启动 host；
+  当 远端按一次 Pause（客户端发 `EncodePauseKey()`）；
+  则 本机 NumLock 指示灯与功能状态**与按键前相同**。
+  现状：**【UNVERIFIED】**，审计角色不动本机键鼠状态；仅完成"0 个平台动作"的等价证明。
+
+### 10.1 两个变异的**确切**变异点（可复现）
+
+**变异 M1 = "只丢 extended1"（还原批 14 的半修）**
+
+- 文件/行：`include/rtsc/server/desktop_input_map.h:99-103`
+- 原式（整块删除）：
+  ```cpp
+  if (ctrl_armed_ && ev.scancode == 0x45 && !ev.extended) {
+      // The window closes on the NumLock up; the down must keep it open.
+      if (ev.release) ctrl_armed_ = false;
+      return true;
+  }
+  ```
+- 新式：（删除，什么都不留）
+- 期望：`[BASH: mutM1.exe]` → `test_desktop_input.cpp:144 all_dropped`、`:146 got 2 want 0`、`:176 got 4 want 2`，`47 tests / 1 failing / 3 failed checks`（**实测已红**）。
+
+**变异 M2 = "一刀切丢 0x45"（错误的快速修法，两种等价落点任选一）**
+
+- 落点 (a) 过滤器：`include/rtsc/server/desktop_input_map.h:92` 之后插入一行
+  - 原式：`        if (ev.kind != InputEvent::Kind::kKey) return false;`
+  - 新式：`        if (ev.kind != InputEvent::Kind::kKey) return false;` + 换行 + `        if (ev.scancode == 0x45) return true;`
+  - 期望：`[BASH: mutM2.exe]` → `:161 tap_kept`、`:162 got 0 want 2`、`:176 got 0 want 2`、`:182`，1 failing / 4 failed checks（**实测已红**）。
+- 落点 (b) 映射层：`src/server/desktop_input_map.cpp:47` 之后插入一行
+  - 原式：`            if (ev.extended1) return out;`
+  - 新式：`            if (ev.extended1) return out;` + 换行 + `            if (ev.scancode == 0x45) return out;`
+  - 期望：`[BASH: mutM2b.exe]` → `:162 got 0 want 2`、`:176 got 0 want 2`，1 failing / 2 failed checks（**实测已红**）。
+
+**变异 M3（顺序变异，专门验证 AC-6）**
+
+- 文件/行：`src/server/server.cpp:836` 与 `:837-841`
+- 原式：`pause_filter_.ShouldDrop(ev)` 在租约门**之前**（`:836`），租约门 `:837-840`，`input_sink_->Inject` `:841`
+- 新式：把 `if (pause_filter_.ShouldDrop(ev)) return;` 移到 `if (input_sink_->Inject(...))` **之前一行、租约门之后**（即 `:841` 前）
+- 期望：`[BASH: srv_ord.exe]` → `test_server.cpp:1464 inject_ids().empty()`、`:1465 geometry_ids().empty()`、`:1476 got 3 want 2`，1 failing / 3 failed checks（**实测已红**）。这条证明 AC-6 的"租约门前"不是风格问题而是可测约束。
+
+**对照（无过滤器 = 批 14 出厂）**：把 `ShouldDrop` 改成恒 `false`（`[BASH: srvbase.exe]`）→ `:1464/:1465/:1476 got 5 want 2`，1 failing / 3 failed checks（**实测已红**）。变异必须转红、恢复后转绿，本批三条变异 + 一条对照全部满足第 16 条。
+
+### 10.2 "PAUSE 的 4 个事件是否保证在同一输入 PDU 内"——假设是否需要证据
+
+**结论：修复**不**依赖这个假设，因此不需要为它单独取证；但"安全论证"依赖一条更弱的性质，需要证据，来源如下。**
+
+1. **修复不依赖 PDU 边界（已实测）**：`PauseSequenceFilter` 是**会话级**状态（`[READ:src/server/server.cpp:2066]`），不是 per-PDU。加固探针把同一 4 事件拆成 4 个"PDU"、以及 2+2 分组，动作数都是 **0**（§9.4 第 3 条）。所以"同一 PDU"即使不成立，修复也不退化。
+2. **仓库事实：本客户端确实放进同一 PDU**
+   - `[READ:src/proto/input.cpp:90-102]` 把 4 个事件作为一个 vector 返回；`[READ:src/client/client.cpp:357-360]` 用 `EncodeFastPathInputPdu(EncodePauseKey())` **一次**发出。
+   - 线上字节 `10 0a 04 1d 00 45 05 1d 01 45`（`[READ:tests/test_input.cpp:115-116]` 断言）：`0x10` = action 0 | numEvents 4。
+3. **规范事实：4 个事件是一条"按键事件序列"**：`[READ:docs/spec/share-data.md:702-708]`（引 [MS-RDPBCGR] 2.2.8.1.2.2.1）原文为 `CTRL(0x1D) DOWN, NUMLOCK(0x45) DOWN, CTRL(0x1D) UP, NUMLOCK(0x45) UP`，且明说**只有 CTRL 事件带 0x04**。规范把它定义为**一个序列**，未要求同一 PDU 承载。规范页 URL 已在 `docs/spec/capabilities.md:87` 记录为 `ms-rdpbcgr/089d362b-31eb-4a1a-b6fa-92fe61bb5dbf`。【本条为文档引文复核，未重新抓取网页】
+4. **需要的那条弱性质（真正的风险面）**：安全论证要求"**0xE1 的两个 half 若被丢失，0x45 的两个 half 不会单独到达**"。
+   - 仓库现状：`FastPathPdu::parse` 是**整 PDU 全有全无**（`[READ:src/proto/share.cpp:277-280]`：长度不足即 `NeedMoreData`，`[READ:src/server/server.cpp:1913-1921]` 解析失败直接 return），且服务端**不实现 fast-path 分片重组**（`FastPathFragmentation` 只有枚举声明 `[READ:include/rtsc/proto/share.h:209-214]`，全仓无使用点，`[BASH: Select-String ... kFirst|kNext|kLast]` 零命中）。
+   - 因此在本仓库的输入路径上，一个被截断的 PAUSE PDU 会**整条丢弃**（4 个事件都不注入，安全）；不会出现"只收到 0x45 两半"。
+   - 跨 PDU 的乱序/丢包若真发生（例如对端把序列拆开发且中途丢弃了 0xE1 部分），过滤器会看到孤立 0x45 并注入——这与批 14 的行为相同，**不是本修复引入的回归**；且被 AC-3 的"上界"限制为最多一次 tap。
+5. **结论与取证建议**：
+   - **必须有的证据**已有：客户端单 PDU 编码（第 2 条）+ 规范序列定义（第 3 条）+ 整 PDU 全有全无（第 4 条），全部为仓库内可复现。
+   - **可选加强证据**（仅在要宣称"对任意第三方客户端安全"时才需要）：一段 mstsc/FreeRDP 真机抓包，证明其 PAUSE 也是单 PDU。当前状态 **【UNVERIFIED】**，建议在 seam 文档里按"仓库客户端已证、第三方未证"措辞记录，而不是不写。
