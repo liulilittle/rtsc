@@ -40,7 +40,9 @@ struct InjectGeometry {
 // null sink counts every Inject call it accepted and then dropped.
 // `dropped_queue_full` counts platform actions refused by the bounded injection
 // queue (including an older movement evicted to make room for the incoming
-// action), `dropped_rate_limited` counts platform actions refused by the
+// action) or discarded when their session is released (the session-end purge
+// drops the session's queued non-synthetic events), `dropped_rate_limited`
+// counts platform actions refused by the
 // injection rate limiter (400 actions/s and a burst of 800 per session,
 // 1000 actions/s and a burst of 2000 globally; only a HELD release -- the up of
 // a key/button the session actually holds down -- is exempt and never counted

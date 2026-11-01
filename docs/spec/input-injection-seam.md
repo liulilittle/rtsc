@@ -134,8 +134,8 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 | `kWheel` | FIFO，不与移动合并（离散平台动作） |
 | 队列达到软上限 256 | 先驱逐**最旧的一条纯移动**并计数（`dropped_queue_full++`） |
 | 队列达到硬上限 1024 且无可驱逐的移动 | 只豁免 **held release**：该 key/按钮仍在会话 `pressed` 集合中（口径 = scancode + 0xE0 标志 / 按钮号）；其余平台动作（按下、移动、**未持有的释放**）一律 `kDrop` 并计数 |
-| 队列上界（**峰值**口径） | `peak(queue) ≤ hard_limit + 饱和时刻的 pressed 集合大小 = 1024 + 515 = 1539`。pressed 的结构上限是 510 键（`scancode` 是 `uint8_t`，255 × 0xE0 两位）+ 5 按钮。**不要**把它读成瞬时不变式：每次越限接受同时擦除一个 pressed 项，释放后队列仍可能是 1534 而 pressed 已为 0（探针 774 次违反瞬时公式） |
-| 饱和引理 | `size > soft_limit ⇒ 队列内无纯移动`：`size ≥ soft` 时任何事件都先走 `kEvictMove`（只替换不增长），每来一个按下就吃掉一条移动；移动被驱逐光后新移动走 `kDrop`。因此饱和时无移动可驱逐，硬限的 `kDrop` 不会被 evict 绕过 |
+| 队列上界（**峰值**口径） | 必须分两段，且**不得读作瞬时不变式**。① **对端可入队事件**：`peak(queue) ≤ kHardQueueLimit + \|pressed\|@饱和 = 1024 + 515 = 1539`；pressed 的结构上限是 510 键（`scancode` 是 `uint8_t`，255 × 0xE0 两位）+ 5 按钮。② **合成 up 额外**：`ReleaseSession`/`Shutdown` 补发的合成 up 由 `AppendReleasesLocked` 按 `pressed` 直接入队、不过 `DecideEnqueue`（`desktop_input_win32.cpp:232-254`），且 purge 明确保留 `synthetic` 项（`:307-315`）⇒ 再 `+ Σ_会话 \|pressed\| ≤ 会话数 × 515`，全局峰值 `≤ 1539 + 会话数 × 515`。瞬时更不成立：每次越限接受同时擦除一个 pressed 项，释放后队列仍可能是 1534 而 pressed 已为 0（探针 774 次违反瞬时公式） |
+| 饱和引理（**仅对端可入队事件**） | `size > soft_limit ⇒ 队列内无纯移动`：`size ≥ soft` 时任何事件都先走 `kEvictMove`（只替换不增长），每来一个按下就吃掉一条移动；移动被驱逐光后新移动走 `kDrop`。因此饱和时无移动可驱逐，硬限的 `kDrop` 不会被 evict 绕过。合成 up 不参与驱逐且由 `AppendReleasesLocked` 直推（见上一行），可使 `size > soft` 时队列仍含移动，故本引理不覆盖合成 up 注入的队列状态 |
 | `kSync` | 不注入（v1 无"设置 toggle 状态"的注入形式；见 §3 P-7） |
 | `kMouseRel` | **已上送**（`InputEvent::Kind::kMouseRel`，带符号 `rel_x/rel_y`）；v1 不注入（相对位移受系统鼠标加速度污染），按 `dropped_unsupported` 计数 |
 
@@ -165,17 +165,18 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 限流丢弃不打印日志（只经 `dropped_rate_limited` 可见）。主机（`tools/rtsc_server/main.cpp`）
 每 5 s 采样一次 `Stats()`，仅在任一计数变化时打印
 `input stats (periodic): input_injected=… input_dropped_queue=… input_rate_limited=… input_send_failures=…`，
-退出前再打印一条 `(final)` 终值。
+**正常退出（`--seconds` 到期或 `--once`）**前再打印一条 `(final)` 终值；无界模式（默认无 `--seconds`）
+没有 `SIGINT`/`SetConsoleCtrlHandler` 处理，Ctrl+C 直接终止进程，**不打印 final**。
 
-**回压**：`Inject` 返回 false 仅表示"已丢弃"，会话不做重传（输入是实时语义，重传旧键位比丢掉更糟）。
+**回压**：`Inject` 无返回值；丢弃只经计数可见（`InputStats`），会话不做重传（输入是实时语义，重传旧键位比丢掉更糟）。
 
 ### 1.7 会话归属与几何：两个必须先补的"接口余量"
 
-1. **会话归属**：`Inject(session_id, ev)`。今天 `server.cpp:1843` / `:1962` 两处会话构造都传
-   `session_id = 0`，所以 `session_id` 目前在库内恒为 0 → 多会话仲裁形同虚设。
-   修复建议：`RdpServer::Impl` 用原子递增计数器给每个会话分配 ID（与 `total_session_count()`
-   `server.h:288-295` 同一处记账，避免两套计数），并把 `session_id` 一并放入日志行
-   （`main.cpp:462` 现在是 `"session active: key event forwarded"`，无归属）。
+1. **会话归属**：`Inject(session_id, ev)`。**已实现**：`RdpServer::Impl::next_input_session_id`（`server.cpp:2160`）
+   原子递增，两条会话构造路径各自传入非零且互不相同的 id（`server.cpp:2286-2287` 线程路径、
+   `:2414` `ServeOne` 路径，均 `fetch_add(1)+1`）。`0` 保留为"未分配"哨兵（成员默认值 `:2036`）。
+   仍待办：日志行尚未带上 `session_id`（`main.cpp` 的 `"session active: key event forwarded"`），
+   排障时无法把一行日志归到具体会话——属可观测性缺口，不影响仲裁正确性。
 2. **几何来源**：`InjectGeometry` 必须来自**捕获源的真实矩形**，而不是 `ServerConfig::desktop_width/height`
    （`server.h:57-59`）。因为 GDI 源把"捕获矩形**缩放**到协商几何"（`desktop_gdi.h:38-39`），
    而协商几何会被客户端请求 + 上限钳制改变（`server.h:142-159`：8192×8192 / 32 MiB 上限、

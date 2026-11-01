@@ -678,6 +678,71 @@ RTSC_TEST(desktop_input_rate_limit_unheld_release_is_limited) {
     CHECK(!limiter.Allow(1, IsHeldRelease(unicode_up, pressed), t0));
 }
 
+RTSC_TEST(desktop_input_rate_limit_held_release_keeps_token) {
+    // E1-T: a HELD release is not merely "allowed", it spends no token. Drain
+    // the session bucket to exactly one of its 800 tokens, then lift 100 keys
+    // that are genuinely held (each was pressed and tracked earlier). All 100
+    // ups pass, nothing is dropped, and the one token left is still spendable:
+    // if the exemption had charged a token, the final press would be refused.
+    InputRateLimiter limiter;
+    PressedInputs pressed;
+    const RateClock::time_point t0 = RateTime(8000);
+    const auto gate = [&](bool held_release) {
+        return limiter.Allow(1, held_release, t0);
+    };
+
+    // Press 100 keys; AdmitAndTrack records them in `pressed`.
+    for (int i = 0; i < 100; ++i) {
+        const AdmitOutcome down = AdmitAndTrack(
+            QueueState(0, false, false), pressed,
+            KeyDown(static_cast<uint8_t>(i + 1)), gate);
+        CHECK(down.action == EnqueueAction::kAccept);
+        CHECK(!down.rate_limited);
+    }
+    // 699 more presses leave exactly 1 of the 800 burst tokens.
+    for (int i = 0; i < 699; ++i) {
+        CHECK(limiter.Allow(1, false, t0));
+    }
+    CHECK_EQ(pressed.keys.size(), static_cast<size_t>(100));
+
+    const size_t dropped_before = limiter.dropped();
+    size_t allowed_ups = 0;
+    for (int i = 0; i < 100; ++i) {
+        const AdmitOutcome up = AdmitAndTrack(
+            QueueState(0, false, false), pressed,
+            KeyUp(static_cast<uint8_t>(i + 1)), gate);
+        CHECK(up.held_release);
+        CHECK(!up.rate_limited);
+        CHECK(up.action == EnqueueAction::kAccept);
+        if (!up.rate_limited) ++allowed_ups;
+    }
+    CHECK_EQ(allowed_ups, static_cast<size_t>(100));
+    CHECK_EQ(limiter.dropped(), dropped_before);
+    CHECK(pressed.keys.empty());
+
+    // The kept token is still there: one press is allowed, the next is not.
+    CHECK(limiter.Allow(1, false, t0));
+    CHECK(!limiter.Allow(1, false, t0));
+
+    // Control: an UNHELD up is limited like a press and DOES spend the last
+    // token. Without this the test could not tell "exempt" from "free".
+    InputRateLimiter unheld;
+    PressedInputs nothing_held;
+    const auto unheld_gate = [&](bool held_release) {
+        return unheld.Allow(2, held_release, t0);
+    };
+    for (int i = 0; i < 799; ++i) {
+        CHECK(unheld.Allow(2, false, t0));
+    }
+    const AdmitOutcome stray_up = AdmitAndTrack(
+        QueueState(0, false, false), nothing_held, KeyUp(0x2A), unheld_gate);
+    CHECK(!stray_up.held_release);
+    CHECK(!stray_up.rate_limited);
+    CHECK_EQ(unheld.dropped(), static_cast<size_t>(0));
+    CHECK(!unheld.Allow(2, false, t0));
+    CHECK_EQ(unheld.dropped(), static_cast<size_t>(1));
+}
+
 RTSC_TEST(desktop_input_rate_limit_global_bucket) {
     // The global bucket (1000 evt/s, burst 2000) caps the sum over sessions:
     // 8 sessions x 250 events = 2000 accepted, the next event is dropped even
