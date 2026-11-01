@@ -20,8 +20,13 @@
       期望：`KEYEVENTF_EXTENDEDKEY` 生效，`右 Win` 打开开始菜单。
 - [ ] 组合键：`Ctrl+Shift+Esc` 打开任务管理器；`Alt+Tab` 切换窗口；`Ctrl+Alt+Del` **预期无效**
       （SendInput 无法合成 SAS；需 `SendSAS` + 服务/策略，v1 未实现）——记录实际表现。
-- [ ] Pause/Break 键：解码层已忠实上送 `extended1`（0xE1 前缀），但 SendInput **只能表达 0xE0**。
-      **预期：Pause 可能无效或表现异常**；记录实际。`[UNVERIFIED]`
+- [ ] Pause/Break 键：解码层忠实上送 `extended1`（0xE1 前缀），SendInput 只能表达 0xE0，
+      因此**整条 PAUSE 序列（`04 1D`/`00 45`/`05 1D`/`01 45`）被整体丢弃、不注入**（批 16）。
+      **验收要点：按 Pause 后本机 NumLock 指示灯/状态必须不变**——若发生翻转即回归。
+      `[UNVERIFIED-真机]`
+- [ ] 验证 PAUSE 抑制不误伤：先按 Pause，再单独按 NumLock 一次，NumLock **必须正常切换**
+      （PAUSE 窗口最多吞一次 tap，不得永久吞掉 0x45）。`[UNVERIFIED-真机]`
+- [ ] `kSync` 会终止 PAUSE 窗口（批 17）：Pause 后紧接状态同步，随后的 NumLock 仍应生效。`[UNVERIFIED-真机]`
 - [ ] NumLock/CapsLock 状态同步（`kSync`）：v1 **不注入**，记录是否造成状态不一致。
 
 ## 2. 鼠标
