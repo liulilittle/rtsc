@@ -902,3 +902,9 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
 - `discover.md` 现有 25 例（第 1-24 例 + 早期归档），第 20-24 例为本轮输入注入主线新增
 - `memory.md` 现有 75 条原则，第 72-75 条为本轮新增（豁免定界、幂等哨兵、值域追溯、验收钉用例名、序列缺陷）
 - `plan.md` 含批 1-17 定案与历史归档
+## 第834轮：审计 J 空输出且无报告 → 已唤醒补交
+- [BASH: git status / Get-ChildItem] `docs/spec/input-batch13-review-J.md` **不存在**，J 平台状态 completed 但空输出
+- 按第 11 条「completed 空输出且无写入产物禁止判完成，必须核验产物」→ 判为**未完成**
+- 处置：经 `prompt` 直发原会话（附完整任务摘要），不新开替代
+- 同时注意到批 17 正在改 `map.h`/`test_desktop_input.cpp`/`seam.md` —— 与 J 的只读审计不冲突
+- 工作树现状（批 17 在写，勿提交）：`docs/spec/input-injection-seam.md`、`include/rtsc/server/desktop_input_map.h`、`tests/test_desktop_input.cpp` 均有未提交改动
