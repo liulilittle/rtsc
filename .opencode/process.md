@@ -644,3 +644,11 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
   + 给出 mutC 的确切变异点（改哪行、原式与新式），供执行 AI 复现
 - 决策依据：两审不必然互相回执；G 的结论已被主代理采信并写入 plan.md 批 11 定案，
   继续等待交叉只会空转（G4b：无新信息必须换向）
+## 第817轮：审计 G 收口完成并解散；批 11 已收 mutC 细节
+- G 报告追加 §10「批 11 验收判据」：E7-a1 三要素 / E7-a2 饱和引理限定 / E7-b / E7-c / E7-d / E1-T / 收口门
+- **mutC 变异点已明确**：`src/server/desktop_input_map.cpp:195` 的 `if (held_release) return true;`
+  改为"Refill 两桶各扣 1 后 return true"（变量名必须用 `held_session`，避免遮蔽 `:198` 的 `session`，否则 `/W4 /WX` 报错）
+- G 的副本实测：新用例 pristine `41 tests/10504 checks/0 failing`；mutC `1 failing`（`test_desktop_input.cpp:664`）；
+  旧套件 `40/9602/0` 在 mutC 下仍绿 → 只有新用例能钉住"held up 不耗令牌"
+- 已把 mutC 细节 relay 给批 11 执行会话
+- 审计 G 已 delete 解散；当前在途仅审计 F + 批 11
