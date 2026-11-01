@@ -129,13 +129,18 @@ void SetInputSink(InputSink* sink);   // nullptr 关闭注入；指针必须活�
 
 | 事件类 | 策略 |
 |---|---|
-| `kKey` / `kUnicode` / 按钮按下抬起 | FIFO，不与移动合并；**释放类（keyup / 按钮 up）永不被队列上限丢弃** |
+| `kKey` / `kUnicode` / 按钮按下抬起 | FIFO，不与移动合并 |
 | `kMouse` 纯移动（无按钮位） | **合并**：同会话只保留最新位置（移动是状态量，不是事件量），上限 250 Hz 输出 |
 | `kWheel` | FIFO，不与移动合并（离散事件） |
 | 队列达到软上限 256 | 先驱逐**最旧的一条纯移动**并计数（`dropped_queue_full++`） |
-| 队列达到硬上限 1024 且无可驱逐的移动 | 丢弃该**非释放**事件并计数（`dropped_queue_full++`）；按下未被记录为 held，故不会留下卡键 |
+| 队列达到硬上限 1024 且无可驱逐的移动 | 只豁免 **held release**：该 key/按钮仍在会话 `pressed` 集合中（口径 = scancode + 0xE0 标志 / 按钮号）；其余事件（按下、移动、**未持有的释放**）一律 `kDrop` 并计数 |
+| 队列上界 | `hard_limit` + pressed 集合大小：held release 的条数被 pressed 集合限界，因此队列仍是有界的 |
 | `kSync` | 不注入（v1 无"设置 toggle 状态"的注入形式；见 §3 P-7） |
 | `kMouseRel` | **已上送**（`InputEvent::Kind::kMouseRel`，带符号 `rel_x/rel_y`）；v1 不注入（相对位移受系统鼠标加速度污染），按 `dropped_unsupported` 计数 |
+
+`unicode` 释放不豁免：`KEYEVENTF_UNICODE`（`wVk = 0`）只输入字符、不按下物理键，不进入 pressed 集合，
+因此也没有可清的物理状态。**未持有的 keyup（重复 up，或被硬限丢弃的按下的 up）也不豁免**——否则
+单条 32 KiB 输入 PDU 的数千个 keyup 就能让队列无限增长。
 
 ### 1.6 失败传播：计数 + 限流日志，**不断连**
 

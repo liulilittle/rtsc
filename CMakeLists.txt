@@ -681,6 +681,11 @@ add_executable(rtsc_desktop_input_tests tests/test_desktop_input.cpp)
 target_sources(rtsc_desktop_input_tests PRIVATE src/server/desktop_input_null.cpp)
 target_link_libraries(rtsc_desktop_input_tests PRIVATE rtsc_server_desktop_input_map rtsc_util)
 target_include_directories(rtsc_desktop_input_tests PRIVATE tests)
+# The host's startup line and lease-denied warning cannot be linked into this
+# suite (tools/rtsc_server/main.cpp owns a full server process), so those two
+# wiring points are guarded structurally against the source file.
+target_compile_definitions(rtsc_desktop_input_tests PRIVATE
+                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
 if(WIN32)
     add_library(rtsc_server_desktop_input STATIC src/server/desktop_input_win32.cpp)

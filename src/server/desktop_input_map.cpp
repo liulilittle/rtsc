@@ -4,6 +4,7 @@
 
 #include "rtsc/server/desktop_input_map.h"
 
+#include <algorithm>
 #include <cstdint>
 
 namespace rtsc::server {
@@ -107,13 +108,112 @@ EnqueueAction DecideEnqueue(const EnqueueState& state) {
     if (state.size < state.soft_limit) return EnqueueAction::kAccept;
     if (state.has_movable_move) return EnqueueAction::kEvictMove;
     if (state.incoming_is_move) return EnqueueAction::kDrop;
-    // A release is bounded by the set of keys/buttons the session holds down,
-    // so accepting it can never grow the queue without bound. It must win over
-    // the hard-limit drop: the press was already accepted (and tracked), and
-    // dropping its release is what leaves a key stuck.
-    if (state.incoming_is_release) return EnqueueAction::kAccept;
+    // A HELD release is bounded by the set of keys/buttons the session holds
+    // down, so accepting it can never grow the queue without bound. It must win
+    // over the hard-limit drop: the press was already accepted (and tracked),
+    // and dropping its release is what leaves a key stuck. A release for
+    // something not held has no such bound and falls through to the hard limit.
+    if (state.incoming_is_held_release) return EnqueueAction::kAccept;
     if (state.size >= state.hard_limit) return EnqueueAction::kDrop;
     return EnqueueAction::kAccept;
+}
+
+void TrackInput(PressedInputs& pressed, const PlatformInput& input) {
+    if (input.kind == PlatformInput::Kind::kKey) {
+        // Unicode events are KEYEVENTF_UNICODE key events (wVk = 0): they type
+        // a character, they do not press a scan-code key, so they cannot leave
+        // a physical key stuck and are deliberately not tracked.
+        if (input.unicode != 0) return;
+        const KeyId key{input.scancode, input.extended};
+        if (input.release) {
+            pressed.keys.erase(key);
+        } else {
+            pressed.keys.insert(key);
+        }
+        return;
+    }
+    if (input.kind == PlatformInput::Kind::kMouseButton) {
+        if (input.button_down) {
+            pressed.buttons.insert(input.button);
+        } else {
+            pressed.buttons.erase(input.button);
+        }
+    }
+}
+
+bool IsHeldRelease(const PlatformInput& input, const PressedInputs& pressed) {
+    if (input.kind == PlatformInput::Kind::kKey) {
+        // Unicode key-ups carry no physical state, so they are never a held
+        // release even if a unicode key-down was sent earlier.
+        if (!input.release || input.unicode != 0) return false;
+        return pressed.keys.count(KeyId{input.scancode, input.extended}) != 0;
+    }
+    if (input.kind == PlatformInput::Kind::kMouseButton) {
+        if (input.button_down) return false;
+        return pressed.buttons.count(input.button) != 0;
+    }
+    return false;
+}
+
+EnqueueAction AdmitInput(EnqueueState state, PressedInputs& pressed,
+                         const PlatformInput& input, bool held_release) {
+    // The incoming-event flags are derived here so a caller cannot disagree
+    // with the bookkeeping this function performs.
+    state.incoming_is_move =
+        input.kind == PlatformInput::Kind::kMouseMove;
+    state.incoming_is_held_release = held_release;
+    const EnqueueAction action = DecideEnqueue(state);
+    // Track only what the queue accepted. Tracking a press that the hard limit
+    // dropped would make its later release look held: the sink would exempt an
+    // event for a key it never pressed, and the "bounded by the pressed set"
+    // argument behind the release exemption would no longer hold.
+    if (action != EnqueueAction::kDrop) TrackInput(pressed, input);
+    return action;
+}
+
+void InputRateLimiter::Refill(Bucket& bucket, double per_second, double burst,
+                              Clock::time_point now) {
+    if (!bucket.started) {
+        bucket.started = true;
+        bucket.last = now;
+        bucket.tokens = burst;
+        return;
+    }
+    // steady_clock is monotonic, so a non-positive delta is only the "two
+    // events at the same instant" case; leaving the bucket untouched is right.
+    if (now <= bucket.last) return;
+    const double elapsed =
+        std::chrono::duration<double>(now - bucket.last).count();
+    bucket.last = now;
+    bucket.tokens = std::min(burst, bucket.tokens + elapsed * per_second);
+}
+
+bool InputRateLimiter::Allow(uint32_t session_id, bool is_release,
+                             Clock::time_point now) {
+    // Releases are never limited and never spend a token (see the header).
+    if (is_release) return true;
+
+    Refill(global_, kGlobalEventsPerSecond, kGlobalBurst, now);
+    Bucket& session = sessions_[session_id];
+    Refill(session, kSessionEventsPerSecond, kSessionBurst, now);
+    // Decide before spending: a denial by either bucket must leave both
+    // buckets untouched, or a global-congested event would cost the session a
+    // token it never got to use.
+    if (session.tokens < 1.0 || global_.tokens < 1.0) {
+        dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    session.tokens -= 1.0;
+    global_.tokens -= 1.0;
+    return true;
+}
+
+void InputRateLimiter::Forget(uint32_t session_id) {
+    sessions_.erase(session_id);
+}
+
+size_t InputRateLimiter::dropped() const {
+    return static_cast<size_t>(dropped_.load(std::memory_order_relaxed));
 }
 
 }  // namespace rtsc::server

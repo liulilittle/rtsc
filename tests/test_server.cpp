@@ -2165,9 +2165,18 @@ RTSC_TEST(server_undefined_share_data_type_is_not_reinterpreted) {
     CHECK(WriteAll(*r.transport,
                    McsSendData::build_request(r.user_channel, r.io_channel,
                                               payload)));
-    // Give the session thread time to process the PDU: no input event may be
-    // delivered, because the payload is not a fast-path PDU at all.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Poll until the session thread has counted the malformed PDU, then assert
+    // that it delivered no input event. Asserting the empty vector after a
+    // fixed sleep left a race: a slow session thread could make that check pass
+    // before the PDU was processed, so the test did not actually pin the
+    // "no phantom key" behaviour.
+    bool malformed_counted = false;
+    for (int i = 0; i < 200 && !malformed_counted; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        malformed_counted =
+            server.malformed_input_pdu_count() > malformed_before;
+    }
+    CHECK(malformed_counted);
     {
         std::lock_guard<std::mutex> lock(mu);
         CHECK(events.empty());

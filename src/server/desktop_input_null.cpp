@@ -32,6 +32,8 @@ class NullDesktopInputSink final : public DesktopInputSink {
     InputStats Stats() const override {
         // The null sink "injects" nothing but accepts every event, so the
         // accepted count is what the counters expose (see desktop_input.h).
+        // It has no worker queue, so it never rate-limits and
+        // dropped_queue_full/dropped_rate_limited stay zero.
         InputStats stats;
         stats.injected = static_cast<size_t>(
             dropped_.load(std::memory_order_relaxed));

@@ -485,7 +485,8 @@ int main(int argc, char** argv) {
              std::string(opt.audio == Options::AudioSource::kSine ? "sine"
                                                                    : "off") +
              " input=" + (opt.allow_input ? "on" : "off") +
-             " max-input-sessions=" + std::to_string(opt.max_input_sessions));
+             " input_max_sessions=" +
+             std::to_string(opt.max_input_sessions));
     if (opt.allow_any_credentials) {
         log.line(
             "WARNING: credential validation is DISABLED "
@@ -620,6 +621,7 @@ int main(int argc, char** argv) {
     std::thread runner([&server]() { server.Run(); });
     size_t seen_live = 0;
     size_t seen_total = 0;
+    bool lease_denied_reported = false;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(opt.seconds);
     const bool bounded = opt.seconds > 0;
@@ -635,6 +637,22 @@ int main(int argc, char** argv) {
             seen_total = total;
             log.line("sessions: live=" + std::to_string(live) +
                      " total=" + std::to_string(total));
+        }
+        // A denied input lease means a session is sending input that the
+        // configured cap keeps off the shared desktop. Report the first
+        // denial once -- the counter alone would be silent -- and keep
+        // counting without one line per event.
+        const size_t lease_denied = server.input_lease_denied_count();
+        if (!lease_denied_reported && lease_denied != 0) {
+            lease_denied_reported = true;
+            log.line(
+                "WARNING: input lease denied (input_lease_denied_count=" +
+                std::to_string(lease_denied) + "): at most " +
+                (opt.max_input_sessions == 0
+                     ? std::string("all sessions (unlimited)")
+                     : std::to_string(opt.max_input_sessions)) +
+                " session(s) may inject input at once; the other session's "
+                "events are observed but not injected.");
         }
         if (bounded && std::chrono::steady_clock::now() >= deadline) {
             log.line("run window elapsed; stopping");

@@ -17,14 +17,24 @@
 //     is DROPPED (fail closed). Trading a lost press for a hard memory bound is
 //     deliberate: an unbounded queue driven by a hostile peer would exhaust
 //     memory. A dropped press cannot leave a stuck key because the sink records
-//     what each session holds down only AFTER the enqueue is accepted, so a
-//     dropped press was never tracked. RELEASES are the exception: they are
-//     always accepted (bounded by the held-key set), because dropping one would
-//     erase the tracked key and make teardown unable to release it.
+//     what each session holds down only AFTER the queue accepted the press, so a
+//     dropped press was never tracked;
+//   * only a HELD release -- the up of a key/button this session actually holds
+//     down -- is exempt from the hard limit. It is bounded by the pressed set
+//     (queue length <= hard limit + |pressed|) and dropping it is what leaves
+//     the peer's key stuck. A release for something not held (a repeated up, or
+//     the up of a dropped press) is treated like a press, so a flood of key-ups
+//     cannot grow the queue.
 //
 // Failures are counted and logged at most once per five seconds; the session is
 // never disconnected for an injection failure (UIPI and lock-screen failures
 // are local-machine state, not a protocol violation).
+//
+// Rate limiting (docs/spec/input-injection-seam.md 2.3) happens on the worker
+// thread right before dispatch: 400 evt/s per session (burst 800) and
+// 1000 evt/s for all sessions together (burst 2000). An event above either
+// limit is dropped and counted in InputStats::dropped_rate_limited. Releases
+// are exempt (dropping one is what leaves a key stuck); see InputRateLimiter.
 
 #include "rtsc/server/desktop_input.h"
 
@@ -70,16 +80,6 @@ constexpr Clock::duration kFailureLogInterval = std::chrono::seconds(5);
 // docs/spec/input-injection-seam.md 2.4): ASCII "RTSC".
 constexpr ULONG_PTR kInjectTag = 0x52545343;
 
-struct KeyId {
-    uint16_t scancode = 0;
-    bool extended = false;
-
-    bool operator<(const KeyId& other) const {
-        if (scancode != other.scancode) return scancode < other.scancode;
-        return extended < other.extended;
-    }
-};
-
 struct QueuedInput {
     uint32_t session_id = 0;
     PlatformInput input;
@@ -87,8 +87,7 @@ struct QueuedInput {
 
 struct SessionInputState {
     InjectGeometry geometry;
-    std::set<KeyId> pressed_keys;
-    std::set<uint8_t> pressed_buttons;
+    PressedInputs pressed;
 };
 
 class Win32DesktopInputSink final : public DesktopInputSink {
@@ -117,13 +116,16 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             return;
         }
         for (const PlatformInput& input : inputs) {
-            // Only a queued event changes the held-key/button state. Tracking
-            // before the enqueue let a key-up that the hard limit dropped erase
-            // the key, so a later teardown had nothing to release and the key
-            // stayed physically stuck. EnqueueLocked accepts every release.
-            if (EnqueueLocked(session_id, input)) {
-                TrackPressedLocked(session, input);
-            }
+            // A release may exceed the hard limit only when it lifts a key or
+            // button this session actually holds down, so the question is
+            // answered against the pressed set BEFORE the enqueue updates it.
+            // EnqueueLocked (via AdmitInput) records the press/release only
+            // when the queue accepted it: a press dropped at the hard limit was
+            // never injected, so it must not appear held (and its later up is
+            // not exempt either), which keeps the queue bounded by
+            // hard_limit + |pressed|.
+            const bool held_release = IsHeldRelease(input, session.pressed);
+            EnqueueLocked(session_id, session, input, held_release);
         }
         cv_.notify_one();
     }
@@ -131,13 +133,14 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     void ReleaseSession(uint32_t session_id) override {
         {
             std::lock_guard<std::mutex> lock(mu_);
-            // Forget the move-rate timestamp even when no session state exists:
-            // a restarted server restarts its input ids at 1, and a stale
-            // last_move_sent_[session_id] would throttle the new session's
-            // first move. The worker owns both move maps, so only record the
-            // request here; the worker drains it under the same mutex before it
-            // dispatches the next queued item.
-            forget_moves_.insert(session_id);
+            // Forget the per-session bookkeeping even when no session state
+            // exists: a restarted server restarts its input ids at 1, and a
+            // stale last_move_sent_[session_id] or rate-limit bucket would
+            // throttle the new session's first events. The worker owns the move
+            // maps and the rate limiter, so only record the request here; the
+            // worker drains it under the same mutex before it dispatches the
+            // next queued item.
+            forget_sessions_.insert(session_id);
             const auto it = sessions_.find(session_id);
             if (it == sessions_.end()) {
                 cv_.notify_one();
@@ -155,6 +158,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             injected_ok_.load(std::memory_order_relaxed);
         stats.dropped_queue_full =
             dropped_queue_full_.load(std::memory_order_relaxed);
+        stats.dropped_rate_limited = rate_limiter_.dropped();
         stats.send_failures =
             injected_failed_.load(std::memory_order_relaxed);
         return stats;
@@ -162,40 +166,12 @@ class Win32DesktopInputSink final : public DesktopInputSink {
 
  private:
     // ---- queue-side helpers (mu_ held) ------------------------------------
-    // A release is a key-up (scan code or unicode) or a mouse-button-up. It is
-    // bounded by the set of keys/buttons the session holds down and must never
-    // be dropped by the hard limit.
-    static bool IsRelease(const PlatformInput& input) {
-        if (input.kind == PlatformInput::Kind::kKey) return input.release;
-        if (input.kind == PlatformInput::Kind::kMouseButton) {
-            return !input.button_down;
-        }
-        return false;
-    }
-
-    static void TrackPressedLocked(SessionInputState& session,
-                                   const PlatformInput& input) {
-        if (input.kind == PlatformInput::Kind::kKey && input.unicode == 0) {
-            const KeyId key{input.scancode, input.extended};
-            if (input.release) {
-                session.pressed_keys.erase(key);
-            } else {
-                session.pressed_keys.insert(key);
-            }
-            return;
-        }
-        if (input.kind == PlatformInput::Kind::kMouseButton) {
-            if (input.button_down) {
-                session.pressed_buttons.insert(input.button);
-            } else {
-                session.pressed_buttons.erase(input.button);
-            }
-        }
-    }
-
-    // Returns true when the event was queued (or coalesced into the tail), so
-    // the caller knows whether to update the session's held-key/button state.
-    bool EnqueueLocked(uint32_t session_id, const PlatformInput& input) {
+    // Returns true when the event was queued (or coalesced into the tail).
+    // Admission (including the "held release only" exemption) and the held-key
+    // bookkeeping are the platform-neutral AdmitInput(); this function only
+    // applies its decision to the queue container.
+    bool EnqueueLocked(uint32_t session_id, SessionInputState& session,
+                       const PlatformInput& input, bool held_release) {
         if (input.kind == PlatformInput::Kind::kMouseMove && !queue_.empty() &&
             queue_.back().session_id == session_id &&
             queue_.back().input.kind == PlatformInput::Kind::kMouseMove) {
@@ -213,10 +189,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         state.soft_limit = kMaxQueue;
         state.hard_limit = kHardQueueLimit;
         state.has_movable_move = oldest_move != queue_.end();
-        state.incoming_is_move =
-            input.kind == PlatformInput::Kind::kMouseMove;
-        state.incoming_is_release = IsRelease(input);
-        switch (DecideEnqueue(state)) {
+        switch (AdmitInput(state, session.pressed, input, held_release)) {
             case EnqueueAction::kEvictMove:
                 queue_.erase(oldest_move);
                 dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
@@ -235,10 +208,10 @@ class Win32DesktopInputSink final : public DesktopInputSink {
                               const SessionInputState& session) {
         // Win32 does not reset the keyboard state, so every key and button the
         // session still holds must be released explicitly. These internal
-        // release events deliberately bypass the hard queue limit: they are
+        // release events deliberately bypass the queue-policy call: they are
         // bounded by the pressed-key/button set (not by peer traffic) and they
         // are what makes a dropped key temporally harmless.
-        for (const KeyId& key : session.pressed_keys) {
+        for (const KeyId& key : session.pressed.keys) {
             PlatformInput up;
             up.kind = PlatformInput::Kind::kKey;
             up.scancode = key.scancode;
@@ -246,7 +219,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             up.release = true;
             queue_.push_back({session_id, up});
         }
-        for (const uint8_t button : session.pressed_buttons) {
+        for (const uint8_t button : session.pressed.buttons) {
             PlatformInput up;
             up.kind = PlatformInput::Kind::kMouseButton;
             up.button = button;
@@ -263,7 +236,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             bool stop = false;
             {
                 std::unique_lock<std::mutex> lock(mu_);
-                ForgetReleasedMovesLocked();
+                ForgetReleasedSessionsLocked();
                 if (!queue_.empty()) {
                     item.emplace(std::move(queue_.front()));
                     queue_.pop_front();
@@ -285,16 +258,19 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         FlushMoves();
     }
 
-    // Drops the move-rate timestamps recorded for sessions whose
-    // ReleaseSession has already run. Only the worker touches last_move_sent_,
-    // so this runs under mu_ (which also guards forget_moves_) and must be
-    // called before dispatching any queued item: that way a move enqueued
-    // after ReleaseSession cannot be throttled by the old session's timestamp.
-    void ForgetReleasedMovesLocked() {
-        for (const uint32_t session_id : forget_moves_) {
+    // Drops the move-rate timestamps and rate-limit buckets recorded for
+    // sessions whose ReleaseSession has already run. Only the worker touches
+    // last_move_sent_ and rate_limiter_, so this runs under mu_ (which also
+    // guards forget_sessions_) and must be called before dispatching any queued
+    // item: that way a move enqueued after ReleaseSession cannot be throttled
+    // by the old session's timestamp, and a reused session id starts with a
+    // full rate-limit burst.
+    void ForgetReleasedSessionsLocked() {
+        for (const uint32_t session_id : forget_sessions_) {
             last_move_sent_.erase(session_id);
+            rate_limiter_.Forget(session_id);
         }
-        forget_moves_.clear();
+        forget_sessions_.clear();
     }
 
     Clock::time_point MoveDue(uint32_t session_id) const {
@@ -342,6 +318,13 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     }
 
     void Dispatch(QueuedInput item) {
+        // Last gate before the platform call, on the single worker thread, so
+        // the token buckets need no lock. Releases are exempt inside Allow();
+        // a refused event is dropped and counted, never queued again.
+        if (!rate_limiter_.Allow(item.session_id, IsReleaseInput(item.input),
+                                 Clock::now())) {
+            return;
+        }
         if (item.input.kind == PlatformInput::Kind::kMouseMove) {
             // Movement is a state, not an event: keep only the newest position
             // per session and let the rate cap decide when it is sent.
@@ -489,8 +472,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             stopping_ = true;
             for (auto& entry : sessions_) {
                 AppendReleasesLocked(entry.first, entry.second);
-                entry.second.pressed_keys.clear();
-                entry.second.pressed_buttons.clear();
+                entry.second.pressed = PressedInputs{};
             }
         }
         cv_.notify_all();
@@ -501,15 +483,17 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     std::condition_variable cv_;
     std::deque<QueuedInput> queue_;
     std::map<uint32_t, SessionInputState> sessions_;
-    // Sessions whose ReleaseSession asked the worker to forget their move-rate
-    // timestamp (guarded by mu_; the move maps themselves stay worker-only).
-    std::set<uint32_t> forget_moves_;
+    // Sessions whose ReleaseSession asked the worker to forget their per-session
+    // state (guarded by mu_; the move maps and the rate limiter stay
+    // worker-only).
+    std::set<uint32_t> forget_sessions_;
     bool stopping_ = false;
     std::thread worker_;
 
     // Owned by the worker thread, never touched under mu_.
     std::map<uint32_t, PlatformInput> pending_moves_;
     std::map<uint32_t, Clock::time_point> last_move_sent_;
+    InputRateLimiter rate_limiter_;
 
     std::atomic<uint64_t> injected_ok_{0};
     std::atomic<uint64_t> injected_failed_{0};

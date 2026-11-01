@@ -12,8 +12,12 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <vector>
 
 #include "rtsc/server/desktop_input.h"
@@ -68,6 +72,51 @@ struct PlatformInput {
 std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
                                           const InjectGeometry& g);
 
+// True for a platform input that lifts a previously pressed state: a key-up
+// (scan code or unicode) or a mouse-button-up. This is the rate limiter's
+// exemption and the first half of the queue's held-release test.
+inline bool IsReleaseInput(const PlatformInput& input) {
+    if (input.kind == PlatformInput::Kind::kKey) return input.release;
+    if (input.kind == PlatformInput::Kind::kMouseButton) {
+        return !input.button_down;
+    }
+    return false;
+}
+
+// Identity of a held key: the set-1 scan code plus the 0xE0 prefix flag. This
+// is exactly what TrackInput stores, so a release is matched against the press
+// it actually lifts (a 0xE0 key and the same non-extended scan code are two
+// different physical keys).
+struct KeyId {
+    uint16_t scancode = 0;
+    bool extended = false;
+
+    bool operator<(const KeyId& other) const {
+        if (scancode != other.scancode) return scancode < other.scancode;
+        return extended < other.extended;
+    }
+};
+
+// Keys and buttons a session has injected a press for and not yet released.
+// The sink tracks ONLY events the queue accepted: a press refused by the hard
+// limit was never injected, so it must never be "held" or released later.
+struct PressedInputs {
+    std::set<KeyId> keys;
+    std::set<uint8_t> buttons;
+};
+
+// Records an accepted press/release in `pressed`. Unicode key events carry no
+// physical key state (KEYEVENTF_UNICODE injects a character with wVk = 0, not a
+// scan-code key), so they are deliberately not tracked.
+void TrackInput(PressedInputs& pressed, const PlatformInput& input);
+
+// True when `input` lifts a key/button this session currently holds down. Such
+// a release is the only kind that may exceed the queue's hard limit: it is
+// bounded by the pressed set and losing it leaves the peer's key stuck. A
+// release for something not held (a repeated up, or the up of a press the hard
+// limit dropped) gets no exemption -- there is no physical state to clear.
+bool IsHeldRelease(const PlatformInput& input, const PressedInputs& pressed);
+
 // True when TranslateInput would produce at least one platform action for
 // `ev`. The server uses this before taking the (single) desktop input lease:
 // an event that can never be injected must not be able to hold the lease and
@@ -112,11 +161,13 @@ struct EnqueueState {
     size_t hard_limit = 0;  // absolute cap: never grow past this
     bool has_movable_move = false;
     bool incoming_is_move = false;
-    // True when the incoming event releases a key or button. Release events
-    // are bounded by the set of keys/buttons the session holds down, and
-    // losing one is worse than losing a press: the peer's key would stay
-    // stuck. They are therefore accepted regardless of the limits.
-    bool incoming_is_release = false;
+    // True when the incoming event lifts a key/button the session is CURRENTLY
+    // holding down (IsHeldRelease), not merely "is a release". Only a held
+    // release may exceed the hard limit: the pressed set bounds how many such
+    // events can exist, and losing one leaves the peer's key stuck. A release
+    // for something not held gets no exemption, so a flood of key-ups for keys
+    // that were never pressed cannot grow the queue past the hard limit.
+    bool incoming_is_held_release = false;
 };
 
 // Queue policy (see desktop_input_win32.cpp for the rationale):
@@ -126,9 +177,74 @@ struct EnqueueState {
 //   * with no movement to evict and a key/button/wheel press arriving: accept
 //     while the queue is below the hard limit, but DROP at the hard limit
 //     (fail closed: a bound on injection memory beats an unbounded queue);
-//   * a RELEASE (key up / button up) is always accepted, even at the hard
-//     limit: releases are bounded by the held-key set and losing one is what
-//     leaves the peer's key stuck.
+//   * a HELD release (the up of a press this session actually holds) is
+//     accepted even at the hard limit: it is bounded by the pressed set and
+//     losing one is what leaves the peer's key stuck. Any other release is
+//     treated like a press: dropped at the hard limit.
 EnqueueAction DecideEnqueue(const EnqueueState& state);
+
+// Admits one platform input: fills the incoming-event flags from `input`,
+// applies DecideEnqueue, and updates `pressed` ONLY when the queue accepted the
+// event (kAccept or kEvictMove). `held_release` must be computed by the caller
+// immediately before this call, against the pressed set it passes in (the sink
+// does exactly that in Inject()).
+//
+// The "track only when accepted" rule is load bearing: tracking a press the
+// hard limit dropped would make its later release look held, so the sink would
+// exempt it and "release" a key that was never pressed -- and the queue would
+// gain an unbounded stream of exempt events.
+EnqueueAction AdmitInput(EnqueueState state, PressedInputs& pressed,
+                         const PlatformInput& input, bool held_release);
+
+// Token-bucket rate limiter for the injection queue (docs/spec/
+// input-injection-seam.md 2.3). It runs on the sink's single worker thread, so
+// it takes no lock; `now` is caller-supplied steady_clock time so the policy is
+// unit testable without sleeping.
+//
+//   * one session: 400 events/s, burst 800 (two seconds of traffic);
+//   * all sessions together: 1000 events/s, burst 2000.
+//
+// Two exemptions mirror the queue policy: a RELEASE (key-up / button-up) is
+// never limited and spends no token, because losing one leaves the local key or
+// button stuck and the number of releases is bounded by what the session holds
+// down. An event refused by the GLOBAL bucket does not spend the session's
+// token either, so one busy peer cannot drain another session's allowance.
+class InputRateLimiter {
+ public:
+    using Clock = std::chrono::steady_clock;
+
+    static constexpr double kSessionEventsPerSecond = 400.0;
+    static constexpr double kSessionBurst = 800.0;
+    static constexpr double kGlobalEventsPerSecond = 1000.0;
+    static constexpr double kGlobalBurst = 2000.0;
+
+    // Returns true when one event may be injected. Only the worker thread calls
+    // this; a false result is expected to be counted by the caller (the sink
+    // adds it to InputStats::dropped_rate_limited).
+    bool Allow(uint32_t session_id, bool is_release, Clock::time_point now);
+
+    // Forgets a session's bucket (ReleaseSession), so a later session that
+    // reuses the id starts with a full burst instead of inheriting a drained
+    // bucket from the previous holder.
+    void Forget(uint32_t session_id);
+
+    // Events refused so far. A relaxed atomic because Stats() is documented as
+    // callable from any thread while the worker writes.
+    size_t dropped() const;
+
+ private:
+    struct Bucket {
+        double tokens = 0.0;
+        Clock::time_point last{};
+        bool started = false;
+    };
+
+    static void Refill(Bucket& bucket, double per_second, double burst,
+                       Clock::time_point now);
+
+    Bucket global_;
+    std::map<uint32_t, Bucket> sessions_;
+    mutable std::atomic<uint64_t> dropped_{0};
+};
 
 }  // namespace rtsc::server
