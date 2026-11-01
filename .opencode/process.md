@@ -527,3 +527,24 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
 - 另要求：补"硬限丢 press 后 `pressed_` 不含该键"测试（遮盖 `TrackPressed` 变异缺口）；
   禁止"5000 release 全允许"断言；`server_undefined_share_data_type` 先轮询计数再断言空
 - 审计 A/B 会话均已解散，其 relay 超时属正常
+## 第808轮：批 9 唤醒后核查（未提交工作树）
+- 已实现 `held_release`：`desktop_input_map.cpp:116`（`incoming_is_held_release → kAccept`）、`:159-164`（`AdmitInput` 传递）、`desktop_input_win32.cpp:127-128`（`IsHeldRelease` 于入队前计算）
+- 已实现限流：`desktop_input_map.cpp:191-194`（`InputRateLimiter::Allow`，release 豁免）、`desktop_input_win32.cpp:34-36` 注释 400/800 + 1000/2000、`:161` 暴露 `dropped_rate_limited`
+- 新测试（[BASH: Select-String tests]）：`:327` held release 接受、`:341` 非 held 硬限丢弃、`:364` held 接受且 untracked、`:387` 按钮释放豁免、`:411` unicode 释放不豁免、`:433` **硬限丢 press 不 track（补变异盲区）**、`:469-584` 6 条限流测试、`:598` IsInjectable 交叉、`:656` 启动状态/拒绝
+- 待办：等批 9 relay 报告 → 主代理独占全量 ctest → 独立审计 held_release 上界与限流语义
+## 第809轮：批 9 提交 `27cf199`；双审 D/E 已派
+### 主代理验收
+- 构建 `exit=0 warn=0 err=0`；**独占**全量 ctest `0 tests failed out of 63`（68.72s）
+- 逐行核对：`desktop_input_win32.cpp:127-128` held_release 于入队前求值；`:192-204` 仅 kAccept 才 push 并 track；
+  `desktop_input_map.cpp:116` held_release 才 kAccept；`:191-207` 限流拒绝时两桶都不扣；`:324` 出队后 SendInput 前限流；
+  `AppendReleasesLocked` 仅遍历 `pressed`（有界）
+### 我已发现、待审计 D 独立确认的疑点
+`TrackInput`（`desktop_input_map.cpp:121-133`）对 **任意 scancode** 插入 `pressed.keys`：scancode 空间
+`0x00-0xFFFF` + extended 位 → 最多 ~131,072 项，恶意对端可把"有界公式"从 1024 抬到 ~132k（约数 MB）。
+虽非"无界"，但违背 §1.5 意图；若审计 D 同判 FAIL，修法方向：以**实际按下的 VK**（≤256）为键，
+或在插入时按 VK 槽位去重（同 VK 多 scancode 只保留一个并强制释放最旧者）。
+### 已派
+- 审计 D `ses_e6a5ce98dfferVQXZ3ELT8rso3`：上界严格证明 + `pressed` 无界性 + 键身份互逆
+- 审计 E `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：限流语义/时钟/`sessions_` 增长/移动绕过/文档一致
+### 环境
+批 9 结束后再次 TLS 证书错误（累计第 6 次），任务已完成并已 delete。
