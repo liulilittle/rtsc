@@ -37,6 +37,9 @@ class NullDesktopInputSink final : public DesktopInputSink {
         InputStats stats;
         stats.injected = static_cast<size_t>(
             dropped_.load(std::memory_order_relaxed));
+        // No queue, so no synthetic up can ever fail to be queued. Explicit so
+        // the field is never left to an aggregate default.
+        stats.release_failures = 0;
         return stats;
     }
 

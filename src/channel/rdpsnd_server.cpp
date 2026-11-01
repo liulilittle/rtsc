@@ -45,7 +45,12 @@ RdpsndServer::RdpsndServer(
       negotiation_timeout_(negotiation_timeout) {}
 
 RdpsndServer::~RdpsndServer() {
-    if (source_ && started_) source_->Stop();
+    // source_ is an embedder-supplied capture source, so Stop() is an external
+    // virtual call. This destructor must not throw.
+    try {
+        if (source_ && started_) source_->Stop();
+    } catch (...) {
+    }
 }
 
 void RdpsndServer::Start() {

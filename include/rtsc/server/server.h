@@ -392,6 +392,12 @@ class RdpServer {
     // only the injection attempt is dropped.
     size_t input_lease_denied_count() const;
 
+    // Number of session teardowns whose DesktopInputSink::ReleaseSession call
+    // threw, over the life of this server (monotonic, never reset). Teardown
+    // still frees the lease slot; the count only makes a possibly-lost
+    // synthetic key/button release observable (the local keys may stay down).
+    size_t input_release_failure_count() const;
+
  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

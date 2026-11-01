@@ -681,6 +681,17 @@ add_executable(rtsc_desktop_input_tests tests/test_desktop_input.cpp)
 target_sources(rtsc_desktop_input_tests PRIVATE src/server/desktop_input_null.cpp)
 target_link_libraries(rtsc_desktop_input_tests PRIVATE rtsc_server_desktop_input_map rtsc_util)
 target_include_directories(rtsc_desktop_input_tests PRIVATE tests)
+if(WIN32)
+    # The production Win32 sink is built into this suite as well, behind
+    # RTSC_DESKTOP_INPUT_TESTING, so the teardown failure paths (a throwing
+    # release append) can be reproduced without injecting real input. The
+    # production factory stays compiled out in that build and the null sink
+    # above keeps providing MakeWin32DesktopInputSink.
+    target_sources(rtsc_desktop_input_tests PRIVATE src/server/desktop_input_win32.cpp)
+    target_compile_definitions(rtsc_desktop_input_tests PRIVATE
+                               RTSC_DESKTOP_INPUT_TESTING)
+    target_link_libraries(rtsc_desktop_input_tests PRIVATE user32)
+endif()
 # The host's startup line and lease-denied warning cannot be linked into this
 # suite (tools/rtsc_server/main.cpp owns a full server process), so those two
 # wiring points are guarded structurally against the source file.

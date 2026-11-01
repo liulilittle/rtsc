@@ -651,12 +651,16 @@ void DecodePointerEvent(uint16_t pf, uint16_t x_pos, uint16_t y_pos,
 struct InputLease {
     explicit InputLease(size_t max_sessions)
         : max_sessions(max_sessions),
-          denied(std::make_shared<std::atomic<size_t>>(0)) {}
+          denied(std::make_shared<std::atomic<size_t>>(0)),
+          release_failures(std::make_shared<std::atomic<size_t>>(0)) {}
 
     std::mutex mu;
     std::set<uint32_t> holders;  // input session ids currently injecting
     const size_t max_sessions;   // 0 = unlimited (explicit opt-out)
     std::shared_ptr<std::atomic<size_t>> denied;
+    // Teardown calls whose sink release threw. The released key/button ups may
+    // have been lost, so this is the only operator-visible signal of it.
+    std::shared_ptr<std::atomic<size_t>> release_failures;
 };
 
 // One accepted peer. Owns its transport, its X.224/MCS state, its security
@@ -775,6 +779,10 @@ class RdpSession {
             } catch (...) {
                 // Teardown must still free the slot below: the flags above are
                 // already set, so a skipped erase would leak it permanently.
+                // Count it: the sink may have lost the synthetic ups, leaving
+                // local keys/buttons down with no other visible signal.
+                input_lease_->release_failures->fetch_add(
+                    1, std::memory_order_relaxed);
             }
         }
         {
@@ -2458,7 +2466,16 @@ void RdpServer::Stop() {
     // could be missed by the snapshot cannot register: either the snapshot
     // below already saw it, or the register sees this false and breaks.
     impl_->running.store(false, std::memory_order_relaxed);
-    if (impl_->listener) impl_->listener->Close();
+    // Both calls below go through virtual interfaces that are not noexcept (a
+    // transport Close() or a session Stop() may be implemented by an embedder).
+    // Stop() also runs from ~RdpServer, so one escaping exception would
+    // terminate the process; each step is isolated so the teardown continues.
+    if (impl_->listener) {
+        try {
+            impl_->listener->Close();
+        } catch (...) {
+        }
+    }
 
     const auto registry = impl_->registry;
     // Ask every live session to stop, then wait until their detached threads
@@ -2471,7 +2488,12 @@ void RdpServer::Stop() {
         std::lock_guard<std::mutex> lock(registry->mu);
         sessions = registry->sessions;
     }
-    for (const auto& s : sessions) s->Stop();
+    for (const auto& s : sessions) {
+        try {
+            s->Stop();
+        } catch (...) {
+        }
+    }
     std::unique_lock<std::mutex> lock(registry->mu);
     registry->cv.wait(lock, [&registry]() { return registry->live == 0; });
     // Dropping `sessions` releases any session the thread had not released yet;
@@ -2499,6 +2521,11 @@ size_t RdpServer::malformed_input_pdu_count() const {
 
 size_t RdpServer::input_lease_denied_count() const {
     return impl_->input_lease->denied->load(std::memory_order_relaxed);
+}
+
+size_t RdpServer::input_release_failure_count() const {
+    return impl_->input_lease->release_failures->load(
+        std::memory_order_relaxed);
 }
 
 // ---- Test pattern ----------------------------------------------------------

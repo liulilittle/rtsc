@@ -47,12 +47,17 @@ struct InjectGeometry {
 // 1000 actions/s and a burst of 2000 globally; only a HELD release -- the up of
 // a key/button the session actually holds down -- is exempt and never counted
 // here), and `send_failures` counts SendInput calls that did not emit exactly
-// one event.
+// one event. `release_failures` counts teardown attempts whose synthetic key
+// and button ups could not be queued (an allocation failure while appending
+// them): the released keys stay physically down, so the counter is the only
+// way an operator can observe a release that was lost. The null backend, which
+// has no queue, always reports zero.
 struct InputStats {
     size_t injected = 0;
     size_t dropped_queue_full = 0;
     size_t dropped_rate_limited = 0;
     size_t send_failures = 0;
+    size_t release_failures = 0;
 };
 
 // Receives decoded input for injection. Every method runs on the session thread

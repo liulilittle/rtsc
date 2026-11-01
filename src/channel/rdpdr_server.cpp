@@ -46,7 +46,13 @@ RdpdrServer::~RdpdrServer() {
     outstanding_.clear();
     for (auto& entry : pending) {
         if (entry.callback) {
-            entry.callback(rtsc::proto::kStatusUnsuccessful, {});
+            // The callback belongs to the embedder: one that throws must not
+            // turn this destructor into std::terminate. The remaining pending
+            // IRPs are still failed.
+            try {
+                entry.callback(rtsc::proto::kStatusUnsuccessful, {});
+            } catch (...) {
+            }
         }
     }
 }

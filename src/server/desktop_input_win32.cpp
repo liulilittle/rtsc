@@ -58,6 +58,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <set>
 #include <thread>
@@ -74,10 +75,18 @@
 
 #include "rtsc/server/desktop_input_map.h"
 
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+#include "desktop_input_win32_test_hooks.h"
+#endif
+
 namespace rtsc::server {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+std::atomic<DesktopInputAppendFailureHook> g_append_failure_hook{nullptr};
+#endif
 
 constexpr size_t kMaxQueue = 256;
 // Absolute bound on queued platform inputs. The soft limit allows short
@@ -157,15 +166,33 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             // the pointer after the release). The move maps are worker-owned,
             // so only record the request here; the worker drains it under the
             // same mutex before it emits or dispatches anything else.
-            forget_sessions_.insert(session_id);
-            const auto it = sessions_.find(session_id);
-            if (it == sessions_.end()) {
-                cv_.notify_one();
-                return;
+            //
+            // Teardown must not be skipped by a failure while queueing the
+            // synthetic ups: losing the ups leaves keys down, but leaving the
+            // session (or the forget request) behind keeps the worker asleep
+            // and permanently rejects the next session that reuses the id.
+            try {
+                forget_sessions_.insert(session_id);
+            } catch (...) {
+                // No forget request; the session state itself is still
+                // released below.
             }
-            AppendReleasesLocked(session_id, it->second);
-            sessions_.erase(it);
+            const auto it = sessions_.find(session_id);
+            if (it != sessions_.end()) {
+                try {
+                    AppendReleasesLocked(session_id, it->second);
+                } catch (...) {
+                    release_failures_.fetch_add(1,
+                                                std::memory_order_relaxed);
+                }
+                // Unconditional: the session state and its pressed set must
+                // not survive a failed append (the ups are lost either way,
+                // and a retained state would keep the id unusable).
+                sessions_.erase(it);
+            }
         }
+        // Unconditional: the worker must observe the forget request (or the
+        // synthetic ups) even when the append above failed.
         cv_.notify_one();
     }
 
@@ -178,8 +205,33 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         stats.dropped_rate_limited = rate_limiter_.dropped();
         stats.send_failures =
             injected_failed_.load(std::memory_order_relaxed);
+        stats.release_failures =
+            release_failures_.load(std::memory_order_relaxed);
         return stats;
     }
+
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+    // Test seam (desktop_input_win32_test_hooks.h): the suite drives the real
+    // teardown paths without injecting input. Not part of the production build.
+    void SeedPressedKeyForTest(uint32_t session_id, uint16_t scancode,
+                               bool extended) {
+        std::lock_guard<std::mutex> lock(mu_);
+        KeyId key;
+        key.scancode = scancode;
+        key.extended = extended;
+        sessions_[session_id].pressed.keys.insert(key);
+    }
+    size_t SessionCountForTest() {
+        std::lock_guard<std::mutex> lock(mu_);
+        return sessions_.size();
+    }
+    size_t PendingForgetCountForTest() {
+        std::lock_guard<std::mutex> lock(mu_);
+        return forget_sessions_.size();
+    }
+    void ShutdownForTest() { Shutdown(); }
+    bool WorkerJoinableForTest() { return worker_.joinable(); }
+#endif
 
  private:
     // ---- queue-side helpers (mu_ held) ------------------------------------
@@ -233,6 +285,10 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         return true;
     }
 
+    // Queues the synthetic ups for every key and button the session still
+    // holds. May throw (a deque allocation); the callers are the teardown
+    // paths, which must finish their cleanup regardless (see ReleaseSession
+    // and Shutdown).
     void AppendReleasesLocked(uint32_t session_id,
                               const SessionInputState& session) {
         // Win32 does not reset the keyboard state, so every key and button the
@@ -240,54 +296,86 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         // release events deliberately bypass the queue-policy call: they are
         // bounded by the pressed-key/button set (not by peer traffic) and they
         // are what makes a dropped key temporally harmless.
+        size_t index = 0;
         for (const KeyId& key : session.pressed.keys) {
             PlatformInput up;
             up.kind = PlatformInput::Kind::kKey;
             up.scancode = key.scancode;
             up.extended = key.extended;
             up.release = true;
-            queue_.push_back({session_id, up, true});
+            AppendReleaseLocked(session_id, up, index++);
         }
         for (const uint8_t button : session.pressed.buttons) {
             PlatformInput up;
             up.kind = PlatformInput::Kind::kMouseButton;
             up.button = button;
             up.button_down = false;
-            queue_.push_back({session_id, up, true});
+            AppendReleaseLocked(session_id, up, index++);
         }
     }
 
+    // Queues one synthetic up. The test hook makes it throw std::bad_alloc,
+    // exactly like a real allocation failure, so the teardown callers can be
+    // exercised without exhausting memory.
+    void AppendReleaseLocked(uint32_t session_id, const PlatformInput& up,
+                             size_t index) {
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+        const DesktopInputAppendFailureHook hook =
+            g_append_failure_hook.load(std::memory_order_relaxed);
+        if (hook != nullptr && hook(session_id, index)) {
+            throw std::bad_alloc();
+        }
+#else
+        (void)index;
+#endif
+        queue_.push_back({session_id, up, true});
+    }
+
     // ---- worker-only state -------------------------------------------------
-    void WorkerMain() {
+    void WorkerMain() noexcept {
         for (;;) {
             std::optional<QueuedInput> item;
             bool stop = false;
-            {
-                std::unique_lock<std::mutex> lock(mu_);
-                ForgetReleasedSessionsLocked();
-                if (!queue_.empty()) {
-                    item.emplace(std::move(queue_.front()));
-                    queue_.pop_front();
-                } else if (stopping_) {
-                    stop = true;
-                } else {
-                    const std::optional<Clock::time_point> deadline =
-                        NextMoveDeadline();
-                    if (deadline) {
-                        cv_.wait_until(lock, *deadline);
+            // One failed iteration (an allocation failure in Dispatch or
+            // EmitDueMoves) must not escape the thread function: that is
+            // std::terminate, which would kill the whole process. Count it,
+            // drop the item and keep draining.
+            try {
+                {
+                    std::unique_lock<std::mutex> lock(mu_);
+                    ForgetReleasedSessionsLocked();
+                    if (!queue_.empty()) {
+                        item.emplace(std::move(queue_.front()));
+                        queue_.pop_front();
+                    } else if (stopping_) {
+                        stop = true;
                     } else {
-                        cv_.wait(lock);
+                        const std::optional<Clock::time_point> deadline =
+                            NextMoveDeadline();
+                        if (deadline) {
+                            cv_.wait_until(lock, *deadline);
+                        } else {
+                            cv_.wait(lock);
+                        }
                     }
                 }
+                if (stop) break;
+                // Emit due moves only after the forget drain and before the
+                // next dispatch: a pending move of a session whose
+                // ReleaseSession has already been drained is gone by the time
+                // this runs.
+                EmitDueMoves();
+                if (item) Dispatch(std::move(*item));
+            } catch (...) {
+                worker_failures_.fetch_add(1, std::memory_order_relaxed);
+                if (stopping_) break;
             }
-            if (stop) break;
-            // Emit due moves only after the forget drain and before the next
-            // dispatch: a pending move of a session whose ReleaseSession has
-            // already been drained is gone by the time this runs.
-            EmitDueMoves();
-            if (item) Dispatch(std::move(*item));
         }
-        FlushMoves();
+        try {
+            FlushMoves();
+        } catch (...) {
+            worker_failures_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     // Drops the pending move, the move-rate timestamp and the rate-limit bucket
@@ -510,23 +598,55 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         }
     }
 
-    void Shutdown() {
-        {
+    // Teardown must be noexcept: it runs from the destructor, and a skipped
+    // join makes ~std::thread call std::terminate. Every step is isolated, and
+    // the notify/join run unconditionally.
+    void Shutdown() noexcept {
+        try {
             std::lock_guard<std::mutex> lock(mu_);
-            if (stopping_) return;
-            stopping_ = true;
-            for (auto& entry : sessions_) {
-                AppendReleasesLocked(entry.first, entry.second);
-                entry.second.pressed = PressedInputs{};
+            // The append pass runs once. Not returning early afterwards is
+            // deliberate: if an earlier call failed before the join, this one
+            // still has to wake and join the worker (both are idempotent).
+            if (!stopping_) {
+                stopping_ = true;
+                for (auto& entry : sessions_) {
+                    try {
+                        AppendReleasesLocked(entry.first, entry.second);
+                    } catch (...) {
+                        release_failures_.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
+                    try {
+                        entry.second.pressed = PressedInputs{};
+                    } catch (...) {
+                        // Cannot normally throw; nothing may escape a
+                        // destructor path.
+                    }
+                }
+                try {
+                    sessions_.clear();
+                } catch (...) {
+                }
             }
+        } catch (...) {
+            // A mutex-misuse exception is unrecoverable, but the worker still
+            // has to be woken and joined below.
         }
+        // Unconditional, and never an early return when stopping_ was already
+        // set: if an earlier call failed before the join, this one still has to
+        // wake and join the worker. A skipped notify or join leaves the worker
+        // asleep and then makes ~std::thread terminate the process. Both
+        // operations are idempotent.
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
         // The worker has drained the queue (FlushMoves ran on exit); release
         // the worker-owned move state explicitly so nothing survives a
         // shutdown that already appended the synthetic ups.
-        pending_moves_.clear();
-        last_move_sent_.clear();
+        try {
+            pending_moves_.clear();
+            last_move_sent_.clear();
+        } catch (...) {
+        }
     }
 
     std::mutex mu_;
@@ -537,7 +657,10 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     // state (guarded by mu_). The worker also drops their pending move and
     // move-rate timestamp; the rate-limit bucket is guarded by mu_ too.
     std::set<uint32_t> forget_sessions_;
-    bool stopping_ = false;
+    // Written under mu_ by Shutdown; read by the worker outside the lock on the
+    // exception path, so it is atomic (relaxed suffices: the mutex provides the
+    // ordering for the state it guards).
+    std::atomic<bool> stopping_{false};
     std::thread worker_;
 
     // Move state: owned by the worker thread. `pending_moves_` and
@@ -554,6 +677,11 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     std::atomic<uint64_t> injected_failed_{0};
     std::atomic<uint64_t> dropped_queue_full_{0};
     std::atomic<uint64_t> dropped_unsupported_{0};
+    // Teardown synthetic ups that could not be queued: the corresponding key or
+    // button stays physically down, so this is the only place it is visible.
+    std::atomic<uint64_t> release_failures_{0};
+    // Worker iterations that threw and were skipped (see WorkerMain).
+    std::atomic<uint64_t> worker_failures_{0};
 
     std::mutex log_mu_;
     bool logged_failure_ = false;
@@ -562,8 +690,65 @@ class Win32DesktopInputSink final : public DesktopInputSink {
 
 }  // namespace
 
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+
+void SetDesktopInputAppendFailureHook(DesktopInputAppendFailureHook hook) {
+    g_append_failure_hook.store(hook, std::memory_order_relaxed);
+}
+
+std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSinkForTest() {
+    return std::make_unique<Win32DesktopInputSink>();
+}
+
+namespace {
+
+Win32DesktopInputSink* AsWin32(DesktopInputSink* sink) {
+    return static_cast<Win32DesktopInputSink*>(sink);
+}
+
+}  // namespace
+
+void DesktopInputTestSeedPressedKey(DesktopInputSink* sink, uint32_t session_id,
+                                    uint16_t scancode, bool extended) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return;
+    win32->SeedPressedKeyForTest(session_id, scancode, extended);
+}
+
+size_t DesktopInputTestSessionCount(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return 0;
+    return win32->SessionCountForTest();
+}
+
+size_t DesktopInputTestPendingForgetCount(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return 0;
+    return win32->PendingForgetCountForTest();
+}
+
+void DesktopInputTestShutdown(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return;
+    win32->ShutdownForTest();
+}
+
+bool DesktopInputTestWorkerFinished(DesktopInputSink* sink) {
+    return !DesktopInputTestWorkerJoinable(sink);
+}
+
+bool DesktopInputTestWorkerJoinable(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return false;
+    return win32->WorkerJoinableForTest();
+}
+
+#else
+
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSink() {
     return std::make_unique<Win32DesktopInputSink>();
 }
+
+#endif
 
 }  // namespace rtsc::server

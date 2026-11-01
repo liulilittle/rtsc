@@ -757,7 +757,7 @@ bool SendTestInput(const HandshakeResult& r) {
 // reports that the holder's ReleaseSession ran, `handed_off` that the survivor
 // then acquired the lease.
 bool RunLeaseHandoffProbe(bool throw_on_release, bool* released,
-                          bool* handed_off) {
+                          bool* handed_off, size_t* release_failures) {
     ServerConfig cfg;
     cfg.port = 0;
     cfg.desktop_width = 64;
@@ -802,6 +802,16 @@ bool RunLeaseHandoffProbe(bool throw_on_release, bool* released,
     *released = holder != 0 && WaitUntil([&sink, holder]() {
         return CountId(sink.release_ids(), holder) == 1;
     });
+    if (release_failures != nullptr) {
+        // ReleaseSession records the id before it throws, so give the teardown
+        // a moment to reach the catch that counts the failure.
+        if (throw_on_release) {
+            WaitUntil([&server]() {
+                return server.input_release_failure_count() != 0;
+            });
+        }
+        *release_failures = server.input_release_failure_count();
+    }
 
     // The survivor must acquire the freed slot. A leaked slot denies it on
     // every attempt, so a distinct session id never reaches Inject.
@@ -3869,15 +3879,24 @@ RTSC_TEST(server_release_input_frees_lease_slot_when_release_throws) {
     // control (well-behaved sink); the second must behave the same.
     bool released = false;
     bool handed_off = false;
-    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/false, &released, &handed_off));
+    size_t release_failures = 0;
+    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/false, &released, &handed_off,
+                               &release_failures));
     CHECK(released);
     CHECK(handed_off);
+    // A well-behaved sink: teardown never failed, nothing was lost.
+    CHECK_EQ(release_failures, static_cast<size_t>(0));
 
     released = false;
     handed_off = false;
-    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/true, &released, &handed_off));
+    release_failures = 0;
+    CHECK(RunLeaseHandoffProbe(/*throw_on_release=*/true, &released, &handed_off,
+                               &release_failures));
     CHECK(released);
     CHECK(handed_off);
+    // The throw was counted (the sink may have lost the synthetic ups): the
+    // failure is observable even though the lease slot was freed.
+    CHECK_EQ(release_failures, static_cast<size_t>(1));
 }
 
 RTSC_TEST(server_non_injectable_input_does_not_hold_lease) {

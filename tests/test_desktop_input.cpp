@@ -9,12 +9,18 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "rtsc/server/desktop_input_map.h"
 #include "test_framework.h"
 #include "test_main.h"
+
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+#include "desktop_input_win32_test_hooks.h"
+#endif
 
 namespace {
 
@@ -1038,6 +1044,8 @@ RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
     CHECK(src.find("input_dropped_queue=") != std::string::npos);
     CHECK(src.find("input_rate_limited=") != std::string::npos);
     CHECK(src.find("input_send_failures=") != std::string::npos);
+    // Teardown releases that could not be queued are only visible here.
+    CHECK(src.find("input_release_failures=") != std::string::npos);
     // The final value is printed before the process exits.
     CHECK(src.find("\"final\"") != std::string::npos);
 #else
@@ -1067,8 +1075,75 @@ RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
     // present so a host can read it uniformly from DesktopInputSink::Stats().
     CHECK_EQ(sink->Stats().dropped_rate_limited, static_cast<size_t>(0));
     CHECK_EQ(sink->Stats().send_failures, static_cast<size_t>(0));
+    // The null backend has no queue, so a teardown release can never fail to
+    // be queued: the counter is explicitly zero, not merely defaulted.
+    CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(0));
     sink->ReleaseSession(1);
     CHECK_EQ(sink->Stats().injected, static_cast<size_t>(2));
 }
+
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+RTSC_TEST(desktop_input_release_session_clears_state_when_append_throws) {
+    // N-1: the synthetic ups for a released session are queued by
+    // AppendReleasesLocked, which can throw (a deque allocation). Before the
+    // fix that exception skipped both sessions_.erase and cv_.notify_one:
+    // the session stayed half-alive, and because Inject() early-returns for a
+    // forgotten id without notifying, the worker could sleep forever and the
+    // next session (ids restart at 1) would have all its input dropped.
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    rtsc::server::DesktopInputTestSeedPressedKey(sink.get(), 7, 0x1E, false);
+    CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(sink.get()),
+             static_cast<size_t>(1));
+    rtsc::server::SetDesktopInputAppendFailureHook(
+        [](uint32_t, size_t) { return true; });
+    sink->ReleaseSession(7);
+    rtsc::server::SetDesktopInputAppendFailureHook(nullptr);
+    // Unconditional teardown, even though appending the ups failed.
+    CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(sink.get()),
+             static_cast<size_t>(0));
+    CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(1));
+    // The lost release must be observable and the worker must still be woken:
+    // the forget request is drained by the worker under the mutex.
+    bool drained = false;
+    for (int i = 0; i < 300; ++i) {
+        if (rtsc::server::DesktopInputTestPendingForgetCount(sink.get()) == 0) {
+            drained = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(drained);
+}
+
+RTSC_TEST(desktop_input_shutdown_joins_worker_when_append_throws) {
+    // N-2: Shutdown appends the synthetic ups for every live session before
+    // joining the worker. If that append throws and the join is skipped,
+    // ~Win32DesktopInputSink leaves a joinable std::thread behind and the
+    // std::thread destructor calls std::terminate -- teardown kills the
+    // process. Shutdown must be noexcept: join runs no matter what.
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    rtsc::server::DesktopInputTestSeedPressedKey(sink.get(), 3, 0x2A, false);
+    rtsc::server::SetDesktopInputAppendFailureHook(
+        [](uint32_t, size_t) { return true; });
+    rtsc::server::DesktopInputTestShutdown(sink.get());
+    rtsc::server::SetDesktopInputAppendFailureHook(nullptr);
+    CHECK(!rtsc::server::DesktopInputTestWorkerJoinable(sink.get()));
+    CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(1));
+    CHECK_EQ(rtsc::server::DesktopInputTestSessionCount(sink.get()),
+             static_cast<size_t>(0));
+    if (rtsc::server::DesktopInputTestWorkerJoinable(sink.get())) {
+        // A broken shutdown left the worker unjoined: keep the sink alive so
+        // this test's failure is reported instead of becoming std::terminate.
+        static rtsc::server::DesktopInputSink* leaked = sink.release();
+        (void)leaked;
+    }
+}
+#endif  // RTSC_DESKTOP_INPUT_TESTING
 
 int main() { return rtsc::test::run_all("rtsc_desktop_input_tests"); }
