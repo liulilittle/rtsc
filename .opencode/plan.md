@@ -621,3 +621,31 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - §2.3：`kMouseRel` **已上送**（`Kind::kMouseRel`），v1 注入器不注入（相对移动受加速污染）；
   `kSync` 不注入。
 - §2.4：限流与告警按本节实现（若实现与本定案有偏差，以代码+测试为准并回写本文件）。
+## 批 11 定案（审计 G 的 E7 + E1-T，round 815 预写）
+> 范围：仅文档/注释与 1 条测试，**不动产品逻辑**（G 已判 E1/E5/E6 PASS）。
+
+### 文档/注释（4 处）
+1. `docs/spec/input-injection-seam.md:137` 与 `src/server/desktop_input_win32.cpp:26-27`：
+   峰值上界必须写全两段：
+   - 对端可入队事件：`peak(queue) ≤ kHardQueueLimit + |pressed|@饱和 = 1024 + 515 = 1539`
+   - **合成 up**：`AppendReleasesLocked`（`win32.cpp:232-254`）按 `pressed` 直推、不受队列上限，
+     且 purge 保留 `synthetic`（`307-315`）→ 追加 `+ Σ 会话 |pressed| ≤ 会话数 × 515`
+   - 明确"不得读作瞬时不变式"（释放后 queue=1534 / pressed=0 的探针事实）。
+2. `include/rtsc/server/desktop_input.h:41-43`：`dropped_queue_full` 定义补"**会话结束时 purge 的排队项**"
+   （`win32.cpp:310` 路径），否则读计数器的人会以为只统计硬限丢弃。
+3. `seam.md:168`："退出前终值"限定为**正常退出**（`--seconds` 到期 / `--once`）；
+   无界模式无 SIGINT 处理（`main.cpp:713-722`）→ 必须写明"Ctrl+C 不打印 final"。
+4. `seam.md:170`：删"Inject 返回 false"（`Inject` 是 void，`desktop_input.h:71`）。
+
+### 测试（E1-T 缺口）
+新增 `desktop_input_rate_limit_held_release_keeps_token`：
+- 给定：会话耗尽到仅剩 1 令牌（799 presses，burst 800）
+- 当：发 100 条 **held** up（先按下再抬起）
+- 则：全部放行且 `dropped_delta == 0`，**且保留的 1 令牌仍可花**（下一次 press 放行）
+- 变异 mutC（held up 豁免但扣令牌）必须使该用例转红。
+
+### 验收
+- `cmake --build build --config Release` 0 err 0 warn
+- `ctest --test-dir build -C Release` 独占 63/63
+- mutC 红 → 恢复绿 + `Get-FileHash` 双证
+- 文档与代码逐条对照，禁止保留任何"文档说 X、代码是 Y"的句子
