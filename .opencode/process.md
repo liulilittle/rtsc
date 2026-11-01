@@ -714,3 +714,8 @@ F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、
 - 已令 H 与 I 直接互通（H 补 I 的文档核对、I 校正 H 的行号）
 ### 子代理
 批 12 执行会话 `ses_e69c4df7` 已完成（待本轮结束后 delete）。
+## 第822轮：双审 H/I 被平台中断（零输出）→ 已补发继续指令
+- [BASH: get_goal] H / I 均 `idle`、`wrote=null`、无报告文件（`docs/spec/input-batch12-review-*.md` 不存在）
+- 本轮均为"系统/平台中断（非用户停止）"，按任务调度条款经 `prompt` 直发原会话（附完整任务摘要），未新开替代
+- 同步补发 H↔I 的互相对话 ID，保证磋商通道
+- 本轮环境：再次出现 `Cannot connect to API` 宿主错误（子会话侧），累计已超 10 次；策略不变：压短提示词 + 原会话继续
