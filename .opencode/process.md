@@ -928,3 +928,13 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
 2) 审计 J 补交后复核（在途）
 ### 子代理
 批 17 已 delete 解散。
+## 第836轮：批 18 提交 `d8badad`（峰值注释统一为 hard_limit + 515·K）
+### 主代理直接执行（1 文件注释 + 文档回写，无逻辑改动）
+- `src/server/desktop_input_win32.cpp:25-38`：删除"合成 up 作为额外项 `sessions × 515`"的重复计基线写法，
+  统一为 `peak ≤ kHardQueueLimit + 515·K`（K=持租且 pressed 非空的会话数，默认 1 → 1539），
+  并显式声明"合成 up 与 pressed 是**同一项**，非额外相加"、"PEAK 非瞬时不变式"
+- `docs/spec/input-injection-seam.md` §7.2 补记：把"仍存在的不一致"改为"已于批 18 修复"
+- 验证：`cmake --build` exit=0 / warn=0 / err=0；seam `U+FFFD`=0
+### 剩余待办
+- 审计 J 补交（在途，busy）
+- 真机验证（用户环境）
