@@ -15,9 +15,10 @@ namespace {
 // The negotiated framebuffer has `extent` pixels per axis; the client's last
 // valid pixel is extent-1, which maps onto 65535. Values at or beyond the last
 // pixel are clamped rather than allowed to overflow the wire range (the RDP
-// coordinate is a uint16 and may legally carry 65535). An extent of 0 (geometry
-// not known yet) or 1 (no span) degrades to a 1:1 pass-through instead of
-// dividing by zero.
+// coordinate is a uint16 and may legally carry 65535). Callers reject a
+// geometry whose extent is 0 (not known yet) or 1 (no span) before asking for
+// absolute movement; the guard here only keeps a future caller from dividing by
+// zero.
 int NormalizeAxis(uint16_t value, uint16_t extent) {
     if (extent <= 1) return static_cast<int>(value);
     const int last = static_cast<int>(extent) - 1;
@@ -37,6 +38,13 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
             // only for a KEYEVENTF_UNICODE event, and this branch is the scan
             // code path. Dropping it keeps an unusable INPUT out of the queue.
             if (ev.scancode == 0) return out;
+            // The 0xE1 prefix (FASTPATH_INPUT_KBDFLAGS_EXTENDED1) belongs to
+            // the PAUSE sequence, whose CTRL down/up carry it on the wire.
+            // SendInput has no KEYEVENTF_EXTENDED1, so injecting the bare scan
+            // code would press/release a DIFFERENT physical key -- the plain
+            // CTRL and NumLock, which toggles the local keyboard state. The
+            // event has no faithful platform form, so it produces nothing.
+            if (ev.extended1) return out;
             // The RDP keyCode is already the set-1 scan code; the 0xE0 prefix
             // is a separate flag, so the value must never be offset by 0x100.
             PlatformInput key;
@@ -61,7 +69,13 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
             // Only PTRFLAGS_MOVE moves the absolute pointer; a release carries
             // the button bit without MOVE. Treating every kMouse as a move
             // would teleport the cursor to (0, 0) on each button release.
-            if (ev.is_move) {
+            // Normalization needs a real pixel span on both axes. With a
+            // geometry of 0 (not negotiated yet) or 1 (no span) the old 1:1
+            // pass-through sent the raw wire value as a normalized coordinate,
+            // which puts the pointer at the wrong place (or leaves it pinned
+            // at the top-left corner). Drop the move rather than inject a
+            // position that cannot be derived.
+            if (ev.is_move && g.width > 1 && g.height > 1) {
                 PlatformInput move;
                 move.kind = PlatformInput::Kind::kMouseMove;
                 move.x = NormalizeAxis(ev.x, g.width);
@@ -84,6 +98,11 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
             // notch); the backend must not multiply it by 120 again. x/y are
             // ignored: [MS-RDPBCGR] requires a wheel event to carry no pointer
             // movement.
+            //
+            // A zero delta rotates nothing: enqueueing it would spend a queue
+            // slot and a rate-limit token on a no-op, and a peer could flood
+            // zero wheels to evict queued movement and starve real input.
+            if (ev.wheel_delta == 0) return out;
             PlatformInput wheel;
             wheel.kind = PlatformInput::Kind::kWheel;
             wheel.wheel = ev.wheel_delta;

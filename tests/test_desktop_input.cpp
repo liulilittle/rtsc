@@ -27,6 +27,7 @@ using rtsc::server::EnqueueState;
 using rtsc::server::InjectGeometry;
 using rtsc::server::InputEvent;
 using rtsc::server::IsHeldRelease;
+using rtsc::server::IsInjectable;
 using rtsc::server::IsReleaseInput;
 using rtsc::server::KeyId;
 using rtsc::server::MakeWin32DesktopInputSink;
@@ -79,6 +80,33 @@ RTSC_TEST(desktop_input_extended_key_keeps_scancode) {
     CHECK_EQ(out[0].scancode, 0x1D);
     CHECK(out[0].extended);
     CHECK(!out[0].release);
+}
+
+RTSC_TEST(desktop_input_extended1_is_not_injected) {
+    // The 0xE1 prefix (FASTPATH_INPUT_KBDFLAGS_EXTENDED1) belongs to the PAUSE
+    // sequence: its CTRL down/up carry it on the wire. SendInput has no
+    // KEYEVENTF_EXTENDED1, so injecting the bare scan code would press a
+    // DIFFERENT physical key -- the plain CTRL and NumLock, which really
+    // toggles the local keyboard state. The event cannot be expressed and must
+    // produce no platform input at all (P-6 item 4).
+    InputEvent ev = KeyEvent(0x1D, false, false);
+    ev.extended1 = true;
+    CHECK(TranslateInput(ev, InjectGeometry{}).empty());
+    CHECK(!IsInjectable(ev));
+    // Both halves of the sequence are refused, not just the down.
+    InputEvent up = KeyEvent(0x1D, false, true);
+    up.extended1 = true;
+    CHECK(TranslateInput(up, InjectGeometry{}).empty());
+    CHECK(!IsInjectable(up));
+    // Control: the same scan code without the E1 flag is an ordinary key.
+    const InputEvent plain = KeyEvent(0x1D, false, false);
+    CHECK_EQ(TranslateInput(plain, InjectGeometry{}).size(), 1u);
+    CHECK(IsInjectable(plain));
+    // Off-by-one guard: the 0xE0 flag (`extended`) is NOT the 0xE1 flag and
+    // must keep being injected.
+    const InputEvent e0 = KeyEvent(0x1D, true, false);
+    CHECK_EQ(TranslateInput(e0, InjectGeometry{}).size(), 1u);
+    CHECK(IsInjectable(e0));
 }
 
 RTSC_TEST(desktop_input_zero_scancode_is_not_injected) {
@@ -135,6 +163,44 @@ RTSC_TEST(desktop_input_absolute_move_full_range) {
     CHECK_EQ(out[0].y, 65535);
 }
 
+RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
+    // T6: normalization needs a real pixel span on both axes. With a geometry
+    // of 0 or 1 (not negotiated yet, or a degenerate capture) the old 1:1
+    // pass-through sent the raw wire value as a normalized coordinate, so a
+    // move to (0, 0) stayed at the top-left corner and any other value was
+    // meaningless. Drop the move instead of injecting a wrong position.
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kMouse;
+    ev.is_move = true;
+    ev.x = 0;
+    ev.y = 0;
+    CHECK(TranslateInput(ev, InjectGeometry{0, 0}).empty());
+    CHECK(TranslateInput(ev, InjectGeometry{1, 1}).empty());
+    // One usable axis does not help: the other one is still not normalizable.
+    CHECK(TranslateInput(ev, InjectGeometry{2, 1}).empty());
+    CHECK(TranslateInput(ev, InjectGeometry{1, 2}).empty());
+    // Control: both axes have a span.
+    const std::vector<PlatformInput> out =
+        TranslateInput(ev, InjectGeometry{2, 2});
+    CHECK_EQ(out.size(), 1u);
+    if (out.size() != 1) return;
+    CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
+
+    // Only the un-normalizable MOVE is suppressed: a button press carries no
+    // coordinates and still has to reach the desktop, or the peer's click is
+    // lost (and its later release leaves the local button stuck).
+    InputEvent click = ev;
+    click.button = 1;
+    click.button_down = true;
+    const std::vector<PlatformInput> clicked =
+        TranslateInput(click, InjectGeometry{0, 0});
+    CHECK_EQ(clicked.size(), 1u);
+    if (clicked.size() != 1) return;
+    CHECK(clicked[0].kind == PlatformInput::Kind::kMouseButton);
+    CHECK_EQ(clicked[0].button, 1);
+    CHECK(clicked[0].button_down);
+}
+
 RTSC_TEST(desktop_input_button_left_down) {
     InputEvent ev;
     ev.kind = InputEvent::Kind::kMouse;
@@ -189,6 +255,27 @@ RTSC_TEST(desktop_input_wheel_negative_is_wire_units) {
     CHECK(out[0].kind == PlatformInput::Kind::kWheel);
     CHECK_EQ(out[0].wheel, -120);
     CHECK(!out[0].horizontal);
+}
+
+RTSC_TEST(desktop_input_zero_wheel_is_not_injected) {
+    // T10: a zero delta rotates nothing. Enqueueing it would spend a queue
+    // slot and a rate-limit token on a no-op, and a peer could flood zero
+    // wheels to evict queued movement and starve real input.
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kWheel;
+    ev.wheel_delta = 0;
+    CHECK(TranslateInput(ev, InjectGeometry{}).empty());
+    CHECK(!IsInjectable(ev));
+    // A zero horizontal wheel is equally a no-op.
+    ev.horizontal = true;
+    CHECK(TranslateInput(ev, InjectGeometry{}).empty());
+    CHECK(!IsInjectable(ev));
+    // Control: one notch in each direction still produces exactly one action.
+    ev.horizontal = false;
+    ev.wheel_delta = 120;
+    CHECK_EQ(TranslateInput(ev, InjectGeometry{}).size(), 1u);
+    ev.wheel_delta = -120;
+    CHECK_EQ(TranslateInput(ev, InjectGeometry{}).size(), 1u);
 }
 
 RTSC_TEST(desktop_input_horizontal_wheel) {
@@ -852,6 +939,9 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     events.push_back(KeyEvent(0x1E, false, false));  // key down
     events.push_back(KeyEvent(0x1E, false, true));   // key up
     events.push_back(KeyEvent(0x00, false, false));  // zero scancode
+    InputEvent extended1_key = KeyEvent(0x1D, false, false);
+    extended1_key.extended1 = true;  // PAUSE half (0xE1 prefix)
+    events.push_back(extended1_key);
 
     InputEvent unicode;
     unicode.kind = InputEvent::Kind::kUnicode;
@@ -879,6 +969,10 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     wheel.kind = InputEvent::Kind::kWheel;
     wheel.wheel_delta = 120;
     events.push_back(wheel);
+    InputEvent zero_wheel;
+    zero_wheel.kind = InputEvent::Kind::kWheel;
+    zero_wheel.wheel_delta = 0;  // no-op: must not take the lease
+    events.push_back(zero_wheel);
 
     InputEvent mouse_rel;
     mouse_rel.kind = InputEvent::Kind::kMouseRel;
@@ -889,9 +983,13 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     sync.kind = InputEvent::Kind::kSync;
     events.push_back(sync);
 
+    // A usable geometry: IsInjectable() has no geometry argument, so the
+    // cross-check covers the "can this event ever become an action" question.
+    // The degenerate-geometry rule (T6) is geometry-dependent and is pinned by
+    // desktop_input_absolute_move_requires_usable_geometry instead.
+    const InjectGeometry usable{1920, 1080};
     for (const InputEvent& ev : events) {
-        CHECK(IsInjectable(ev) ==
-              !TranslateInput(ev, InjectGeometry{}).empty());
+        CHECK(IsInjectable(ev) == !TranslateInput(ev, usable).empty());
     }
     // Pin the non-injectable kinds explicitly so a change to TranslateInput
     // cannot silently make them take the lease.
@@ -900,6 +998,8 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     CHECK(!IsInjectable(KeyEvent(0x00, false, false)));
     CHECK(!IsInjectable(zero_unicode));
     CHECK(!IsInjectable(bare_mouse));
+    CHECK(!IsInjectable(extended1_key));
+    CHECK(!IsInjectable(zero_wheel));
 }
 
 RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {

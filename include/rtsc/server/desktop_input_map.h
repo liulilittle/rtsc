@@ -60,11 +60,15 @@ struct PlatformInput {
 //
 //   kKey      -> one kKey (scancode copied verbatim, never offset by 0x100);
 //                a zero scan code is dropped (SendInput has no wScan=0 key)
+//                and so is the 0xE1 (extended1) prefix: PAUSE has no
+//                KEYEVENTF_EXTENDED1, and its bare scan code would inject a
+//                plain CTRL/NumLock pair
 //   kUnicode  -> one kKey with `unicode` set (drops a zero code point)
-//   kMouse    -> kMouseMove when is_move is set, and/or kMouseButton when a
+//   kMouse    -> kMouseMove when is_move is set AND the geometry has a real
+//                span on both axes (> 1 pixel), and/or kMouseButton when a
 //                button identity is present; neither -> empty
 //   kWheel    -> one kWheel (x/y are ignored, the wire sends them but they are
-//                meaningless for a wheel event)
+//                meaningless for a wheel event); a zero delta -> empty
 //   kMouseRel -> empty (relative injection is subject to mouse acceleration and
 //                is deliberately not injected in v1)
 //   kSync     -> empty (there is no Win32 toggle-state event; injecting a key
@@ -132,13 +136,13 @@ bool IsHeldRelease(const PlatformInput& input, const PressedInputs& pressed);
 inline bool IsInjectable(const InputEvent& ev) {
     switch (ev.kind) {
         case InputEvent::Kind::kKey:
-            return ev.scancode != 0;
+            return ev.scancode != 0 && !ev.extended1;
         case InputEvent::Kind::kUnicode:
             return ev.unicode_code != 0;
         case InputEvent::Kind::kMouse:
             return ev.is_move || ev.button != 0;
         case InputEvent::Kind::kWheel:
-            return true;
+            return ev.wheel_delta != 0;
         case InputEvent::Kind::kMouseRel:
         case InputEvent::Kind::kSync:
             return false;
