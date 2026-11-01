@@ -723,3 +723,22 @@ holders.erase(...);                // :777 抛异常时被跳过
   我此前所有"逐行核对"都是读码，因此对异常路径系统性失明。
 - 同型风险清单（本仓）：任何 `~dtor`/`Stop()`/`Close()` 里"先置标志再释放"的写法；
   `ReleaseSession`、`ReleaseInput`、剪贴板/通道关闭、`std::thread::join` 前的标志置位。
+## 第823轮：F-1 修好后才知道「同型」有 3 处真实可崩（第 23 例：修一个必须扫全类）
+### 审计 H 的同型排查结果（全部带行号）
+- **N-1** `desktop_input_win32.cpp:150-170` `ReleaseSession`：`AppendReleasesLocked` 抛 ⇒ `sessions_.erase`
+  与 `notify_one` 双双跳过，而 `Inject` 对 forgotten id（`:124-127`）早退**不 notify** ⇒ worker 可能永久睡死。
+- **N-2** `:513-530` `Shutdown`：append 抛 ⇒ `worker_.join()` 跳过 ⇒ `std::thread` 析构 `terminate`；
+  且 Shutdown 由 `~Win32DesktopInputSink` 调用 ⇒ **直接杀进程**。
+- **N-3** `:261-291` `WorkerMain`：无兜底，`Dispatch`/`EmitDueMoves` 分配失败逃出线程 ⇒ terminate。
+- 另有 N-4/N-5/N-6：`server.cpp:2461/2474`、`rdpsnd_server.cpp:47-49`、`rdpdr_server.cpp:39-52` 析构/Stop 无 catch。
+
+### 教训（第 23 例：**"修一处 + 扫同型"必须是同一次交付，且扫描维度要按"结构"而非"文件"**）
+- 我在第 819 轮修 `ReleaseInput` 时，只把 `ReleaseInput` 当成"这一个 bug"，没把
+  「**标志/状态已提交 + 后续可抛调用 + 关键清理在其后**」抽象成结构模式去全仓扫。
+  审计 H 正是按这个结构扫，一次找出 3 处**会 terminate 或永久挂起**的同类。
+- 判据：任何 teardown/资源释放修复，交付前必须给出"结构扫描清单"：
+  ①搜索 `Close(|Stop(|Shutdown(|Release|join(|erase(` 的**调用点**而非定义点；
+  ②判定该调用是否在析构/teardown 路径、其后是否还有关键清理；
+  ③析构路径上的调用一律要求 `noexcept` 语义（调用点 try/catch 或保证不抛）。
+- 另一条：**`catch(...)` 静默 = 不可诊断**。异常被吞但状态已不可回退（`input_released_=true`）时，
+  必须有计数或限流日志，否则现场只看到"键卡住"却无任何线索。

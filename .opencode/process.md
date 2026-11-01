@@ -719,3 +719,18 @@ F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、
 - 本轮均为"系统/平台中断（非用户停止）"，按任务调度条款经 `prompt` 直发原会话（附完整任务摘要），未新开替代
 - 同步补发 H↔I 的互相对话 ID，保证磋商通道
 - 本轮环境：再次出现 `Cannot connect to API` 宿主错误（子会话侧），累计已超 10 次；策略不变：压短提示词 + 原会话继续
+## 第823轮：审计 H 完成（F-1 行为闭合，但同型 3 处可崩）→ 批 13 已派
+### 审计 H（`docs/spec/input-batch12-review-H.md`）
+- F-1：①erase 全路径执行 PASS ②顺序 PASS（变异 M2 红）③**catch 全静默 FAIL（低）** ④标志时机 PASS
+- 同型排查（重点产出）：
+  - **N-1** `win32.cpp:150-170` ReleaseSession append 抛 ⇒ erase/notify 跳过 + forgotten id 早退不 notify ⇒ worker 睡死
+  - **N-2** `:513-530` Shutdown append 抛 ⇒ join 跳过 ⇒ thread 析构 terminate（由析构调用 ⇒ 杀进程）
+  - **N-3** `:261-291` WorkerMain 无兜底 ⇒ terminate
+  - N-4/N-5/N-6 `server.cpp:2461/2474`、`rdpsnd_server.cpp:47-49`、`rdpdr_server.cpp:39-52` 析构/Stop 无 catch
+- 变异红证：M1 → `tests/test_server.cpp:3880`；M2 → `:3848`（`injects_during_release got 1 want 0`）
+- 回归 63/63（84.81s）；`rtsc_server_tests` 3 次 `49 tests/0 failing`（checks 561/562/563 随 `tests:3852-3856` 循环调度浮动，非新用例）
+- 文档：`batch10-review-F.md:340` 仍写"F-1 未修复"（过期）；`seam.md:137` 行号 `232-254/307-315` 应为 `236-258/311-319`
+### 批 13 `ses_e69673c71ffeNPiDZ61bfvgTm9`
+N-1/N-2/N-3/N-4/N-5/N-6 + `release_failures` 计数 + `input_release_failures=` 日志 + 两处文档修正 + 2 变异
+### 子代理
+审计 H 已 delete 解散；审计 I（seam 全文对账）仍在途。
