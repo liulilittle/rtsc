@@ -908,3 +908,23 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
 - 处置：经 `prompt` 直发原会话（附完整任务摘要），不新开替代
 - 同时注意到批 17 正在改 `map.h`/`test_desktop_input.cpp`/`seam.md` —— 与 J 的只读审计不冲突
 - 工作树现状（批 17 在写，勿提交）：`docs/spec/input-injection-seam.md`、`include/rtsc/server/desktop_input_map.h`、`tests/test_desktop_input.cpp` 均有未提交改动
+## 第835轮：批 17 验收提交 `a141f58`（kSync 关窗 + seam 全文重写）
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_desktop_input_tests` → `48 tests, 0 failing`；`rtsc_server_tests` → `50 tests, 0 failing`（**不钉 checks 数**）
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（65.08s）
+### 逐行核对（W5）
+- `map.h:88-96` kSync 分支在"非 kKey 早退"**之前**（这是关键：否则 kSync 落在 `:101` 早退里永远不会清 arm）；
+  注释说明"SYNC 后丢失的 0xE1 半序列不得让陈旧 arm 吞掉下一次真实 NumLock 点击" ✅
+- 文档自检（[BASH: 正则]）：`\.(cpp|h|md):\d` 命中 **0**（全篇零行号引用）、767 行、`U+FFFD`=0 ✅
+- 文档 11 项已落地：§0 状态表、§1.3/§1.4 接口名（显式声明旧名不存在）、Inject 统一 void、
+  §1.7#2 仍 OPEN + 三处错位实测、§1.8 改"部分闭合"（覆盖 vs 仅读码两张清单）、
+  §2.3 held_release/`kGlobalBurst=2000` 理由/`release_failures`/两把锁、§3 P 分节 + P-12 汇总、
+  §4.1 T4 中点改 32785/32798（复算）、T6/T10/T12/T13/T14/T15、§4.4 M1-M7 覆盖现状、§7 收敛记录（H/I/K/J）
+- 执行方主动交底：`win32.cpp` 顶部注释仍是旧式 `sessions × 515` 峰值写法（本批"不改产品逻辑"未动），
+  已在文档 §7.2 如实记录不一致 —— **记入待办**
+### 待办
+1) `desktop_input_win32.cpp` 顶部注释的峰值公式需同步为 `kHardQueueLimit + 515·K`（下一批）
+2) 审计 J 补交后复核（在途）
+### 子代理
+批 17 已 delete 解散。
