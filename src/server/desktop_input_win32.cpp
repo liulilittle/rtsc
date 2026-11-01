@@ -23,16 +23,19 @@
 //     what each session holds down only AFTER the queue accepted the press, so a
 //     dropped press was never tracked;
 //   * only a HELD release -- the up of a key/button this session actually holds
-//     down -- is exempt from the hard limit. For peer-enqueueable events the
-//     peak queue length is bounded by hard_limit + |pressed| at the saturation
-//     instant (1024 + 515 = 1539). Teardown's synthetic ups are pushed directly
-//     by AppendReleasesLocked (bypassing DecideEnqueue) and the purge keeps
-//     them, so they add up to |pressed| per session on top (sessions x 515).
-//     Both numbers are PEAK bounds, not instantaneous invariants. Dropping such
-//     a release is what leaves the peer's key stuck. A
-//     release for something not held (a repeated up, or the up of a press that
-//     was never injected) is treated like a press, so a flood of key-ups cannot
-//     grow the queue.
+//     down -- is exempt from the hard limit. A release for something not held
+//     (a repeated up, or the up of a press that was never injected) is treated
+//     like a press, so a flood of key-ups cannot grow the queue;
+//   * peak bound (a PEAK, never an instantaneous invariant -- a release that
+//     cleared |pressed| can still sit in the queue): every session that holds
+//     the input lease contributes at most |pressed| <= 515 exempt releases on
+//     top of hard_limit, i.e. hard_limit + 515 * K for K concurrently
+//     lease-holding sessions. The default max_input_sessions = 1 gives
+//     1024 + 515 = 1539. Teardown's synthetic ups are pushed directly by
+//     AppendReleasesLocked (bypassing DecideEnqueue) and the purge keeps them,
+//     so they are the same term, not an extra one on top of it;
+//   * dropping a HELD release is what leaves the peer's key stuck, which is why
+//     it is the only class exempt from the hard limit.
 //
 // Failures are counted and logged at most once per five seconds; the session is
 // never disconnected for an injection failure (UIPI and lock-screen failures

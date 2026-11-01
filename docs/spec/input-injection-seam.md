@@ -694,9 +694,11 @@ std::vector<PlatformInput>                       --BuildNative()+Emit()-->  Send
 
 补记：I 指出的常量漂移**不存在**（256/1024、400/800/1000/2000、515/1539、4 ms、1 s、±255、120、
 `0x52545343` 均与代码一致）；漂移只在行号与状态描述，本版已按符号名 + 当前状态重写。
-I 还指出 `desktop_input_win32.cpp` 顶部注释的峰值公式与 seam 不一致——**仍存在**：代码注释写
-"hard_limit + |pressed| … + sessions × 515"，本文件 §1.5 给出的是同一事实的两段式（`≤ 1024 + 515·K`，
-`K` = 持租且 pressed 非空的会话数），两者在 K=1 时相同；批 17 未改该注释（不改产品逻辑）。
+I 还指出 `desktop_input_win32.cpp` 顶部注释的峰值公式与 seam 不一致——**已于批 18 修复**：
+代码注释原先写 "hard_limit + |pressed| … + sessions × 515"（把合成 up 当作额外项重复计基线），
+现与 §1.5 统一为同一事实的单一式子：`peak ≤ kHardQueueLimit + 515·K`，`K` = 持租且 `pressed` 非空的会话数
+（默认 `max_input_sessions = 1` → 1539）。合成 up 与之是**同一项**（由 `AppendReleasesLocked` 直推、
+purge 保留 `synthetic`），不是额外相加。
 
 ### 7.3 审计 K（`docs/spec/input-batch14-review-K.md`）
 
