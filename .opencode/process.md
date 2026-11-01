@@ -689,3 +689,9 @@ D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流
 F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、峰值公式与算术修正、F-2 已知缺口文档
 ### 子代理
 审计 F 已 delete 解散（其 relay 审计 G 失败属正常：G 已解散）。
+## 第820轮：批 12 会话因证书错误零输出 → 已解散并重派
+- 上轮批 12 `ses_e69d8d008ffeVtgyOfZLmw7i4l` 遭遇 `unknown certificate verification error`，`wrote=null`、零输出
+- 目标因连续无进展被插件自动暂停 → 已 `update_goal_status:active` 恢复（AI 自主暂停可自行恢复）
+- 旧会话已 `delete`，按任务调度经 `task` 新开 `ses_e69c4df7affe5Ljvc4shJYcdOK`，提示词压短
+- 同时纠正一处并发风险：批 11 会话已在 `tests:745-761` 追加 mutC2 覆盖，新提示明确禁止重复新增，避免两个执行方写同一测试
+- 环境：本会话累计宿主错误（证书/连接）已达 8 次以上，均为子会话独立失败、主会话可恢复
