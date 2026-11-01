@@ -695,3 +695,22 @@ F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、
 - 旧会话已 `delete`，按任务调度经 `task` 新开 `ses_e69c4df7affe5Ljvc4shJYcdOK`，提示词压短
 - 同时纠正一处并发风险：批 11 会话已在 `tests:745-761` 追加 mutC2 覆盖，新提示明确禁止重复新增，避免两个执行方写同一测试
 - 环境：本会话累计宿主错误（证书/连接）已达 8 次以上，均为子会话独立失败、主会话可恢复
+## 第821轮：批 12 验收提交 `a59a594`；双审 H/I 并行派出
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_server_tests.exe` → `49 tests, 562 checks, 0 failing`
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（88.00s）
+### 逐行核对（W5）
+- F-1：`server.cpp:772-783` `try { ReleaseSession } catch (...) {}` 后**无条件** `holders.erase`（`:780-783`）；
+  顺序仍"先 sink 后放槽"；注释说明"标志已置位，跳过 erase 会永久泄漏" ✅
+- 文档：`seam.md:137` 峰值收紧 `kHardQueueLimit + 515·K` 并显式禁止 `1539 + 会话数×515`；
+  `:202-221` 新增 §1.8「已知测试缺口：Win32 接线」列出 7 个未覆盖判定点 + CMake 证据链 ✅
+### 执行方如实披露（值得记）
+恢复变异时 `Copy-Item` 保留旧 mtime → MSBuild 跳过重编 → 测试仍红；touch 后转绿。
+与既有记忆一致（变异测试必须 touch + 哈希双证）。
+### 已派（并行）
+- 审计 H `ses_e69a6bf2dffeFbfXYfLhYvCM97`：F-1 是否真闭合 + **同型缺陷全仓排查**（Stop/Close/scope guard/通道关闭/purge）
+- 审计 I `ses_e69a6b007ffej3VD6pO5vTT2zt`：seam.md **全文与代码逐条对账**（行号失效/常量/P-1..P-12 状态过期/§4.4 变异表）
+- 已令 H 与 I 直接互通（H 补 I 的文档核对、I 校正 H 的行号）
+### 子代理
+批 12 执行会话 `ses_e69c4df7` 已完成（待本轮结束后 delete）。
