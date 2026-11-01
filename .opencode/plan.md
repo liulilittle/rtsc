@@ -601,3 +601,23 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - [ ] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤；⑤ sink↔server 集成测试；
       ⑥ `max_input_sessions=1` 单会话控制租约（设计文档要求，未实现）
 - [ ] 真机验证：按 `docs/spec/input-injection-real-machine-checklist.md` 逐项（UIPI/多会话/SAS/Pause/多屏）
+## 批 9 设计定案（限流与可观测，round 805 预写）
+> 目的：把 `docs/spec/input-injection-seam.md` §2 的限流要求落到实现，并消除文档漂移。
+
+### 限流（令牌桶，注入器内部，单 worker 线程执行）
+- 单会话：`400 evt/s`，桶容量 `800`（2s 突发）。
+- 全局：`1000 evt/s`，桶容量 `2000`。
+- 超限：**丢弃该事件并计数**（`InputStats.dropped_rate_limited`），不排队、不断连、不打日志每事件；
+  每 5s 限流窗口最多一条 WARN（复用现有 5s 限流日志机制）。
+- 例外：**释放类事件（keyup / 按钮 up）不受限流**（与 F1 同理：丢释放比丢按下危险）。
+- 计数器：`InputStats { injected, dropped_queue_full, dropped_rate_limited, send_failures }`；
+  `RdpServer::input_dropped_count()` 汇总（可选）。
+- 可观测：启动行打印 `input=on|off input_max_sessions=N`；运行期每秒最多一条 lease-denied 汇总
+  （`input_lease_denied_count()` 已有，改为启动后周期性打印或首次拒绝时打印一次 + 计数）。
+
+### 文档回写（`docs/spec/input-injection-seam.md`）
+- §1.5 队列：软上限 256（驱逐最旧移动）/ 硬上限 1024（无可驱逐时丢非释放事件并计数）/
+  释放事件永不被队列上限丢弃。
+- §2.3：`kMouseRel` **已上送**（`Kind::kMouseRel`），v1 注入器不注入（相对移动受加速污染）；
+  `kSync` 不注入。
+- §2.4：限流与告警按本节实现（若实现与本定案有偏差，以代码+测试为准并回写本文件）。
