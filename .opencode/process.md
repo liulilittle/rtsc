@@ -970,3 +970,22 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
   2. Pause 之后再单独按 NumLock **必须正常切换**（抑制不误伤，上界=一次 tap）
   3. Pause 后紧接 `kSync`，随后 NumLock 仍生效（批 17 的窗口终止）
 - 文件 92 行、`U+FFFD`=0
+## 第839轮：批 19 验收提交 `5aa9fea`；审计 L 已派
+### 主代理独立验收
+- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
+- `rtsc_desktop_input_tests` 49/0；`rtsc_server_tests` 50/0；`rtsc_rdpdr_server_io_tests` 13/0（均 0 failing）
+- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（59.90s）
+### 逐行核对（W5）
+- J-1：`server.cpp:2210-2217` `~RdpServer` `try { Stop(); } catch (...)`；`:2508-2513` 快照 try；
+  `:2524-2528` `unique_lock`+`cv.wait` try；注释说明"teardown 已完成，吞掉正确" ✅
+- J-2：`win32.cpp:731-732` `dynamic_cast<Win32DesktopInputSink*>`；注释记录 static_cast 的四种 UB 结局 ✅
+- J-3a：`desktop_input.h:54,65`、null `:44`、`main.cpp:620-621,633` 三端接通 ✅
+- J-3b：`win32.cpp:369/375` `worker_waiting_` store(true/false) + `:684` atomic；hook `:240` ✅
+- 执行方红证：J-1 变异→`unhandled-seh EXIT=3`；J-2 变异→`0xC0000409`；J-3b 删 notify→5/5 红；J-4 变异→`fires==2 got 1`
+### 我提出的审计追问（已写入 L 的任务）
+1) **J-1 快照失败 → sessions 空 → wait 仍等 `live==0`**：若会话线程永不退出，`Stop()` 会永久挂起（比 terminate 更隐蔽）
+2) **J-1 wait 被吞异常后 `live != 0` 就返回**：`~RdpServer` 可能在会话线程仍访问 `impl_` 时销毁对象 → **use-after-free**（本项最危险）
+3) J-2 `dynamic_cast` 依赖 RTTI，需确认无 target 设 `/GR-`
+4) J-3b `store(true)` 与 `cv_.wait` 之间的 lost-wakeup 面
+### 子代理
+批 19 已 delete 解散。
