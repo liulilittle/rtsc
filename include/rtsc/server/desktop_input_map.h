@@ -85,6 +85,15 @@ class PauseSequenceFilter {
  public:
     // true = this event is part of an unrepresentable PAUSE sequence; drop it.
     bool ShouldDrop(const InputEvent& ev) {
+        // kSync declares the keyboard state and resets every key to "up"
+        // (P-7), so it terminates any open envelope: a SYNC after a lost 0xE1
+        // half must not let the stale arm swallow the next real NumLock tap.
+        // It is not part of the envelope itself, so it is not dropped here
+        // (TranslateInput maps it to no platform action).
+        if (ev.kind == InputEvent::Kind::kSync) {
+            ctrl_armed_ = false;
+            return false;
+        }
         // Only key events are part of the envelope. A mouse/wheel event between
         // the halves must be injected and must NOT close an open window (the
         // wire sequence does not interleave, but a lost PDU must not swallow a

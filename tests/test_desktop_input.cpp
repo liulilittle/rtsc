@@ -182,6 +182,38 @@ RTSC_TEST(desktop_input_pause_sequence_is_fully_suppressed) {
     CHECK(!reset_filter.ShouldDrop(num_down));
 }
 
+RTSC_TEST(desktop_input_pause_window_closed_by_sync) {
+    // P-7: a kSync event declares the keyboard state and resets every key to
+    // "up", so it terminates an open PAUSE window. Without that, a lost 0xE1
+    // half followed by a SYNC would leave the filter armed and swallow the next
+    // real NumLock tap -- the same "eat a live key" failure mode that bounds the
+    // suppression. The wire form is: E1 CTRL down, SYNC, then a NumLock tap.
+    const InjectGeometry usable{1920, 1080};
+    InputEvent ctrl_down = KeyEvent(0x1D, false, false);
+    ctrl_down.extended1 = true;
+    InputEvent sync;
+    sync.kind = InputEvent::Kind::kSync;
+    sync.sync_flags = 0x06;  // NumLock + CapsLock
+    const std::vector<InputEvent> tap = {KeyEvent(0x45, false, false),
+                                         KeyEvent(0x45, false, true)};
+
+    PauseSequenceFilter filter;
+    CHECK(filter.ShouldDrop(ctrl_down));  // window opens
+    // The SYNC itself is not part of the envelope: it must be injected normally
+    // (it translates to nothing, but ShouldDrop must not claim it).
+    CHECK(!filter.ShouldDrop(sync));
+    // The state reset closes the window, so the following tap is a real key.
+    size_t actions = 0;
+    bool all_kept = true;
+    for (const InputEvent& ev : tap) {
+        const bool drop = filter.ShouldDrop(ev);
+        all_kept = all_kept && !drop;
+        if (!drop) actions += TranslateInput(ev, usable).size();
+    }
+    CHECK(all_kept);
+    CHECK_EQ(actions, static_cast<size_t>(2));
+}
+
 RTSC_TEST(desktop_input_zero_scancode_is_not_injected) {
     // A kKey event carrying scan code 0 has no valid Win32 scan code: SendInput
     // would be asked for wScan=0, which the system does not turn into a key
