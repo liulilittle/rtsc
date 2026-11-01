@@ -1,4 +1,4 @@
-// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
+﻿// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
 // connection state machine, exercised end to end.
 //
 // The tests drive the server with a scripted peer that speaks the client half
@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -591,6 +592,84 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
     uint16_t geometry_width_ = 0;
     uint16_t geometry_height_ = 0;
     rtsc::server::InputEvent last_event_;
+};
+
+// A sink that widens the ReleaseInput hand-off window on purpose. The server
+// must call ReleaseSession BEFORE it frees the lease slot. Releasing the sink
+// first queues the old session's synthetic key/button ups while the lease is
+// still held; freeing the lease first lets another session acquire it and
+// enqueue a key-down that the worker may emit before those ups (lifting the new
+// holder's key). ReleaseSession here blocks (briefly) so an Inject from another
+// session that slips into that window is observed deterministically.
+class ReleaseOrderingSink final : public rtsc::server::DesktopInputSink {
+ public:
+    void SetGeometry(uint32_t session_id,
+                     const rtsc::server::InjectGeometry& g) override {
+        (void)session_id;
+        (void)g;
+    }
+
+    void Inject(uint32_t session_id,
+                const rtsc::server::InputEvent& ev) override {
+        (void)ev;
+        std::lock_guard<std::mutex> lock(mu_);
+        inject_ids_.push_back(session_id);
+        if (armed_ && release_started_ && !release_finished_) {
+            ++injects_during_release_;
+        }
+        cv_.notify_all();
+    }
+
+    void ReleaseSession(uint32_t session_id) override {
+        std::unique_lock<std::mutex> lock(mu_);
+        release_ids_.push_back(session_id);
+        if (armed_ && !release_started_) {
+            release_started_ = true;
+            // Timeout only matters when the fix is in place (no Inject may
+            // happen while the lease is still held); with the bug the Inject
+            // arrives at once and wakes this up.
+            cv_.wait_for(lock, std::chrono::milliseconds(500), [this]() {
+                return injects_during_release_ > 0;
+            });
+            release_finished_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    rtsc::server::InputStats Stats() const override { return {}; }
+
+    void ArmReleaseProbe() {
+        std::lock_guard<std::mutex> lock(mu_);
+        armed_ = true;
+        release_started_ = false;
+        release_finished_ = false;
+        injects_during_release_ = 0;
+    }
+
+    std::vector<uint32_t> inject_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return inject_ids_;
+    }
+
+    std::vector<uint32_t> release_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return release_ids_;
+    }
+
+    size_t injects_during_release() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return injects_during_release_;
+    }
+
+ private:
+    mutable std::mutex mu_;
+    std::condition_variable cv_;
+    std::vector<uint32_t> inject_ids_;
+    std::vector<uint32_t> release_ids_;
+    bool armed_ = false;
+    bool release_started_ = false;
+    bool release_finished_ = false;
+    size_t injects_during_release_ = 0;
 };
 
 size_t DistinctIds(const std::vector<uint32_t>& ids) {
@@ -2036,13 +2115,22 @@ RTSC_TEST(server_slowpath_event_count_mismatch_is_counted) {
     runner.join();
 }
 
-RTSC_TEST(server_fastpath_pdu_resembling_share_header_is_not_swallowed) {
-    // GAP-4: a fast-path input PDU can pass ShareDataHeader::parse by
-    // coincidence. This payload's bytes 2..3 are 0x17/0x00 (pduType=DATA with
-    // protocol version 1) and it is >= 18 bytes, but byte14 (pduType2) is 0x17,
-    // which is NOT a defined ShareDataPduType. Without the whitelist the PDU
-    // was marked "share data" and never reached the fast-path decoder, so the
-    // encoded key was swallowed. With the whitelist it must still decode.
+RTSC_TEST(server_undefined_share_data_type_is_not_reinterpreted) {
+    // F4: a payload that parses as a TS_SHAREDATAHEADER but carries an
+    // undefined pduType2 is malformed share data -- it must NOT be handed to
+    // the fast-path decoder. That fallback let a 24-byte malformed packet emit
+    // phantom key events (0x1E here) and, with injection enabled, potentially
+    // grab the desktop input lease. The old GAP-4 whitelist deliberately fell
+    // through for undefined types; the approved policy reverses that trade-off:
+    // drop the payload, count it as malformed, and keep the session alive.
+    //
+    // The 24-byte payload doubles as a valid fast-path PDU, which is exactly
+    // why the fallback produced input:
+    //   [0] 0x04 [1] 0x18  fast-path header, one-byte length 24; these bytes
+    //                      are also totalLength/type of the fake share header
+    //   [2] 0x17 [3] 0x00  share control: DATA type, protocol version 1
+    //   [4] 0x03 [5] 0x1E  fast-path scancode event for 0x1E (the phantom)
+    //   [14] 0x99          undefined sharedPDUType
     ServerConfig cfg;
     cfg.port = 0;
     cfg.desktop_width = 64;
@@ -2064,31 +2152,41 @@ RTSC_TEST(server_fastpath_pdu_resembling_share_header_is_not_swallowed) {
     HandshakeResult r = DriveToActive(server.bound_port());
     CHECK(r.reached_active);
 
-    // Fast-path input PDU, 18 bytes (header+length = 2, body = 16):
-    //   [0] 0x04        fpInputHeader: FASTPATH, numEvents=1
-    //   [1] 0x12        length = 18
-    //   [2] 0x17        eventHeader code 0 (scancode); this is also the low
-    //                   byte of the fake SHAREDATAHEADER pduType
-    //   [3] 0x00        keyCode 0; also the high byte of the fake pduType
-    //   [4] 0x00 [5] 0x1E  scancode 0x1E down (the event of interest)
-    //   [6] 0xC0 [7..10] 0  QoE timestamp event (consumed, no callback)
-    //   [11] 0xC0 [12]0 [13]0 [14]0x17 [15]0  QoE; byte14 is the fake pduType2
-    //   [16] 0x00 [17] 0x00  scancode 0
-    const std::vector<uint8_t> payload = {
-        0x04, 0x12, 0x17, 0x00, 0x00, 0x1E, 0xC0, 0x00, 0x00,
-        0x00, 0x00, 0xC0, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00,
-    };
+    std::vector<uint8_t> payload(24, 0);
+    payload[0] = 0x04;  // fast-path header (action 0, numEvents 1)
+    payload[1] = 0x18;  // fast-path length = 24
+    payload[2] = 0x17;  // fake share control: DATA (0x7) | version 1 << 4
+    payload[3] = 0x00;
+    payload[4] = 0x03;  // fast-path scancode event header (code 0)
+    payload[5] = 0x1E;  // phantom scancode
+    payload[14] = 0x99;  // undefined sharedPDUType
+
+    const size_t malformed_before = server.malformed_input_pdu_count();
     CHECK(WriteAll(*r.transport,
                    McsSendData::build_request(r.user_channel, r.io_channel,
                                               payload)));
+    // Give the session thread time to process the PDU: no input event may be
+    // delivered, because the payload is not a fast-path PDU at all.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        CHECK(events.empty());
+    }
+    CHECK_EQ(server.malformed_input_pdu_count(), malformed_before + 1);
 
+    // The session survives: a following well-formed fast-path key decodes.
+    CHECK(WriteAll(*r.transport,
+                   McsSendData::build_request(
+                       r.user_channel, r.io_channel,
+                       EncodeFastPathInputPdu(
+                           {EncodeKeyboardEvent(0x2C, false, false)}))));
     bool saw_key = false;
     for (int i = 0; i < 100 && !saw_key; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         std::lock_guard<std::mutex> lock(mu);
         for (const auto& ev : events) {
             if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
-                ev.scancode == static_cast<uint8_t>(0x1E)) {
+                ev.scancode == static_cast<uint8_t>(0x2C)) {
                 saw_key = true;
                 break;
             }
@@ -3556,6 +3654,139 @@ RTSC_TEST(server_input_lease_zero_means_unlimited) {
     }
     CHECK(both_injected);
     CHECK_EQ(DistinctIds(sink.geometry_ids()), static_cast<size_t>(2));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_release_session_precedes_lease_handoff) {
+    // F3: ReleaseInput must call sink->ReleaseSession BEFORE it frees the lease
+    // slot. Releasing the sink queues the old session's synthetic key/button
+    // ups; if the slot is freed first, the surviving session can acquire it and
+    // Inject a key-down that the worker may emit before those ups, lifting the
+    // new holder's key. The ordering sink blocks in ReleaseSession and records
+    // any Inject that lands in that window.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    ReleaseOrderingSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult first =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(first.reached_active);
+    HandshakeResult second =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(second.reached_active);
+
+    // The first session takes the lease and injects at least once.
+    CHECK(SendTestInput(first));
+    CHECK(WaitUntil([&sink]() { return !sink.inject_ids().empty(); }));
+    CHECK(!sink.inject_ids().empty() && sink.inject_ids().front() != 0);
+
+    // The second session is denied while the first still holds the lease.
+    CHECK(SendTestInput(second));
+    CHECK(WaitUntil(
+        [&server]() { return server.input_lease_denied_count() >= 1; }));
+
+    sink.ArmReleaseProbe();
+    std::atomic<bool> keep_sending{true};
+    std::thread sender([&second, &keep_sending]() {
+        while (keep_sending.load(std::memory_order_relaxed)) {
+            SendTestInput(second);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    // Disconnect the holder. Its ReleaseSession runs while the lease is still
+    // held, so no Inject may reach the sink during that window.
+    first.reader.reset();
+    first.transport->Close();
+    first.transport.reset();
+    CHECK(WaitUntil([&sink]() { return !sink.release_ids().empty(); }));
+    // Let a late, wrongly-ordered Inject show up before checking.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    keep_sending.store(false, std::memory_order_relaxed);
+    sender.join();
+
+    CHECK_EQ(sink.injects_during_release(), static_cast<size_t>(0));
+
+    // The hand-off still happens: the survivor acquires the freed lease.
+    bool handed_off = false;
+    for (int i = 0; i < 300 && !handed_off; ++i) {
+        CHECK(SendTestInput(second));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        handed_off = DistinctIds(sink.inject_ids()) == 2;
+    }
+    CHECK(handed_off);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_non_injectable_input_does_not_hold_lease) {
+    // F4-A3: a session that only sends kSync (which TranslateInput drops) must
+    // not acquire the single lease. Otherwise one SYNC holds it for the whole
+    // session and a peer that actually controls the desktop is starved forever.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult sync_sender =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(sync_sender.reached_active);
+    HandshakeResult key_sender =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(key_sender.reached_active);
+
+    auto send_sync = [&sync_sender]() {
+        return WriteAll(*sync_sender.transport,
+                        McsSendData::build_request(
+                            sync_sender.user_channel, sync_sender.io_channel,
+                            EncodeFastPathInputPdu({EncodeSyncEvent(0)})));
+    };
+    for (int i = 0; i < 5; ++i) CHECK(send_sync());
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // The SYNC session never reached the sink and never took the lease.
+    CHECK(sink.inject_ids().empty());
+    CHECK(sink.geometry_ids().empty());
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    // The other session can take the lease with a real (injectable) key.
+    bool injected = false;
+    for (int i = 0; i < 300 && !injected; ++i) {
+        CHECK(SendTestInput(key_sender));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        injected = !sink.inject_ids().empty();
+    }
+    CHECK(injected);
+    CHECK_EQ(DistinctIds(sink.inject_ids()), static_cast<size_t>(1));
     CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
 
     server.Stop();

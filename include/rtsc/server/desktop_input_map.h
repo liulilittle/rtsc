@@ -68,6 +68,31 @@ struct PlatformInput {
 std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
                                           const InjectGeometry& g);
 
+// True when TranslateInput would produce at least one platform action for
+// `ev`. The server uses this before taking the (single) desktop input lease:
+// an event that can never be injected must not be able to hold the lease and
+// starve a session that actually controls the desktop.
+//
+// Keep this predicate in lock step with TranslateInput; the tests cross-check
+// the two for every InputEvent kind. Defined inline so a caller (the server)
+// does not need to link the mapping library just for this predicate.
+inline bool IsInjectable(const InputEvent& ev) {
+    switch (ev.kind) {
+        case InputEvent::Kind::kKey:
+            return ev.scancode != 0;
+        case InputEvent::Kind::kUnicode:
+            return ev.unicode_code != 0;
+        case InputEvent::Kind::kMouse:
+            return ev.is_move || ev.button != 0;
+        case InputEvent::Kind::kWheel:
+            return true;
+        case InputEvent::Kind::kMouseRel:
+        case InputEvent::Kind::kSync:
+            return false;
+    }
+    return false;
+}
+
 // What the bounded injection queue must do with one incoming platform input.
 // This decision is platform neutral and pure so the fail-closed policy can be
 // unit tested without SendInput or the Win32 worker thread.
@@ -87,16 +112,23 @@ struct EnqueueState {
     size_t hard_limit = 0;  // absolute cap: never grow past this
     bool has_movable_move = false;
     bool incoming_is_move = false;
+    // True when the incoming event releases a key or button. Release events
+    // are bounded by the set of keys/buttons the session holds down, and
+    // losing one is worse than losing a press: the peer's key would stay
+    // stuck. They are therefore accepted regardless of the limits.
+    bool incoming_is_release = false;
 };
 
 // Queue policy (see desktop_input_win32.cpp for the rationale):
 //   * below the soft limit: accept;
 //   * at/above the soft limit: evict the oldest pure movement when one exists;
 //   * with no movement to evict: a pure movement is disposable and is dropped;
-//   * with no movement to evict and a key/button/wheel arriving: accept while
-//     the queue is below the hard limit (losing an up event would leave a stuck
-//     key), but DROP at the hard limit (fail closed: a bound on injection
-//     memory beats an unbounded queue).
+//   * with no movement to evict and a key/button/wheel press arriving: accept
+//     while the queue is below the hard limit, but DROP at the hard limit
+//     (fail closed: a bound on injection memory beats an unbounded queue);
+//   * a RELEASE (key up / button up) is always accepted, even at the hard
+//     limit: releases are bounded by the held-key set and losing one is what
+//     leaves the peer's key stuck.
 EnqueueAction DecideEnqueue(const EnqueueState& state);
 
 }  // namespace rtsc::server

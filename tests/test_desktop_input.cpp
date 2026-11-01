@@ -1,4 +1,4 @@
-// Pure mapping tests for the desktop input injection seam.
+﻿// Pure mapping tests for the desktop input injection seam.
 //
 // TranslateInput() is platform neutral by design: it never includes
 // <windows.h> and never calls SendInput, so these cases run on every platform
@@ -246,13 +246,15 @@ RTSC_TEST(desktop_input_mouse_without_move_or_button_is_empty) {
 // fail-closed rule: key/button events may grow the queue past the soft limit
 // (losing an up event leaves a stuck key) but never past the hard limit.
 
-EnqueueState QueueState(size_t size, bool movable_move, bool incoming_is_move) {
+EnqueueState QueueState(size_t size, bool movable_move, bool incoming_is_move,
+                        bool incoming_is_release = false) {
     EnqueueState state;
     state.size = size;
     state.soft_limit = 4;
     state.hard_limit = 16;
     state.has_movable_move = movable_move;
     state.incoming_is_move = incoming_is_move;
+    state.incoming_is_release = incoming_is_release;
     return state;
 }
 
@@ -289,14 +291,88 @@ RTSC_TEST(desktop_input_queue_grows_between_limits_for_key) {
 }
 
 RTSC_TEST(desktop_input_queue_hard_limit_drops_key) {
-    // At the hard limit with no movement to evict, a key/button MUST be
-    // dropped: the queue is bounded, a dropped key is released by
-    // ReleaseSession, and an unbounded queue would let a hostile peer exhaust
-    // memory.
+    // At the hard limit with no movement to evict, a key/button press MUST be
+    // dropped: the queue is bounded, a dropped press was never recorded as held
+    // (TrackPressedLocked runs only after a successful enqueue), and an
+    // unbounded queue would let a hostile peer exhaust memory.
     CHECK(DecideEnqueue(QueueState(16, false, false)) ==
           EnqueueAction::kDrop);
     CHECK(DecideEnqueue(QueueState(17, false, false)) ==
           EnqueueAction::kDrop);
+}
+
+RTSC_TEST(desktop_input_queue_accepts_release_at_hard_limit) {
+    // F1: a release must never be dropped. Releases are bounded by the set of
+    // keys/buttons the session actually holds down, and losing one leaves the
+    // peer's key stuck: TrackPressedLocked has already erased it from the
+    // pressed set, so teardown would have nothing left to release. Even at (and
+    // above) the hard limit a release is accepted.
+    CHECK(DecideEnqueue(QueueState(16, false, false, true)) ==
+          EnqueueAction::kAccept);
+    CHECK(DecideEnqueue(QueueState(17, false, false, true)) ==
+          EnqueueAction::kAccept);
+    // A release arriving while a movement can be evicted still succeeds (the
+    // eviction keeps the queue size unchanged).
+    CHECK(DecideEnqueue(QueueState(16, true, false, true)) ==
+          EnqueueAction::kEvictMove);
+}
+
+RTSC_TEST(desktop_input_is_injectable_matches_translation) {
+    // F4-A3: the server must only take the single desktop input lease for an
+    // event that can actually produce a platform input. IsInjectable() is the
+    // gate, so it must agree with TranslateInput() for every event kind.
+    std::vector<InputEvent> events;
+    events.push_back(KeyEvent(0x1E, false, false));  // key down
+    events.push_back(KeyEvent(0x1E, false, true));   // key up
+    events.push_back(KeyEvent(0x00, false, false));  // zero scancode
+
+    InputEvent unicode;
+    unicode.kind = InputEvent::Kind::kUnicode;
+    unicode.unicode_code = 0x6F22;
+    events.push_back(unicode);
+    InputEvent zero_unicode;
+    zero_unicode.kind = InputEvent::Kind::kUnicode;
+    zero_unicode.unicode_code = 0;
+    events.push_back(zero_unicode);
+
+    InputEvent bare_mouse;
+    bare_mouse.kind = InputEvent::Kind::kMouse;
+    events.push_back(bare_mouse);  // no move, no button
+    InputEvent mouse_move;
+    mouse_move.kind = InputEvent::Kind::kMouse;
+    mouse_move.is_move = true;
+    events.push_back(mouse_move);
+    InputEvent mouse_button;
+    mouse_button.kind = InputEvent::Kind::kMouse;
+    mouse_button.button = 1;
+    mouse_button.button_down = true;
+    events.push_back(mouse_button);
+
+    InputEvent wheel;
+    wheel.kind = InputEvent::Kind::kWheel;
+    wheel.wheel_delta = 120;
+    events.push_back(wheel);
+
+    InputEvent mouse_rel;
+    mouse_rel.kind = InputEvent::Kind::kMouseRel;
+    mouse_rel.rel_x = 10;
+    events.push_back(mouse_rel);
+
+    InputEvent sync;
+    sync.kind = InputEvent::Kind::kSync;
+    events.push_back(sync);
+
+    for (const InputEvent& ev : events) {
+        CHECK(IsInjectable(ev) ==
+              !TranslateInput(ev, InjectGeometry{}).empty());
+    }
+    // Pin the non-injectable kinds explicitly so a change to TranslateInput
+    // cannot silently make them take the lease.
+    CHECK(!IsInjectable(sync));
+    CHECK(!IsInjectable(mouse_rel));
+    CHECK(!IsInjectable(KeyEvent(0x00, false, false)));
+    CHECK(!IsInjectable(zero_unicode));
+    CHECK(!IsInjectable(bare_mouse));
 }
 
 RTSC_TEST(desktop_input_null_sink_stats_count_injections) {

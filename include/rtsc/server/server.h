@@ -146,11 +146,13 @@ struct ServerConfig {
     // Upper bound on sessions that may hold the desktop input lease at the same
     // time. The default is 1 because every session injects into the same
     // physical desktop: two peers typing at once would interleave into one
-    // keyboard/mouse stream. A session acquires the lease on its first decoded
-    // input event and releases it when it ends; a session that finds no free
-    // slot keeps its events out of the sink (counted by
-    // input_lease_denied_count()) and tries again on its next event. 0 disables
-    // the limit explicitly (every session may inject) and is not the default.
+    // keyboard/mouse stream. A session acquires the lease on its first
+    // injectable decoded input event (one that can produce a platform input;
+    // kSync/kMouseRel/zero-code events never take it) and releases it when it
+    // ends; a session that finds no free slot keeps its events out of the sink
+    // (counted by input_lease_denied_count()) and tries again on its next
+    // injectable event. 0 disables the limit explicitly (every session may
+    // inject) and is not the default.
     size_t max_input_sessions = 1;
 
     // The server tells the client how many times it may reconnect with a saved
@@ -372,13 +374,15 @@ class RdpServer {
     // a real kMouseRel event).
     size_t unknown_input_event_count() const;
 
-    // Number of slow-path input PDUs (PDUTYPE2_INPUT) abandoned because their
-    // numberEvents does not match the payload (a short header, a truncated
-    // event body, or a count that runs past the PDU), over the life of this
-    // server (monotonic, never reset). Such a PDU cannot be resynchronised, so
-    // only the decode is dropped; the session stays alive. Kept separate from
-    // unknown_input_event_count(): a malformed length is a framing error, not
-    // an unknown event type.
+    // Number of malformed input-carrying PDUs over the life of this server
+    // (monotonic, never reset): a slow-path input PDU whose numberEvents does
+    // not match the payload (a short header, a truncated event body, or a count
+    // that runs past the PDU), and a share-data PDU whose header parses but
+    // whose pduType2 is undefined (such a payload is dropped rather than
+    // reinterpreted as fast-path input). Such a PDU cannot be resynchronised,
+    // so only the decode is dropped; the session stays alive. Kept separate
+    // from unknown_input_event_count(): a malformed framing/type is not an
+    // unknown event code.
     size_t malformed_input_pdu_count() const;
 
     // Number of decoded input events that were NOT injected because this

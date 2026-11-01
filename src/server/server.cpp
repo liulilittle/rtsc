@@ -56,6 +56,7 @@
 #include "rtsc/proto/tpkt.h"
 #include "rtsc/proto/x224.h"
 #include "rtsc/server/desktop_input.h"
+#include "rtsc/server/desktop_input_map.h"
 
 namespace rtsc::server {
 
@@ -641,9 +642,10 @@ void DecodePointerEvent(uint16_t pf, uint16_t x_pos, uint16_t y_pos,
 // Every session injects into the same physical desktop, so letting several
 // sessions inject at once interleaves two peers' pointer/keyboard streams into
 // one machine. ServerConfig::max_input_sessions caps how many sessions may hold
-// the lease simultaneously (default 1). The first decoded input event from a
-// session acquires the lease; a session that arrives while every slot is taken
-// is refused (and counted) for that event. There is deliberately no wait queue:
+// the lease simultaneously (default 1). The first injectable decoded input
+// event from a session acquires the lease; a session that arrives while every
+// slot is taken is refused (and counted) for that event. There is deliberately
+// no wait queue:
 // the refused session tries again on its next event, so the lease moves to it as
 // soon as a holder disconnects and releases.
 struct InputLease {
@@ -762,12 +764,17 @@ class RdpSession {
         input_released_ = true;
         if (!input_lease_held_) return;
         input_lease_held_ = false;
+        // Release the sink BEFORE freeing the lease slot. ReleaseSession
+        // appends this session's synthetic key/button ups while the lease is
+        // still held; freeing the slot first would let another session acquire
+        // it and queue a key-down that the worker can emit before those ups,
+        // lifting the new holder's key.
+        if (config_.enable_desktop_input && input_sink_ != nullptr) {
+            input_sink_->ReleaseSession(input_session_id_);
+        }
         {
             std::lock_guard<std::mutex> lock(input_lease_->mu);
             input_lease_->holders.erase(input_session_id_);
-        }
-        if (config_.enable_desktop_input && input_sink_ != nullptr) {
-            input_sink_->ReleaseSession(input_session_id_);
         }
     }
 
@@ -797,12 +804,29 @@ class RdpSession {
     ~RdpSession() { ScrubCredentials(); }
 
  private:
+    // Hands one decoded event to the sink, taking the lease only when the event
+    // can actually become a platform input. A non-injectable event (kSync,
+    // kMouseRel, a zero scan code or code point, or a bare kMouse) must not be
+    // able to hold the single lease: otherwise one SYNC could starve every peer
+    // that really controls the desktop. A session that already holds the lease
+    // still forwards the event so the sink's unsupported-event counter keeps
+    // counting it.
+    void InjectIfLeasable(const InputEvent& ev) {
+        if (input_sink_ == nullptr) return;
+        if (!input_lease_held_) {
+            if (!IsInjectable(ev)) return;
+            if (!AcquireInputLease()) return;
+        }
+        input_sink_->Inject(input_session_id_, ev);
+    }
+
     // Returns true when this session may inject the current event. The first
-    // call takes a lease slot (unless the configured limit is already reached,
-    // in which case the event is counted as denied); later calls are cheap
-    // while the lease is held. A refused session retries on its next event, so
-    // it takes over when an earlier holder disconnects -- no waiter queue is
-    // needed and a session that stops typing does not block the hand-off.
+    // injectable call takes a lease slot (unless the configured limit is
+    // already reached, in which case the event is counted as denied); later
+    // calls are cheap while the lease is held. A refused session retries on its
+    // next injectable event, so it takes over when an earlier holder
+    // disconnects -- no waiter queue is needed and a session that stops typing
+    // does not block the hand-off.
     bool AcquireInputLease() {
         if (input_sink_ == nullptr || !config_.enable_desktop_input) return false;
         if (input_lease_held_) return true;
@@ -1670,9 +1694,10 @@ class RdpSession {
     // desktop refresh, and PDUTYPE2_INPUT carries slow-path input events.
     // Everything else is ignored. Returns false when a refresh send failed:
     // the session must then end (the caller breaks its loop). `handled` is set
-    // to true when the payload is a well-formed TS_SHAREDATAHEADER, so the
-    // caller knows the payload was consumed here and must not also be given
-    // to the fast-path decoder.
+    // to true when the payload was consumed here: a defined share data type, or
+    // a TS_SHAREDATAHEADER carrying an undefined pduType2 (malformed, dropped
+    // and counted). It stays false only when the header is too short or does
+    // not parse, so a real fast-path PDU can still reach the fast-path decoder.
     bool HandleSlowPathPdu(
         const std::vector<uint8_t>& payload,
         std::chrono::steady_clock::time_point* next_refresh,
@@ -1684,12 +1709,19 @@ class RdpSession {
             Status::Ok) {
             return true;  // not a share data PDU (e.g. fast-path input)
         }
-        // Only a defined sharedPDUType marks the payload as consumed. A
-        // fast-path input PDU can pass ShareDataHeader::parse by coincidence
-        // (its bytes form a DATA/version-1 header but pduType2 is not a real
-        // share data type); treating that as share data would swallow the
-        // client's input. Unknown types fall through to HandleInputPdu.
-        if (!IsKnownShareDataPduType(hdr.pdu_type2)) return true;
+        // A share-data header whose pduType2 is undefined is malformed, not a
+        // fast-path input PDU. Reinterpreting it with the fast-path decoder let
+        // a 24-byte packet emit phantom key events (and, with injection on,
+        // reach the sink). Consume it here: count it as malformed and do NOT
+        // fall through. Only a header that is too short or does not parse (a
+        // real fast-path PDU) is left for HandleInputPdu.
+        if (!IsKnownShareDataPduType(hdr.pdu_type2)) {
+            if (malformed_input_pdus_) {
+                malformed_input_pdus_->fetch_add(1, std::memory_order_relaxed);
+            }
+            if (handled != nullptr) *handled = true;
+            return true;
+        }
         if (handled != nullptr) *handled = true;
         if (hdr.pdu_type2 == proto::ShareDataPduType::kRefreshRect) {
             proto::RefreshRectPdu refresh;
@@ -1860,9 +1892,7 @@ class RdpSession {
                     }
                     return;
             }
-            if (AcquireInputLease()) {
-                input_sink_->Inject(input_session_id_, ev);
-            }
+            InjectIfLeasable(ev);
             if (input_callback_) input_callback_(ev);
         }
     }
@@ -1988,9 +2018,7 @@ class RdpSession {
                     }
                     return;
             }
-            if (AcquireInputLease()) {
-                input_sink_->Inject(input_session_id_, ev);
-            }
+            InjectIfLeasable(ev);
             if (input_callback_) input_callback_(ev);
         }
     }

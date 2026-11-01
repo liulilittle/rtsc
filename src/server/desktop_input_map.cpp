@@ -107,6 +107,11 @@ EnqueueAction DecideEnqueue(const EnqueueState& state) {
     if (state.size < state.soft_limit) return EnqueueAction::kAccept;
     if (state.has_movable_move) return EnqueueAction::kEvictMove;
     if (state.incoming_is_move) return EnqueueAction::kDrop;
+    // A release is bounded by the set of keys/buttons the session holds down,
+    // so accepting it can never grow the queue without bound. It must win over
+    // the hard-limit drop: the press was already accepted (and tracked), and
+    // dropping its release is what leaves a key stuck.
+    if (state.incoming_is_release) return EnqueueAction::kAccept;
     if (state.size >= state.hard_limit) return EnqueueAction::kDrop;
     return EnqueueAction::kAccept;
 }

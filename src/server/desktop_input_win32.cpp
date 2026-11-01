@@ -13,12 +13,14 @@
 //     queue holds no movement, a key/button is still accepted (the queue grows
 //     temporarily) because losing an up event produces a stuck key or button;
 //   * growth is bounded by a hard limit (4x the soft limit): once the queue is
-//     there and no movement can be evicted, an incoming key/button/wheel is
-//     DROPPED (fail closed). Trading a lost input for a hard memory bound is
+//     there and no movement can be evicted, an incoming key/button/wheel PRESS
+//     is DROPPED (fail closed). Trading a lost press for a hard memory bound is
 //     deliberate: an unbounded queue driven by a hostile peer would exhaust
-//     memory. A dropped key cannot leave a stuck key because the sink also
-//     records what each session holds down and ReleaseSession emits the
-//     matching ups.
+//     memory. A dropped press cannot leave a stuck key because the sink records
+//     what each session holds down only AFTER the enqueue is accepted, so a
+//     dropped press was never tracked. RELEASES are the exception: they are
+//     always accepted (bounded by the held-key set), because dropping one would
+//     erase the tracked key and make teardown unable to release it.
 //
 // Failures are counted and logged at most once per five seconds; the session is
 // never disconnected for an injection failure (UIPI and lock-screen failures
@@ -115,8 +117,13 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             return;
         }
         for (const PlatformInput& input : inputs) {
-            TrackPressedLocked(session, input);
-            EnqueueLocked(session_id, input);
+            // Only a queued event changes the held-key/button state. Tracking
+            // before the enqueue let a key-up that the hard limit dropped erase
+            // the key, so a later teardown had nothing to release and the key
+            // stayed physically stuck. EnqueueLocked accepts every release.
+            if (EnqueueLocked(session_id, input)) {
+                TrackPressedLocked(session, input);
+            }
         }
         cv_.notify_one();
     }
@@ -155,6 +162,17 @@ class Win32DesktopInputSink final : public DesktopInputSink {
 
  private:
     // ---- queue-side helpers (mu_ held) ------------------------------------
+    // A release is a key-up (scan code or unicode) or a mouse-button-up. It is
+    // bounded by the set of keys/buttons the session holds down and must never
+    // be dropped by the hard limit.
+    static bool IsRelease(const PlatformInput& input) {
+        if (input.kind == PlatformInput::Kind::kKey) return input.release;
+        if (input.kind == PlatformInput::Kind::kMouseButton) {
+            return !input.button_down;
+        }
+        return false;
+    }
+
     static void TrackPressedLocked(SessionInputState& session,
                                    const PlatformInput& input) {
         if (input.kind == PlatformInput::Kind::kKey && input.unicode == 0) {
@@ -175,12 +193,14 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         }
     }
 
-    void EnqueueLocked(uint32_t session_id, const PlatformInput& input) {
+    // Returns true when the event was queued (or coalesced into the tail), so
+    // the caller knows whether to update the session's held-key/button state.
+    bool EnqueueLocked(uint32_t session_id, const PlatformInput& input) {
         if (input.kind == PlatformInput::Kind::kMouseMove && !queue_.empty() &&
             queue_.back().session_id == session_id &&
             queue_.back().input.kind == PlatformInput::Kind::kMouseMove) {
             queue_.back().input = input;  // coalesce consecutive moves
-            return;
+            return true;
         }
         const auto oldest_move =
             std::find_if(queue_.begin(), queue_.end(),
@@ -195,6 +215,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         state.has_movable_move = oldest_move != queue_.end();
         state.incoming_is_move =
             input.kind == PlatformInput::Kind::kMouseMove;
+        state.incoming_is_release = IsRelease(input);
         switch (DecideEnqueue(state)) {
             case EnqueueAction::kEvictMove:
                 queue_.erase(oldest_move);
@@ -202,11 +223,12 @@ class Win32DesktopInputSink final : public DesktopInputSink {
                 break;
             case EnqueueAction::kDrop:
                 dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
-                return;
+                return false;
             case EnqueueAction::kAccept:
                 break;
         }
         queue_.push_back({session_id, input});
+        return true;
     }
 
     void AppendReleasesLocked(uint32_t session_id,
