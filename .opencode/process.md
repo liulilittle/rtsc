@@ -691,3 +691,21 @@ N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"
 - 执行 AI **delete 解散**（任务完成）
 - 双审**新开两会话**（原 M/N 组已解散）：P 自顶向下 `ses_e64fc340fffefiPwHITCUqaaW9`、
   Q 自底向上 `ses_e64fbe978ffeAmiKOui8vVn22l`；已双向补发对方 ID
+## 第856轮：审计 P（自顶向下）报告 + 主代理核验
+### P 结论：CONDITIONAL（映射核心正确，可观测/接线/覆盖有缺口）
+### 主代理逐条核验（只读）
+| # | P 的发现 | 我的核验 | 判定 |
+|---|---|---|---|
+| 1 | `dropped_unmapped` 未接入运维日志 | `[BASH] Select-String tools/rtsc_server/main.cpp -Pattern dropped_unmapped` = **0**；`:611-620` 只打印 injected/dropped_queue/send/release/worker | **成立 Medium** |
+| 2 | 服务端→sink 几何接线无测试 | `[READ:tests/test_server.cpp:544-550]` `RecordingInputSink::SetGeometry` 只存 width/height | **成立 Medium** |
+| 3 | 判据字面与实现不一致（SM_*VS vs SM_CXSCREEN） | 我已裁决采纳 SM_CXSCREEN（多屏正确）；M §4.2 文本未同步 | **成立 Medium（文档）** |
+| 4 | desktop origin 平移零覆盖 | `[BASH]` 测试里 `desktop = InjectRect{0,0,...}` 全部原点 0 | **成立 Medium** |
+| 5 | `AbsoluteMoveMappable` 不校验 capture⊂desktop、desk<=65536 | `[READ:desktop_input_map.h]` 谓词只查 span>1 | **成立 Low** |
+| 6 | `requires_usable_geometry` 注释与实测理由不符 | 待复核 | 待定 |
+| 7 | M 设计 §10/§12 残留已否决公式 | 待复核 | 待定 |
+| 8 | `IsInjectable` 不含几何门槛（纯移动仍抢租约） | `[READ:desktop_input_map.h:200-201]` `kMouse: return ev.is_move || ev.button != 0` | **成立 Low（前批遗留）** |
+### P 确认正确的部分（与我一致）
+MapAxis 逐字符合 §3.2；1:1 稠密 34303 点 0 失配；通用不变量 5926 点 0 失配；
+验收#1 `(52429,32768)→2560`；溢出上界 3.5e13 << 9.2e18；fail-closed 只丢移动且计数不重复。
+### 在途
+审计 Q（自底向上）尚未回报；P 已把报告 relay 给 Q 做互审。
