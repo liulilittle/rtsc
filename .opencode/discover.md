@@ -839,3 +839,37 @@ landA = dec(enc_old(x));  landB = dec(enc_new(x));  count(landA != landB) / tota
   "改前改后输出不同"当作"改后正确"的证据。
 - 附带：`dec(ceil(x*65536/w))` 与 `dec(round(x*65535/(w-1)))` 在全像素上大量不同的**原因**是
   分母语义不同，这与"哪个更接近真值"是两个独立问题——先定 oracle 再谈差异。
+## 第848轮：我上一轮的几何 oracle 是错的（下采样路径），第 28 例
+### 事实
+我第 846 轮用 `truth = round(x*(cw-1)/(fbw-1))`（端点锚定）当 oracle，判定"新公式 mean=0/max=0，现实现 max=1px"。
+**该 oracle 只对阵上采样（1600→1920）恰好成立，对下采样彻底错误。**
+### 我的独立 GDI 实测（[BASH: gdi_probe.ps1，DIB→DIB，SetStretchBltMode(COLORONCOLOR)=3]）
+```
+src=2560 dst=1280  center=0/1280   endpoint=640/1280  leftedge=1280/1280
+src=3200 dst=1280  center=0/1280   endpoint=428/1280  leftedge=1280/1280
+src=1920 dst=1280  center=0/1280   endpoint=0/1280    leftedge=640/1280
+src=1280 dst=2560  center=0/2560   endpoint=0/2560    leftedge=0/2560
+src=1920 dst=1920  center=0         endpoint=0         leftedge=0
+```
+⇒ **`StretchBlt(COLORONCOLOR)` 的取值是中心采样 `floor(((2x+1)*cap)/(2*fb))`，7/7 全零失配**；
+端点锚定在 2560→1280 上错 640/1280（50%），在 3200→1280 上错 428/1280。
+### 教训（第 28 例：**oracle 必须与被测路径的算法同族，禁止跨采样方向类推**）
+- 上采样/下采样/1:1 是三个不同算法域；在其中一个域拟合出的公式不能作为另一个域的预言机。
+- 判定"实现偏差多少"之前，必须先问：**这条路径实际执行的是什么算法**（本例：GDI 缩放模式）。
+  查代码 → `desktop_gdi.cpp:205-206` 确认走 `SetStretchBltMode(COLORONCOLOR)` + `StretchBlt`。
+- 同型风险：把"规格/直觉上的理想映射"当 oracle，而不去实测真实执行体。
+- **连带修正**：第 846 轮"M 的公式 mean=0/max=0"这一结论作废——那是用错 oracle 得到的"0 偏差对错误预言机"。
+
+## 第849轮：本环境 SendInput 无法注入（新环境限制）
+### 事实
+`SendInput(MOVE|ABSOLUTE|VIRTUALDESK)` 返回 **1**（成功），但 `GetCursorPos` 读数**完全不变**（2366,783 恒定）：
+```
+n=0 sent=1 pos=2366 | n=16384 sent=1 pos=2366 | n=32768 sent=1 pos=2366 | n=65535 sent=1 pos=2366
+```
+- 首次尝试 `err=87`（ERROR_INVALID_PARAMETER）是我自己的 bug：`INPUT` 结构多了 `long pad`，sizeof=48（应为 40）。修正后 err=0 但位置不动。
+- `OpenInputDesktop` 返回非 0（桌面句柄可取）。
+- 结论：**该会话无法用 SendInput 驱动光标**（非交互桌面 / 会话隔离子系统 / UIPI 静默丢弃）。
+### 影响
+- 审计 N 的"真机确证 `phys = origin + floor(n*extent/65536)`（x 4179 点/y 685 点全 0 失配）"我**无法复现**，标注 **UNVERIFIED（我侧）**，只能采信 N 的原始输出。
+- 因此 U1/U2 的关闭**仅有 N 单方证据**，不构成我方已确认。
+- 真机验收文档必须写明：**自动化环境很可能无法验证注入类断言**，必须由用户在有真实交互桌面时执行。
