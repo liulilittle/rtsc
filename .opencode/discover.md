@@ -403,3 +403,42 @@ old      : v=1920 w=1920 -> n=65535   ✅
 - 同型风险：子代理说"测试通过"但没跑；说"已提交"但没 commit；说"已删除"但文件还在。
 - 附带：文档内部一致性也要查（同一数字两处不同、章节标题与正文相反），
   这类矛盾会直接误导执行 AI。
+## 第854轮：`pixels_are_physical` 用虚拟桌面宽比对 DESKTOPHORZRES —— 多显示器下必然 false（第 31 例）
+### 缺陷
+`src/server/desktop_gdi.cpp:321-324`：
+```cpp
+const bool pixels_are_physical =
+    dpi_ok && physical_w > 0 && physical_h > 0 &&
+    desktop.right - desktop.left == physical_w &&      // desktop = SM_*VIRTUALSCREEN 包围盒
+    desktop.bottom - desktop.top == physical_h;
+```
+`physical_w/h` 来自 `GetDeviceCaps(probe, DESKTOPHORZRES/DESKTOPVERTRES)`，`probe` 是
+`CreateDC("DISPLAY")` 的**桌面 DC**。
+### 权威依据（[WEB: learn.microsoft.com GetDeviceCaps]）
+> "On a multiple monitor system, if hdc is the desktop, GetDeviceCaps returns the capabilities
+> of the **primary monitor**."
+> "The following display capabilities are the same for all monitors: LOGPIXELSX, LOGPIXELSY,
+> **DESTOPHORZRES, DESKTOPVERTRES**."
+
+⇒ `DESKTOPHORZRES` = **主显示器**物理宽，不是虚拟桌面宽。
+### 后果（High）
+多显示器时 `SM_CXVIRTUALSCREEN`（如 3200）≠ `DESKTOPHORZRES`（如 1920）
+⇒ `pixels_are_physical=false` ⇒ `AbsoluteMoveMappable` 恒 false ⇒ **所有绝对移动被丢弃**。
+而 `--monitor N` 恰恰只在多显示器下有意义 ⇒ **本批要修的功能在多显示器上完全不可用**。
+单显示器（本机 2560x1440）两者相等，所以测试全绿、缺陷不可见。
+### 正确判据
+比较**主显示器**的两种口径，而不是虚拟桌面：
+```cpp
+pixels_are_physical = dpi_ok &&
+    GetSystemMetrics(SM_CXSCREEN) == physical_w &&
+    GetSystemMetrics(SM_CYSCREEN) == physical_h;
+```
+`SM_CXSCREEN` 是主显示器在当前进程 DPI 语境下的宽；`DESKTOPHORZRES` 是主显示器物理宽。
+两者相等 ⇔ 进程报告的是物理像素。单屏/多屏都成立。
+### 教训（第 31 例：**跨屏功能必须在多屏语义下验证判据，单屏全绿是假绿**）
+- 任何"环境能力探测"（DPI/物理像素/虚拟桌面）都要问：**这个 API 在多显示器下返回什么**？
+  查官方文档的 "multiple monitor" 段落，不要用单屏实测外推。
+- 测试若把错误判据写成断言（`pixels_are_physical == (SM_*VS == DESKTOPHORZRES)`），
+  测试会**保护缺陷**而不是发现它。断言必须来自权威语义，不是来自实现。
+- 同型风险：`SM_CXSCREEN` vs `SM_CXVIRTUALSCREEN`、`HORZRES` vs `DESKTOPHORZRES`、
+  `GetMonitorInfo` vs `GetSystemMetrics` 混用。
