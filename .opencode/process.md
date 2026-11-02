@@ -565,3 +565,23 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 host `main.cpp` 调用点无行为测试（`--once` 阻塞等待客户端，无法低成本自动化）
 ### 调度
 执行 AI `ses_e6475efa1...` **delete 解散**
+## 第865轮：批25 —— 闭合 R7（host 装配点行为测试）+ 启动安全闸首次覆盖
+### 做了什么
+新增 `tests/host_cli_check.cmake`（cmake -P + execute_process）+ CMakeLists 5 条 `host_cli_*`。
+`--seconds 1` 让 host 自行到期退出，绕开 `--once` 等连接的阻塞，从而能观测
+`main.cpp:611` 的装配点与启动安全闸。
+### 验证
+| 项 | 证据 |
+|---|---|
+| 配置 | exit 0；`CTestTestfile.cmake` 5 条 |
+| 构建 | exit 0；六类诊断 0/0 |
+| 全量 | **68/68, 0 failed**（72.55s）|
+| 变异 A（`main.cpp:611` → `log.line(reason)`） | `host_cli_stats_line` 唯一红 ⇒ R7 真闭合 |
+| 变异 B（拒绝路径 `return 2`→`0`） | 两个 `refuse_*` 红 |
+| 变异 C（改计数键名） | `desktop_input` + `stats_line` 红 |
+| 恢复 | hash 一致、MUTANT 残留 0、重编 68/68 |
+### 新教训（discover 例 36）
+`Copy-Item` 恢复会带回旧 mtime → MSBuild 不重编 → 二进制仍是变异体 → 下一个变异证据被污染。
+恢复后必须 `touch`，且必须确认构建日志里出现该文件的重编行（BUILD_EXIT=0 在"什么都没编"时也成立）。
+### 残留
+R7 关闭；真机语义项（数字是否随注入变化）仍 UNVERIFIED。

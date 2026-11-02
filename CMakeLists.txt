@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.25)
 
 project(rtsc
     VERSION 0.1.0
@@ -816,6 +816,19 @@ add_test(NAME server_multisession COMMAND rtsc_server_multisession_tests)
 add_test(NAME server_cliprdr_e2e COMMAND rtsc_server_cliprdr_e2e_tests)
 add_test(NAME server_rdpdr_e2e COMMAND rtsc_server_rdpdr_e2e_tests)
 add_test(NAME server_rdpsnd_e2e COMMAND rtsc_server_rdpsnd_e2e_tests)
+
+# rtsc_server_host owns its own main(), so it is driven as a process. These
+# cases cover the start-up safety gate (desktop input injection must not be
+# combined silently with credentials that are not verified) and the shutdown
+# counter line that main() assembles from FormatInputStats().
+foreach(host_cli_case IN ITEMS help refuse_no_enhanced refuse_any_credentials
+                               acknowledged_start stats_line)
+    add_test(NAME host_cli_${host_cli_case}
+             COMMAND ${CMAKE_COMMAND}
+                     -DHOST=$<TARGET_FILE:rtsc_server_host>
+                     -DCASE=${host_cli_case}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/host_cli_check.cmake)
+endforeach()
 if(WIN32)
     add_test(NAME desktop_gdi COMMAND rtsc_desktop_gdi_tests)
 endif()

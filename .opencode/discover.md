@@ -378,3 +378,29 @@ Get-ChildItem "$env:TEMP\opencode\auditQ" -Recurse -File | Select-Object Name,Le
   日志构造抽成函数但宿主没调用它（本次 R3 就是这个）。
 - **元教训**：我上一轮修假测试时，只检查了"原来那条假测试没了"+"新测试能红"，
   没有检查"新测试是否覆盖了导致原缺陷的那条真实路径"。**修复必须对着缺陷的成因验证，不是对着修复的形式验证。**
+## 第864轮：恢复变异体时"拷贝旧备份"把二进制留在变异态 → 下一次变异证据被污染（例 36）
+
+### 症状
+变异 C（改 `FormatInputStats` 的 `input_dropped_unmapped` 键名）只应让
+`desktop_input` 与 `host_cli_stats_line` 转红，实测却连
+`host_cli_refuse_no_enhanced` / `host_cli_refuse_any_credentials` 也红了。
+
+### 根因
+我用 `Copy-Item` 从 `.opencode\backups\...main.cpp` 恢复，但**没有更新 mtime**。
+`Copy-Item` 会把目标文件的 LastWriteTime 设成源文件（备份）的时间，该时间**早于**
+上一步变异 B 编出的 `rtsc_server_host.exe`/`.obj`，于是 MSBuild 认为 main.cpp
+"未修改"，**不重编**，host 仍是变异 B（`return 0`）的二进制 → 拒绝用例继续红。
+
+### 证据
+`[BASH: Copy-Item 备份 -> main.cpp 后直接 cmake --build]` 输出里**没有** `main.cpp`
+编译行；`[BASH: touch main.cpp + desktop_input_stats.cpp 后重编]` 才出现
+`desktop_input_stats.cpp` / `main.cpp` 两行，再跑同一变异 → 只剩预期的 2 个红。
+
+### 教训（例 36）
+- **恢复必须 `touch`**：`Copy-Item`/`Get-Content|Set-Content` 都可能带来旧 mtime，
+  恢复后必须显式 `(Get-Item $f).LastWriteTime=Get-Date`，再确认构建日志里**出现了该文件**，
+  否则"恢复"只恢复了源码、没恢复二进制。
+- **变异证据必须看构建日志里有没有重编该 TU**，不能只看退出码：
+  `BUILD_EXIT=0` 在"什么都没编"时同样成立，这正是假绿/假红的来源。
+- 判据升级：每个变异必须同时记录"被改文件出现在编译输出中"+"目标用例红的名单"；
+  恢复后必须记录"hash 相同 + 该文件重编 + 全量绿"。

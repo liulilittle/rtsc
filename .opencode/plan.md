@@ -759,3 +759,42 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 `input_dropped_unmapped` 必须打印、未持租约会话也必须计数）。UNVERIFIED 保留。
 **若将来要自动化**：加一条 ctest 启动 host + 用测试客户端建会话再断言 stdout，
 或把 `LogInputStats` 的参数从 `InputStats` 改为可注入的输出回调（sink），在单测里捕获。
+## 批 25（round 865）——闭合 R7：host 装配点行为测试 + 启动安全闸首次覆盖
+
+### 推导起点（第一性原理）
+R7 缺口的事实：`tests/` 下 0 处出现 `rtsc_server_host`/`CreateProcess`，
+`allow_input_unverified`/`refusing to start` 在测试里 0 处命中
+⇒ host 可执行文件的**全部**行为零覆盖，含一条安全契约（未验证凭据 + `--allow-input`
+必须拒绝启动）与 R3 的装配点（`main.cpp:611` 调 `FormatInputStats`）。
+`main.cpp:627-634` 给出可用出口：`--once` 阻塞等连接，但 `--seconds N` 让 accept
+循环**自行到期退出**，且退出前 `log_input_stats("final")` 必打一行
+⇒ 无需模拟客户端即可观测装配点。实测 `--seconds 1` EXIT=0 且打印
+`input stats (final): input_injected=0 ... input_dropped_unmapped=0`。
+
+### 方案（最小改动，纯增量）
+新增 `tests/host_cli_check.cmake`（`cmake -P` 驱动 execute_process，跨平台、无需
+C++ 子进程代码），5 个用例：
+| CASE | 参数 | 断言 |
+|---|---|---|
+| help | `--help` | exit 0；含 `--allow-input`/`--allow-input-unverified`；无 `refusing to start` |
+| refuse_no_enhanced | `--allow-input --no-enhanced` | exit 2；含 `refusing to start` + `conflicting option --no-enhanced` |
+| refuse_any_credentials | `--allow-input --allow-any-credentials` | exit 2；含对应冲突行；**不得**含 `--no-enhanced` 冲突行 |
+| acknowledged_start | `--allow-input --allow-input-unverified --port 0 --seconds 1` | exit 0；含 `listening on`/`input=on`/`WARNING: desktop input injection is ENABLED` |
+| stats_line | 同上 | exit 0；含 `input stats (final): input_injected=` 及 7 个计数键 |
+`--port 0` 避免与真实运行抢端口；`--seconds 1` 使进程自行退出，杜绝孤儿。
+
+### 验证（已全部完成）
+| 项 | 证据 |
+|---|---|
+| 配置 | `cmake -S . -B build` exit 0，`CTestTestfile.cmake` 出现 5 条 `host_cli_*` |
+| 构建 | exit 0，六类诊断全 0 |
+| 全量 | 68/68，0 failed（72.55s）|
+| 变异 A：`main.cpp:611` 改 `log.line(reason)` | **只有** `host_cli_stats_line` 红（1/5 failed）⇒ 装配点被独占守护，R7 闭合 |
+| 变异 B：拒绝路径 `return 2` → `return 0` | 两个 `refuse_*` 红，其余绿（2/5）|
+| 变异 C：`FormatInputStats` 键名改 `input_dropped_unknown` | `desktop_input` + `host_cli_stats_line` 红，其余绿（2/6）|
+| 恢复 | 两个被改文件 hash 与备份一致、`MUTANT` 残留 0、重编后 68/68 |
+
+### R7 状态
+**[x] 已闭合**。此前只能在真机清单里人工验收的两条（`input_dropped_unmapped` 打印、
+纯移动计数），现在由 `host_cli_stats_line` 自动断言"该行确实由主干装配出来"；
+真机仍保留"数字是否随注入变化"的语义验收。
