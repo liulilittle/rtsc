@@ -442,3 +442,26 @@ pixels_are_physical = dpi_ok &&
   测试会**保护缺陷**而不是发现它。断言必须来自权威语义，不是来自实现。
 - 同型风险：`SM_CXSCREEN` vs `SM_CXVIRTUALSCREEN`、`HORZRES` vs `DESKTOPHORZRES`、
   `GetMonitorInfo` vs `GetSystemMetrics` 混用。
+## 第855轮：结构守卫测试会"读源码文件"，变异时若不同步改副本源码会假红/假绿（第 32 例）
+### 现象
+执行 AI 的变异 exe `gdi_mut.exe` 现在跑出 `0 failing`，与报告的"1 failing"矛盾。
+原因：新增测试 `desktop_gdi_geometry_uses_primary_screen_metrics` 在**运行时读**
+`RTSC_SOURCE_DIR/src/server/desktop_gdi.cpp` 的文本并 grep `SM_CXSCREEN`。
+- 变异编译时把调用点改成 `SM_CXVIRTUALSCREEN` → 该 exe 当时读到变异源码 → 红（报告正确）
+- 之后副本源码被恢复 → **同一个 exe 再跑就读到恢复后的源码 → 绿**
+⇒ exe 的结论依赖**外部文件当前内容**，不是编译期快照。
+### 主代理独立复现（重做变异，不信任旧 exe）
+```
+mutated src/server/desktop_gdi.cpp (SM_CXSCREEN -> SM_CXVIRTUALSCREEN)
+build exit=0
+FAIL :310 :311 :312 :313  -> 1 failing tests, 4 failed checks, EXIT=1   ✅ 红
+restore + touch, hash_same=True
+build -> 10 tests, 57 checks, 0 failing, EXIT=0                          ✅ 绿
+```
+### 教训（第 32 例：**运行时读外部文件的测试，其红/绿取决于该文件当前内容**）
+- 这类"源头守卫"测试有效，但**不能靠复跑旧 exe 来验证变异**：必须"改源码 → 重编 → 跑 → 恢复 → 重编 → 跑"。
+- 变异证据必须记录**当时**的源码状态（hash 或 diff），否则事后无法分辨是"变异未生效"还是"源码已被恢复"。
+- 更稳的替代：把判据抽成纯函数（本批已做 `PixelsArePhysical`）用纯函数单测覆盖语义，
+  结构守卫只作为"调用点传参正确"的补充，不承担语义断言。
+- 同型风险：任何 `RTSC_SOURCE_DIR` 源扫描测试（本仓库已有多处），
+  以及读配置/环境/文件系统状态的测试。
