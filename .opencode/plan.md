@@ -677,3 +677,20 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 ### 验收
 - 代码：build 0/0；两套件 `0 failing`（**不钉 checks 数**，见 memory 第 74 条）；ctest 独占 63/63；变异 1 个红/绿 + 哈希
 - 文档：与代码逐条对照，逐项在报告中列出"文档断言 → 代码事实"
+## 批 20 范围（round 840）：§1.7 第 2 条「几何来自协商尺寸而非捕获矩形」
+### 现状（主代理取证）
+- `include/rtsc/server/desktop_input.h:31-34` `InjectGeometry { uint16_t width, height; }` —— **只有协商 framebuffer 尺寸，无 origin、无虚拟桌面范围**
+- `src/server/server.cpp:1324` `inject_geometry_ = InjectGeometry{desktop_width_, desktop_height_}`（协商并钳制后的尺寸）
+- `src/server/desktop_input_win32.cpp:518-522` `BuildNative` 恒发 `MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK`
+- 捕获侧 `MakeGdiDesktopSource(monitor_index, x, y, width, height)`（`include/rtsc/server/desktop_gdi.h:40-42`）支持"单显示器 + 子矩形"，并把该矩形**缩放**到协商几何
+### 缺陷
+`--monitor N`（或子矩形捕获）时：客户端坐标以"捕获矩形"为域，注入却按"整个虚拟桌面"归一化 ⇒ **指针整体偏移/缩放错**（默认 `--monitor -1` 全虚拟桌面时才对）。
+### 目标契约（执行 AI 需按 MS 文档校准后确认）
+`InjectGeometry` 必须能表达：①捕获矩形在**虚拟桌面坐标**中的 `origin_x/origin_y` ②捕获矩形尺寸 ③虚拟桌面总范围
+④是否使用 `VIRTUALDESK`。归一化分两步：framebuffer 坐标 → 捕获矩形像素 → 虚拟桌面归一化 0..65535。
+### 交付要求
+1. 先给"设计 + 规范依据"（`MOUSEINPUT`/`MOUSEEVENTF_VIRTUALDESK` 原文 + 成熟实现交叉），再动手
+2. TDD：先写"单显示器 + origin 偏移 + 缩放"的多组用例（含 1:1、2x、origin 非零、虚拟桌面多屏）
+3. `DesktopSource` 需能报告捕获矩形（新增可选接口或工厂返回值），服务端据此填 `InjectGeometry`
+4. 变异：①忽略 origin ②忽略虚拟桌面范围 ③恒发/不发 VIRTUALDESK —— 各必红
+5. 真机项（`--monitor N` 落点）仍 UNVERIFIED，写入清单
