@@ -54,6 +54,43 @@ $ctest = Join-Path $vsRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\b
 
 if (-not (Test-Path $cmake)) { Write-Error "cmake not found at $cmake"; exit 1 }
 
+Write-Host "== mutation residue gate =="
+# A mutation that was not reverted before building produces a binary that does
+# not correspond to the sources; the test run then measures the mutant and the
+# real defect hides behind a green build (.opencode/discover.md examples 36/39).
+#
+# The check is deliberately dumb: ANY occurrence of the mutation token in the
+# covered trees fails. An earlier version tried to exempt "comment-only" lines
+# by looking at the first character, which is unsound in C++ -- `// log();` (a
+# commented-out call, the most common leftover), `#define X 1` (a preprocessor
+# directive) and `*p = 5;` (a dereference) were all treated as prose, so exactly
+# the B2 residue form passed (audit V, D5). Do not reintroduce a comment
+# heuristic or a file:line allowlist: sources are expected to keep the token out
+# of prose, so no exemption is needed.
+#
+# Two more traps this gate must not fall into itself (audit W, D3/D4/D6):
+#   * a bare `git grep` resolves the repository from the process CWD, so running
+#     this script from anywhere else greps nothing and "passes" -- anchor it with
+#     -C $root (the rest of this script already uses $PSScriptRoot the same way);
+#   * `git grep` skips untracked files by default, and a leftover mutation is
+#     often a brand-new file -- pass --untracked.
+# Exit status: 0 = matches, 1 = no match (both normal), >1 = the grep failed.
+# Scope: the trees that hold product and test sources. CMakeLists.txt, this
+# script and scripts/ are excluded on purpose (no MUT- token has ever appeared
+# there: `git log --all -S'MUT-' -- CMakeLists.txt verify.ps1 scripts cmake` is
+# empty); widen the list if that changes.
+$mutHits = @(git -C $root grep -n --untracked 'MUT-' -- src include tools tests 2>$null)
+if ($LASTEXITCODE -gt 1) {
+    Write-Host "  mutation residue gate could not run (git grep exit $LASTEXITCODE)"
+    exit 1
+}
+if ($mutHits.Count -gt 0) {
+    Write-Host "  mutation residue found (revert before building):"
+    $mutHits | ForEach-Object { Write-Host "    $_" }
+    exit 1
+}
+Write-Host "  mutation residue gate passed"
+
 Write-Host "== configure =="
 $configure = "call `"$vcvars`" >nul 2>&1 && `"$cmake`" -S `"$root`" -B `"$buildDir`" -G Ninja -DCMAKE_BUILD_TYPE=Debug"
 cmd /c $configure

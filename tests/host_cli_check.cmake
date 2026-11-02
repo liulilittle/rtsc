@@ -66,6 +66,15 @@ elseif(CASE STREQUAL "stats_line")
     set(args --allow-input --allow-input-unverified --port 0 --seconds 1)
     set(expect_exit 0)
     list(APPEND must_have "input stats (final): input_injected=")
+    # 1 s is shorter than the 5 s sampling interval, so the periodic sampler
+    # must not have run at all. Without this a host that hoisted the sample out
+    # of the loop (calling it once at startup) produced the same "exactly one
+    # periodic line" as the real periodic sampler, and the periodic_stats_line
+    # case could not tell them apart (audit V: hoisting the sample out of the
+    # loop). The mutation name is deliberately NOT written here: the pre-flight
+    # gate in verify.ps1 fails on any hit of that token, so a prose mention
+    # would need a fragile file:line whitelist. Keep this comment free of it.
+    list(APPEND must_not_have "input stats (periodic)")
     list(APPEND must_have "input_dropped_queue=")
     list(APPEND must_have "input_rate_limited=")
     list(APPEND must_have "input_send_failures=")
@@ -122,8 +131,8 @@ endforeach()
 
 foreach(once IN LISTS exactly_once)
     # Count plain substring occurrences. REGEX MATCHALL cannot be used here:
-    # the needle contains '(' and ')' (and the host wraps long lines), so a
-    # regex would either mis-match or fail to match at all.
+    # because the needle contains '(' and ')', which are regex metacharacters:
+    # the pattern would either mis-match or fail to match at all.
     set(remaining "${text}")
     set(hit_count 0)
     while(TRUE)

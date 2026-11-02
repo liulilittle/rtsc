@@ -130,7 +130,8 @@ class DesktopInputSink {
 
 // 宿主 `input stats` 行的唯一构造点，抽成纯函数以便直接断言每个字段。
 std::string FormatInputStats(const char* reason, const InputStats& stats);
-// 宿主只在计数变化时打印；逐字段比较，漏掉一个字段该计数就永远不打印。
+// 宿主首次采样必打印基线（见下方 PeriodicInputStatsLine），其后只在计数变化时打印；
+// 逐字段比较，漏掉一个字段该计数就永远不打印。
 bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 // 周期性采样行的判定 + 构造（合为一个函数，便于直接单测）。
 // `printed == nullptr` 表示"尚无基线"（首次采样）：必定返回一行，

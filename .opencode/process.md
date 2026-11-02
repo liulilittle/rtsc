@@ -644,3 +644,21 @@ D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorde
 | 基线（无变异） | `68 tests, 13919 checks, 0 failing` |
 ### 验证
 构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（75.56s）；`MUT-` 残留 0；stats 文件 hash 与备份一致。
+## 第871轮：审计 W/V 的 D3/D4/D5/D6/D7 —— verify.ps1 机械门自身假绿
+### 我的缺陷（V 的 D5 最严重，我复现）
+门用 `StartsWith('//'|'#'|'*'|'/*')` 豁免"仅注释"行。C++ 里
+`// log(); // MUT-X`（注释掉的调用）、`#define X 1 /* MUT-X */`、`*p=5; // MUT-X` 全是代码。
+复现：3 行夹具 → 旧门只报 1 条（放走 2/3）；而这正是 B2 残留的形态（`:714` 是纯注释行）。
+### 修复
+1. 把 `host_cli_check.cmake:73` 的变异名改成不含该 token 的描述（消除唯一豁免需求）
+2. 门简化为"**任何命中即失败**"，删启发式与白名单
+3. 保留 D3 `git -C $root`、D4 `--untracked`、D6 校验 `$LASTEXITCODE > 1`
+4. D7 在注释里写明排除范围与依据（`git log --all -S'MUT-' -- CMakeLists.txt verify.ps1 scripts cmake` 为空）
+### 验证
+| 场景 | 结果 |
+|---|---|
+| 干净仓库（从 `C:\Windows` 跑） | `passed`, EXIT=0 |
+| 3 行变异夹具（外部 CWD，未跟踪文件） | **3 条全报**, EXIT=1 |
+| 非仓库路径（`git -C` 失败） | EXIT=128 → 门报"could not run"并退出 1 |
+### 全量
+构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（82.21s）；`MUT-` 全仓残留 **0**（含注释）。

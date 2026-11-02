@@ -111,6 +111,9 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 // changed (so the host prints nothing and the log does not flood), otherwise
 // exactly the `input stats (periodic): ...` line for `current`.
 //
+// The ONE exception to "empty when nothing changed" is the first sample, which
+// has no baseline to compare against; see `printed` below.
+//
 // `printed` is null before the first sample. The baseline is always emitted:
 // otherwise an operator sees nothing at all until the first counter moves,
 // and a host that never receives input produces no periodic line ever -- which
