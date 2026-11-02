@@ -873,3 +873,23 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 + J-3a 补"能涨"断言 + J-5 括注修正；变异 2 个
 ### 教训
 `discover.md` 第 26 例：**`catch(...)` 不是安全，它把失败转移给调用者的假设**；注释里的"安全论证"必须能被代码证伪。
+## 第843轮：设计审计 M 交付（几何定案草案）→ 已派第二名审计 N 交叉
+### M 的核心定案（`docs/spec/input-geometry-design-M.md`，653 行）
+1) 四步公式：`fx=clamp(wx,0,fbw-1)` → `lx=round(fx*(cw-1)/(fbw-1))`（端点锚定）→ `px=cx+lx` →
+   `rel=clamp(px-dx,0,dw-1)` → `nx=min(65535,ceil(rel*65536/dw))`；flag 恒 `MOVE|ABSOLUTE|VIRTUALDESK`
+2) **分母裁决（争议）**：用 `65536/width`（解码侧 `n*w>>16` 的互逆），判现有 `extent-1` **为错**；
+   代价是改一条已绿断言 `tests/test_desktop_input.cpp:272-279`（`(1920,1080)→65535` 改 `65502`）
+3) `InjectGeometry` 最小集：`width/height + capture{4} + desktop{4} + bool mapped`；**不加 DPI、不加 `use_virtual_desk`**
+4) `DesktopSource` 推荐**方案④** `virtual DesktopGeometry Geometry() const { return {}; }`（非纯虚带默认，老实现零改动）
+5) 变异 9 项；**诚实披露**：M5（分母）在**稀疏落点级 0 命中**、M6（采样相位）只有 B0 一个稀疏点能抓
+6) 可达性数值例：monitor1(1920,0) 1280x1024、桌面 3200x1024、fb 1280x1024、客户端(640,512)
+   → 应落 **(2560,512)**，现实现落 **(1601,512)**（偏 −959 px 且跨屏）；`--monitor -1` 方向正确但 49.18% 偏 1 px
+- 自检：落点表 21 行、变异表 9 行、§6.1 全像素 1310720、§6.5 分母枚举 5 组 → 全部 0 不符；文档 lint 通过
+- UNVERIFIED 9 项（U1-U9）；§11 冲突登记含 `input-injection-evidence.md:139,144` 分母与 `tests:272-279` 端点
+### 第二名审计 N `ses_e66????????`（已派）
+必答四项：①分母裁决（自取证 `MOUSEINPUT` 原文 + 解码源码，自己枚举 5 个宽度全像素算失配）
+②采样相位（端点 vs 中心 vs 起点，找 GDI `StretchBlt` 真实证据）
+③M5 稀疏 0 命中是否意味着**无法被测住**，给出能抓住它的最小断言
+④字段集是否会丢信息（混合 DPI / `VIRTUALDESK` 恒开）
+### 状态
+审计 M 待 N 的交叉回执后再收口；批 21（J-1 挂起/UAF）仍在途，与 N 只读审计无冲突
