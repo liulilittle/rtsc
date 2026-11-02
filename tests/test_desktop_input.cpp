@@ -894,6 +894,25 @@ RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     if (out.size() != 1) return;
     CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
 
+    // The two trust bits need their own cases. Every PartialGeometry above has a
+    // broken span or a zero capture rectangle, so those checks reject it first
+    // and flipping `mapped` alone changes nothing observable -- three separate
+    // mutations of PartialGeometry (`mapped=true`, and a combined variant) all
+    // stayed green for exactly that reason (audit Y, P1). Start from a geometry
+    // that is otherwise fully usable and break ONE trust bit at a time.
+    InjectGeometry unmapped = PhysicalGeometry(2, 2);
+    unmapped.mapped = false;
+    CHECK(TranslateInput(ev, unmapped).empty());
+    InjectGeometry logical = PhysicalGeometry(2, 2);
+    logical.pixels_are_physical = false;
+    CHECK(TranslateInput(ev, logical).empty());
+    // The button still arrives under an untrusted geometry, so the suppression
+    // above is specifically about the MOVE and not a blanket drop.
+    InputEvent unmapped_click = ev;
+    unmapped_click.button = 1;
+    unmapped_click.button_down = true;
+    CHECK_EQ(TranslateInput(unmapped_click, unmapped).size(), 1u);
+
     // Only the unmappable MOVE is suppressed: a button press carries no
     // coordinates and still has to reach the desktop, or the peer's click is
     // lost (and its later release leaves the local button stuck).

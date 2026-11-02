@@ -71,6 +71,23 @@ inline int run_all(const char* app_name) {
     if (failure_count() != 0) {
         std::printf("crash dumps (if any): %s\n", ::rtsc::util::CrashDumpDirectory());
     }
+
+    // An empty run is not a pass. Both shapes below used to exit 0, which makes
+    // the harness report success for a run that proved nothing:
+    //   * a misspelled RTSC_TEST_FILTER matches no case, so a reviewer's
+    //     "RTSC_TEST_FILTER=<case> <exe>" evidence line silently confirms nothing;
+    //   * a test binary whose registration was compiled out exits 0 with zero
+    //     cases, so ctest reports a green suite that ran no assertions.
+    // Exit 2 keeps this distinguishable from exit 1 ("a test failed").
+    if (ran_tests == 0) {
+        if (!filter.empty()) {
+            std::printf("error: RTSC_TEST_FILTER='%s' matched no test case\n",
+                        filter.c_str());
+        } else {
+            std::printf("error: no test cases were registered in this binary\n");
+        }
+        return 2;
+    }
     return failed_tests == 0 ? 0 : 1;
 }
 

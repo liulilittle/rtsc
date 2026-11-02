@@ -449,7 +449,17 @@ target_link_libraries(rtsc_gui_send_tests PRIVATE
                       rtsc_client rtsc_security rtsc_server rtsc_net
                       rtsc_proto rtsc_crypto rtsc_ui rtsc_util rtsc_urbrdc)
 target_include_directories(rtsc_gui_send_tests PRIVATE tests)
-add_test(NAME gui_send COMMAND rtsc_gui_send_tests)
+# tests/test_gui_send.cpp is entirely inside `#if defined(_WIN32)` (the GUI send
+# path drives the Win32 UI layer), so on Linux this target links but registers
+# zero cases. Registering it unconditionally made `gui_send` a green test that
+# asserted nothing for as long as the gate has existed -- the same "ran nothing,
+# reported success" shape as the guarded-out OpenSSL P0 case. Keep the target
+# (it is still compiled, so it catches build breaks) but only register the test
+# where the cases actually exist. tests/test_main.h exits 2 on an empty registry
+# so a future regression of this kind cannot pass silently either.
+if(WIN32)
+    add_test(NAME gui_send COMMAND rtsc_gui_send_tests)
+endif()
 
 # Blocking TCP transport. Windows = Winsock; POSIX = POSIX sockets.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

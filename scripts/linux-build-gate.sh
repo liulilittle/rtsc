@@ -78,7 +78,7 @@ rotate_logs() {
 # removed wholesale, only rotated above.
 cleanup() {
     rotate_logs
-    rm -rf -- "$BUILD_DIR"
+    rm -rf -- "$BUILD_DIR" "${BUILD_DIR}-rel"
 }
 trap cleanup EXIT
 CFG_LOG="$LOG_DIR/configure.log"
@@ -95,6 +95,7 @@ rm -rf "$BUILD_DIR"
 # environment contract above already makes a missing toolchain a hard FAIL.
 cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRTSC_TLS_OPENSSL=ON >"$CFG_LOG" 2>&1
 CFG_EXIT=$?
+echo "CONFIGURE_EXIT=$CFG_EXIT"
 if [ "$CFG_EXIT" -ne 0 ]; then
     echo "--- configure log tail ---"
     tail -40 "$CFG_LOG"
@@ -169,11 +170,35 @@ fi
 P0_CASE=tls_server_regression_coalesced_first_record_no_stall
 SEC_LOG="$LOG_DIR/server_security.log"
 "$SEC_BIN" >"$SEC_LOG" 2>&1
-grep -q "OK .* ${P0_CASE}\$" "$SEC_LOG" || {
+# Printf'ing "skipped: ..." and returning from the case body is still reported as
+# "[  OK  ] <name>" by tests/test_main.h, so an OK line alone does not prove the
+# body ran -- a TLS-less or guard-weakened build satisfies it (audit X, D1: a
+# body rewritten to `if (true) { skipped; return; }` still produced
+# P0_REGRESSION=executed and LINUX GATE PASS before this check existed).
+# Require all three: the case ran, nothing skipped, and at least the checks the
+# real body produces.
+if ! grep -q "OK .* ${P0_CASE}\$" "$SEC_LOG"; then
     echo "LINUX GATE FAIL: ${P0_CASE} did not execute (OpenSSL backend compiled out?)"
     grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
     exit 1
-}
+fi
+# Scoped to this one suite on purpose: the check count is a lower bound, not an
+# equality, so adding assertions to this file does not break the gate. Other
+# suites are known to be unstable here (rtsc_server_tests oscillates 655-657
+# because two checks run conditionally, audit X), so do NOT copy this pattern.
+if grep -q "skipped:" "$SEC_LOG"; then
+    echo "LINUX GATE FAIL: ${P0_CASE} suite self-skipped; an OK line does not prove the body ran"
+    grep -n "skipped:" "$SEC_LOG" | tail -5
+    exit 1
+fi
+SEC_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$SEC_LOG" | tail -1)
+SEC_TESTS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^([0-9]+) tests,.*/\1/')
+SEC_CHECKS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
+if [ "${SEC_TESTS:-0}" -lt 8 ] || [ "${SEC_CHECKS:-0}" -lt 67 ]; then
+    echo "LINUX GATE FAIL: ${P0_CASE} suite ran less than the full body (tests=${SEC_TESTS:-?} checks=${SEC_CHECKS:-?}, want >=8 tests / >=67 checks)"
+    printf '%s\n' "$SEC_SUMMARY"
+    exit 1
+fi
 echo "P0_REGRESSION=executed"
 (cd "$BUILD_DIR" && ctest --output-on-failure >"$TEST_LOG" 2>&1)
 CTEST_EXIT=$?
@@ -186,6 +211,49 @@ if [ "$CTEST_EXIT" -ne 0 ]; then
     echo "LINUX GATE FAIL: ctest"
     exit 1
 fi
+
+# Debug-only coverage hides optimized-build-only assertions. tests/test_view.cpp
+# wraps its timing budgets in `#if defined(NDEBUG)` (batch 33), so the Debug run
+# above never evaluates them -- the algorithm budget was deleted from the only
+# automated gate rather than made build-aware (audit X D3 / Y P1). Build the same
+# tree once more with optimization so those checks actually execute. Only the
+# view suite is run: the rest of the tree was already exercised in Debug, and the
+# Release build's job here is to prove the budget assertions are live.
+REL_BUILD_DIR="${BUILD_DIR}-rel"
+REL_CFG_LOG="$LOG_DIR/configure-release.log"
+REL_BUILD_LOG="$LOG_DIR/build-release.log"
+REL_TEST_LOG="$LOG_DIR/ctest-release-view.log"
+echo "RELEASE_BUILD_DIR=$REL_BUILD_DIR"
+
+if ! cmake -S . -B "$REL_BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DRTSC_TLS_OPENSSL=ON >"$REL_CFG_LOG" 2>&1; then
+    echo "--- release configure log tail ---"
+    tail -40 "$REL_CFG_LOG"
+    echo "LINUX GATE FAIL: release configure"
+    exit 1
+fi
+if ! cmake --build "$REL_BUILD_DIR" --target rtsc_view_tests >"$REL_BUILD_LOG" 2>&1; then
+    echo "--- release build log tail ---"
+    tail -60 "$REL_BUILD_LOG"
+    echo "LINUX GATE FAIL: release build"
+    exit 1
+fi
+VIEW_LOG="$LOG_DIR/view-release.log"
+"$REL_BUILD_DIR/rtsc_view_tests" >"$VIEW_LOG" 2>&1
+VIEW_EXIT=$?
+echo "VIEW_RELEASE_EXIT=$VIEW_EXIT"
+if [ "$VIEW_EXIT" -ne 0 ]; then
+    tail -40 "$VIEW_LOG"
+    echo "LINUX GATE FAIL: view budget under optimization"
+    exit 1
+fi
+if grep -q "skipped: timing budgets" "$VIEW_LOG"; then
+    echo "LINUX GATE FAIL: view budgets still skipped in an optimized build"
+    exit 1
+fi
+grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1
+echo "VIEW_BUDGETS=executed"
+rm -rf -- "$REL_BUILD_DIR"
 
 echo "LINUX GATE PASS"
 exit 0
