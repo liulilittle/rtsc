@@ -82,10 +82,20 @@
 - [ ] 断开后继续用另一客户端注入，确认无残留移动/按键，日志无 `sessions_` 相关异常。
 
 ## 10. 可观测（`input stats`）
-- [ ] `--once` 与 `--seconds N` 正常退出时打印 `input stats (final)`，四个计数与实际观察一致
+- [ ] `--once` 与 `--seconds N` 正常退出时打印 `input stats (final)`，六个计数与实际观察一致
       （注入成功应有 `input_injected` > 0）。
 - [ ] 无界模式（不带 `--seconds`）按 Ctrl+C **不会**打印 final（当前无 SIGINT 处理）——
       确认文档未承诺该行为。
 - [ ] 周期性 `input stats (periodic)` 只在计数变化时出现，**不得刷屏**；`lease denied summary`
       不应与首次 WARNING 重复刷同一条。
 - [ ] UIPI 静默失败场景下，`input_send_failures` 应增长（用于区分"没反应"与"没送到"）。
+- [ ] 异常断开（拔网线/杀进程）后 `input_release_failures` 应保持 0（补发 up 成功）；
+      若增长说明合成 up 入队失败，本地可能残留按住状态——与 §9 的"不得残留"互为对照。
+- [ ] `input_worker_failures` 应恒为 0（worker 线程未吞异常）；非 0 表示有注入动作被静默丢弃。
+
+## 11. 停止与退出（`Stop()` 契约）
+- [ ] 正常关闭（`--seconds` 到期）必须在**有限时间**内返回；若日志出现
+      `stop: N session(s) still live after Xs`，说明某会话线程未退出（属缺陷，请记录 N 与场景）。
+- [ ] 关闭后立即继续使用宿主对象（如销毁 clipboard/desktop source 并退出进程）**不得崩溃**：
+      `Stop()` 契约是"返回时已无会话线程访问借用对象"。
+- [ ] 客户端连接后不发送任何输入再关闭服务端：`Stop()` 应立即返回（无会话积压）。
