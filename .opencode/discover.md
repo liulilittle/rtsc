@@ -359,3 +359,22 @@ Get-ChildItem "$env:TEMP\opencode\auditQ" -Recurse -File | Select-Object Name,Le
   用日志文本断言行为。
 - 附带：这正是我在批22 自己违反第 16 条（"改坏仍全绿即假测试"）的产物——**测试必须能被变异打死**，
   而该守卫在关键变异下依然绿，说明它从未真正守护任何东西。
+## 第862轮：我修了"假绿"却没修"假绿的成因模式"（第 35 例）
+### 事故
+我（批23）按第 34 例把 `test_desktop_gdi.cpp` 的读源码守卫换成了行为 seam，
+并在验收时做了变异"seam 内 SM_CXSCREEN→VIRTUALSCREEN"→ 转红，就判定 H1 通过。
+但审计 R 指出且我实测确认：**工厂 `desktop_gdi.cpp:382-383` 换成 VIRTUALSCREEN 仍然 0 failing**。
+```
+把 PixelsArePhysicalFromMetrics(dpi_ok, metrics)
+改成 PixelsArePhysical(dpi_ok, metrics.SystemMetric(SM_CXVIRTUALSCREEN), ...)
+→ 10 tests, 57 checks, 0 failing tests, 0 failed checks, EXIT=0
+```
+即：seam 的**单元**被测死，但 seam 与**装配点**之间的连线没有。
+### 教训（第 35 例：**修一个假测试时，必须同时验证"装配点"也被覆盖**）
+- 抽 seam（依赖注入）容易让人以为"行为可测了"，但 seam 只在**被装配进生产路径**时才有意义。
+- 判据：新 seam 的测试必须至少有一条**经过生产入口**（工厂/构造函数）而非直接调 seam 函数。
+- 验证方法：变异必须打在**装配点**（工厂里选哪个 metric），而不只是打在 seam 内部。
+- 同型风险：抽了纯函数但调用点仍可写成别的；抽了接口但实现没被注入；
+  日志构造抽成函数但宿主没调用它（本次 R3 就是这个）。
+- **元教训**：我上一轮修假测试时，只检查了"原来那条假测试没了"+"新测试能红"，
+  没有检查"新测试是否覆盖了导致原缺陷的那条真实路径"。**修复必须对着缺陷的成因验证，不是对着修复的形式验证。**
