@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -31,9 +30,12 @@ using rtsc::server::AdmitOutcome;
 using rtsc::server::DecideEnqueue;
 using rtsc::server::EnqueueAction;
 using rtsc::server::EnqueueState;
+using rtsc::server::FormatInputStats;
 using rtsc::server::InjectGeometry;
 using rtsc::server::InjectRect;
 using rtsc::server::InputEvent;
+using rtsc::server::InputStats;
+using rtsc::server::InputStatsChanged;
 using rtsc::server::IsHeldRelease;
 using rtsc::server::IsInjectable;
 using rtsc::server::IsReleaseInput;
@@ -796,6 +798,19 @@ RTSC_TEST(desktop_input_absolute_move_degenerate_geometry) {
     g.capture.height = 3;  // y + height = 3 > desktop 0 + 2
     CHECK(TranslateInput(ev, g).empty());
 
+    // Exactly one pixel past the right edge. The case above overshoots by two
+    // (x=2 + width 2 vs desktop 2), so it cannot distinguish "<=" from "<=" with
+    // a one-pixel allowance; this one pins the boundary itself.
+    g = PhysicalGeometry(2, 2);
+    g.capture.x = 1;  // x + width = 3 == desktop right + 1
+    CHECK(TranslateInput(ev, g).empty());
+
+    // An empty capture height is degenerate even when marked mapped: without
+    // this case a "<0" rewrite of the "<= 0" check would stay green.
+    g = PhysicalGeometry(2, 2);
+    g.capture.height = 0;
+    CHECK(TranslateInput(ev, g).empty());
+
     // MOUSEINPUT absolute coordinates have 65536 steps per axis, so a desktop
     // box larger than that cannot be addressed pixel by pixel: a wire step
     // would skip pixels. Treat it as unusable rather than silently imprecise.
@@ -817,6 +832,17 @@ RTSC_TEST(desktop_input_absolute_move_degenerate_geometry) {
     CHECK_EQ(addressable.size(), 1u);
     if (addressable.size() == 1) {
         CHECK(addressable[0].kind == PlatformInput::Kind::kMouseMove);
+    }
+
+    // Same control on the vertical axis. Without it a ">= 65536" rewrite of the
+    // height check would only be exercised by the 65537 rejection above.
+    g = PhysicalGeometry(2, 2);
+    g.desktop.height = 65536;
+    g.capture.height = 2;
+    const std::vector<PlatformInput> addressable_h = TranslateInput(ev, g);
+    CHECK_EQ(addressable_h.size(), 1u);
+    if (addressable_h.size() == 1) {
+        CHECK(addressable_h[0].kind == PlatformInput::Kind::kMouseMove);
     }
 }
 
@@ -1675,60 +1701,66 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     CHECK(IsInjectable(mouse_button, untrusted));
 }
 
-RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
-    // tools/rtsc_server/main.cpp owns a full server process and cannot be
-    // linked into this suite, so the two observability points are guarded
-    // structurally (the same way tests/test_ui.cpp guards the GUI dispatch).
-    //   1. the startup line carries "input=on|off" and "input_max_sessions=N";
-    //   2. the first denied input lease logs a WARNING that includes the
-    //      running input_lease_denied_count(), and the count is summarized
-    //      periodically afterwards -- never one line per event;
-    //   3. the host actually reads DesktopInputSink::Stats() and prints the
-    //      four counters (otherwise dropped_rate_limited is invisible in the
-    //      shipped binary).
-#ifdef RTSC_SOURCE_DIR
-    const std::string path =
-        std::string(RTSC_SOURCE_DIR) + "/tools/rtsc_server/main.cpp";
-    std::ifstream in(path, std::ios::binary);
-    CHECK(in.is_open());
-    if (!in.is_open()) {
-        std::printf("  FAIL: cannot open %s\n", path.c_str());
-        return;
-    }
-    const std::string src((std::istreambuf_iterator<char>(in)),
-                          std::istreambuf_iterator<char>());
-    CHECK(src.find("\" input=\"") != std::string::npos);
-    CHECK(src.find("(opt.allow_input ? \"on\" : \"off\")") !=
-          std::string::npos);
-    CHECK(src.find("\" input_max_sessions=\"") != std::string::npos);
-    CHECK(src.find("input_lease_denied_count()") != std::string::npos);
-    CHECK(src.find("WARNING: input lease denied") != std::string::npos);
-    // Periodic lease-denied summary (not only the first denial).
-    CHECK(src.find("input lease denied summary") != std::string::npos);
-    // Production call site of Stats() and the four printed counters.
-    CHECK(src.find("->Stats()") != std::string::npos);
-    CHECK(src.find("input_injected=") != std::string::npos);
-    CHECK(src.find("input_dropped_queue=") != std::string::npos);
-    CHECK(src.find("input_rate_limited=") != std::string::npos);
-    CHECK(src.find("input_send_failures=") != std::string::npos);
-    // Teardown releases that could not be queued are only visible here.
-    CHECK(src.find("input_release_failures=") != std::string::npos);
-    // Worker iterations that threw and were skipped are only visible here.
-    CHECK(src.find("input_worker_failures=") != std::string::npos);
-    // Moves dropped because the session geometry is untrusted are only
-    // observable through this counter, so the shipped host must print it...
-    CHECK(src.find("input_dropped_unmapped=") != std::string::npos);
-    // ... and must include it in the change detector, or a session whose only
-    // fault is untrusted geometry would never produce a periodic line.
-    CHECK(src.find("stats.dropped_unmapped != printed_input.dropped_unmapped") !=
-          std::string::npos);
-    // The final value is printed before the process exits.
-    CHECK(src.find("\"final\"") != std::string::npos);
-#else
-    std::printf(
-        "  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
-    CHECK(false);
-#endif
+RTSC_TEST(desktop_input_stats_line_reports_every_counter) {
+    // The shipped host builds its periodic line with FormatInputStats(). The
+    // four queue/rate/failure counters and dropped_unmapped are otherwise
+    // invisible to an operator, so every field must appear with its own value.
+    // Asserting the function's return value replaces the old source-text grep,
+    // which a rename plus a comment could satisfy without printing anything.
+    InputStats stats;
+    stats.injected = 11;
+    stats.dropped_queue_full = 22;
+    stats.dropped_rate_limited = 33;
+    stats.send_failures = 44;
+    stats.release_failures = 55;
+    stats.worker_failures = 66;
+    stats.dropped_unmapped = 77;
+    const std::string line = FormatInputStats("periodic", stats);
+    CHECK_EQ(line.compare(0, 24, "input stats (periodic): "), 0);
+    CHECK(line.find("input_injected=11 ") != std::string::npos);
+    CHECK(line.find("input_dropped_queue=22 ") != std::string::npos);
+    CHECK(line.find("input_rate_limited=33 ") != std::string::npos);
+    CHECK(line.find("input_send_failures=44 ") != std::string::npos);
+    CHECK(line.find("input_release_failures=55 ") != std::string::npos);
+    CHECK(line.find("input_worker_failures=66 ") != std::string::npos);
+    CHECK(line.size() >= 25);
+    CHECK_EQ(line.compare(line.size() - 25, 25, "input_dropped_unmapped=77"),
+             0);
+    // A different reason is carried through verbatim.
+    CHECK_EQ(FormatInputStats("final", stats).compare(0, 21,
+                                                     "input stats (final): "),
+             0);
+}
+
+RTSC_TEST(desktop_input_stats_change_detection_covers_all_counters) {
+    // The host only logs a periodic line when InputStatsChanged() says so. If a
+    // counter is missing from the comparison, a session whose only fault is
+    // that counter never produces a line (the batch 24 R3 case was
+    // dropped_unmapped). Each field is bumped alone here.
+    const InputStats base;
+    CHECK(!InputStatsChanged(base, base));
+    InputStats next = base;
+    next.injected = 1;
+    CHECK(InputStatsChanged(base, next));
+    CHECK(InputStatsChanged(next, base));
+    next = base;
+    next.dropped_queue_full = 1;
+    CHECK(InputStatsChanged(base, next));
+    next = base;
+    next.dropped_rate_limited = 1;
+    CHECK(InputStatsChanged(base, next));
+    next = base;
+    next.send_failures = 1;
+    CHECK(InputStatsChanged(base, next));
+    next = base;
+    next.release_failures = 1;
+    CHECK(InputStatsChanged(base, next));
+    next = base;
+    next.worker_failures = 1;
+    CHECK(InputStatsChanged(base, next));
+    next = base;
+    next.dropped_unmapped = 1;
+    CHECK(InputStatsChanged(base, next));
 }
 
 RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
@@ -1756,7 +1788,9 @@ RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
     CHECK_EQ(sink->Stats().release_failures, static_cast<size_t>(0));
     // ... and it has no worker, so a worker iteration can never fail either.
     CHECK_EQ(sink->Stats().worker_failures, static_cast<size_t>(0));
-    // The null backend has no geometry, so it never fail-closes a move.
+    // The null backend has no geometry, so it never fail-closes a move; the
+    // server-side note (a pure move refused before Inject) is a no-op too.
+    sink->NoteUnmappableMove(1);
     CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(0));
     sink->ReleaseSession(1);
     CHECK_EQ(sink->Stats().injected, static_cast<size_t>(2));
@@ -1789,6 +1823,25 @@ RTSC_TEST(desktop_input_unmapped_move_is_counted_separately) {
     sink->SetGeometry(1, untrusted);
     sink->Inject(1, move);
     CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(1));
+    CHECK_EQ(sink->Stats().injected, static_cast<size_t>(0));
+}
+
+RTSC_TEST(desktop_input_note_unmappable_move_counts_without_inject) {
+    // Batch 24 S1: the server fail-closes a pure move before taking the lease,
+    // so Inject() is never called for it. The sink must still count the drop
+    // when the server reports it through NoteUnmappableMove(), otherwise
+    // dropped_unmapped stays 0 for exactly the session an operator needs to
+    // diagnose (untrusted geometry, no lease).
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(0));
+    sink->NoteUnmappableMove(1);
+    CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(1));
+    sink->NoteUnmappableMove(1);
+    CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(2));
+    // Nothing was injected and no session state was needed for the note.
     CHECK_EQ(sink->Stats().injected, static_cast<size_t>(0));
 }
 

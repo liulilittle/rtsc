@@ -173,6 +173,15 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         cv_.notify_one();
     }
 
+    void NoteUnmappableMove(uint32_t session_id) override {
+        // The server calls this for a pure move it fail-closed before Inject()
+        // (the session does not hold the lease, so the event must not take it).
+        // Only the counter changes: creating session state here would be wrong,
+        // and a lease holder's move is counted inside Inject() instead.
+        (void)session_id;
+        dropped_unmapped_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void ReleaseSession(uint32_t session_id) override {
         {
             std::lock_guard<std::mutex> lock(mu_);

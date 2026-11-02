@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "rtsc/server/server.h"
 
@@ -95,6 +96,17 @@ struct InputStats {
     size_t dropped_unmapped = 0;
 };
 
+// The `input stats (...)` log line the shipped host writes. Pure so the line's
+// fields and values are asserted directly, instead of by grepping the host's
+// source text (a comment or a rename used to satisfy such a test).
+std::string FormatInputStats(const char* reason, const InputStats& stats);
+
+// True when `cur` differs from `prev` in any counter, i.e. the host should log
+// a new stats line. `dropped_unmapped` is included: a session whose only fault
+// is an untrusted geometry must still produce a periodic line (the server can
+// note such moves without ever calling Inject).
+bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
+
 // Receives decoded input for injection. Every method runs on the session thread
 // and must return quickly: implementations queue the work and perform the
 // platform call on their own worker thread, because a blocked session thread
@@ -111,6 +123,15 @@ class DesktopInputSink {
     // session_id identifies the session so a sink can track (and release) the
     // keys and buttons each session holds down.
     virtual void Inject(uint32_t session_id, const InputEvent& ev) = 0;
+
+    // Called when a pure pointer movement was fail-closed BEFORE reaching
+    // Inject(): the session does not hold the input lease and the movement
+    // cannot be mapped with its geometry (so it must not take the lease).
+    // Such a movement never reaches Inject(), yet InputStats::dropped_unmapped
+    // documents it as the only visible signal, so the counting has to happen
+    // here. A session that already holds the lease goes through Inject(), which
+    // counts the same condition itself; implementations must not double count.
+    virtual void NoteUnmappableMove(uint32_t session_id) = 0;
 
     // Called when the session ends: releases every key/button that session
     // still holds down. Win32 does not reset the keyboard state, so skipping

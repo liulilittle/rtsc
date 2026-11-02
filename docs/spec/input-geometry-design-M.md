@@ -251,7 +251,7 @@ else if (pmi->dwFlags & MOUSEEVENTF_VIRTUALDESK)
 这正是把“域/原点”与“取整约定”分开定案的价值：**缺陷修复不依赖 U2，只有最后 1 px 精度依赖它**。
 
 数值范围（防溢出）：`cw, ch ≤ 32767`（`SM_CXVIRTUALSCREEN` 是 `int`）、`fbw, fbh ≤ 8192`
-（`kMaxDesktopWidth/Height`）⇒ 步骤 1 分子 `fx*(cw-1)*2 ≈ 8191*32766*2 ≈ 5.37e8`，
+（`kMaxDesktopWidth/Height`）⇒ 步骤 1 分子 `(2*fx+1)*cw ≤ (2*8191+1)*32767 = 16383*32767 ≈ 5.37e8`，
 步骤 3 最大 `32766*65536 ≈ 2.147e9`（略低于 `INT32_MAX`）。**仍要求用 `int64_t`**：余量只剩 1e-4，
 且未来放宽上限必然溢出。
 
@@ -315,11 +315,13 @@ struct InjectGeometry {
 `InjectGeometry{desktop_width_, desktop_height_}` 这种两参数聚合初始化**继续可用**
 （新增成员有默认值），可把改动面压到最小。
 
-被丢弃的绝对移动计入 sink 的**内部** `dropped_unsupported_`
-[READ:src/server/desktop_input_win32.cpp:141,700]；该计数**目前不在 `InputStats` 里**
-[READ:include/rtsc/server/desktop_input.h:59-66]，因此“几何不可信导致的丢弃”对运维**不可见**。
-建议顺带把它提升为 `InputStats` 的一个字段（属可观测性增强，非本缺陷必需；若加，需同步
-`desktop_input_null.cpp` 与 `InputStats` 的既有断言）。
+被丢弃的绝对移动计入 `InputStats::dropped_unmapped`
+[READ:include/rtsc/server/desktop_input.h:83-95]，因此“几何不可信导致的丢弃”对运维**可见**：
+宿主在 `input stats (...)` 行打印它，并把该字段纳入变更检测（`FormatInputStats` /
+`InputStatsChanged`，[READ:src/server/desktop_input_stats.cpp]）。未持租约的不可映射纯移动
+由 server 通过 `NoteUnmappableMove()` 报告给 sink，同样计入该字段，且**不重复**计入
+“无平台形态”的内部 `dropped_unsupported_`（后者仍不在 `InputStats` 里）
+[READ:src/server/desktop_input_win32.cpp:147-182]。
 
 ### 4.2 字段来源与生命周期
 
@@ -329,7 +331,7 @@ struct InjectGeometry {
 | `capture` | `DesktopSource::Geometry()`（GDI 实现返回其 `rect_`，即**钳制后**最终矩形） | 连接建立（`DoConnectResponse`）时一次性快照，**会话期间不变** |
 | `desktop` | 同一工厂内一次性取 `SM_X/Y/CX/CYVIRTUALSCREEN` 快照 | 同上 |
 | `mapped` | `capture.width>0 && capture.height>0 && desktop.width>1 && desktop.height>1` | 同上 |
-| `pixels_are_physical` | PMv2 生效且 `SM_CXSCREEN/SM_CYSCREEN == GetDeviceCaps(DESKTOPHORZRES/VERTRES)`（**主显示器**口径；[READ:src/server/desktop_gdi.cpp:159-164] 目前丢弃返回值） | 同上 |
+| `pixels_are_physical` | PMv2 生效且 `SM_CXSCREEN/SM_CYSCREEN == GetDeviceCaps(DESKTOPHORZRES/VERTRES)`（**主显示器**口径；[READ:src/server/desktop_gdi.cpp:70-78] 的返回值已参与判定，[READ:src/server/desktop_gdi.cpp:166-177] 为判定函数） | 同上 |
 
 **禁止**在 sink / 映射层调用 `GetSystemMetrics`：`desktop_input_map.cpp` 必须保持平台中立
 [READ:include/rtsc/server/desktop_input_map.h:1-12]，且注入线程 DPI 语境不可保证。
@@ -428,8 +430,9 @@ class DesktopSource {
 ### 6.4 落点表（可逐行抄进单测）
 
 列说明：`fb` = 协商几何；`捕获` = `(cx,cy,cw,ch)`；`桌面` = `(dx,dy,dw,dh)`；
-`新 n / 新落点` = §3 公式；`规范落点` = `cx + round(fx*(cw-1)/(fbw-1))`（端点锚定下“应该”指向的物理像素，
-也是 §3 公式输出的真实落点，二者逐行相等是本表的自检）；
+`新 n / 新落点` = §3 公式；`规范落点` = `cx + floor(((2*fx+1)*cw)/(2*fbw))`（§3.2 的中心采样，
+也是 §3 公式输出的真实落点，二者逐行相等是本表的自检；端点锚定 `round(fx*(cw-1)/(fbw-1))`
+已在 §2.5 否决）；
 `现有 n / 现有落点` = `round(fx*65535/(fbw-1))` 经 `floor(n*dw/65536)+dx`。
 
 | 用例 | fb | 捕获 | 桌面 | 客户端 | 新 n | 新落点 | 规范落点 | 现有 n | 现有落点 | 现有误差 |
@@ -613,8 +616,9 @@ def decode(n, desk0, desk_n):                            # what the OS does
 - **1:1 恒等**：`cap == fb` 时 `step1(p) == p`（`BitBlt` 路径零取整）。
 - **桌面段**：对 `desk_n ∈ {1280,1920,2560,3200,3840,8192}` 与全部 `p`，
   `decode(map_axis(p, desk_n, desk_n, 0, 0, desk_n), 0, desk_n) == p`（0 失配）。
-- **可区分性**：`fb=640, cap=1280` 时 `step1` 与“中心采样”在 **320/640** 个 `p` 上不同，
-  与“窗口起点”也在 **320/640** 个 `p` 上不同 ⇒ 稠密用例能把三者分开（§7 M6/M6s）。
+- **可区分性**：`fb=640, cap=1280` 时 `step1` **就是**中心采样，两者在 **0/640** 个 `p` 上不同
+  （恒等是设计意图）；`step1` 与“窗口起点”在 **640/640** 个 `p` 上不同
+  ⇒ 稠密用例仍能把中心采样与窗口起点分开（§7 M6/M6s）。
 
 本次实测（§6.5）：`ceil` 版 0 失配；`round` 版 512/896/1536/1792/0；`extent-1` 版 3/7/20/28/0。
 
@@ -652,7 +656,7 @@ def decode(n, desk0, desk_n):                            # what the OS does
 | 1b `MOUSEINPUT` 原文 | §2.1 | `ABSOLUTE` 归一化 0..65535，两端点对应域两角；`VIRTUALDESK` 把域改成整个虚拟桌面 |
 | 1c 成熟实现对照 | §2.3 | Wine/ReactOS 反解 `floor(n*w/65536)`；Chromium `ui/base` 正向 `ceil(p*65536/w)` 与本文一致；FreeRDP 手工加 origin 但域固定主屏；rdev 落点等价 |
 | 1d 分母是 `宽-1` 还是 `宽` | §2.4、§6.5 | **用 `宽`（`65536/宽`，向上取整）**；`宽-1` 与解码不互逆（1280 宽有 3 个像素偏 1） |
-| 2 `InjectGeometry` 目标结构 | §4.1、§4.2 | `width/height` + `capture{4}` + `desktop{4}` + `mapped`；不加 DPI、不加 `use_virtual_desk` |
+| 2 `InjectGeometry` 目标结构 | §4.1、§4.2 | `width/height` + `capture{4}` + `desktop{4}` + `mapped` + `pixels_are_physical`；不加 DPI 数值、不加 `use_virtual_desk` |
 | 3 `DesktopSource` 接口扩展 | §5 | 选方案 ④：`virtual DesktopGeometry Geometry() const` 带默认实现 |
 | 4 变异清单（≥4） | §7 | M1 忽略 capture origin、M2 忽略 capture extent、M3 忽略 desktop origin、M4 归一化域用捕获矩形、M5/M5b 分母、M6/M6s 采样相位、M7 flag、M8 origin 符号、M9 `mapped` 恒真 |
 | 5a `--monitor -1` 现在是否正确 | §6.1 | 方向正确；`fb != 桌面` 时端点基线 49.18% / 中心基线 50.23% 的像素有 1 px 误差 |

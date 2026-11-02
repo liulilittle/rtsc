@@ -882,7 +882,19 @@ class RdpSession {
         // the single lease slot without producing a real action.
         if (pause_filter_.ShouldDrop(ev)) return;
         if (!input_lease_held_) {
-            if (!IsInjectable(ev, inject_geometry_)) return;
+            if (!IsInjectable(ev, inject_geometry_)) {
+                // A pure move that cannot be mapped is fail-closed here and
+                // never reaches Inject(), so the sink would never count it.
+                // Report it anyway: dropped_unmapped is documented as the
+                // only visible signal for an untrusted geometry. Other
+                // non-injectable events (SYNC, relative moves, zero codes)
+                // are not geometry faults and stay uncounted.
+                if (ev.kind == InputEvent::Kind::kMouse && ev.is_move &&
+                    ev.button == 0) {
+                    input_sink_->NoteUnmappableMove(input_session_id_);
+                }
+                return;
+            }
             if (!AcquireInputLease()) return;
         }
         input_sink_->Inject(input_session_id_, ev);

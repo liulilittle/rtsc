@@ -680,10 +680,6 @@ if(WIN32)
 add_executable(rtsc_desktop_gdi_tests tests/test_desktop_gdi.cpp)
 target_link_libraries(rtsc_desktop_gdi_tests PRIVATE rtsc_server_desktop_gdi rtsc_util)
 target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
-# The geometry predicate's call site cannot be distinguished on a
-# single-monitor host, so the suite guards it structurally against the source.
-target_compile_definitions(rtsc_desktop_gdi_tests PRIVATE
-                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 endif()
 
 # Server-side desktop input injection. The mapping layer is platform neutral
@@ -698,7 +694,9 @@ add_executable(rtsc_desktop_input_tests tests/test_desktop_input.cpp)
 # where the production factory is the SendInput backend -- so the sink's
 # Stats()/Inject accounting can be asserted without injecting real input or
 # starting the Win32 worker thread.
-target_sources(rtsc_desktop_input_tests PRIVATE src/server/desktop_input_null.cpp)
+target_sources(rtsc_desktop_input_tests PRIVATE
+               src/server/desktop_input_null.cpp
+               src/server/desktop_input_stats.cpp)
 target_link_libraries(rtsc_desktop_input_tests PRIVATE rtsc_server_desktop_input_map rtsc_util)
 target_include_directories(rtsc_desktop_input_tests PRIVATE tests)
 if(WIN32)
@@ -712,17 +710,16 @@ if(WIN32)
                                RTSC_DESKTOP_INPUT_TESTING)
     target_link_libraries(rtsc_desktop_input_tests PRIVATE user32)
 endif()
-# The host's startup line and lease-denied warning cannot be linked into this
-# suite (tools/rtsc_server/main.cpp owns a full server process), so those two
-# wiring points are guarded structurally against the source file.
-target_compile_definitions(rtsc_desktop_input_tests PRIVATE
-                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
 if(WIN32)
-    add_library(rtsc_server_desktop_input STATIC src/server/desktop_input_win32.cpp)
+    add_library(rtsc_server_desktop_input STATIC
+                src/server/desktop_input_win32.cpp
+                src/server/desktop_input_stats.cpp)
     target_link_libraries(rtsc_server_desktop_input PUBLIC rtsc_server_desktop_input_map user32)
 else()
-    add_library(rtsc_server_desktop_input STATIC src/server/desktop_input_null.cpp)
+    add_library(rtsc_server_desktop_input STATIC
+                src/server/desktop_input_null.cpp
+                src/server/desktop_input_stats.cpp)
     target_link_libraries(rtsc_server_desktop_input PUBLIC rtsc_server_desktop_input_map)
 endif()
 

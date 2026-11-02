@@ -608,32 +608,13 @@ int main(int argc, char** argv) {
     auto log_input_stats = [&](const char* reason) {
         if (!input_sink) return;
         const rtsc::server::InputStats stats = input_sink->Stats();
-        log.line(std::string("input stats (") + reason + "): input_injected=" +
-                 std::to_string(stats.injected) + " input_dropped_queue=" +
-                 std::to_string(stats.dropped_queue_full) +
-                 " input_rate_limited=" +
-                 std::to_string(stats.dropped_rate_limited) +
-                 " input_send_failures=" +
-                 std::to_string(stats.send_failures) +
-                 " input_release_failures=" +
-                 std::to_string(stats.release_failures) +
-                 " input_worker_failures=" +
-                 std::to_string(stats.worker_failures) +
-                 " input_dropped_unmapped=" +
-                 std::to_string(stats.dropped_unmapped));
+        log.line(rtsc::server::FormatInputStats(reason, stats));
         printed_input = stats;
     };
     auto input_stats_changed = [&]() {
         if (!input_sink) return false;
-        const rtsc::server::InputStats stats = input_sink->Stats();
-        return stats.injected != printed_input.injected ||
-               stats.dropped_queue_full != printed_input.dropped_queue_full ||
-               stats.dropped_rate_limited !=
-                   printed_input.dropped_rate_limited ||
-               stats.send_failures != printed_input.send_failures ||
-               stats.release_failures != printed_input.release_failures ||
-               stats.worker_failures != printed_input.worker_failures ||
-               stats.dropped_unmapped != printed_input.dropped_unmapped;
+        return rtsc::server::InputStatsChanged(printed_input,
+                                              input_sink->Stats());
     };
 
     std::string error;

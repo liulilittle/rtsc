@@ -560,12 +560,22 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
         last_event_ = ev;
     }
 
+    void NoteUnmappableMove(uint32_t session_id) override {
+        std::lock_guard<std::mutex> lock(mu_);
+        note_ids_.push_back(session_id);
+    }
+
     void ReleaseSession(uint32_t session_id) override {
         std::lock_guard<std::mutex> lock(mu_);
         release_ids_.push_back(session_id);
     }
 
-    rtsc::server::InputStats Stats() const override { return {}; }
+    rtsc::server::InputStats Stats() const override {
+        std::lock_guard<std::mutex> lock(mu_);
+        rtsc::server::InputStats stats;
+        stats.dropped_unmapped = note_ids_.size();
+        return stats;
+    }
 
     std::vector<uint32_t> inject_ids() const {
         std::lock_guard<std::mutex> lock(mu_);
@@ -578,6 +588,10 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
     std::vector<uint32_t> release_ids() const {
         std::lock_guard<std::mutex> lock(mu_);
         return release_ids_;
+    }
+    std::vector<uint32_t> note_ids() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return note_ids_;
     }
     rtsc::server::InjectGeometry geometry() const {
         std::lock_guard<std::mutex> lock(mu_);
@@ -601,6 +615,7 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
     std::vector<uint32_t> inject_ids_;
     std::vector<uint32_t> geometry_ids_;
     std::vector<uint32_t> release_ids_;
+    std::vector<uint32_t> note_ids_;
     rtsc::server::InjectGeometry geometry_;
     bool have_geometry_ = false;
     rtsc::server::InputEvent last_event_;
@@ -685,6 +700,10 @@ class ReleaseOrderingSink final : public rtsc::server::DesktopInputSink {
         cv_.notify_all();
     }
 
+    void NoteUnmappableMove(uint32_t session_id) override {
+        (void)session_id;
+    }
+
     void ReleaseSession(uint32_t session_id) override {
         std::unique_lock<std::mutex> lock(mu_);
         release_ids_.push_back(session_id);
@@ -757,6 +776,10 @@ class ReleaseThrowingSink final : public rtsc::server::DesktopInputSink {
         (void)ev;
         std::lock_guard<std::mutex> lock(mu_);
         inject_ids_.push_back(session_id);
+    }
+
+    void NoteUnmappableMove(uint32_t session_id) override {
+        (void)session_id;
     }
 
     void ReleaseSession(uint32_t session_id) override {
@@ -4373,6 +4396,15 @@ RTSC_TEST(server_unmappable_move_does_not_hold_lease) {
     CHECK(sink.geometry_ids().empty());
     CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
 
+    // Batch 24 S1: the fail-closed moves are still observable. The server
+    // calls NoteUnmappableMove() for each one even though it never takes the
+    // lease and never reaches Inject(), so dropped_unmapped is not silently 0
+    // for a session whose only fault is an untrusted geometry.
+    CHECK(WaitUntil([&sink]() { return sink.Stats().dropped_unmapped >= 5; }));
+    CHECK_EQ(sink.Stats().dropped_unmapped, static_cast<size_t>(5));
+    CHECK_EQ(sink.note_ids().size(), static_cast<size_t>(5));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
     // The other session takes the lease with a key that always translates.
     bool injected = false;
     for (int i = 0; i < 300 && !injected; ++i) {
@@ -4383,6 +4415,8 @@ RTSC_TEST(server_unmappable_move_does_not_hold_lease) {
     CHECK(injected);
     CHECK_EQ(DistinctIds(sink.inject_ids()), static_cast<size_t>(1));
     CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+    // Keys are not unmappable moves: the counter did not move.
+    CHECK_EQ(sink.Stats().dropped_unmapped, static_cast<size_t>(5));
 
     server.Stop();
     runner.join();
@@ -4406,8 +4440,8 @@ RTSC_TEST(server_sink_geometry_matches_source_geometry) {
 
     RecordingInputSink sink;
     RecordingGeometrySource source(MakeSourceGeometry(
-        /*capture*/ 1920, 0, 1280, 1024,
-        /*desktop*/ 0, 0, 3200, 1024,
+        /*capture*/ 1920, 100, 1280, 1024,
+        /*desktop*/ 0, 50, 3200, 1100,
         /*mapped=*/true, /*pixels_are_physical=*/true));
     RdpServer server(cfg);
     server.SetDesktopSource(&source);
@@ -4436,13 +4470,13 @@ RTSC_TEST(server_sink_geometry_matches_source_geometry) {
     CHECK_EQ(g.width, static_cast<uint16_t>(64));
     CHECK_EQ(g.height, static_cast<uint16_t>(48));
     CHECK_EQ(g.capture.x, static_cast<int32_t>(1920));
-    CHECK_EQ(g.capture.y, static_cast<int32_t>(0));
+    CHECK_EQ(g.capture.y, static_cast<int32_t>(100));
     CHECK_EQ(g.capture.width, static_cast<int32_t>(1280));
     CHECK_EQ(g.capture.height, static_cast<int32_t>(1024));
     CHECK_EQ(g.desktop.x, static_cast<int32_t>(0));
-    CHECK_EQ(g.desktop.y, static_cast<int32_t>(0));
+    CHECK_EQ(g.desktop.y, static_cast<int32_t>(50));
     CHECK_EQ(g.desktop.width, static_cast<int32_t>(3200));
-    CHECK_EQ(g.desktop.height, static_cast<int32_t>(1024));
+    CHECK_EQ(g.desktop.height, static_cast<int32_t>(1100));
     CHECK(g.mapped);
     CHECK(g.pixels_are_physical);
 

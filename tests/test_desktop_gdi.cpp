@@ -61,6 +61,46 @@ void CheckFrame(const char* label, rtsc::server::DesktopSource& source,
     CHECK(!all_same_pixel);
 }
 
+// A metric source with independent primary/virtual/physical values. A
+// single-monitor host makes SM_CXSCREEN and SM_CXVIRTUALSCREEN equal, so a
+// fake is the only way to tell which one the production decision reads.
+class FakeMetrics final : public rtsc::server::MetricSource {
+ public:
+    FakeMetrics(int primary_w, int primary_h, int virtual_w, int virtual_h,
+                int physical_w, int physical_h)
+        : primary_w_(primary_w),
+          primary_h_(primary_h),
+          virtual_w_(virtual_w),
+          virtual_h_(virtual_h),
+          physical_w_(physical_w),
+          physical_h_(physical_h) {}
+
+    int SystemMetric(int index) const override {
+        switch (index) {
+            case SM_CXSCREEN:
+                return primary_w_;
+            case SM_CYSCREEN:
+                return primary_h_;
+            case SM_CXVIRTUALSCREEN:
+                return virtual_w_;
+            case SM_CYVIRTUALSCREEN:
+                return virtual_h_;
+            default:
+                return 0;
+        }
+    }
+    int PhysicalWidth() const override { return physical_w_; }
+    int PhysicalHeight() const override { return physical_h_; }
+
+ private:
+    int primary_w_;
+    int primary_h_;
+    int virtual_w_;
+    int virtual_h_;
+    int physical_w_;
+    int physical_h_;
+};
+
 }  // namespace
 
 RTSC_TEST(desktop_gdi_capture_default) {
@@ -282,7 +322,6 @@ RTSC_TEST(desktop_gdi_pixels_are_physical_predicate) {
 }
 
 RTSC_TEST(desktop_gdi_geometry_uses_primary_screen_metrics) {
-    using rtsc::server::MetricSource;
     using rtsc::server::PixelsArePhysicalFromMetrics;
 
     // The decision must read SM_CXSCREEN/SM_CYSCREEN (the PRIMARY monitor) and
@@ -298,43 +337,6 @@ RTSC_TEST(desktop_gdi_geometry_uses_primary_screen_metrics) {
     // differ. Guarding the call site by grepping the source text was a false
     // test: a comment mentioning the correct call made the grep pass while the
     // real call was wrong, and a comment mentioning the old call made it fail.
-    class FakeMetrics final : public MetricSource {
-     public:
-        FakeMetrics(int primary_w, int primary_h, int virtual_w, int virtual_h,
-                    int physical_w, int physical_h)
-            : primary_w_(primary_w),
-              primary_h_(primary_h),
-              virtual_w_(virtual_w),
-              virtual_h_(virtual_h),
-              physical_w_(physical_w),
-              physical_h_(physical_h) {}
-
-        int SystemMetric(int index) const override {
-            switch (index) {
-                case SM_CXSCREEN:
-                    return primary_w_;
-                case SM_CYSCREEN:
-                    return primary_h_;
-                case SM_CXVIRTUALSCREEN:
-                    return virtual_w_;
-                case SM_CYVIRTUALSCREEN:
-                    return virtual_h_;
-                default:
-                    return 0;
-            }
-        }
-        int PhysicalWidth() const override { return physical_w_; }
-        int PhysicalHeight() const override { return physical_h_; }
-
-     private:
-        int primary_w_;
-        int primary_h_;
-        int virtual_w_;
-        int virtual_h_;
-        int physical_w_;
-        int physical_h_;
-    };
-
     // Single monitor: every metric agrees, the process is physical.
     CHECK(PixelsArePhysicalFromMetrics(
         true, FakeMetrics(1920, 1080, 1920, 1080, 1920, 1080)));
@@ -361,6 +363,43 @@ RTSC_TEST(desktop_gdi_geometry_uses_primary_screen_metrics) {
     // Unavailable metrics cannot be trusted.
     CHECK(!PixelsArePhysicalFromMetrics(
         true, FakeMetrics(0, 0, 0, 0, 0, 0)));
+}
+
+RTSC_TEST(desktop_gdi_factory_feeds_primary_metrics_to_decision) {
+    // The previous test drives the decision function directly; it cannot see
+    // which metrics the FACTORY hands it (batch 24 R1: changing the factory's
+    // call to SM_CX*VIRTUALSCREEN stayed green). This test goes through the
+    // factory assembly (capture-rect resolution, desktop snapshot and decision)
+    // with the same fake, so the metric choice at that wiring point is covered.
+    std::string why;
+    if (!HaveInteractiveDesktop(why)) {
+        std::printf("  SKIP: %s\n", why.c_str());
+        return;
+    }
+
+    // Multi-monitor shape: primary 1920 == physical 1920, virtual box 3200.
+    // Reading the virtual width would reject this and disable absolute
+    // movement on every multi-monitor host.
+    FakeMetrics multi(1920, 1080, 3200, 1080, 1920, 1080);
+    std::string error;
+    auto source = rtsc::server::MakeGdiDesktopSourceWithMetrics(
+        multi, -1, 0, 0, 0, 0, &error);
+    if (source == nullptr) {
+        std::printf("  SKIP: MakeGdiDesktopSourceWithMetrics failed: %s\n",
+                    error.c_str());
+        return;
+    }
+    CHECK(source->Geometry().pixels_are_physical);
+
+    // A source that reports the virtual box as the "primary" size (the
+    // defect's signature) must be rejected even through the factory.
+    FakeMetrics wrong(3200, 1080, 3200, 1080, 1920, 1080);
+    auto rejected = rtsc::server::MakeGdiDesktopSourceWithMetrics(
+        wrong, -1, 0, 0, 0, 0, &error);
+    CHECK(rejected != nullptr);
+    if (rejected != nullptr) {
+        CHECK(!rejected->Geometry().pixels_are_physical);
+    }
 }
 
 RTSC_TEST(desktop_gdi_unknown_monitor_fails) {

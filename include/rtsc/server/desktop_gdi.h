@@ -83,10 +83,21 @@ class MetricSource {
 // covered by a behavioural test (see MetricSource).
 bool PixelsArePhysicalFromMetrics(bool dpi_ok, const MetricSource& metrics);
 
-// The real Win32 source (GetSystemMetrics + CreateDC("DISPLAY") once, cached).
-// Returns a source that models no metrics when the display DC cannot be opened;
-// every lookup then reports 0, which the decision rejects.
-std::unique_ptr<MetricSource> MakeWin32MetricSource();
+// Test-only factory entry: the same assembly as MakeGdiDesktopSource
+// (capture-rect resolution, desktop snapshot, physical-pixel decision) but
+// reading the decision's metrics from `metrics` instead of the live Win32
+// source. dpi_ok is taken as true; the caller supplies the metric snapshot.
+//
+// The production factory and this overload both funnel through the same
+// assembly function, so a defect at the assembly point -- e.g. feeding the
+// virtual-screen box to PixelsArePhysicalFromMetrics instead of the primary
+// monitor's size -- flips Geometry().pixels_are_physical and turns the test
+// red. Driving only PixelsArePhysicalFromMetrics directly would not cover that
+// wiring (see .opencode/discover.md example 35).
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
+    const MetricSource& metrics, int monitor_index = -1, int32_t x = 0,
+    int32_t y = 0, int32_t width = 0, int32_t height = 0,
+    std::string* error = nullptr);
 
 }  // namespace rtsc::server
 

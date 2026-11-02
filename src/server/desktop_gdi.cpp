@@ -339,9 +339,36 @@ class GdiDesktopSourceImpl : public DesktopSource {
     std::string error_;
 };
 
-std::unique_ptr<MetricSource> MakeWin32MetricSource() {
-    return std::make_unique<Win32MetricSource>();
+namespace {
+
+// Shared assembly for both factory entries. The capture rectangle is resolved
+// by the caller (it needs the live metrics); everything from the desktop
+// snapshot through the physical-pixel decision is identical here. Routing the
+// test seam through this function is what covers the assembly point: a wrong
+// metric choice below shows up in Geometry().pixels_are_physical.
+std::unique_ptr<DesktopSource> AssembleGdiDesktopSource(
+    bool dpi_ok, const MetricSource& metrics, const CaptureRect& rect) {
+    // Snapshot the virtual desktop: it is the domain MOUSEEVENTF_VIRTUALDESK
+    // normalizes against, independent of which monitor was captured.
+    CaptureRect desktop;
+    desktop.left = Metric(SM_XVIRTUALSCREEN);
+    desktop.top = Metric(SM_YVIRTUALSCREEN);
+    desktop.right = desktop.left + Metric(SM_CXVIRTUALSCREEN);
+    desktop.bottom = desktop.top + Metric(SM_CYVIRTUALSCREEN);
+
+    // The SM_* metrics are only physical pixels when the process is
+    // per-monitor aware; compare the PRIMARY monitor's size with the display's
+    // real pixel size. The metric selection lives in
+    // PixelsArePhysicalFromMetrics (see the comment there and in the header):
+    // it is the one place that must name SM_CXSCREEN/SM_CYSCREEN, and the seam
+    // makes that choice behaviourally testable on a single-monitor host.
+    const bool pixels_are_physical =
+        PixelsArePhysicalFromMetrics(dpi_ok, metrics);
+    return std::make_unique<GdiDesktopSourceImpl>(rect, desktop,
+                                                  pixels_are_physical);
 }
+
+}  // namespace
 
 std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x,
                                                     int32_t y, int32_t width,
@@ -357,20 +384,6 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
         return nullptr;
     }
 
-    // Snapshot the virtual desktop: it is the domain MOUSEEVENTF_VIRTUALDESK
-    // normalizes against, independent of which monitor was captured.
-    CaptureRect desktop;
-    desktop.left = Metric(SM_XVIRTUALSCREEN);
-    desktop.top = Metric(SM_YVIRTUALSCREEN);
-    desktop.right = desktop.left + Metric(SM_CXVIRTUALSCREEN);
-    desktop.bottom = desktop.top + Metric(SM_CYVIRTUALSCREEN);
-
-    // The SM_* metrics are only physical pixels when the process is
-    // per-monitor aware; compare the PRIMARY monitor's size with the display's
-    // real pixel size. The metric selection lives in
-    // PixelsArePhysicalFromMetrics (see the comment there and in the header):
-    // it is the one place that must name SM_CXSCREEN/SM_CYSCREEN, and the seam
-    // makes that choice behaviourally testable on a single-monitor host.
     Win32MetricSource metrics;
     if (!metrics.has_display()) {
         if (error != nullptr) {
@@ -379,12 +392,22 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
         return nullptr;
     }
 
-    const bool pixels_are_physical =
-        PixelsArePhysicalFromMetrics(dpi_ok, metrics);
-
     if (error != nullptr) error->clear();
-    return std::make_unique<GdiDesktopSourceImpl>(rect, desktop,
-                                                  pixels_are_physical);
+    return AssembleGdiDesktopSource(dpi_ok, metrics, rect);
+}
+
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
+    const MetricSource& metrics, int monitor_index, int32_t x, int32_t y,
+    int32_t width, int32_t height, std::string* error) {
+    std::string local_error;
+    CaptureRect rect;
+    if (!ResolveCaptureRect(monitor_index, x, y, width, height, rect,
+                            local_error)) {
+        if (error != nullptr) *error = local_error;
+        return nullptr;
+    }
+    if (error != nullptr) error->clear();
+    return AssembleGdiDesktopSource(true, metrics, rect);
 }
 
 }  // namespace rtsc::server

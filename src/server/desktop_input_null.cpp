@@ -27,6 +27,12 @@ class NullDesktopInputSink final : public DesktopInputSink {
         dropped_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void NoteUnmappableMove(uint32_t session_id) override {
+        // The null backend has no geometry, so a move is never fail-closed for
+        // it: there is nothing to count (Stats() keeps dropped_unmapped at 0).
+        (void)session_id;
+    }
+
     void ReleaseSession(uint32_t session_id) override { (void)session_id; }
 
     InputStats Stats() const override {
