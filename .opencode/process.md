@@ -608,3 +608,22 @@ N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"
 - `pixels_are_physical=false` → `mapped=false` fail-closed
 ### 在途
 审计 M 正回应 N 的 4 条反驳（ses_e664d2035...，busy）；审计 N 已 idle（报告已入库）。
+## 第851轮：M/N 收敛 + 主代理真实库复现 + 退回 M 修文档
+### 收敛结果（M 采纳 N 全部 4 条）
+- 采样：中心采样 `floor(((2x+1)*cw)/(2*fbw))`（M 撤回端点锚定）
+- 分母：混合式（内部 ceil，`rel>=w-1`→65535），断言零改动
+- 字段：`InjectGeometry{width,height,capture,desktop,mapped,pixels_are_physical}`
+- M5：`w=1280,rel=1` 单点可杀（ceil 52→1 vs extent-1 51→0）
+### 主代理独立证据（新增，提交 ea80c9f）
+- **真实库复现跨屏**：`probe_real.cpp` 链接 `build/Release/rtsc_server_desktop_input_map.lib`，
+  `TranslateInput(ev(640,512), InjectGeometry{1280,1024})` → `wire n=(32793,32800)`，
+  按 `floor(n*3200/65536)` 落 `(1601,512)`，应 `(2560,512)`，偏 959px。与 M §13.1 一致。
+- 编译坑：`InputEvent` 在 `server.h`，只含 `desktop_input_map.h` 报 C2065。
+### 退回 M 的三处文档问题（报告≠产物）
+1. §8 U1/U2/U3 仍 UNVERIFIED，但 M 报告称"已改已确证"（grep '已确证'=0）
+   → 裁决：U3 改已确证（三方实测）；U1/U2 保持 UNVERIFIED（仅 N 单方，我无法复现）
+2. §3.3「不加 DPI 字段」与 §4.1 `pixels_are_physical` 冲突 → 改为"不加 DPI 数值字段"
+3. §6.1 同时存在 49.18% 与 50.23% → 统一为"端点基线/中心基线"
+### 调度
+- 审计 N 已 delete（报告入库 9dd9783，任务完成）
+- 审计 M 收到修正指令（title=审计M修正文档三处）
