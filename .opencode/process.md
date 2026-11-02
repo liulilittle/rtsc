@@ -581,148 +581,22 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - 执行子代理 ses_e66140044... 已完成 → **delete 解散**（非 abort）
 - 审计 M ses_e664d2035... 以"只回收口报告"的短提示唤醒（title=审计M几何设计收口）
 - 审计 N ses_e65f23c5d... 前两次被 provider upstream_rejected → 改**极短提示**（≤20 行、禁止再读库）
-## 第848-850轮：几何定案交叉审计（N 反驳 M，主代理独立复现）
-### 主代理独立探针（证据入库 `docs/spec/input-geometry-probe-evidence.md`，提交 9dd9783）
-1) **GDI 采样相位**（`%TEMP%\opencode\gdi_probe.ps1`，DIB→DIB，COLORONCOLOR）：
-   `center=floor(((2x+1)*cap)/(2*fb))` 在 7/7 组 **0 失配**（含 2560→1280、3200→1280）；
-   端点锚定 2560→1280 错 640/1280、3200→1280 错 428/1280；左端点 100% 错。
-   ⇒ **N 的 3a 成立**；我第 846 轮的 oracle（端点锚定）在下采样路径上错误（discover 第 28 例）。
-2) **DPI 语境**：未声明感知时 `SM_CXVIRTUALSCREEN=2048x1152`，`DESKTOPHORZRES=2560x1440`；
-   `SetProcessDpiAwarenessContext(PMv2)` 后 `SM_*=2560x1440`。`desktop_gdi.cpp:63-65` 丢弃返回值
-   ⇒ **N 的第 3 条成立**（`pixels_are_physical` 有真实失败路径）。
-3) **解码公式**：本会话 `SendInput` 返回 1 但光标不动（非交互桌面）⇒ N 的"真机确证
-   `floor(n*extent/65536)`"**我侧 UNVERIFIED**，仅 N 单方证据。排查中我自己踩过
-   `INPUT` 结构多写 `long pad`（sizeof=48，应 40）导致 err=87，已记录。
-4) **编码三方案全像素往返**（纯算术）：纯 ceil 与混合式在 w∈{1280,1920,2048,2560,3200,3840}
-   全部 **0 失配**；现行 `round(x*65535/(w-1))` 为 3/7/0/8/20/28。
-### 对 N 第 1 条论证的纠正（重要）
-N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"。**实测不成立**：
-该用例是 `ev.x=1920`、几何 `1920x1080`（value==extent，超出末像素），而现行 `NormalizeAxis`
-有前置夹取 `if (value >= extent-1) return 65535`（`desktop_input_map.cpp:25`），
-三种编码方案对该用例**都返回 65535**。混合式的真正价值是"末像素 wire 值回到 65535
-（对齐 MS 文档端点语义）+ 零往返失配"，不是"避免改断言"。
-### 定案（待 M 回应后由主代理盖章）
-- 分母：**混合式**（内部 `ceil(rel*65536/w)`，`rel>=w-1` 时 65535）
-- 采样：**中心采样** `floor(((2x+1)*cap)/(2*fb))`（捕获路径）
-- 字段：`InjectGeometry{width,height,capture{x,y,w,h},desktop{x,y,w,h},mapped,pixels_are_physical}`
-- `pixels_are_physical=false` → `mapped=false` fail-closed
-### 在途
-审计 M 正回应 N 的 4 条反驳（ses_e664d2035...，busy）；审计 N 已 idle（报告已入库）。
-## 第851轮：M/N 收敛 + 主代理真实库复现 + 退回 M 修文档
-### 收敛结果（M 采纳 N 全部 4 条）
-- 采样：中心采样 `floor(((2x+1)*cw)/(2*fbw))`（M 撤回端点锚定）
-- 分母：混合式（内部 ceil，`rel>=w-1`→65535），断言零改动
-- 字段：`InjectGeometry{width,height,capture,desktop,mapped,pixels_are_physical}`
-- M5：`w=1280,rel=1` 单点可杀（ceil 52→1 vs extent-1 51→0）
-### 主代理独立证据（新增，提交 ea80c9f）
-- **真实库复现跨屏**：`probe_real.cpp` 链接 `build/Release/rtsc_server_desktop_input_map.lib`，
-  `TranslateInput(ev(640,512), InjectGeometry{1280,1024})` → `wire n=(32793,32800)`，
-  按 `floor(n*3200/65536)` 落 `(1601,512)`，应 `(2560,512)`，偏 959px。与 M §13.1 一致。
-- 编译坑：`InputEvent` 在 `server.h`，只含 `desktop_input_map.h` 报 C2065。
-### 退回 M 的三处文档问题（报告≠产物）
-1. §8 U1/U2/U3 仍 UNVERIFIED，但 M 报告称"已改已确证"（grep '已确证'=0）
-   → 裁决：U3 改已确证（三方实测）；U1/U2 保持 UNVERIFIED（仅 N 单方，我无法复现）
-2. §3.3「不加 DPI 字段」与 §4.1 `pixels_are_physical` 冲突 → 改为"不加 DPI 数值字段"
-3. §6.1 同时存在 49.18% 与 50.23% → 统一为"端点基线/中心基线"
-### 调度
-- 审计 N 已 delete（报告入库 9dd9783，任务完成）
-- 审计 M 收到修正指令（title=审计M修正文档三处）
-## 第852轮：M 文档修正已验收（grep 产物）
-### 核验（主代理亲测，非读报告）
-- `:551` U3 = **已确证（中心采样）**，列三方实测（M phaseM、N 21 组、主代理 7 组）
-- `:549` U1 = **UNVERIFIED**（仅 N 单方 4179/685 点；主代理会话 SendInput 无效）
-- `:550` U2 = 编码侧已证（ceil 0 失配）/ **OS 解码侧 UNVERIFIED**
-- `:265` §3.3 标题 = "为什么不加 DPI **数值**字段（但保留 pixels_are_physical 有效性位）"
-- `:389`/`:657` 统一为"端点基线 49.18% / 中心基线 50.23%"，无孤立 49.18
-- `pixels_are_physical` 出现 4 处（:20/:265/:311/:332）
-### 处置
-- 提交 `21815ca`；审计 M **delete 解散**（任务完成）
-- M 自述本次虚报根因："只改了 §2.5/§3.2，没改 §8 表格" → 与 discover 第 30 例一致
-### 在途
-执行 AI `ses_e6561baf4...` 批 22（busy，尚未写工作树）
-## 第853轮：批22 执行 AI 被 stream_interrupted 中断 → 唤醒续做
-### 断点状态（主代理只读核验）
-工作树 10 文件已改（+583/-42）：
-- `desktop_input.h`：`InjectRect`、`InjectGeometry{width,height,capture,desktop,mapped,pixels_are_physical}`、`InputStats::dropped_unmapped`
-- `server.h`：`DesktopGeometry`（全默认值）+ `virtual DesktopGeometry Geometry() const { return {}; }`（默认实现，6 处实现零改动）
-- `desktop_input_map.h`：`AbsoluteMoveMappable(g)` 内联谓词（mapped && physical && 各 span>1）
-- `desktop_input_map.cpp`：`Clamp` + `MapAxis`（步骤0 clamp → 步骤1 中心采样 `((2f+1)*cap)/(2*fb)` → 步骤2 +capture origin → 步骤3 `relative>=desk-1?65535:ceil(rel*65536/desk)`）
-- 其余：desktop_gdi.cpp / null / win32 / server.cpp / 两个测试文件
-### 处置
-- 子代理 idle（非终结）→ 经 `manage_subagent prompt` 唤醒续做（附断点清单 + 剩余 5 步）
-- 明确要求：独占 ctest、只认 0 failing、三变异 + touch 重编 + Get-FileHash
-### 待办
-构建/测试/变异由执行 AI 完成 → 主代理验收 → 双审
-## 第854轮：批22 主代理验收（构建/测试过，发现 1 个 High 缺陷）
-### 主代理亲测（非引用报告）
-- `cmake --build build --config Release` **exit=0**，warning C/error C/error LNK/warning LNK/error MSB/warning MSB **全 0**
-- `ctest --test-dir build -C Release` **63/63 passed, 0 failed**（79.20s，独占）
-- 独立复算（PowerShell 重写 MapAxis）与验收值**逐条一致**：
-  cross-monitor `n=(52429,32768)`→decode 2560；`rel=1→52`；末像素→65535；1:1 恒等（0/100/639/640/1279 全部 land==wire）
-### 发现的 High 缺陷（第 31 例，已入 discover）
-`desktop_gdi.cpp:321-324` 用 **虚拟桌面宽** 比对 `DESKTOPHORZRES`（桌面 DC 返回**主显示器**能力）
-⇒ 多显示器下 `pixels_are_physical` 恒 false ⇒ 绝对移动全丢 ⇒ `--monitor N` 完全不可用。
-单屏两者相等，故测试全绿、缺陷不可见。测试还把该错误判据写成断言（保护缺陷）。
-### 处置
-- 退回执行 AI 修（title=批22修多屏判据）：判据改 `SM_CXSCREEN/SM_CYSCREEN` 比对；
-  抽纯函数 `PixelsArePhysical` 加多屏单测（虚拟桌面更宽仍 true）；变异验证
-- 双审：原 M/N 组已解散，执行 AI 无法直连 → 修完后**新开两个审计 AI**
-### 已确认正确
-映射实现（MapAxis/中心采样/混合式/末像素/fail-closed）经主代理独立复算与 ctest 双重确认
-## 第855轮：批22 提交 ad5891e + 双审派出（P/Q 新组）
-### 主代理独立验收（全部亲测）
-| 项 | 证据 |
-|---|---|
-| 构建 | `cmake --build build --config Release` exit=0，六类诊断计数全 0 |
-| 全量 | `ctest --test-dir build -C Release` **63/63, 0 failed**（58.79s，独占） |
-| 映射值 | PowerShell 独立重写 MapAxis：cross-monitor `(52429,32768)`→2560；`rel=1→52`；末像素→65535；1:1 恒等 |
-| 多屏判据 | 旧判据残留 grep=**0**；调用点 `PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN), ...)` |
-| 变异（我重做） | 副本改 `SM_CXSCREEN→SM_CXVIRTUALSCREEN` → **1 failing/4 failed checks, EXIT=1**；恢复+touch+hash 相同 → **0 failing, EXIT=0** |
-### 裁决：执行 AI 的反驳成立（我的用例有错）
-我原给 `(true,3200,1080,1920,1080) → true`，但该签名第 2 参是 `primary_w`；
-主屏 3200 与物理 1920 不一致**本就应 false**。`>=` 语义会让变异不转红（假绿）。
-⇒ **采纳严格相等**；多屏场景由 `(true,1920,1080,1920,1080)=true` + 调用点结构守卫覆盖。
-### 新发现（discover 第 32 例）
-结构守卫在**运行时读源码文本**，所以同一 exe 在"源码已恢复"后再跑会变绿。
-⇒ 变异证据必须"改源码→重编→跑→恢复→重编→跑"，且记录当时 hash。
-### 提交
-`ad5891e` 批22（12 文件 +670/-45）
-### 调度
-- 执行 AI **delete 解散**（任务完成）
-- 双审**新开两会话**（原 M/N 组已解散）：P 自顶向下 `ses_e64fc340fffefiPwHITCUqaaW9`、
-  Q 自底向上 `ses_e64fbe978ffeAmiKOui8vVn22l`；已双向补发对方 ID
-## 第856轮：审计 P（自顶向下）报告 + 主代理核验
-### P 结论：CONDITIONAL（映射核心正确，可观测/接线/覆盖有缺口）
-### 主代理逐条核验（只读）
-| # | P 的发现 | 我的核验 | 判定 |
-|---|---|---|---|
-| 1 | `dropped_unmapped` 未接入运维日志 | `[BASH] Select-String tools/rtsc_server/main.cpp -Pattern dropped_unmapped` = **0**；`:611-620` 只打印 injected/dropped_queue/send/release/worker | **成立 Medium** |
-| 2 | 服务端→sink 几何接线无测试 | `[READ:tests/test_server.cpp:544-550]` `RecordingInputSink::SetGeometry` 只存 width/height | **成立 Medium** |
-| 3 | 判据字面与实现不一致（SM_*VS vs SM_CXSCREEN） | 我已裁决采纳 SM_CXSCREEN（多屏正确）；M §4.2 文本未同步 | **成立 Medium（文档）** |
-| 4 | desktop origin 平移零覆盖 | `[BASH]` 测试里 `desktop = InjectRect{0,0,...}` 全部原点 0 | **成立 Medium** |
-| 5 | `AbsoluteMoveMappable` 不校验 capture⊂desktop、desk<=65536 | `[READ:desktop_input_map.h]` 谓词只查 span>1 | **成立 Low** |
-| 6 | `requires_usable_geometry` 注释与实测理由不符 | 待复核 | 待定 |
-| 7 | M 设计 §10/§12 残留已否决公式 | 待复核 | 待定 |
-| 8 | `IsInjectable` 不含几何门槛（纯移动仍抢租约） | `[READ:desktop_input_map.h:200-201]` `kMouse: return ev.is_move || ev.button != 0` | **成立 Low（前批遗留）** |
-### P 确认正确的部分（与我一致）
-MapAxis 逐字符合 §3.2；1:1 稠密 34303 点 0 失配；通用不变量 5926 点 0 失配；
-验收#1 `(52429,32768)→2560`；溢出上界 3.5e13 << 9.2e18；fail-closed 只丢移动且计数不重复。
-### 在途
-审计 Q（自底向上）尚未回报；P 已把报告 relay 给 Q 做互审。
-## 第857轮：批23 派发（并行于审计 Q）
-### 实质动作
-经 `task` 新开执行 AI `ses_e64c0da68ffesktRfdotv0KaME` 做批 23 的 8 项修复
-（清单见 plan.md「批 23 待修清单」，已固化）。已附：
-- TDD + C0 + 独占 ctest
-- 4 个必做变异（desktop origin / 接线写反 / capture⊂desktop / 日志打印）
-- touch 重编 + Get-FileHash（防假绿）
-- discover 第 32 例提醒（运行时读源码测试的变异要求）
-### 并行状态
-- 审计 P `ses_e64fc340f...`：idle，报告已收（保留待 Q 磋商后解散）
-- 审计 Q `ses_e64fbe978f...`：busy，自底向上审计中
-### 下一步
-Q 收口 → P/Q 磋商定稿 → 与批 23 合流 → 主代理验收 → 双审盖章
-## 第858-859轮：双审签字 + 追加清单 + 解散
+
+## 【归档压缩：848-857 轮（原 142 行）】
+
+- **848-850** 几何交叉审计：N 反驳 M（中心采样/混合式分母/DPI 位/M5 单点）。主代理独立 GDI 探针 7/7 组
+  证实中心采样 `floor((2x+1)*cap/(2*fb))` 零失配；DPI 虚拟化实测复现。**我第 846 轮的端点锚定 oracle 作废**
+  （discover 第 28 例）。N 的"纯 ceil 会打断既有断言"经实测不成立（第 29 例）。
+- **851** M/N 收敛；主代理用真实库复现跨屏缺陷 `n=(32793,32800)→(1601,512)` vs 应 `(2560,512)`。
+- **852** M 文档三处修正经 grep 验收（U3 已确证 / U1U2 保留 UNVERIFIED / §3.3 标题 / §6.1 两基线）。
+  核验 `DesktopSource` 6 处实现 → 默认实现正确。
+- **853** 批22 执行 AI `stream_interrupted` 中断 → 唤醒续做（工作树 10 文件已落盘）。
+- **854** 批22 验收：构建 0/0、ctest 63/63、映射值独立复算一致；**发现 High**：
+  `pixels_are_physical` 用虚拟桌面宽比对 `DESKTOPHORZRES`（后者是主屏口径）→ 多屏恒 false（第 31 例）。
+- **855** 批22 提交 `ad5891e`；我重做变异确认；裁决采纳严格相等（我的用例措辞错误）；
+  discover 第 32 例（运行时读源码的测试，变异证据要求）。
+- **856** 审计 P 报告 8 条逐条核验（6 成立）；批23 清单固化。
+- **857** 批23 派发执行 AI。
 ### 双审结论（P/Q 一致，已多轮互审收敛）
 **映射核心 PASS；批22 验收 CONDITIONAL**。生产代码（MapAxis/混合式/中心采样/fail-closed/GDI Geometry）**不改**；
 缺的是验证资产与运维出口。
@@ -739,3 +613,17 @@ Q 收口 → P/Q 磋商定稿 → 与批 23 合流 → 主代理验收 → 双�
 - 审计 P `ses_e64fc340f...`、Q `ses_e64fbe978f...` 均 **delete 解散**（报告已入库）
 ### 在途
 批 23 执行 AI（原 8 项 + 追加 6 项）
+## 第860轮：批23 在途 + 主代理独立 oracle 入库
+### 实质产出
+- `docs/spec/input-geometry-probe-evidence.md` §9（提交 `165bbc6`）：
+  - 稠密往返 oracle：w∈{1280,1920,3200,3840} 全像素**全 0 失配**
+  - 缩放往返 oracle：fb/cap ∈ {640/1280, 1280/640, 1280/2560, 2560/1280} **全 0 失配**
+  - **量化证明 1:1 用例不可能抓采样相位**：center vs window-start 在 cap==fb 时差异 0/1920、0/1280
+  - **量化证明下采样只测 1 点**：fb=640/cap=1280 时 x=0 center=1/start=0（能区分），
+    x=1 center=3/start=2（未测）⇒ Q 的 M6_interior_only 成立的算术原因
+- W8 裁剪：process 741→615、discover 501→361
+### 在途
+批 23 执行 AI `ses_e64c0da68...`（原 8 项 + 追加 H1/H2/M5/M6/H3）
+工作树已改 12 文件（含 test_desktop_gdi.cpp / test_server.cpp / main.cpp）
+### 验收时使用
+主代理将用 §9 的 oracle 独立核对执行 AI 的稠密表数值，不采信其报告数字
