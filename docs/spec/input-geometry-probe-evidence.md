@@ -202,3 +202,61 @@ tests/test_server_multisession.cpp:150        RecordingSource
 ⇒ **默认实现（返回 capture/desktop 全 0、`mapped=false`、`pixels_are_physical=false`）是正确选择**：
 生产实现只覆盖 GDI 一处，测试替身零改动，且默认值本身是 fail-closed（不产出移动），
 不会让未覆盖的替身静默产出错误坐标。
+---
+
+## 9. 主代理独立 oracle：批 23 稠密表与测试鉴别力量化（2026-11-02）
+
+本节为**主代理自己算出的期望值**，用于在批 23 验收时独立核对执行 AI 的测试，不依赖任何子代理报告。
+复跑方式：PowerShell 整数算术，编码 `Enc` / 解码 `Dec` 与设计 §3.2 一致。
+
+### 9.1 稠密往返（`fb == cap == desk`，1:1）
+
+对每个 `w` 枚举**全部** `x ∈ [0, w-1]`，检查 `Dec(Enc(x)) == x`：
+
+```text
+w=1280  1:1 identity mismatches=0 / 1280
+w=1920  1:1 identity mismatches=0 / 1920
+w=3200  1:1 identity mismatches=0 / 3200
+w=3840  1:1 identity mismatches=0 / 3840
+```
+
+### 9.2 缩放往返（落点应等于中心采样）
+
+`fb` 为客户端 framebuffer，`cap` 为捕获矩形宽；期望落点 `floor((2x+1)*cap/(2*fb))`：
+
+```text
+fb=640  cap=1280   mismatches=0 / 640
+fb=1280 cap=640    mismatches=0 / 1280
+fb=1280 cap=2560   mismatches=0 / 2560? -> 0 / 1280
+fb=2560 cap=1280   mismatches=0 / 2560
+```
+
+### 9.3 为什么"1:1 用例"永远抓不到采样相位错误（量化）
+
+中心采样与 window-start 在 `cap == fb` 时**恒等**：
+
+```text
+w=1920  center vs start 差异点数 = 0 / 1920
+w=1280  center vs start 差异点数 = 0 / 1280
+```
+
+⇒ `desktop_input_absolute_move_one_to_one_is_identity`（`tests/test_desktop_input.cpp:373-396`）
+**在数学上不可能**区分这两种采样相位，无论采样多稠密。它只能验证归一化往返。
+
+### 9.4 下采样用例只有 1 个采样点
+
+现有 `desktop_input_absolute_move_cross_monitor_scaled` 用 `fb=640, cap=1280` 且只测 `ev(0,0)`：
+
+```text
+x=0 : center=1  window-start=0     <- 该点能区分
+x=1 : center=3  window-start=2     <- 该点未被测
+```
+
+⇒ 若变异只把 `x>0` 的内部像素改成 window-start 而保留 `x=0`，现有用例仍然是绿的。
+这就是 Q 报的 `M6_interior_only` 变异 0 failing 的算术原因。
+修复所需：该用例应至少覆盖 `x ∈ {0, 1, fb/2, fb-1}` 或全 640 点（稠密倍率 640x）。
+
+### 9.5 批 23 验收时主代理将据此核对
+- 稠密表 `w ∈ {1280,1920,3200,3840}` 必须全 0 失配（与 §9.1 一致）
+- 缩放表必须与 §9.2 一致
+- 下采样用例必须覆盖 `x ≥ 1` 的内部点（能杀掉 `M6_interior_only`）
