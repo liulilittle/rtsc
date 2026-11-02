@@ -729,3 +729,27 @@ Y：CONDITIONAL（P1 gate 不判预算、P1 PartialGeometry 无守护、P1 relat
 用 `--clean-first` 只重建单个 target，把其它产物删了却不重建 → ctest 68/69 全崩。
 教训：`--clean-first` 不能与 `--target` 组合用于增量验证；要么全量重建，要么不用 clean。
 另：`Copy-Item` 恢复文件后 mtime 早于产物，MSBuild 不重编，导致"变异仍绿"的假象 —— 必须核对二进制 LastWriteTime（discover 例 36 复发）。
+## 第877轮：批38 —— 堵 D3 的同形洞（审计X V8）
+### 缺陷
+批37 的 D3 只断言 `VIEW_RELEASE_EXIT==0` 与"无 `skipped: timing budgets` 字面量"，
+把 checks 数只打印不断言。X 的 V8 红证：
+`#if defined(NDEBUG)`→`#if 0` + 改 skip 文案 ⇒ `VIEW_RELEASE_EXIT=0`、
+`7341 checks`（= Debug 数，预算一条没跑）、`VIEW_BUDGETS=executed`、`LINUX GATE PASS`。
+**这是我刚修完 D1 就原地重犯的同一个错**（用"无某字符串"代理"执行了"）。
+### 修复（`b9a633f`）
+`VIEW_MIN_CHECKS=7348`，断言 `VIEW_CHECKS >= 7348`（下限）。差值 7 = 七条 bench CHECK。
+### 可证伪性
+| 变异 | 结果 |
+|---|---|
+| `#if defined(NDEBUG)`→`#if 0` + 改 skip 文案 | `EXIT=1` `view budget bodies did not run (checks=7341, want >=7348)`，且 `VIEW_RELEASE_EXIT=0` |
+| 恢复 | SHA256 `775301AB...8866`；全仓 `MUT-` 0；`7348 checks`；`LINUX GATE PASS` |
+### 验证
+Linux `LINUX GATE PASS` + `VIEW_BUDGETS=executed`（7348）；Windows 构建六类诊断全 0；`bash -n` SYNTAX_OK。
+### X 对批37 的复核结论
+D1 两道断言各自可证伪 ✅；Release 7341/7348 delta=7 ✅；`gui_send` 两平台行为 ✅；
+`exit 2` 不误伤正常路径（0/1/2 三态互不串）✅；`CONFIGURE_EXIT` 已恢复 ✅。
+X 亦纠正我一处：删 1 条 CHECK=66、删 3 条=64，均红，数字差异来自变异强度而非判据。
+### 教训（discover 例 49）
+"能观测"≠"已断言"：凡 `printf`/`echo` 出来供人看的数字，必须问"它错了谁会失败"。
+新原则必须立刻回扫本次改动本身（我在同一提交里立了原则又违反）。
+可观测量的**差值**比绝对值更可靠（7348−7341=7 恰等于七条断言）。

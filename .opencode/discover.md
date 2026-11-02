@@ -773,3 +773,46 @@ Linux `server_security` **0.01 秒"通过"**，只跑 7 tests/45 checks（开 Op
   （两处条件执行的 CHECK）。等号只用于已验证稳定的单个套件，且优先用下限。
 - **注释里的"两者都坏会红"必须实测**：`test_desktop_input.cpp:877-879` 的断言
   是假的（Y 用三种变异全绿证明）。注释是不可执行的断言，必须用变异兑现。
+## 第877轮：刚修完的 D1，我在 D3 里原地重犯了同一个错（例 49）
+
+### 症状
+批 37 修 D1 时确立的原则是"不断言'没有某字符串'，要断言产出量"。
+同批的 D3 修法**违反了自己刚立的原则**：
+```sh
+if grep -q "skipped: timing budgets" "$VIEW_LOG"; then ... exit 1; fi
+grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1   # 只打印
+echo "VIEW_BUDGETS=executed"
+```
+checks 数被**打印**却没被**断言**。
+
+### 红证（审计 X 构造 V8）
+```c
+#if defined(NDEBUG)   ->   #if 0
+"skipped: timing budgets..."  ->  "NOTE: budget evaluation unavailable"
+```
+结果：`VIEW_RELEASE_EXIT=0`、`60 tests, 7341 checks`（= Debug 的数，七条预算一条没跑）、
+`VIEW_BUDGETS=executed`、`LINUX GATE PASS`、`EXIT=0` —— **假绿**。
+
+### 根因
+"没有某个字符串"是"用例体执行了"的**代理**，而代理可被任何不叫这个名字的
+skip 短路：换文案、提前 return、`#if 0`、未来重构。这与 D1 在结构上完全同形。
+更深一层：**我在同一次提交里既写下原则又违反了它** —— 说明"知道原则"不足以避免
+重犯，必须让原则变成**检查项**。
+
+### 证据
+- 修前 V8：`EXIT=0` / `VIEW_BUDGETS=executed` / `7341 checks`
+- 修后 V8：`EXIT=1` / `view budget bodies did not run (checks=7341, want >=7348)`，
+  且 `VIEW_RELEASE_EXIT=0` —— 证明这道断言不依赖退出码
+- 恢复后：SHA256 `775301AB...8866` 一致、全仓 `MUT-` 0、`7348 checks`、`LINUX GATE PASS`
+
+### 修复
+`VIEW_MIN_CHECKS=7348`（= Debug 7341 + 7 条 bench CHECK），断言 `VIEW_CHECKS >= 7348`。
+用下限而非等号：给 `test_view.cpp` 新增断言不会误红。
+
+### 教训（例 49）
+- **"能观测"不等于"已断言"**：凡是被 `printf`/`echo` 出来供人看的数字，问一句
+  "如果它是错的，谁会失败？" —— 若答案是"没人"，那就是一个洞。
+- **同一提交内的自我一致性检查**：修 D1 立了"断言产出量"的原则，D3 却在同一批里
+  用"断言字符串缺席"。**新原则必须立刻回头扫一遍本次改动本身**。
+- **可观测量的差值比绝对值更可靠**：7348−7341=7 正好等于七条预算断言 ——
+  一条被跳过则差值归零。差值把"配置形状"翻译成"执行结果"。

@@ -1008,3 +1008,27 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 **未修（登记，不假装处理）**：`kind="relative-move"` 日志文本零守护（纯日志，断言成本高于收益）；Windows `-Wswitch` 零守护；`rtsc_server_tests` checks 漂移；`real-server-test.ps1` 不调 ctest。
 
 **教训（discover 例 48）**：断言"执行了什么"而非"是否失败"；门必须能被打红（每道断言配一个只触发它的变异体）；修 A 类缺陷可能暴露 B 类（改 `test_main.h` 后 `gui_send` 现形）；注释里的"两者都坏会红"必须用变异兑现。
+### 批 38（`b9a633f`）—— 堵 D3 的同形洞（审计 X 的 V8）
+
+**缺陷**：批 37 的 D3 只断言 `VIEW_RELEASE_EXIT==0` 与"日志无 `skipped: timing budgets` 字面量"，
+**check 数只打印不断言**。X 的 V8 红证（`#if defined(NDEBUG)`→`#if 0` + 改 skip 文案）：
+`VIEW_RELEASE_EXIT=0` / `7341 checks`（Debug 数，预算一条没跑）/ `VIEW_BUDGETS=executed` /
+`LINUX GATE PASS` / `EXIT=0` —— **假绿**。
+
+**这本身是 D1 的同形复发**：我刚在 D1 立下"断言产出量而非字符串缺席"，同批的 D3 就违反了。
+
+**修复**：`VIEW_MIN_CHECKS=7348`，断言 `VIEW_CHECKS >= 7348`（下限）。
+差值 7 = 七条 bench CHECK；**差值把"配置形状"翻译成"执行结果"**。
+
+**可证伪性**
+| 变异 | 结果 |
+|---|---|
+| V8 复现 | `EXIT=1`，`view budget bodies did not run (checks=7341, want >=7348)`，且 `VIEW_RELEASE_EXIT=0`（不依赖退出码） |
+| 恢复 | SHA256 `775301AB...8866`；全仓 `MUT-` 0；`7348 checks`；`LINUX GATE PASS` |
+| 语法 | `bash -n` → `SYNTAX_OK` |
+
+**X 对批 37 的复核**：6 项中 D1 / Release delta / `gui_send` / `exit 2` 三态 / `CONFIGURE_EXIT` 均 PASS；
+唯一未过的是本批修的 V8。X 另纠正：删 1 条 CHECK=66、删 3 条=64，均红（变异强度差异，非判据差异）。
+
+**教训（discover 例 49）**："能观测"≠"已断言"——凡被打印出来的数字，问"它错了谁会失败"；
+新原则必须立刻回扫本次改动；可观测量的差值比绝对值更可靠。
