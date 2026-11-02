@@ -87,9 +87,14 @@ TEST_LOG="$LOG_DIR/ctest.log"
 
 rm -rf "$BUILD_DIR"
 
-cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Debug >"$CFG_LOG" 2>&1
+# RTSC_TLS_OPENSSL is OFF by default (design-a D5: a REQUIRED find_package
+# would break configure on hosts without OpenSSL). But this gate exists to
+# prove the Linux build, and without the flag the OpenSSL TLS backend is never
+# compiled and the P0 coalesced-handshake regression test is guarded out -- the
+# gate would certify a configuration nobody ships. Enable it explicitly; the
+# environment contract above already makes a missing toolchain a hard FAIL.
+cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DRTSC_TLS_OPENSSL=ON >"$CFG_LOG" 2>&1
 CFG_EXIT=$?
-echo "CONFIGURE_EXIT=$CFG_EXIT"
 if [ "$CFG_EXIT" -ne 0 ]; then
     echo "--- configure log tail ---"
     tail -40 "$CFG_LOG"

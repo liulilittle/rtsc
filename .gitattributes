@@ -1,0 +1,10 @@
+# Shell scripts must keep LF on every platform.
+#
+# core.autocrlf=true (this repo's recommended Windows setting) otherwise checks
+# these out with CRLF, and bash then fails on the very first line:
+#   $'\r': command not found
+#   set: usage: ...
+# That is not a shell-portability nicety: the Linux gate is the only automated
+# proof that the non-Windows build works, and a CRLF checkout makes it abort
+# before it can prove anything (observed on 2026-11-03).
+*.sh text eol=lf
