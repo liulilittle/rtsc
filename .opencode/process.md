@@ -503,198 +503,24 @@ N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-
   `server.cpp:2479` `malformed_input_pdu_count()` 访问器
 - 尚未验证：`TrackPressedLocked` 位置（:125 仍先于入队？需在交付后逐行核对 F1 第二修）、
   未知 pdu_type2 是否禁止回落、`ReleaseInput` 顺序
-## 第806轮：批 8 验收提交 `334d5a1`；批 8 审计 + 批 9 并行派出
-### 主代理独立验收（不采信子代理数字）
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
-- `ctest --test-dir build -C Release` **独占**运行 → `100% tests passed, 0 tests failed out of 63`（76.07s）
-- **踩坑复现**：我在执行 AI 仍跑测试时启动全量 ctest，先后失败 `tls`、另一测试；单独重跑 `tls` 绿。
-  → 并发 ctest 抢端口 = 伪失败（与既有记忆一致）。**判定绿必须独占运行**，不得与任何在途测试重叠。
-### 逐行核对（W5 证据）
-- F1 ①：`desktop_input_win32.cpp:124-126` 仅 `if (EnqueueLocked(...)) TrackPressedLocked(...)`；② `desktop_input_map.cpp:110-114` 注释+`incoming_is_release → kAccept`（在 `size>=hard_limit` 之前判断）✅
-- F4：`server.cpp:1712-1724` 未知 type → `malformed_input_pdus_+1` + `handled=true` + `return true`，注释明确"禁止回落"✅
-- F3：`server.cpp:767-778` 先 `ReleaseSession` 再锁内 erase，`input_lease_held_=false` 在 ReleaseSession **之前**置位（防重入）✅
-- F4-甲3：`desktop_input_map.h:79-94` inline `IsInjectable`；`server.cpp:814-821` 未持租才判可注入并申请；持租者仍转发以保留 unsupported 统计 ✅
-### 决策确认（执行 AI 提的两点）
-1) `IsInjectable` 内联：接受（`rtsc_server` 不链接 map 库，CMakeLists 不在允许集；inline 不新增链接边）。
-2) `kMouse` 判据取 `is_move || button != 0`：接受（与 `TranslateInput` 锁步，裸 kMouse 无动作；测试已交叉核对全 kind）。
-### 已派
-- 批 9 `ses_e6ab06c78ffeQTe3h03doOnxm7`：限流 400/1000（释放豁免）+ `dropped_rate_limited` + 启动行/首发拒绝 WARN + seam 文档回写（§1.5/§2.3/§2.4）
-- 审计批 8 `ses_e6ab05ac0ffe2Kl0U2SjT4zrPu`：独立复核 334d5a1（release 有界性/白名单完备/IsInjectable 锁步/回归），产出 `docs/spec/input-lease-review-C.md`
-## 第807轮：审计 C 判 F1 FAIL（release 恒接受 → 硬限失效）→ 已并入批 9
-- 审计 C（`docs/spec/input-lease-review-C.md`）：F4/F3/F4-甲3/回归 PASS；**F1 FAIL**：
-  `DecideEnqueue(size=5e6, release)` 仍 `kAccept`（探针），单条 32KB PDU ≈16,382 keyup 入队，O(N²)
-- 修法（已下发给批 9 会话，同文件避免并发）：`held_release` 仅在 `pressed_` 中仍持有该键/按钮时才豁免
-- 另要求：补"硬限丢 press 后 `pressed_` 不含该键"测试（遮盖 `TrackPressed` 变异缺口）；
-  禁止"5000 release 全允许"断言；`server_undefined_share_data_type` 先轮询计数再断言空
-- 审计 A/B 会话均已解散，其 relay 超时属正常
-## 第808轮：批 9 唤醒后核查（未提交工作树）
-- 已实现 `held_release`：`desktop_input_map.cpp:116`（`incoming_is_held_release → kAccept`）、`:159-164`（`AdmitInput` 传递）、`desktop_input_win32.cpp:127-128`（`IsHeldRelease` 于入队前计算）
-- 已实现限流：`desktop_input_map.cpp:191-194`（`InputRateLimiter::Allow`，release 豁免）、`desktop_input_win32.cpp:34-36` 注释 400/800 + 1000/2000、`:161` 暴露 `dropped_rate_limited`
-- 新测试（[BASH: Select-String tests]）：`:327` held release 接受、`:341` 非 held 硬限丢弃、`:364` held 接受且 untracked、`:387` 按钮释放豁免、`:411` unicode 释放不豁免、`:433` **硬限丢 press 不 track（补变异盲区）**、`:469-584` 6 条限流测试、`:598` IsInjectable 交叉、`:656` 启动状态/拒绝
-- 待办：等批 9 relay 报告 → 主代理独占全量 ctest → 独立审计 held_release 上界与限流语义
-## 第809轮：批 9 提交 `27cf199`；双审 D/E 已派
-### 主代理验收
-- 构建 `exit=0 warn=0 err=0`；**独占**全量 ctest `0 tests failed out of 63`（68.72s）
-- 逐行核对：`desktop_input_win32.cpp:127-128` held_release 于入队前求值；`:192-204` 仅 kAccept 才 push 并 track；
-  `desktop_input_map.cpp:116` held_release 才 kAccept；`:191-207` 限流拒绝时两桶都不扣；`:324` 出队后 SendInput 前限流；
-  `AppendReleasesLocked` 仅遍历 `pressed`（有界）
-### 我已发现、待审计 D 独立确认的疑点
-`TrackInput`（`desktop_input_map.cpp:121-133`）对 **任意 scancode** 插入 `pressed.keys`：scancode 空间
-`0x00-0xFFFF` + extended 位 → 最多 ~131,072 项，恶意对端可把"有界公式"从 1024 抬到 ~132k（约数 MB）。
-虽非"无界"，但违背 §1.5 意图；若审计 D 同判 FAIL，修法方向：以**实际按下的 VK**（≤256）为键，
-或在插入时按 VK 槽位去重（同 VK 多 scancode 只保留一个并强制释放最旧者）。
-### 已派
-- 审计 D `ses_e6a5ce98dfferVQXZ3ELT8rso3`：上界严格证明 + `pressed` 无界性 + 键身份互逆
-- 审计 E `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：限流语义/时钟/`sessions_` 增长/移动绕过/文档一致
-### 环境
-批 9 结束后再次 TLS 证书错误（累计第 6 次），任务已完成并已 delete。
-## 第810轮：审计 E 第 1 轮结论（4 类 FAIL）→ 待与 D 交叉后定案
-审计 E 报告 `docs/spec/input-rate-limit-review-E.md`（35 tests/3759 checks 基线绿，`/W4 /WX` 零错）：
-| 项 | 判定 | 要点 |
-|---|---|---|
-| 1a/1b/1c 桶参数/steady_clock/时钟倒退 | PASS | 800=2s、2000=2s；`now<=last` 直接返回 |
-| 2 拒绝不扣令牌 | PASS | 两桶任一不足即返回，不部分扣减 |
-| 4 移动绕过限流 | PASS（有漂移） | `Dispatch` 先 `Allow` 再入 `pending_moves_`；`Emit` 不再过限流 |
-| 5a/5b Stats 双后端 | PASS | 字段一致；两计数器不重复计数同一平台动作 |
-| 7 变异真实性 | PASS | 去释放豁免 / 速率设无穷 均转红 |
-| **1d sessions_ 增长** | **FAIL（E3/E4）** | 断开会话仍有排队项 → `Dispatch→Allow` 重新 `sessions_[id]` 插入，且该 id 不再被 Forget；`pending_moves_` 残留导致断开会话的过时移动仍被注入 |
-| **3 释放豁免语义不一致** | **FAIL（E1/E2）** | 限流用 `IsReleaseInput`（不看是否 held）→ **100 万条未持有 up 全放行**（实测 `allowed=1000000`）；且"限流丢弃的按下仍被 `TrackInput` 记为 held" → `pressed` 可涨到 131,077，`hard_limit + 2×|pressed|` 实测上界远大于文档承诺 |
-| **5c 运行期不可观测** | **FAIL（E6）** | 生产代码**从不调用** `Stats()`（全仓唯一调用在测试），`dropped_rate_limited`/`dropped_queue_full`/`send_failures` 对外不可见；`lease_denied_reported` 只打印一次，与 plan 的"周期性汇总"不符 |
-| **6 文档漂移** | **FAIL（E7）** | a 上界漏 `2×`；b 漏"未注入按下的 up 仍豁免"；c 移动 250Hz 表述不实；d 失败日志无"恢复"态；e §2.3 释放豁免前提错；f "事件"口径实为"平台动作" |
-- 关键量化：限流后未持有 up 仍可达 worker 满速（10^4–10^5 evt/s）→ **限流对"非 held 释放"完全失效**
-- 最小修法（审计建议 A 方案）：`QueuedInput.exempt_release` 由入队决定写入（`held_release` / 合成 up = true），
-  `Dispatch` 用该字段而非 `IsReleaseInput`；`IsReleaseInput` 降级为"仅用于识别释放类型"
-- 下一步：等审计 D（上界证明）→ 两者交叉 → 批 10 修 E1/E2/E3/E4/E5/E6/E7
-## 第811轮：审计 D 完成（上界闭合，我的疑点被驳回）→ 批 10 可派
-### 审计 D 结论（`docs/spec/input-lease-review-D.md`）
-| 要点 | 结论 |
-|---|---|
-| 1 所有 push_back 有界 | PASS（峰值口径） |
-| 2 pressed 上界 | PASS = **515**（scancode 是 uint8_t，非 131k） |
-| 3 键身份互逆 | PASS |
-| 4 其它丢弃点 | PASS（teardown 兜底） |
-| 5 变异真实性 | 目标测试必红，但 **M3/M4 存活 = 覆盖缺口 FAIL** |
-- 峰值不变式：`peak(queue) ≤ 1024 + 515 = 1539`（探针 3 轮一致）；字面公式瞬时违反 774 次
-- 必修：D-A 文档改峰值口径；D-B 补 2 条用例使 M3/M4 转红；D-C 抽纯函数解决 win32 零覆盖；
-  E1 限流前移到 `Inject()`（已持 `mu_`，可一并消 E2）；D-G 生产代码从不调用 `Stats()`
-### 与审计 E 的一致点
-E1 两审独立同证 FAIL（未持有 up 全放行）。E2 被 D 降级为低（上界仍 515/1539，非 128× 膨胀）。
-### 批 10 范围（合并 D+E）
-D-A/D-B/D-C + E1/E2/E3/E4/E5/E6/E7，顺序：先补测试（先红）→ 限流前移 → 抽纯函数 → 回写文档 → 重跑 M1-M4 变异
-## 第812轮：审计 D 已终结解散；批 10 执行在途
-- 审计 D 最终报告要点（已并入第811轮记录）：峰值上界 1539 闭合 F1；pressed=515；M3/M4 变异存活；win32 零覆盖
-- D 已 relay E 并已完成，按第12条 delete 解散
-- 批 10 会话 `ses_e6a3704cdffeVfAuA0Txe5uDnq`：D-A/D-B/D-C + E1-E7，顺序 补测试→限流前移→抽纯函数→文档→M1-M4 变异
-- 审计 E 会话 `ses_e6a5cdca5ffeqKrf15sNRXIOrl`：已令其与 D 交叉定案（D 已回），待终稿
-## 第813轮：审计 E 终稿（两审交叉定案完成，双审均已解散）
-### 审计 E 终稿（`docs/spec/input-rate-limit-review-E.md` 451 行）
-- PASS：1a 桶参数、1b steady_clock、1c Refill 倒退封顶、2 拒绝不扣令牌、4 移动每移动只 Emit 一次（≤400/1000/s）、5a Stats 双后端、5b 两 dropped 不重复、7a 指定变异
-- FAIL：1d/E3（`sessions_` 泄漏，每次高负载断连泄漏 1 桶 sizeof=48）、3/E1+E2（未持有 up 无速率上界，100 万条全放行；限流丢弃的 press 仍记 held）、5c/E6（生产代码从不读 Stats）、6/E7（上界瞬时 vs 峰值、事件 vs 平台动作口径）、7b/E8（M3/M4 变异存活）
-- **审计 E 自纠**：撤回上一轮 `|pressed| ≤ 131,077`（与 D 一致为 515）；撤销 E4（`ServeOne` 无 try/catch，无红证且非本批引入）→ 降为 W5 观察
-### 两审交叉定案
-- 一致：E1 FAIL、E2 现象真但低、E3 低、`|pressed|=515`、峰值 1539、瞬时不变式不成立、E6、M3/M4 存活、win32 零覆盖
-- 分歧已裁定：`seam.md:263-264` 归属为 `b369d75`（非 27cf199），判定不变（实现与既有文档冲突）
-### 批 10 工作树复验（审计 E 独立快照）
-- 已达成：E1/E2（`100000 unheld ups: accepted=0 rate_limited=100000`；held up 豁免；`rate_limited press: tracked_keys=0`）、E8（M3/M4 已转红）、win32 `cl /W4 /WX` exit=0
-- **仍红**：E6 未实现（`40 tests, 9602 checks, 1 failing, 7 failed checks`，缺 main.cpp 的 Stats 打印串）
-- 已向批 10 追加：E6 实现 + `seam.md:252-254` 与 map.h 注释同步（Allow 自计数，caller 不得再计）+ E7 峰值口径与"平台动作"口径 + E3 若未修必须修
-### 双审会话状态
-审计 D、审计 E 均已完成并 delete 解散。当前在途仅批 10 `ses_e6a3704cdffeVfAuA0Txe5uDnq`。
-## 第814轮：批 10 提交 `63e3cc6`；双审 F/G 并行派出
-### 主代理独立验收（不采信执行方数字）
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
-- `ctest --test-dir build -C Release` **独占** → `100% tests passed, 0 tests failed out of 63`（64.46s）
-### 逐行核对（W5）
-- D-C：`desktop_input_map.h:204-237` `AdmitOutcome` + 模板 `AdmitAndTrack`（①held 判定 ②限流闸 ③通过后才 `AdmitInput`）；
-  `desktop_input_win32.cpp:211-216` 接线，闸门 lambda 传 `held_release` ✅
-- E1：`map.h:264-268` `Allow(session_id, held_release, now)`；注释明确"必须传 IsHeldRelease 而非 IsReleaseInput"、
-  "拒绝由 Allow 自己计数，caller 不得重复计数" ✅
-- E2：`AdmitAndTrack` 内限流先于记账 → 被限流的 press 不入 `pressed` ✅
-- E3：`win32.cpp:120-127` `forget_sessions_` 命中即丢弃并计 `dropped_unsupported`，不复活 session/桶 ✅
-- E6：`main.cpp:657-665` 5s 采样 Stats + 1s lease 汇总，仅计数变化才打印 ✅
-### 决策记录
-- 执行 AI 报告 `e6f57fd`（我的记忆提交）把其 `docs/spec/input-injection-seam.md` 改动一并入库 —— 属我 `git add -A docs` 的副作用，
-  内容本身是执行方按我指令写的，无冲突；已确认代码/测试 7 文件当时仍未提交，现已随 `63e3cc6` 入库。
-  **教训：`git add -A docs` 会把子代理正在写的文档一起提交，提交前应逐个文件确认归属。**
-### 已派（并行）
-- 审计 F `ses_e6a12ff22ffeOCGAtI9LBFGDR6`：队列/记账/生命周期侧（D-A/D-B/D-C + E2/E3/E4/E8）
-- 审计 G `ses_e6a12f026ffeby215OzUpiyD2S`：限流/可观测/文档侧（E1/E5/E6/E7）
-## 第815轮：审计 G 完成（E1/E5/E6 PASS；E7 低危文档漂移 4 处 + 测试缺口 E1-T）
-### 审计 G 结论（`docs/spec/input-batch10-review-G.md`）
-- E1 PASS：probe9 `800 presses → 5000 unheld ups allowed=0 dropped=5001`；`799 presses → 100000 held ups allowed、dropped_delta=0`；
-  保留的 1 令牌仍可花；unicode up 受限；全局拒绝后 1s 会话 1 仍花 401（400+保留 1）
-- E5 PASS：probe10 `10 条限流移动 dropped_delta=10`（无 caller 二次计数）；`kEvictMove` 决策 `rate_limited=0 tracked=1`
-- E6 PASS（2 条低危保留）：实跑 `host --seconds 2` → `input stats (final)` 四计数=0
-- 变异真实性 PASS：mutA/mutA2/mutB 各自指定测试红 → restored `40/9602/0` 绿
-- **E7 FAIL（低）**：4 处文档/注释漂移（见下）
-- **E1-T 测试缺口**：mutC（held up 豁免但扣令牌）40/9602/0 **存活** → "held up 不耗令牌"无用例钉住
-### E7 四处（均不动产品逻辑）
-1) `seam.md:137` + `win32.cpp:26-27`：peak 1539 只对"对端可入队事件"成立；`AppendReleasesLocked`（`win32.cpp:232-254`）
-   无上限 push 合成 up 且 purge 保留 synthetic（`307-315`）→ 必须补"合成 up 额外 ≤ 会话数×515"
-2) `desktop_input.h:41-43`：`dropped_queue_full` 定义漏"会话结束时 purge"（`win32.cpp:310`）
-3) `seam.md:168`："退出前终值"须限定为正常退出（`--seconds`/`--once`）；无界模式 Ctrl+C 无 SIGINT 处理
-4) `seam.md:170`："Inject 返回 false" 过期（`Inject` 是 void，`desktop_input.h:71`）
-### E1-T 修法
-补用例"799 presses → 100 held ups → 保留令牌仍可花"，使 mutC 转红。
-### 状态
-审计 G 独立稿已出，已 relay 审计 F 请求交叉验证；审计 F 仍在途。
-## 第816轮：审计 G 收口中（不再等待 F 交叉）
-- G 的独立稿已完成并 relay parent；其请求的 6 条反证问题因 F 仍在途无法即时答复
-- 已令 G 改为「自证收口」：追加「批 11 验收判据」节（E7-a/b/c/d + E1-T 的可勾选判定句）
-  + 给出 mutC 的确切变异点（改哪行、原式与新式），供执行 AI 复现
-- 决策依据：两审不必然互相回执；G 的结论已被主代理采信并写入 plan.md 批 11 定案，
-  继续等待交叉只会空转（G4b：无新信息必须换向）
-## 第817轮：审计 G 收口完成并解散；批 11 已收 mutC 细节
-- G 报告追加 §10「批 11 验收判据」：E7-a1 三要素 / E7-a2 饱和引理限定 / E7-b / E7-c / E7-d / E1-T / 收口门
-- **mutC 变异点已明确**：`src/server/desktop_input_map.cpp:195` 的 `if (held_release) return true;`
-  改为"Refill 两桶各扣 1 后 return true"（变量名必须用 `held_session`，避免遮蔽 `:198` 的 `session`，否则 `/W4 /WX` 报错）
-- G 的副本实测：新用例 pristine `41 tests/10504 checks/0 failing`；mutC `1 failing`（`test_desktop_input.cpp:664`）；
-  旧套件 `40/9602/0` 在 mutC 下仍绿 → 只有新用例能钉住"held up 不耗令牌"
-- 已把 mutC 细节 relay 给批 11 执行会话
-- 审计 G 已 delete 解散；当前在途仅审计 F + 批 11
-## 第818轮：批 11 验收提交 `b6fcaac`；主代理另发现 §1.7 过期描述
-### 主代理独立验收
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
-- `build\Release\rtsc_desktop_input_tests.exe` → `41 tests, 11611 checks, 0 failing`
-- `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（54.58s）
-### 逐行核对
-- `seam.md:137` 峰值两段式完整（① 1024+515=1539 限"对端可入队事件" ② 合成 up `+Σ|pressed| ≤ 会话数×515`
-  ③ "不得读作瞬时不变式"+774 次探针事实）；`:138` 饱和引理限定；`:142-144` 未持有 up 双不豁免；
-  `:168-169` final 限正常退出；`:171` 删返回值口径 ✅
-- `desktop_input.h:41-50` `dropped_queue_full` 含 session-end purge；含"仅 HELD release 免限流" ✅
-- `win32.cpp:25-35` 注释两段峰值 + PEAK 非瞬时 ✅
-- 新测试 `tests/test_desktop_input.cpp:681-744` 含"未持有 up 会花令牌"对照 ✅
-### 我另发现的文档过期（未在批 11 范围）
-`seam.md` §1.7 第 1 条声称"`session_id` 恒为 0、多会话仲裁形同虚设"——**已过期**：
-`server.cpp:2160` `next_input_session_id` 原子递增，`:2286-2287`/`:2414` 两条构造路径均传 `fetch_add(1)+1`，
-0 仅作哨兵（`:2036`）。已修正为"已实现 + 剩余日志无 session_id 的可观测性缺口"。
-§1.7 第 2 条（几何取自协商尺寸而非捕获矩形）**仍成立**（`server.cpp:1303` 用 `desktop_width_/height_`）→ 保持 OPEN。
-### 子代理
-批 11 `ses_e69f47a9` 已完成（其 relay 审计 G 失败属正常：G 已解散）。审计 F `ses_e6a12ff2` 仍在途。
-## 第819轮：审计 F 终稿（F-1 租约槽泄漏必修）→ 批 12 已派
-### 审计 F（`docs/spec/input-batch10-review-F.md`）
-| 项 | 判定 |
-|---|---|
-| D-C 纯函数化 | PASS（闸先于记账、单一接线、生产唯一 `TrackInput` 在 `map.cpp:170`） |
-| E2 记账修正 | PASS（探针：被限流按下 `downs=0 ups=0`；held up 不花令牌且清键） |
-| E3 生命周期 | PASS（`forget_sessions_` 每轮清空；purge 保留 synthetic）+ 2 条低危 |
-| **E4 teardown** | **FAIL（F-1）**：`ReleaseSession` 抛异常 ⇒ `holders.erase` 跳过 + `input_released_` 已真 ⇒ 租约槽永久泄漏（`denied=101 second_injects=0`） |
-| E8 变异 | PASS（M1-M5 全红）；但 **M6/M7/M8（win32 层）全绿存活** |
-| 回归 | PASS（`Dispatch` 无 `Allow`；合成 up 上界 `hard + 515·K`） |
-### 交叉定案（F vs G）
-- mutC 存活两审独立复现 → E1-T 有效；但 **mutC2（只扣全局桶）仍存活** → 需补全局桶用例
-- 峰值公式**收紧为 `kHardQueueLimit + 515·K`**（K=持租会话数）；G 写的 `1539+会话数×515` **重复计基线**
-- final 时点/Ctrl+C/双计/漂移 a-d 一致；**新增 `seam.md:266` 算术错误**（"8×400 的约 1/3" ≠ 2000）
-### 批 12 `ses_e69d8d008ffeVtgyOfZLmw7i4l`
-F-1（try/catch + 无条件 erase + throwing-sink 红证）、mutC2 新用例、峰值公式与算术修正、F-2 已知缺口文档
-### 子代理
-审计 F 已 delete 解散（其 relay 审计 G 失败属正常：G 已解散）。
-## 第820轮：批 12 会话因证书错误零输出 → 已解散并重派
-- 上轮批 12 `ses_e69d8d008ffeVtgyOfZLmw7i4l` 遭遇 `unknown certificate verification error`，`wrote=null`、零输出
-- 目标因连续无进展被插件自动暂停 → 已 `update_goal_status:active` 恢复（AI 自主暂停可自行恢复）
-- 旧会话已 `delete`，按任务调度经 `task` 新开 `ses_e69c4df7affe5Ljvc4shJYcdOK`，提示词压短
-- 同时纠正一处并发风险：批 11 会话已在 `tests:745-761` 追加 mutC2 覆盖，新提示明确禁止重复新增，避免两个执行方写同一测试
-- 环境：本会话累计宿主错误（证书/连接）已达 8 次以上，均为子会话独立失败、主会话可恢复
+## 【归档压缩】806-820 轮（输入注入：租约/限流/文档，原 192 行）
+
+- **806** 批 8 提交 `334d5a1`（F1 卡键/F4 幻影输入/F3 顺序/不可注入不占租）；独占 ctest 63/63。
+  教训：并发跑 ctest 抢端口 = 伪失败，判定绿必须独占。
+- **807** 审计 C 判 **F1 FAIL**：我下的指令"release 恒接受"是**按事件类别豁免** → 硬限 1024 被绕过
+  （`DecideEnqueue(size=5e6, release)=kAccept`，单条 32KB PDU ≈16k keyup 入队，O(N²)）。
+- **809-811** 批 9 提交 `27cf199`（held_release 定界 + 限流 400/800、1000/2000 + `dropped_rate_limited`）。
+  审计 D：峰值上界 `1024 + 515 = 1539` 成立（瞬时公式被证伪 774 次）；`pressed` 上界 **515**（scancode 是 uint8_t）。
+  我"131,072"的疑点被驳回 → 第 20 例教训：值域必须追唯一写入源的实际类型。
+- **813-815** 审计 E 终稿：E1（未持有 up 全放行 100 万条）、E2（限流丢弃的 press 仍记 held）、E3（`sessions_` 泄漏）、
+  E6（生产不读 Stats）、E7（文档漂移）、E8（M3/M4 变异存活）。
+- **814-818** 批 10/11 提交 `63e3cc6`、`b6fcaac`：限流前移 `Inject()`、`AdmitAndTrack` 纯函数、
+  held-release 令牌留存用例、峰值两段式文档、真机清单补租约/限流/可观测三节。
+  我另修正 `seam.md` §1.7 的过期描述（`session_id` 已非 0）。
+- **819-820** 审计 F：**F-1 租约槽永久泄漏**（`ReleaseSession` 抛异常 → `holders.erase` 跳过）；
+  批 12 提交 `a59a594` 修复（try/catch + 无条件 erase）→ 第 22 例：「幂等哨兵 + 可抛调用 = 永久损坏」；
+  读码对异常路径系统性失明，必须用 throwing stub 测。
+
 ## 第821轮：批 12 验收提交 `a59a594`；双审 H/I 并行派出
 ### 主代理独立验收
 - `cmake --build build --config Release` → exit=0 / warn=0 / err=0
