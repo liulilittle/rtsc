@@ -651,3 +651,77 @@ def decode(n, desk0, desk_n):                            # what the OS does
 | 5a `--monitor -1` 现在是否正确 | §6.1 | 方向正确，`fb != 桌面` 时 49.18% 像素有 1 px 误差 |
 | 5b `--monitor N` 与子矩形错位是否不同 | §6.2 | 机理相同（小的当大的）；数值不同（纯平移 vs 平移+缩放） |
 | 5c 数值例 monitor1(1920,0) 1280x1024 客户端 (640,512) | §6.3 | 应落 `(2560,512)`；现有实现落 `(1601,512)`，偏 −959 px 且**跨屏** |
+
+---
+
+## 13. 实证探针（红证 → 绿证，可复跑）
+
+本节回应“未实证不报缺陷”：缺陷结论来自**对可执行产物跑探针**，不是阅读推断。
+探针未入库（审计角色只写本文件），但源码、编译命令与输出全部在下面，可逐字复现。
+
+### 13.1 红证：对 shipped lib 实测
+
+探针链接仓库已有的 `build/Release/rtsc_server_desktop_input_map.lib`
+（SHA256 `096C1270790BB07A6BC4E67F4923F8193AB9E7984E5FA6E3E302F45D0CEB0067`，2026/11/2 10:23:01 构建），
+用**当前服务端真实传入的** `InjectGeometry{fbw, fbh}`
+（[READ:src/server/server.cpp:1368] 只填宽高）调用 `TranslateInput`，
+再按 Wine/ReactOS 的解码语义 `origin + floor(n*extent/65536)` 还原落点。
+
+```text
+A2 wire n=(32793,32800) actual landing=(1601,512) expected n=(52429,32768) expected landing=(2560,512)
+[RED] A2 lands on monitor 2: actual=(1601,512) expected=(2560,512) delta=(-959,0)
+[RED] A2 x within 1px of reference: actual=(1601,512) expected=(2560,512) delta=(-959,0)
+A1 wire n=(0,0) landing=(0,0) expected=(1920,0)
+[RED] A1 lands on selected monitor origin: actual x=0 expected 1920
+
+3 failing probe(s)          (exit=1)
+```
+
+**结论（红证成立）**：`--monitor 1` 下客户端点 (640,512) 实际落到 **第一块屏 (1601,512)**，
+应在 **第二块屏 (2560,512)**，偏 **−959 px**；点 (0,0) 落到 (0,0) 而非选中屏原点 (1920,0)。
+这不是“差 1 px”，是**跨屏**。
+
+### 13.2 绿证：同一探针跑设计实现
+
+把 §3.2 / §4.1 的实现写成独立副本
+（`geom_green/map_fixed.cpp`，含 `InjectRect capture/desktop` + `mapped`），
+同一组 21 个用例 + 稠密往返：
+
+```text
+[GREEN] A1 wire n=(39322,0) landing=(1920,0) expected=(1920,0)
+[GREEN] A2 wire n=(52429,32768) landing=(2560,512) expected=(2560,512)
+[GREEN] A3 ... [GREEN] G2   (21/21 全绿)
+[GREEN] dense round trip 1280/1920/3200/3840: 0 mismatch(es)
+
+0 failing green-probe check(s)      (exit=0)
+```
+
+同时验证了 §2.4：E3（fb 1280x1024、捕获 1920x1080、点 (1279,1023)）得到 `n=65502`，
+解码回 1919 —— 即 `extent-1` 的 65535 约定会把最后一个像素“钉”在 65535 而牺牲互逆性。
+
+### 13.3 探针位置与复跑方式
+
+| 用途 | 路径（临时目录，未入库） |
+|---|---|
+| 红证探针源 | `%TEMP%\opencode\probe_input_geom.cpp` |
+| 红证日志 | `%TEMP%\opencode\probe_red.log` |
+| 绿证实现 | `%TEMP%\opencode\geom_green\map_fixed.cpp` |
+| 绿证探针源 | `%TEMP%\opencode\geom_green\probe_green.cpp` |
+| 绿证日志 | `%TEMP%\opencode\probe_green.log` |
+
+复跑（红）：
+
+```text
+cl /nologo /std:c++20 /EHsc /MD /W4 /I F:\rtsc\include probe_input_geom.cpp ^
+   /Fe:probe_input_geom.exe F:\rtsc\build\Release\rtsc_server_desktop_input_map.lib
+```
+
+复跑（绿）：
+
+```text
+cl /nologo /std:c++20 /EHsc /MD /W4 /I geom_green\include ^
+   probe_green.cpp geom_green\map_fixed.cpp /Fe:probe_green.exe
+```
+
+执行 AI 落地后，应把 §7 变异表转成 `tests/test_desktop_input.cpp` 的断言；
+红证对应的回归断言建议直接写成本节的 A1/A2 两条（跨屏是最强的可观测判据）。
