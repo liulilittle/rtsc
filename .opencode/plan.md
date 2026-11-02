@@ -785,41 +785,43 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 **关键教训（discover 例 38）**：我首版 F2 用 `String.Replace` 打在一个出现 2 次的字符串上，
 生产入口与 seam 被同时改掉，`:461` 变红被误当"生产入口已覆盖"。审计 U 用 13/73 全绿推翻我；
 单点定位重跑确认 **U 对、我错**。
-## 批 27（round 868，提交见下）——闭合 R7 的宿主调用点（无生产后门）
+## 批 27/27b/28（round 868-869，提交 `2ebac6d` / `db5f764` / `1da9e67`）
 
-### 第一性原理推导
-问题陈述：`PeriodicInputStatsLine` 只锁函数内部；删掉 `main` 里的调用、或让 lambda 整体 `return`，
-测试仍全绿。审计 U 提出方案1（env 门控的测试 sink）需要给生产 main 加可替换后端 + 安全评审，
-方案3（起真客户端）时序 flaky。
-**重新审视需求**：宿主周期性采样行的目的是"让运维看得到累计计数"。原设计只在计数变化时打印，
-于是**没有客户端时永远不打印**——这本身就是运维缺口（长跑但空闲的宿主，运维看不到任何计数）。
-⇒ 让**首次采样无条件打印基线**，既是产品改进，也使调用点可从 `--seconds 7` 观测。
-不需要任何测试专用后端、不需要安全评审。
+### 批 27 —— R7 宿主调用点闭合（`2ebac6d`）
+**推导**：原需求"只在计数变化时打印"导致**空闲宿主永远不打印任何 periodic 行**——这本身是运维缺口。
+让首次采样无条件打印基线，既补上可见性，又使调用点可从 `--seconds` 观测。
+**不需要** env 门控 sink、生产后可替换后端、安全评审（这是审计 U 方案1 的代价）。
+`PeriodicInputStatsLine(const InputStats*, ...)`：`nullptr` = 无基线必打印。
 
-### 改动
-| 文件 | 改动 |
-|---|---|
-| `include/rtsc/server/desktop_input.h` | `PeriodicInputStatsLine(const InputStats* printed, ...)`：`printed==nullptr` 表示"无基线，必须打印" |
-| `src/server/desktop_input_stats.cpp` | `nullptr` → `FormatInputStats("periodic", current)` |
-| `tools/rtsc_server/main.cpp` | 新增 `printed_input_valid`；首次采样传 `nullptr` |
-| `tests/test_desktop_input.cpp` | 用例改为 5 条需求（无基线→打印 / 相同→空 / 变化→打印 / 回落→空 / 反向→打印） |
-| `tests/host_cli_check.cmake` | 新增 `periodic_stats_line` CASE（`--seconds 7` > 5s 采样周期），用**纯子串计数**断言 `periodic` 行**恰好 1 次**；加 `cmake_minimum_required(3.20)`（否则 `while(TRUE)` 条件被当字符串） |
-| `CMakeLists.txt` | 注册 `host_cli_periodic_stats_line` |
+### 批 27b —— 自审判据盲区（`db5f764`，discover 例 40）
+`--seconds 7` 而采样间隔 5 s ⇒ 窗口只有 1 次采样，"打印一次"与"每次打印"观测相同，
+刷屏变异下用例**仍绿**。修：`--seconds 12` + `execute_process TIMEOUT 10→25`。
 
-### 变异验证（全部实测）
+### 批 28 —— 审计 W 的 D1/D2（`1da9e67`，discover 例 41）
+**D1 [中] 假测试**：基线行只断言"非空 + 前缀"，夹具 `base` 全 0 ⇒
+`MUT-D1 = FormatInputStats("periodic", InputStats{})` 下 **68 tests/13912 checks 全绿**（我复现）。
+修：`base.injected=7 / dropped_unmapped=5`（两个**不同**非零值）+ 断言两者出现在基线行 →
+同一变异 **红 :1820/:1821**。
+**D2 [低]** `--once` 只走 `log_input_stats("final")`，checklist:91 补注"仅 --seconds/无界模式"。
+
+### 变异矩阵（全部实测）
 | 变异 | 结果 |
 |---|---|
-| 删 `main` 的 `log_input_stats_if_changed()` 调用（唯一一处，已验证 occ=1） | **仅 `host_cli_periodic_stats_line` 红** |
-| lambda 整体 `return;` | **同上红** |
-| `printed==nullptr` 返回空串（无基线不打印） | `desktop_input` + `periodic_stats_line` **双红** |
+| 删 `log_input_stats_if_changed()` 调用 | 仅 `host_cli_periodic_stats_line` 红 |
+| lambda 整体 `return;` | 同上红 |
+| 恒传 nullptr | 红 |
+| `printed==nullptr` 返空 | `desktop_input` + `host_cli` 双红 |
+| 删 `printed_input_valid = true`（刷屏） | 12s 窗口下红 `found 2`；7s 下**曾假绿** |
+| 基线打印 `InputStats{}`（D1） | 修复前全绿；修复后红 :1820/:1821 |
 
 ### 验证
-构建 exit 0 / 六类诊断全 0；`ctest -j1` **69/69, 0 failed**（73.49s）；`MUT-` 残留 0。
+构建 exit 0 / 六类诊断全 0；`ctest -j1` **69/69, 0 failed**（87.98s）；`MUT-` 残留 0。
 
-### R7 状态
-**[x] 完全闭合**（函数内部 + 宿主调用点），且**未引入任何测试专用生产分支**。
-原"OPEN：需生产面改动 + 安全评审"的结论被本推导取代：真正的解不是加后门，而是修正产品行为。
+### OPEN / UNVERIFIED
+- Linux 上 `host_cli_*` 实跑 **UNVERIFIED**：全量构建被 `server.cpp` 既有 `-Werror=reorder` 阻断
+  （**非本批引入**，属独立缺陷，见下）。
+- 真机 U1/U2/U4–U9、`--monitor N` 落点、真实 mstsc 连入时的 periodic 变化行：**UNVERIFIED**。
 
-### 运维行为变化（需在真机清单体现）
-宿主启动后第 5 秒会打印**一行** `input stats (periodic)` 基线；其后无变化则不再打印。
-这与"只在变化时打印"的旧承诺不同，但更符合运维需求（空闲宿主也能确认计数为 0）。
+### 新发现（待立项，非本批引入）
+`src/server/server.cpp` 在非 MSVC/非 Windows 构建下存在 `-Werror=reorder` 报错，
+阻断 Linux 全量构建与 ctest，从而无法验证 `host_cli_*` 在 Linux 的行为。

@@ -598,50 +598,21 @@ host `main.cpp` 调用点无行为测试（`--once` 阻塞等待客户端，无�
 ### 残留
 R7 的"宿主调用点"部分 **OPEN**（方案1 需生产面改动 + 安全评审；方案3 未实现）。
 
-## 第868轮：批27 —— 用"修正产品行为"闭合 R7 宿主调用点（无测试后门）
-### 第一性原理
-原需求"只在计数变化时打印"导致**空闲宿主永远不打印任何 periodic 行**——这本身是运维缺口。
-让**首次采样无条件打印基线**：既补上运维可见性，又让调用点可从 `--seconds 7` 观测。
-不需要 env 门控 sink、不需要生产后可替换后端、不需要安全评审（这两点是审计 U 的方案1 的代价）。
-### 改动
-`PeriodicInputStatsLine(const InputStats* printed, ...)`（nullptr=无基线必打印）；
-main 加 `printed_input_valid`；`host_cli_check.cmake` 加 `periodic_stats_line` CASE，
-用纯子串计数断言 periodic 行**恰好 1 次**（"至少一次"会放过刷屏）；
-加 `cmake_minimum_required(3.20)`（否则 `while(TRUE)` 的条件被当字符串，`hits=0`）。
-### 变异矩阵
-| 变异 | 结果 |
-|---|---|
-| 删 main 的调用（occ=1 已验证） | 仅 `host_cli_periodic_stats_line` 红 |
-| lambda 整体 `return;` | 同上红 |
-| `nullptr` 返空（无基线不打印） | `desktop_input` + `periodic_stats_line` 双红 |
-### 验证
-构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（73.49s）；实测 host `--seconds 7` → periodic=1 final=1。
-### 过程事故（自我记录）
-恢复变异时用错时间戳备份名 → 变异体残留一轮，`ctest` 97% 假红；改用 `Get-ChildItem` 列出真实备份名后恢复。
-**教训**：备份文件名应记录到变量并在恢复时引用，不能手抄时间戳。
-### R7
-**[x] 完全闭合**（函数内部 + 宿主调用点），无生产后门。
 
-## 第868轮续：主代理自查发现判据盲区（discover 例 40）并修复
-### 两个真缺陷（我自己引入）
-1. `host_cli_periodic_stats_line` 用 `--seconds 7`（采样 5s）断言"periodic 恰好 1 次"——
-   **窗口内只有 1 次采样**，"打印一次"与"每次打印"观测相同。刷屏变异（删 `printed_input_valid = true`）
-   下用例仍绿。
-2. `execute_process(TIMEOUT 10)` 小于新窗口 12s → 用例退化为超时失败。
-### 修复
-`--seconds 7` → `12`（覆盖 5s、10s 两次采样）；`TIMEOUT 10` → `25`；注释写明"窗口必须 ≥2 个采样周期"。
-### 复验
-| 场景 | 结果 |
-|---|---|
-| 基线 | `CASE periodic_stats_line: OK` |
-| 刷屏变异（不置 valid） | **红 `found 2`**（改前绿） |
-| 删调用 / lambda early return / nullptr 返空 | 全红（前一轮已验证） |
-### 全量
-构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（89.59s）；实测 `--seconds 12` → periodic=1 final=1。
-### 又踩一次例 36
-恢复源文件后未重编，`--seconds 12` 仍报 2 行（旧变异体二进制）；重编后 1 行。
-**恢复流程必须：换源 → touch → 重编 → 验证二进制行为**，缺一步就会被旧二进制误导。
-## 第869轮：审计 W 的 D1/D2 收口（主代理自行复现）
+## 【归档压缩：868 轮（批27 / 27b，原 44 行）】
+
+### 批 27（`2ebac6d`）—— R7 宿主调用点闭合
+推导：原"只在计数变化时打印"使**空闲宿主永远不打印任何 periodic 行**（运维缺口）。
+让首次采样无条件打印基线 ⇒ 调用点可从 `--seconds` 观测，**无需 env 门控 sink / 生产后可替换后端 / 安全评审**。
+`PeriodicInputStatsLine(const InputStats*, ...)`：nullptr = 无基线必打印。
+变异：删 main 调用 / lambda 整体 return / nullptr 返空 —— 全红。
+
+### 批 27b（`db5f764`）—— 自审判据盲区（discover 例 40）
+`--seconds 7` 而采样 5s ⇒ 窗口只有 1 次采样，"打印一次"与"每次打印"观测相同；
+刷屏变异（删 `printed_input_valid = true`）下用例**仍绿**。
+修：`--seconds 12`（覆盖 5s/10s）+ `execute_process TIMEOUT 10→25`（窗口变长必须同步放大）。
+修后同一变异 → 红 `found 2`。**又踩例 36**：换源未重编，旧二进制误报 2 行。
+
 ### D1 [中] 基线行数值未断言（假测试）
 我复现：`MUT-D1 = FormatInputStats("periodic", InputStats{})` → **68 tests/13912 checks 全绿**。
 根因：用例的 `base` 全 0，"打印当前值"与"打印默认值"逐字节相同。
