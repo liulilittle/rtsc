@@ -455,7 +455,7 @@ if ($LinuxBuild) {
     # Line-anchored, not substring (audit A20-6). A substring test would accept
     # "FAILED_COUNT=01" or a future "FAILED_COUNT=0 (tolerated 1 warning)", i.e.
     # exactly the class of weak-signal bug B0-07 was about.
-    foreach ($needle in @('FAILED_COUNT=0', 'WINDOWS_H_COUNT=0', 'FACTORY_SYMBOL=present')) {
+    foreach ($needle in @('FAILED_COUNT=0', 'WINDOWS_H_COUNT=0', 'FACTORY_SYMBOL=present', 'REQUIRED_TESTS=present', 'P0_REGRESSION=executed')) {
         $anchored = '(?m)^' + [regex]::Escape($needle) + '\r?$'
         if ($gateOut -notmatch $anchored) {
             Write-Error "linux build gate output missing an exact '$needle' line"
