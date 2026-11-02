@@ -847,3 +847,29 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 ### 在途
 审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验：UAF/挂起/RTTI/lost-wakeup）、
 设计审计 M `ses_e664d2035ffev3TAIwV4TuCE9J`（几何定案）
+## 第842轮：审计 L 判 J-1 FAIL(High，挂起 + UAF) → 批 21 已派
+### 审计 L（`docs/spec/input-batch19-review-L.md`）
+- **J-1 FAIL(High，两项)**：
+  ① 快照分配失败被吞 ⇒ `sessions` 空 ⇒ 一次 `s->Stop()` 都不发；`RdpSession::Stop()`（`server.cpp:756-759`）
+     才是置 `stop_requested_` 的唯一入口，`listener->Close()` 不影响已 accept 的 transport ⇒ 会话线程不退出 ⇒
+     `live` 永不为 0 ⇒ `cv.wait` **永久挂死**（实测 20s）
+  ② `cv.wait` catch 吞掉后立即返回（实测 `live=1`），违反 `server.h:293-295/304-310/317-324` 的
+     "借用指针 must outlive the server (including Stop())" ⇒ **UAF**
+  - 我写的两处"安全论证"注释（`:2504-2507`、`:2520-2523`）**都被代码证伪**
+- J-2 PASS（`dynamic_cast` 在 `:731-733`；全仓零 `/GR-`；6 个 hook 全 nullptr 早退；还原 static_cast 后新用例挂死 30s）
+- J-3a PASS + Low（三个断言全是 `==0`，删 `fetch_add` 仍绿 ⇒ "能涨"侧无回归保护）
+- J-3b PASS（`store(true)` 在 `mu_` 内且 wait 前，notify 方持同一 `mu_` ⇒ 无 lost-wakeup）
+- J-4 PASS（双 IRP；逐项 `break` 与整圈 catch 两种变异均红）
+- J-5 PASS + Low（`review-F.md:340` 括注 `a59a594` 与行号 `776-791`（属 `6fc5614`）不匹配）
+- 回归：build 零错零警告、ctest 63/63、三套件 0 failing
+- 如实披露：08:09 一次 `server` 失败 13 次重跑不复现（在报告上未归因）；一次探针误写入共享工作树已按同一 blob 恢复
+### 批 21 `ses_e66140044ffeWtCbsIG4OB7yES`
+新增两条不变式并要求写进注释：
+- **I1 不得静默成功**：任何"没能确认全部会话已停止"的路径必须留可诊断输出
+- **I2 不得 UAF**：仍有会话线程可能访问借用指针时 `Stop()` 不得返回；超时不得当成功
+修法：①快照失败时改为**锁内直接遍历 `registry->sessions` 调 `s->Stop()`**（无分配）②等待改 `wait_for` 循环 + 周期告警
++ ③删改两处错误注释 + ④`server.h` Stop 契约补"会阻塞到全部退出"
+测试：`server_stop_delivers_stop_when_snapshot_allocation_fails`、`server_stop_does_not_return_while_session_thread_alive`
++ J-3a 补"能涨"断言 + J-5 括注修正；变异 2 个
+### 教训
+`discover.md` 第 26 例：**`catch(...)` 不是安全，它把失败转移给调用者的假设**；注释里的"安全论证"必须能被代码证伪。
