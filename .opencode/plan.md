@@ -857,3 +857,32 @@ R 实测：把真实打印改成 `input_dropped_unmapped_DISABLED=` 并加注释
 ⇒ y 轴 origin/extent 被互换或丢失时测试不转红。
 修复：改用 `capture{1920, 100, 1280, 1024}`、`desktop{0, 50, 3200, 1100}` 之类的非零异值。
 验收：互换 y 轴 capture/desktop 必须转红。
+### 批 24 追加（round 863，审计 S 报告 + 主代理核验；与原 R1-R6 合并执行）
+
+**S1 [Medium·回归] `dropped_unmapped` 对非租约会话归零**
+批 23 引入 `IsInjectable(ev, g)` 几何门槛后（`src/server/server.cpp:884-888`），
+不可映射的纯移动在**未持有租约**时直接 `return`，`DesktopInputSink::Inject` 不被调用
+⇒ `desktop_input_win32.cpp:151-156` 的 `dropped_unmapped_` 计数**永不执行**
+⇒ 而 `include/rtsc/server/desktop_input.h:83-87` 仍宣称该计数器是"唯一可见信号"。
+批 22 的旧 gate 会进 sink 计数，批 23 的新 gate 使 pure move 归零 —— **这是批 23 引入的回归**。
+修复（二选一，主代理裁决：选 A）：
+- **A（采纳）**：`DesktopInputSink` 新增 `virtual void NoteUnmappableMove(uint32_t session_id) = 0;`
+  （null 后端空实现），server 在 `IsInjectable(ev,g)==false && ev 是不可映射纯移动` 时调用它，
+  使计数与日志仍然可见。理由：保持"fail-closed 可观测"的交付承诺，且不改租约语义。
+- B（备选，仅当 A 会破坏接口预算）：文档降级为"仅租约持有者可见"，并在真机清单里去掉该断言。
+验收：新用例证明"未持有租约的不可映射纯移动使 `dropped_unmapped` +1"，且租约未被占用。
+
+**S2 [Low] `AbsoluteMoveMappable` 三处边界未钉死**
+审计 S 实测三个变异均 0 failing（对照侧有 control 会红）：
+| 变异 | 现状 |
+|---|---|
+| `capture_right <= desktop_right + 1` | 0 failing（bottom+1 在 `:797` 红） |
+| `desktop.height >= 65536` | 0 failing（width 侧 `:814` 有 control） |
+| `capture.height < 0`（改写 `<= 0`） | 0 failing（width=0 在 `:767` 有） |
+补三条用例：`capture.x=1`（x+width=3 > desktop 0+2）、`desktop.height=65536`（期望 mappable）、
+`capture.height=0`（期望空）。验收：上述三个变异各自必须转红。
+
+**S3 [Info] 清理**
+- `MakeWin32MetricSource`（`src/server/desktop_gdi.cpp:342`）无调用方 → 删除或用于 R1 的工厂注入
+- `CMakeLists.txt:683-686` 对 desktop_gdi 测试的 `RTSC_SOURCE_DIR` 定义与注释已过期
+  （读源码的守卫已删）→ 删除该定义与注释
