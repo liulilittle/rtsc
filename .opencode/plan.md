@@ -906,3 +906,28 @@ Debug 下 7 个形状中 3 个超预算（最慢 256ms / 预算 90ms；同机 Re
 ### 状态
 Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate 级证据；
 真机项（U1/U2/U4–U9、`--monitor N` 落点）仍 **UNVERIFIED**（需真实多显示器桌面）。
+### 批 34（`36430c1`）—— 验证工具自身的两层缺陷
+
+**为什么继续**：批 32/33 让 gate 通过了，但我在复核 `RTSC_TLS_OPENSSL` 传播时发现更深的问题。
+
+| 层 | 问题 | 证据 | 修复 |
+|---|---|---|---|
+| 1 | `scripts/linux-build-gate.sh` 被 `core.autocrlf=true` 检出成 CRLF，bash 无法执行 | `file` → `with CRLF line terminators`；`wsl bash gate` → `line 29: $'\r': command not found`（EXIT=2） | 新增 `.gitattributes`（`*.sh text eol=lf`）+ `git add --renormalize` |
+| 2 | gate 用 `RTSC_TLS_OPENSSL` 默认 **OFF** 构建 ⇒ OpenSSL 后端从未编译，P0 用例 `tls_server_regression_coalesced_first_record_no_stall` 被 `#if` 守卫掉 | Linux `server_security` **`Passed 0.01 sec`**，7 tests/45 checks（Windows 7/60） | gate 显式 `-DRTSC_TLS_OPENSSL=ON` |
+
+**验证**
+| 配置 | 结果 |
+|---|---|
+| gate + `RTSC_TLS_OPENSSL=ON` | `LINUX GATE PASS`；**68/68 tests passed**；`server_security` **8 tests/67 checks**；P0 用例 `[ OK ]` |
+| gate 默认（OFF） | 构建 0 失败；`server_security` 7/45 全过（守卫是设计性降级，**不是删测试**） |
+| `.gitattributes` 生效 | 删除后 `git checkout` → CR 字节 **0**，`file` 报纯 ASCII |
+| Windows Release | 构建 exit 0、六类诊断全 0；`ctest -j1` **69/69, 0 failed**（99.96s） |
+
+**结论**：Linux 的 UNVERIFIED 状态此前是**假 UNVERIFIED**——不是"环境缺失"，而是
+"验证工具坏着 + 认证了错误配置"。现已用真实证据替代。
+
+**教训（discover 例 45）**
+- 验证工具本身必须被验证（"故意改坏 → gate 是否真的失败"演练）。
+- 可选后端默认 OFF 时，gate 必须显式打开，否则测试被 `#if` 静默编译掉。
+- `core.autocrlf=true` 的仓库必须有 `.gitattributes` 钉 `*.sh` 为 `eol=lf`。
+- **0.01 秒"通过"是可疑信号**：含 TLS 握手的套件瞬间通过，应怀疑"没跑"。

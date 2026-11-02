@@ -662,3 +662,26 @@ gate 用 `-DCMAKE_BUILD_TYPE=Debug`，而 `view_scale_benchmark_budget` 预算�
 ### 教训（discover 例 44）
 UNVERIFIED 必须定期重试；"非本批引入"只影响归因，不豁免修复；MSVC 全绿 ≠ GCC 全绿。
 注意：`ctest` 与 WSL gate 并行跑会造成 `desktop_gdi` 伪红，必须独占复跑核实。
+## 第873轮：Linux gate 的 gate —— 工具自己坏了 + 认证错配置（批34）
+### 两层发现
+1. `scripts/linux-build-gate.sh` 被 `core.autocrlf=true` 检出为 CRLF →
+   bash `$'\r': command not found` → **gate 在 Linux 上根本起不来**。
+2. gate 用 `RTSC_TLS_OPENSSL` 默认 **OFF** 构建 ⇒ OpenSSL 后端从未编译，
+   P0 用例 `tls_server_regression_coalesced_first_record_no_stall` 被 `#if` 守卫掉，
+   Linux `server_security` **0.01s "通过"**，只跑 7 tests/45 checks。
+### 修复（`36430c1`）
+- gate 显式 `-DRTSC_TLS_OPENSSL=ON`
+- 新增 `.gitattributes`（`*.sh text eol=lf`）+ `git add --renormalize`
+### 验证
+| 配置 | 结果 |
+|---|---|
+| gate + OpenSSL ON | `LINUX GATE PASS`，**68/68**；`server_security` **8/67**；P0 用例 `[ OK ]` |
+| gate 默认（OFF） | 构建 0 失败；`server_security` 7/45 全过（设计性降级，非删测试） |
+| `.gitattributes` 生效 | 删后 `git checkout` → CR 字节 **0**，`file` 报纯 ASCII |
+| Windows | 构建 0/0 六类诊断 0；`ctest -j1` **69/69**（99.96s） |
+### 教训（discover 例 45）
+验证工具本身要被验证；默认 OFF 的可选后端必须由 gate 显式打开；
+CRLF 是跨平台验证的隐形杀手；0.01 秒"通过"是可疑信号。
+### 调度
+审计 X/Y 因上游 UnknownError 中断（idle 未终结），已按调度条款 prompt 恢复，
+审计对象扩展为批 32/33/34。

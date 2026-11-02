@@ -646,3 +646,44 @@ Release 实测值 ×3 设定 ⇒ Debug 下必然超预算（最慢 256ms / 预�
 - **"非本批引入"只影响归因，不影响是否要修**：它阻塞验证 → 就必须处理或明确挂起。
 - **平台差异要跑真工具**：MSVC 全绿 ≠ GCC 全绿；`-Werror` 集合不同。
 - 看到 `FAILED_COUNT=N` 要逐个看 N 个目标的全部 error，不能只读第一条。
+## 第873轮：验证工具自己坏了，于是"验证"变成"认证一个没人发布的配置"（例 45）
+
+### 症状（两层）
+**第一层**：`scripts/linux-build-gate.sh` 被 `core.autocrlf=true` 检出为 CRLF，
+bash 执行报 `$'\r': command not found`、`set: usage: ...`、`syntax error near unexpected token`。
+⇒ 该脚本在 Linux 上**根本无法启动**。
+
+**第二层**：gate 能跑起来之后（含 CRLF 修复前偶然成功的那次），它用默认配置
+（`RTSC_TLS_OPENSSL` **OFF**）构建。于是：
+- OpenSSL TLS 后端**从未被编译**；
+- `tests/test_server_security.cpp` 的 P0 回归用例
+  `tls_server_regression_coalesced_first_record_no_stall` 被 `#if` 守卫掉；
+- Linux 上 `server_security` **0.01 秒"通过"**，只跑 7 tests / 45 checks
+  （开 OpenSSL 后是 8 tests / 67 checks）。
+
+### 根因
+把"gate 退出码 0"当成"Linux 构建可用"。但 gate 的**配置**决定了它证明什么：
+`RTSC_TLS_OPENSSL` 默认 OFF（design-a D5：REQUIRED `find_package` 会破坏无 OpenSSL 主机的配置），
+于是 gate 认证的是一个**没有任何人会发布**的配置；而它自己又因 CRLF 长期起不来。
+
+### 证据
+- `[BASH: file scripts/linux-build-gate.sh]` → `ASCII text executable, with CRLF line terminators`
+- `[BASH: wsl bash gate]` → `line 29: $'\r': command not found`（EXIT=2，ENV 失败）
+- `[BASH: gate 默认配置]` → `LINUX GATE PASS` 但 `server_security` `Passed 0.01 sec`
+- `[BASH: gate -DRTSC_TLS_OPENSSL=ON]` → `LINUX GATE PASS`，**68/68**，
+  `server_security` **8 tests / 67 checks**，P0 用例输出 `[ OK ] tls_server_regression_...`
+- `[BASH: 默认配置 OFF 重跑]` → 构建 0 失败，`server_security` 7/45 全过（守卫是设计性降级）
+
+### 修复
+1. gate 显式 `-DRTSC_TLS_OPENSSL=ON`（gate 的职责是证明构建可用；缺工具链已由 env 契约 FAIL）。
+2. 新增 `.gitattributes`：`*.sh text eol=lf`，并 `git add --renormalize` 两个 `.sh`。
+
+### 教训（例 45）
+- **验证工具本身也要被验证**：先问"这个 gate 在它声称覆盖的配置下，真的会红吗？"
+  至少做一次"故意改坏 → 确认 gate 失败"的演练。
+- **默认选项决定 gate 证明了什么**：可选后端默认 OFF 时，gate 必须显式打开它，
+  否则测试会被 `#if` 静默编译掉，"通过"只是"没跑"。
+- **CRLF 是跨平台验证的隐形杀手**：`core.autocrlf=true` 的仓库必须有 `.gitattributes`
+  把 `*.sh` 钉成 `eol=lf`。
+- **0.01 秒"通过"是可疑信号**：一个包含联网/TLS 握手的测试套件不该瞬间通过，
+  耗时异常短要当成"可能没执行"的证据去查。
