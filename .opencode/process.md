@@ -989,3 +989,22 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 4) J-3b `store(true)` 与 `cv_.wait` 之间的 lost-wakeup 面
 ### 子代理
 批 19 已 delete 解散。
+## 第840轮：批 20（几何 origin/虚拟桌面）设计审计 M 已派
+### 主代理取证（[BASH: Select-String / Get-Content]）
+- `InjectGeometry`（`desktop_input.h:31-34`）只有 `width/height`，**无 origin、无虚拟桌面范围**
+- 服务端填的是**协商并钳制后**的 framebuffer（`server.cpp:1324`），与捕获矩形无关联
+- `BuildNative` 恒发 `MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK`（`win32.cpp:518-522`）
+- 捕获侧 `MakeGdiDesktopSource(monitor_index, x, y, width, height)`（`desktop_gdi.h:40-42`）支持单显示器 + 子矩形，并缩放到协商几何
+⇒ `--monitor N` 或子矩形时，客户端坐标以"捕获矩形"为域、注入按"整个虚拟桌面"归一化 → **指针整体偏移/缩放错**
+### 设计定案审计 `ses_e664d2035ffev3TAIwV4TuCE9J`
+要求产出（`docs/spec/input-geometry-design-M.md`，不写代码）：
+1) 完整映射公式（含取整）+ `MOUSEINPUT` 原文 + 至少一个成熟实现对照 + "分母是宽-1 还是宽"的判定
+2) `InjectGeometry` 最小充分字段集与各字段来源
+3) `DesktopSource` 取值方案三选一
+4) ≥4 个变异点
+5) 逐位数值例子（含 `--monitor -1` 默认是否已正确）
+### 范围已写入 `plan.md`「批 20 范围」
+- 先定案再实现；TDD 覆盖 1:1 / 2x / origin 非零 / 多屏虚拟桌面
+- `--monitor N` 真机落点仍 UNVERIFIED
+### 在途
+审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验，重点 UAF）+ 设计审计 M
