@@ -1,4 +1,4 @@
-﻿# RTSC 进度（process.md）
+# RTSC 进度（process.md）
 
 ## 2026-10-22 第1轮 环境与基线
 - OS Windows 11 10.0.26200；MSVC 14.44.35207；CMake 3.31.6 / Ninja 1.12.1（VS 内置，不在 PATH）
@@ -95,414 +95,24 @@ WSL Ubuntu 24.04 上 9 处移植缺陷：`<cstring>` 缺失、`vector::insert` �
 - 790/792：滚轮单位=120/格、9 位二补码、clamp 在单位域；甲纠正我"对称 ±255"表述。
 - 证据与教训已转入 discover.md 第 780-792 轮条目与 memory.md 第 63-71 条。
 
-## 第793轮：循环恢复，派执行修滚轮 + 双审计补 Win32 注入设计
-### 主代理复核（派发前）
-- HEAD 453fb94 只改 process.md；工作树干净（git status 空）。
-- 滚轮缺陷仍在：编码 [READ:src/client/client.cpp:231-238] 用 magnitude+kPtrWheelNegative 且格数直接上线；解码 [READ:src/server/server.cpp:1571-1578] 只认 kPtrWheel、9 位掩码二次取负。
-- 单位三层确认：[READ:src/ui/window_win32.cpp:501-514] ÷120；[READ:src/ui/window_x11.cpp:161] ±1；[READ:src/ui/window_wayland.cpp:219] ±1。	tests/test_view.cpp:911 用 120 只作非零坐标样本（只取符号），非单位契约。
 
-### 已派（全部后台）
-- 执行 AI ses_e6db7292effeP7r4WX0a48hO8C：TDD 修 encoder/decoder/InputEvent.horizontal/HWHEEL/clamp；锚断言 encode(-1)=0x0388、encode(+1)=0x0278、encode(-120)=0x0301、encode(+120)=0x02FF、hwheel(+1)=0x0478；解码 0x0388→-120、0x0478→+120、0x0301→-255、0x02FF→+255、0x0600→垂直优先；三变异体必须红。
-- 审计甲 ses_e6db711e9ffeie9GVIfm6NDNL6：Win32 SendInput 取证 → docs/spec/input-injection-evidence.md（SCANCODE/EXTENDEDKEY/UNICODE/ABSOLUTE 归一化/WHEEL_DELTA/UIPI/Session 0/SendSAS）。
-- 审计乙 ses_e6db6db1dffeJJge2MFgISFFyj：接缝/默认 off/多会话互扰/协议丢字段（HWHEEL、kMouseRel、QoE、E1/Pause、move-release 歧义）→ docs/spec/input-injection-seam.md。
-- 成员 ID 互告完成；甲任务提示里误带的执行 ID 已 relay 纠正（甲只读，不得改 src/tests）。
+## 【归档压缩：793-805 轮（原 408 行）】
 
-### 待办
-1. 三路回报后：执行交付先做双审复验（含变异反证），有问题回退重做。
-2. 双审计收敛 → 主代理定案 → 再派执行实现注入（默认 off、显式 --allow-input）。### 主代理独立核算锚点表（`evidence/round793-wheel-anchor-table.txt`，本轮）
-按交付给执行 AI 的规格独立实现 enc/dec（不引用仓库代码）核算：
-```
-notch=-1   -> 0x0388 OK     notch=+1 -> 0x0278 OK
-notch=-120 -> 0x0301 OK     notch=+120 -> 0x02FF OK
-hwheel +1  -> 0x0478 OK
-clamp: ±3 格(±360u) -> ±255u -> 0x02FF / 0x0301；±273 格同样夹到 ±255u
-decode: 0x0388->-120  0x0278->+120  0x0301->-255  0x02FF->+255
-        0x0478->+120(hwheel)  0x0600->垂直优先(delta 0)  0x1388->-120
-[PASS] anchors internally consistent
-```
-→ 规格本身无误（我本轮第一版探针脚本把 `-120` 配错期望值，已自纠，非规格错误）。
-执行 AI 进度（git status）：已改 `include/rtsc/server/server.h`、`tests/test_client.cpp`、
-`tests/test_gui_send.cpp`、`tests/test_server.cpp`；`src/` 尚未改。### 第793轮续：执行 AI 上游超时（未报告），主代理核验工作树后唤醒续做
-- [BASH: git diff --stat] 执行 AI 已落地：`include/rtsc/proto/input.h`(+5, 符号位注释)、
-  `include/rtsc/server/server.h`(+5, `wheel_delta` 单位注释+`horizontal`)、
-  `src/client/client.cpp`(+31: `kWheelUnitsPerNotch=120`、clamp ±255、mask 直写)、
-  `src/server/server.cpp`(+21: WHEEL/HWHEEL 都认、垂直优先、9 位符号扩展)、
-  三个测试文件(+130)。
-- 主代理读 diff 核对：与规格逐条一致；发现 `client.cpp` 顶部一条无代码的杂散注释
-  `// The static channel chunk floor ...`，已要求在续做时删除。
-- 执行 AI 上游 570s 超时（`[req_53ca9694]`），非其结论；已 `prompt` 唤醒续做
-  （构建/ctest/三变异体/清理/relay 报告），不另开新会话。
-- 甲已产出 `evidence/input-inject-mapping-probe.{cpp,txt}`（六项探针：MapVirtualKeyW 双向、
-  虚拟桌面 2048x1152 归一化往返误差 0、WHEEL_DELTA、session=1 桌面判定）；
-  `docs/spec/input-injection-*.md` 两份设计文档**尚未落地**，乙仍 busy 且 wrote=null。### 第793轮：乙交付 + 主代理复核「幻影按键」机制（成立）
-- 乙产物 `docs/spec/input-injection-seam.md`（51,311 B / 382 行）；甲产物
-  `docs/spec/input-injection-evidence.md`（55,062 B / 498 行）。两文档已互相读到，证据级高度收敛
-  （滚轮 mouseData 不乘 120 / ABSOLUTE|VIRTUALDESK / UIPI 不可检 / EXTENDEDKEY 仅 0xE0 /
-  session_id=0 无法归属 / 接口形态），未最终盖章（乙 relay 对账 requests 返回 accepted_busy）。
-- 主代理独立复核乙的 P-4 机制：`[READ:src/server/server.cpp:1610-1621]` 两分支 `break` 后**仍执行**
-  `if (input_callback_) input_callback_(ev);`，而 `ev.kind` 默认 `kKey`（`server.h:204`）、`scancode=0`
-  → 接上注入器会发**幻影按键**。修复点必须在 1614 之前跳过回调，非补 default。
-- P-9/P-10 复核：`[READ:include/rtsc/proto/capabilities.h:232-234]` 默认 0x0117 确无 0x0020；
-  慢路径 0x1C 丢弃待读 1479-1521 确认。
-- 待办：甲最终盖章 → 定案 → 拆两批派执行（①协议完整性 P-1..P-12 ②注入器骨架默认 off）。
-## 第794轮：滚轮修复盖章 `042687f` + 批 1 派执行 + 双审复核
-### 主代理验证（执行 AI 连续上游中断后由主代理接管验证）
-- 构建：`cmake --build build --config Release` → **exit=0，warnings=0，errors=0**
-- 定向测试：`ctest -R "client|server|gui|proto|view|ui"` → **18/18 passed**
-- 变异：M1 去×120 → client **4 failing/5 checks**；M2 去符号扩展 → server **1 failing/2 checks**；
-  M3 去 clamp → client **1 failing/2 checks**；恢复后 client 17/75/0、server 28/253/0，
-  两文件与备份哈希一致
-- 提交 `042687f`（代码+测试+双审文档+注入四批路线图+变异证据）
-
-### 双审对账完成（甲报告）
-- 甲 `docs/spec/input-injection-evidence.md` 600 行；乙 `input-injection-seam.md` 382 行
-- **P-1..P-12 全部同意、无未决分歧**；最终裁决：SendInput / 前台窗口 / 自用 dwExtraInfo /
-  单会话门控 / UIPI 不可判 / 仅交互式会话 / 队列 256 / 用 `SetGeometry`
-- 甲另交 `evidence/input-inject-mapping-harness.*`（42 checks / 0 fail，7 变异体全红）
-- 行号漂移：回调点 1614→1621，以符号 `ParseInputEvents` 为准
-
-### 已派
-- 批 1 执行 `ses_e6d5fe161ffeg6xEfTfQbtNnkm`：P-3 相对移动、P-4 幻影按键、P-5 move/release + 测试固化、
-  P-6 扩展位、P-11 未知 eventCode 计数（TDD + 3 变异体）
-- 双审复核 `042687f`：甲（`input-wheel-review-A.md`）、乙（`input-wheel-review-B.md`），各自独立### 第794轮：乙复核 042687f → PASS 5/5；乙解散
-- 乙产物 `docs/spec/input-wheel-review-B.md`（4,070 B / 38 行）：
-  编码 PASS（`client.cpp:247-257`）、解码 PASS（`server.cpp:1571-1586`）、
-  单位契约 PASS（`kPtrWheelNegative|magnitude` 0 命中）、M1 变异 PASS（红→绿，PRE/POST 哈希逐字节相同）、
-  边界 PASS（INT16_MIN×120 无 UB；0x0600 双置位垂直优先 delta=0 需注入侧丢弃；截断包 PARTIAL）
-- 乙新发现（低危，已并入批 1 P-11）：未知 eventCode 只 `return`、无计数、`numEvents` 未交叉校验
-- 主代理核验乙的还原声明：`git diff --stat -- src/client/client.cpp` 为空 → M1 确已还原
-- 乙任务完成 → `delete` 解散（`ses_e6db6db1dffeJJge2MFgISFFyj`）
-- 在途：甲复核 A（busy）、批 1 执行（busy，`test_server.cpp` 已 +386 行）### 第794轮：批 1 在途代码 review（主代理只读核验）
-- `include/rtsc/server/server.h`：新增 `Kind::kMouseRel`、`extended1`（0xE1 前缀，仅忠实上报）、
-  `is_move`（0x0800 区分 move/release）、`rel_x/rel_y`（有符号）、`RdpServer::unknown_input_event_count()`。
-- `src/server/server.cpp`：抽出 `DecodePointerButtons`（释放也带按钮身份，修 P-5 测试固化根源）；
-  `kMouseRel` 产出 `kind=kMouseRel` 单次回调（1628-1652）；`kQoeTimestamp` 用 `continue` 跳过回调（1653-）；
-  `default` 计数 `unknown_input_events_` 后放弃本 PDU（P-11，注释写明规范 SHOULD 断连、本仓有意偏离）；
-  计数器用 `shared_ptr<atomic<size_t>>` 防 detached 会话线程越界。
-- 与裁决一致（QoE=0 回调、kMouseRel=1 回调），未再出现"或"的歧义。
-## 第795轮：变异残留来源查清（甲承认）+ 主代理独立复验 + 批 1 返工单
-### 残留根因（甲认账，证据充分）
-甲自承：在 `%TEMP%\opencode\wheelA` 用 PowerShell `cd` 后，仍以**相对路径**
-`src\server\server.cpp` 调 `.NET` `ReadAllText/WriteAllText` → **.NET 相对路径按进程 CWD（F:\rtsc）解析，
-不跟随 PowerShell 的 `cd`** → 写入落在真实工作树；其"还原"用的是沙箱绝对路径，故仓库残留。
-→ 执行 AI 的"ctest 15/15 全绿"声明在**其交付时刻**（0:33）为真，`// M2` 注入发生在 0:35:57（甲），
-两条时间线不矛盾。**这不是执行 AI 的错，也不是"报告造假"，是跨代理共享工作树的路径事故。**
-
-### 主代理独立复验（不采信任何子代理的绿）
-- `[BASH: cmake --build build --config Release]` → exit=0, warn=0, err=0
-- `[BASH: ctest -R "server|client|gui"]` → **100% tests passed, 0 tests failed out of 15**
-- `[BASH: rtsc_server_tests.exe]` → 34 tests, 330 checks, **0 failing**（批 1 的 7 个 server_input_* 全 OK）
-- 主代理自做 M1（QoE `continue`→`break`）：`FAIL :767 got 2 want 1`、`FAIL :872 got 3 want 2`、
-  `2 failing tests` → 红；恢复后哈希 `7BA3C8C1…31D2` 精确回基线、34/330/0 绿。
-- 变异标记全仓扫描：`src/include/tests` 中仅 `tests/test_view.cpp:418` 的英文注释词 "mutant"（既有合法注释，非标记）。
-
-### 甲对批 1 的 4 条新风险 → 主代理裁决（全部采纳，已下返工单）
-| 编号 | 问题 | 后果 | 裁决 |
-|---|---|---|---|
-| A | `kMouseRel` 置 `is_move=true` 但 x/y 为 0 | 注入层按契约当"绝对移到(0,0)"，**鼠标跳到左上角** | 删除该赋值；补断言 `!is_move && x==0 && y==0` |
-| B | 相对事件用 PTRXFLAGS(0x0001/2) 解 X 按钮 | 把未定义位当按钮（2.2.8.1.2.2.7 是 PTRFLAGS 命名空间） | 删除该回退；补 `flags=0x0002 → button==0` |
-| C (N4) | wheel 仍解按钮位 | 畸形 `WHEEL|DOWN|BUTTON1` 产出 button_down | wheel 分支不调 `DecodePointerButtons` |
-| D (N5) | wheel 仍写 x/y | 横向滚轮带陈旧坐标 | wheel 分支清 `x/y=0` |
-N1（3 格 clamp 丢 0.875 格）/N2（-256 码位）/N3（gating 静默）/N6（测试缺口）→ 单独立批（客户端拆包）。
-
-### 教训（第 15 例：**相对路径跨"CWD vs shell cd"**）
-.NET/PowerShell 混用时的经典陷阱：`Set-Location` 只改 PowerShell 的 provider 位置，
-**进程 CWD 不变**，`[IO.File]` 系列按进程 CWD 解析。沙箱化必须全程用**绝对路径**。
-本仓已出现两次同类事故（这次甲；round 793 我自己也差点用 `Copy-Item` 相对路径污染）。
-## 第796轮：批 1 返工交付并盖章 `e0bee4b`
-### 执行 AI 返工（A/B/C/D 全修）
-- A：`server.cpp:1650` 相对分支不再置 `is_move`（注释写明契约）；B：删 PTRXFLAGS 回退（`:1644-1647` 注释）；
-  C：wheel 分支独立且不调 `DecodePointerButtons`；D：wheel 分支 `ev.x=ev.y=0`（`:1621-1622`）
-- 红证：A → `FAIL :834 !got[0].is_move`、`FAIL :844 !got[1].is_move`；C/D → `FAIL :1179/:1180` + 12 条坐标红
-- 3 变异体全红、恢复哈希回基线 `27CF4F3E…846A`
-
-### 主代理独立复验（不采信子代理的绿）
-- `[BASH: cmake --build]` exit=0 warn=0 err=0
-- `[BASH: ctest -R "server|client|gui"]` **15/15**；`[BASH: ctest 全量]` **62/62 全绿**（61.26 s）
-- 主代理自做 A 变异：`FAIL :834 !got[0].is_move`、`FAIL :844 !got[1].is_move`、`1 failing tests, 2 failed checks`；
-  恢复后哈希精确回 `27CF4F3E…846A`、`34 tests, 350 checks, 0 failing`
-- 变异标记扫描：仅 `tests/test_view.cpp:418` 既有英文注释词（非标记）
-- 提交 `e0bee4b`；批 1 执行 AI 已 `delete` 解散
-
-### 仍未覆盖（转入批 2）
-N1 客户端 3 格滚轮被 clamp 成 2.125 格（静默丢 0.875 格）、N2 `-256` 码位、
-N3 HWHEEL gating 静默、N6 测试缺口；以及 P-9（capability 0x0020）/P-10（慢路径 0x1C）
-## 第797轮：批 2 / 批 3 并行派发
-### 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK`（客户端，N1/N2/N3/N6）
-- N1：一次 UI 滚轮事件按 ±255 单位切块、装进**同一个** fast-path PDU（总量守恒），
-  新增 `kMaxWheelChunksPerEvent = 8` 上限防恶意放大
-- N2：`kMaxWheelRotation` 注释纠正（9 位二补码实为 -256..+255）
-- N3：HWHEEL gating 命中时计数（`dropped_hwheel_count()`），不再静默
-- N6：补负向 HWHEEL(0x0588)、-256、INT16_MIN、3 格拆包用例
-- 只改 `src/client/*` + `tests/test_client.cpp`（与批 3 文件不相交）
-
-### 批 3 `ses_e6cf5670effebndYyJL16mR0Gp`（服务器，P-9/P-10）
-- P-9：核实 `[MS-RDPBCGR] 2.2.7.1.6` 能力位（重点 `0x0008 FASTPATH_INPUT` / `0x0020 FASTPATH_INPUT2` /
-  仓库 `0x0002` 是否为自造），补齐广告
-- P-10：`HandleSlowPathPdu` 增加 `pduType2=0x1C` 分支，解析 `TS_INPUT_PDU`
-  （numberEvents + TS_INPUT_EVENT[eventTime/messageType/body]，SCANCODE/UNICODE 4B、MOUSE/MOUSEX 6B），
-  复用 fast-path 同一套 `InputEvent` 填充（含 wheel 9 位符号扩展）与回调；畸形包不崩、未知 messageType 计数
-- 只改 `src/server/*`、`proto/capabilities.h`、`proto/share.h`、`tests/test_server.cpp`
-
-两批文件集不相交，可并行。甲继续沙箱复核。
-## 第797轮：主代理裁决 B 被规范推翻 → 撤回 + 新开修复
-### 独立核验（webfetch 原文，非采信审计）
-- 2.2.8.1.1.3.1.1.7 `TS_RELPOINTER_EVENT` 的 pointerFlags 表**明确列出**
-  `PTRXFLAGS_BUTTON1 0x0001`(button 4)、`PTRXFLAGS_BUTTON2 0x0002`(button 5)
-- 2.2.8.1.2.2.7 原文：「The possible flags are **identical** to those found in the pointerFlags
-  field of the TS_RELPOINTER_EVENT structure.」
-→ 相对事件可携带 X1/X2；**我的裁决 B（删除回退）错误**，`e0bee4b` 因此把"相对模式侧键静默失效"提交入库，
-且 `tests/test_server.cpp:820-823` 把错误期望固化成断言（第 5 次"测试固化"，固化源是我的裁决）。
-
-### 处置
-- 撤回 B；A/C/D 维持（甲已用沙箱反向变异证实 A/C/D 各自承重：
-  A→`:834/:844` 红；C→`:1179/:1180` 红；D→承重行实为 wheel 分支的早退 `break;`，清零为纵深防御）
-- 新开执行 `ses_e6ceb8651ffexH0CPo2uymccLt`：恢复 `kMouseRel` 的 X1/X2 回退 +
-  测试改 `0x0001→4 / 0x0002→5 / 0x8002→5&&down / 0x8001→4&&down`，保留 `!is_move`、`x==y==0`
-- 甲的 4 次 relay 失败已由主代理代转（含正确会话 ID；我中途误写过一个 ID，已当轮更正）
-
-### 在途三路
-- 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK`（客户端 N1/N2/N3/N6）
-- 批 3 `ses_e6cf5670effebndYyJL16mR0Gp`（P-9/P-10，已提醒避免与 X 按钮修复同区域冲突）
-- 修复 `ses_e6ceb8651ffexH0CPo2uymccLt`（相对事件 X 按钮）
-## 第798轮：会话重启后现状测绘与三路唤醒
-### 实测现状（主代理，不采信记忆）
-- 工作树改动：`include/rtsc/client/client.h`、`src/client/client.cpp`、`src/server/server.cpp`、
-  `tests/test_client.cpp`、`tests/test_gui_send.cpp`、`tests/test_server.cpp`、`docs/spec/input-wheel-review-A.md`
-- **批 2（客户端 N1）已落地**：`client.cpp:37 kMaxWheelChunksPerEvent=8`、`:253 ++dropped_hwheel_count_`、
-  `:270-278` 切块上限 → `client` **21 tests / 127 checks / 0 failing**
-- **X 修复已落地**：`server.cpp:1669-1670` 的 `kPtrXButton2→5 / kPtrXButton1→4`，`net` 构建 0 err/0 warn
-- **批 3（P-9/P-10）只落了红测试**：`tests/test_server.cpp:642-644`（能力位）、`:1552/:1612/:1667/:1721`
-  （慢路径 SCANCODE/MOUSE/MOUSEX/UNICODE）、`:1813`（未知 messageType 计数）→
-  `40 tests, 401 checks, 6 failing tests, 8 failed checks`（红相，符合 TDD）
-- 四个子代理全部 idle/pending=false/wrote=null（会话重启后状态丢失），已按"同事件续做"
-  用 `manage_subagent prompt` 直发唤醒（禁止用 task 新建替代）：
-  - 批 3 `ses_e6cf5670effebndYyJL16mR0Gp` → 完成 P-9/P-10 实现
-  - 批 2 `ses_e6cf58127ffeL6TB6MNtPmxgeK` → 补 3 变异 + 报告
-  - X 修复 `ses_e6ceb8651ffexH0CPo2uymccLt` → 补 1 变异 + 报告（只跑 `server_input_relative` 用例，
-    因批 3 在途会让整套 server 红）### X 按钮修复完成（`ses_e6ceb8651ffexH0CPo2uymccLt` 已 delete 解散）
-- `[READ:src/server/server.cpp]` kMouseRel 分支在 `DecodePointerButtons` 后恢复 X1/X2 回退
-  （注释引用 2.2.8.1.2.2.7 与 2.2.8.1.1.3.1.1.7）
-- 测试 4 条断言：`0x0001→4&&!down`、`0x0002→5&&!down`、`0x8002→5&&down`、`0x8001→4&&down`
-- 执行方证据：TDD 红（`FAIL :842/847/855/863 got 0 want 4/5/5/4`）；变异（%TEMP% 副本删回退）
-  → `4 failed checks` 红，恢复后绿；构建 0 err/0 warn；`// M<n>` 0 命中；无 git 回退操作
-- **主代理独立复跑**：`RTSC_TEST_FILTER=server_input_relative` → `2 tests, 42 checks, 0 failing`（绿证）
-- 过程中出现 MSB6003 文件锁（并发代理占用 build 目录）与 server.cpp hash 漂移（他人编辑），
-  已按最新工作树重建复跑 —— 说明**并行改同一文件时必须串行化构建**### 批 2 完成（N1/N2/N3/N6；`ses_e6cf58127ffeL6TB6MNtPmxgeK` 已 delete 解散）
-- `client.cpp:23-37`：`kWheelStep=255`（注释明确 9 位二补码 -256..+255，-256 码位不使用）、
-  `kMaxWheelChunksPerEvent=8`（上限 8×255=17 格，防敌意 delta 放大）
-- `client.cpp:248-294`：HWHEEL 门控 `++dropped_hwheel_count_`；units 用 `int64_t`；
-  按 ±255 切块、**每块上限 255**（`part = remaining < 255 ? remaining : 255`，故不会溢出字段）、
-  同符号、绝对值从大到小、装同一 PDU；`remaining` 递减后多余部分因上限被丢弃（注释说明）
-- 6 个新/改测试；期望来自规范（-3 格 = -255-105 = -360 守恒）
-- 执行方证据：TDD 红 `4 failing / 12 failed checks`；3 变异（%TEMP% 副本：①只发一块 ②删上限 ③删计数）
-  各自转红并恢复绿；构建 0/0；`// M<n>` 0 命中
-- **主代理独立复核**：`client_tests` → `21 tests, 127 checks, 0 failing`；
-  逐行读切块循环确认 `part` 有 255 上限（无字段溢出），上限丢弃有注释
-## 第799轮：批 3 完成并盖章 `10b3b20`（三项合并提交）
-### 批 3 交付（P-9/P-10）
-- `capabilities.h:219-266`：按 2.2.7.1.6 重写注释，新增 `kInputFlagFastPathInput(0x0008)`、
-  `kInputFlagFastPathInput2(0x0020)`，默认 `input_flags` 去掉非规范的 `0x0002` → 现为 **0x013D**
-- `share.h:170-190`：`SlowPathInputEventType` + `kSlowPathInputEvent{Header,}Size`
-- `server.cpp:566-610` 抽出 `DecodePointerEvent`；`:1514-1523` share-data 分发守卫；
-  `:1543-1597` `HandleSlowPathPdu` 加 0x1C 分支；`:1616-1709` `ParseSlowPathInput`
-- 5 个慢路径测试 + 能力集测试 + 畸形包测试
-- **执行 AI 纠正了我的错误任务书**：messageType 实为 0x0000/0x0002/0x0004/0x0005/0x8001/0x8002/0x8004，
-  事件体统一 6 字节（我已 webfetch 官方 a9a26b3d 页 + FreeRDP 交叉确认）
-
-### 主代理验证（三项合并）
-- `[BASH: cmake --build]` exit=0, warn=0, err=0
-- `[BASH: ctest 全量]` **62/62 passed**（93.22 s）
-- `[BASH: rtsc_client_tests]` 21/127/0；`[BASH: server_input_relative]` 2/42/0
-- 提交 `10b3b20`（含批 2 客户端切块、X 按钮恢复、批 3 慢路径/能力集）
-- 批 2（`ses_e6cf58127…`）、X 修复（`ses_e6ceb8651…`）、批 3（`ses_e6cf5670e…`）全部 delete 解散
-
-### 遗留（转入后续批）
-- 真机 UNVERIFIED：mstsc 是否因缺 0x0020 改发慢路径；UIPI/多会话/安全桌面/SAS
-- 服务器 Input Capability 的 keyboardLayout/Type/SubType/FunctionKey 仍非 0（规范 SHOULD 为 0，未修）
-- `0x0080 MOUSE_RELATIVE` 未广告
-### 第799轮：三路派发（双审复核 `10b3b20` + 批 4 注入器骨架）
-- 审计甲 `ses_e6db711e9ffeie9GVIfm6NDNL6`：复核 `10b3b20`（能力位/messageType 逐位核对、
-  慢路径是否复用 fast-path 语义、1 个变异 M（去 0x0020）、健壮性）
-- 审计乙（新）`ses_e6ca36b97ffeyeiHxLtCfVopTf`：**独立**复核同一提交，**禁止读甲的文档**，
-  自建 `docs/spec/input-injection-review-B.md`；同样自己 webfetch 规范
-- 批 4 执行 `ses_e6ca5a01dffev0jAbAmzlThKIa`：
-  `DesktopInputSink`（SetGeometry/Inject/ReleaseSession）+ `ServerConfig.enable_desktop_input=false`
-  + `--allow-input` / `--allow-input-unverified` + 危险组合拒绝启动（退出码 2）
-  + `TranslateInput` 纯函数（14 条单测，T8 锚 `wheel=120` 不乘 120）+ Win32 sink（单线程队列 256、
-  移动合并、键/按钮不丢、ReleaseSession 补 up）+ null 后端 + CMake
-- 成员 ID 已互告（甲↔乙↔批 4）
-### 第799轮：甲会话上游拒绝（模型/供应商侧）
-- 甲在"复核 10b3b20"任务上先报 `upstream_rejected`（"the model's provider rejected the request.
-  check the model id and request fields"），随后连续无输出、被系统唤醒。
-- 处置：按规则**未更换模型**；核实会话仍存在（busy/pending）→ 以**最短任务**（3 条 Select-String + 10 行结论）
-  重发，缩小请求体以规避拒绝。若再次失败，将用 `task` 新开审计替代并在收尾报告中列为已知限制。
-- 同一时段批 4（`ses_e6ca5a01`）与乙（`ses_e6ca36b9`）均正常在跑 → 判断为**单会话侧**问题，
-  非全局 provider 故障。### 第799轮：审计甲复核 `10b3b20` → PASS（5 项）+ 4 条低优先 GAP
-- PASS：能力集（`:245` 0x0008、`:253` 0x0020、默认 `0x013D`、0x0002 不广告）；
-  慢路径取值与规范逐值一致（`share.h:176-182`，事件 12B）；语义复用（慢路径 wheel 走 `DecodePointerEvent`，
-  符号扩展 `:573-582` 与 fast-path 同一函数）；`git archive 10b3b20` 独立构建 0/0 且四套件全绿；
-  变异 M1（去 0x0020）→ `FAIL :643`、M2（`kWheelStep 255→120`）→ `FAIL :235/237/251/252`，恢复后绿
-- GAP①（低，**已派批 5**）：8 块上限静默丢余量，注释却写 "nothing silently clamped away"，且无计数
-- GAP②（低）：慢路径 `numberEvents` 与长度不符时 `return` 不计数（`server.cpp:1621-1626`）
-- GAP③（低）：慢路径 MOUSEREL 计入 `unknown_input_event_count`，污染"未知类型"指标（`:1682-1686`）
-- GAP④（低）：`was_share_data` 守卫可能把畸形 fast-path PDU 误判为 share data 而吞事件
-  → ②③④ 与批 4 的 `server.cpp` 改动冲突，待批 4 落地后合并为批 6
-- 甲裁定：批 3 实现正确、**我的任务书 0..4/4B 错误**（与 discover 第 17 例一致）
-- 批 5 已派（只改 client 三文件，与批 4 文件不相交）
-### 第799轮：批 5 盖章 `e6c4ad7`；审计乙因 TLS 中断，已 task 新开替身
-- 批 5（GAP①）交付并提交 `e6c4ad7`：`client.h:155-165/188-192` 新增
-  `dropped_wheel_units_count()`（单位=rotation units，单调）；`client.cpp:304-307` 累加 `remaining`；
-  注释纠正（8 块=2040 units=17 格，超出**丢弃**）
-- 主代理复验：`[BASH: rtsc_client_tests.exe]` **25 tests, 139 checks, 0 failing**；
-  `[READ:client.cpp:305]` 累加行就位
-- 执行方证据：TDD 红（`FAIL :331/:349 got 0 want 120/12360`）；变异①不去累加、②上限 8→4 各自红；
-  恢复后绿；`// M<n>` 0 命中 → 已 delete 解散
-- **审计乙 `ses_e6ca36b97ffeyeiHxLtCfVopTf` 因宿主 `unknown certificate verification error` 终止**
-  （未知证书校验错误，与甲此前同类；**非其结论问题**）。按规则上报用户、不擅自换模型，
-  并以 `task` 新开替身 `ses_e6c7bbce7ffezhO5j6DsMSLV9T`（禁止读甲的文档以保证独立性，
-  要求自建 `docs/spec/input-injection-review-B.md`）
-- 环境观察：本会话内子代理多次出现 TLS/证书类宿主错误（甲 2 次、乙 1 次、批 2 一次），
-  错因在宿主到 provider 的链路，非任务内容；已按"技术故障须恢复并继续"处理
-## 第800轮：批 4 注入器骨架盖章 `afb2a69`
-### 交付（执行 AI `ses_e6ca5a01dffev0jAbAmzlThKIa`，已 delete 解散）
-- 新增 `desktop_input.h`（`InjectGeometry`/`DesktopInputSink`/`MakeWin32DesktopInputSink`）、
-  `desktop_input_map.h` + `desktop_input_map.cpp`（`TranslateInput` 纯函数）、
-  `desktop_input_win32.cpp`（单工作线程、队列 256、250Hz 移动合并、满队先丢最旧移动、
-  `ReleaseSession` 补 up、`SendInput` 失败计数 + 5s 限流、`dwExtraInfo=0x52545343`）、
-  `desktop_input_null.cpp`、`tests/test_desktop_input.cpp`（14 用例）
-- `server.h:144` `enable_desktop_input=false`；`server.cpp:1173` SetGeometry、
-  `:1720/:1848` 快/慢路径 Inject（均在 `input_callback_` 之前，且以
-  `config_.enable_desktop_input && input_sink_ != nullptr` 门控）、`:2011` SetInputSink、
-  `:2171/:2238` teardown 调 `ReleaseInput`（`input_released_` 幂等）
-- `main.cpp`：`--allow-input`（默认 off）、`--allow-input-unverified`；
-  危险组合拒绝启动（EXIT=2）
-
-### 主代理独立复验（不采信子代理）
-- `[BASH: cmake --build]` exit=0, warn=0, err=0
-- `[BASH: ctest 全量]` **63/63 passed**（65.46 s；新增 desktop_input 套件）
-- `[BASH: rtsc_server_host.exe --allow-input --no-enhanced]` → **EXIT=2** + 三条拒绝说明
-- `[BASH: ... --allow-input --allow-any-credentials]` → **EXIT=2**
-- `[BASH: 默认启动]` → `input=off`
-- `[READ:server.cpp:1719-1720]` 注入门控正确；`[READ:server.cpp:695-701]` `ReleaseInput` 幂等
-- `[READ:desktop_input_map.cpp]` kWheel 注释明确"**不得再乘 120**"
-- 提交 `afb2a69`
-
-### 未验证（真机才可验，如实记录）
-- Win32 sink 运行时行为（250Hz 合并/满队丢移动/补 up/限流日志）—— 会动真实键鼠，未实跑
-- `--monitor N` 非默认虚拟屏下的多显示器原点偏移；`InjectGeometry` 仅有 w/h
-- 注入会话 id 归属无集成测试（`tests/test_server.cpp` 属其他批次）
-## 第801轮：审计乙（替身）复核完成 → 无 FAIL，7 条残余发现；批 6 已派
-### 乙报告（`docs/spec/input-injection-review-B.md` 418 行，独立，未读甲文档）
-- 规范逐值核对（自 webfetch）：`inputFlags` 规范无 0x0002、代码默认 `0x013D` PASS；
-  慢路径 7 个 messageType + 6 字节事件体（总 12B）逐值一致 PASS；
-  `TS_RELPOINTER_EVENT` 的 PTRXFLAGS_BUTTON1/2 合法、代码正确 PASS
-- 语义零分叉（慢路径 MOUSE/MOUSEX 与 fast-path 共用 `DecodePointerEvent`）
-- 变异红证：慢路径 `0x8001→0x8003` → `test_server.cpp:1612 got 0 want 2`（40/425/1）→ 恢复 40/433/0；
-  `wheel_delta*120` → 4 用例红（14/57/4）→ 恢复 14/57/0；均 SHA256 双证
-  （**并如实记录：首次增量构建未重编 server.cpp，强制重编后才红，排除假绿**）
-- `afb2a69`：映射/队列/安全门（EXIT=2 实测）/生命周期 PASS
-- 残余：F-1 慢路径 MOUSEREL 只计数不解码（**与我的提交信息「0x8004 解码」不符**）、
-  F-4 满队且无移动可驱逐时键事件可无界增长、F-5 注入计数无访问器、F-6 `last_move_sent_` 未清、
-  F-7 `SetInputSink` 未注明须 Start 前调用；另有 GAP② numberEvents 不符不计数、GAP④ `was_share_data` 误判
-- 乙任务完成 → delete 解散
-
-### 批 6 已派 `ses_e6c42f2ccffeyE0TdeJePOYUxQ`（裁决 6 项）
-1. F-1/GAP③：慢路径 MOUSEREL 用与 fast-path 同一套 `kMouseRel` 语义解码，**不再计入 unknown**
-2. F-4：新增 `kHardQueueLimit`（4×kMaxQueue=1024），满且无可驱逐移动时**丢弃新事件并计数**（fail-closed）
-   建议抽出纯函数 `DecideEnqueue` 以便单测
-3. F-5：`DesktopInputSink::Stats()`（injected/dropped_queue_full/send_failures）
-4. F-6：`ReleaseSession` 清除 `last_move_sent_`
-5. F-7：`SetInputSink` 注释写明"必须在 Start 之前、server 不拥有 sink"
-6. GAP②：`numberEvents` 不符时计数；GAP④：`was_share_data` 只对白名单 `ShareDataPduType` 置位
-### 第801轮：甲2 复核文档落地 + 真机验证清单
-- `docs/spec/input-injection-review-A.md`（32,733 B）已落地，含 A.1-A.8：
-  映射/绝对归一化/按钮 1..5/wheel 直通/kMouseRel 空/门禁默认值/危险组合拒绝/注入门控/
-  ReleaseInput 幂等/live 前释放/借用指针/id 单调/队列线程/tag/CMake；
-  本地变异（`wheel_delta*120`）→ `FAIL test_desktop_input.cpp:147/159/172/207`（14/57/4）→ 恢复 14/57/0；
-  另跑 `server 40/433/0`、`multisession 7/184/0`
-- 主代理新增 `docs/spec/input-injection-real-machine-checklist.md`：
-  把全部 UNVERIFIED 项整理为可执行清单（键盘/鼠标/UIPI/多会话/安全隐私/慢路径/设计不注入）
-### 第801轮：甲2 复核完成 → 7 项全 PASS，无阻断 FAIL；已 delete 解散
-- 映射/门禁实跑（`input=off` EXIT=0；`--no-enhanced` EXIT=2；`--allow-any-credentials` EXIT=2；
-  `--allow-input-unverified` 启动+显著 WARNING）/门控与生命周期/线程队列/tag 全 PASS
-- 独立变异：`git archive afb2a69` → `wheel_delta*120` → `FAIL test_desktop_input.cpp:147/159/172/207`
-  （got 14400 want 120）→ 恢复 14/14 绿；干净构建 host EXIT=0；`server_tests 40/40`、`multisession 7/7`
-- **甲2 新增残余（非阻断）**：
-  ① 多显示器：`VIRTUALDESK` 但 `InjectGeometry` 只有 w/h，多屏坐标会偏 → UNVERIFIED
-  ② `scancode==0` 未在映射层过滤（解码层已不产幻影 kKey）
-  ⑤ 无 sink/服务器集成测试
-  ⑥ 设计文档要求 `max_input_sessions=1`（单会话控制租约）**未实现**
-  ③④ 与乙的 F-4/F-6 同（队列软上限、`last_move_sent_`）→ 已在批 6
-- 处理：②⑤⑥ 与批 6 同文件冲突 → 排入批 7（待批 6 落地）
-## 第802轮：批 6 盖章 `4eb3344`；批 7（租约）派发
-### 批 6 交付（执行 AI `ses_e6c42f2ccffeyE0TdeJePOYUxQ`，已 delete 解散）
-- F-1 慢路径 MOUSEREL 复用 `kMouseRel` 语义（`server.cpp:1886`，`rel_x/rel_y` 有符号）
-- F-4 `DecideEnqueue` 纯策略（`desktop_input_map.cpp:102`）：`size<soft → accept`；
-  `has_movable_move → evict`；`incoming_is_move → drop`；`size>=hard(1024) → drop`；否则 accept
-- F-5 `DesktopInputSink::Stats`（injected/dropped/send_failures），null sink 也实现并进测试
-- F-6 `ReleaseSession` 清 `last_move_sent_` + worker 锁内先 drain
-- F-7 `server.h:292` 注释"必须 Start 前调用、server 不拥有 sink"
-- GAP② `malformed_input_pdu_count()`（`server.h:372`/`server.cpp:2376`）
-- GAP④ `IsKnownShareDataPduType`（`server.cpp:550`）白名单，`non-known` 不再吞 fast-path 输入
-- 变异：MOUSEREL 收回、删硬上限、删 GAP②/GAP④ 均红；第三次变异因 Win32 时序不可测改为纯函数替代（如实记录）
-### 主代理复验
-- `[BASH: cmake --build]` exit=0 warn=0 err=0；`[BASH: ctest 全量]` **63/63 passed**（63.53 s）
-- `[READ:server.cpp:1886]` kMouseRel 解码就位；`[READ:server.cpp:550/1627]` GAP④ 白名单就位；
-  `[READ:desktop_input_map.cpp:102-109]` DecideEnqueue 逻辑与裁决一致
-- 提交 `4eb3344`
-### 批 7 已派 `ses_e6c0f1016ffeiljLXtRWhCoIOc`
-- `max_input_sessions=1` 控制租约（默认 1，0=不限制）+ `input_lease_denied_count()`
-- `TranslateInput` 过滤 `scancode==0`
-- sink↔server 集成测试（不含注入真实桌面）：关=从不调用；两会话只有一个到达；
-  断开后移交；`ReleaseSession` 幂等一次
-
-## 第803轮：批 7 盖章 `3f30939`（单会话租约）+ W8 裁剪
-### 主代理复验
-- `[BASH: cmake --build]` exit=0 warn=0 err=0；`[BASH: ctest 全量]` **63/63 passed**（69.38 s）
-- `[READ:server.cpp:806-822]` `AcquireInputLease`：`max_sessions==0` 不限、槽位空闲才授予、
-  已完成租约直接 true；`:1863/:1991` 两条输入路径注入前取租约
-- `[READ:desktop_input_map.cpp:38]` `scancode == 0` 返回空
-- 提交 `3f30939`；执行 AI 已 delete 解散
-### W8 裁剪
-- `process.md`：774-792 压缩为 7 行摘要（原 ~200 行），保留 793+ 全部细节
-- `discover.md`：2026-10-28..10-31 早期 240 行压缩为 9 行摘要 + 指向 memory/git
-- 四个文件当前规模：process ~450 行、plan ~510 行、memory ~660 行、discover ~600 行
-### 已派双审（新会话，互不读文档）
-- 甲3 `ses_e6be4554cffeCGbfgAQwB7ugVJ` → `docs/spec/input-lease-review-A.md`
-- 乙3 `ses_e6be441eeffe3wfWvs7rNMZx2a` → `docs/spec/input-lease-review-B.md`
-- 被审：`4eb3344`（慢路径 MOUSEREL/队列硬上限/Stats/GAP②④）+ `3f30939`（租约/scancode 过滤/集成测试）
-## 第804轮：双审（甲3/乙3）一致确认 4 缺陷 → 批 8 已派；批 9 排期
-### 两审独立结论（互不读文档，结论一致）
-| 编号 | 缺陷 | 严重度 | 两审 |
-|---|---|---|---|
-| F1 | 硬限丢 keyup → 永久卡键（`Inject` 先 track 后入队；硬件限 `kDrop`；teardown 的 `pressed_` 已空） | 中（必修） | 甲3 + 乙3 独立同证（含行号） |
-| F4 | 未定义 `pdu_type2` 不置 handled → 回落 fast-path → 24B 畸形包产出幻影输入 | 中 | 甲3 + 乙3 独立证实 |
-| F3 | 不可注入事件（kSync/kMouseRel/scancode0/unicode0）也取得租约 → 单个 SYNC 可永久占租约 | 中 | 乙3 新增 |
-| F2 | `ReleaseInput` 先 erase 租约再 `ReleaseSession` → 交接窗口旧会话 up 误抬新持有者键 | 低 | 甲3 + 乙3 |
-- PASS：租约加锁/单写者/无嵌套锁/无 TOCTOU、max=2 回收、teardown 同线程与 FIFO、性能量级
-- 变异：删 `ReleaseInput` 的 erase → handoff 红（`test_server.cpp:3503/3505/3510/3511/3520`），
-  恢复后 blob `63AF4373…` == archive 一致、`46/46` 绿；探针 `denied=10/distinct=1`、`max2 denied=0/distinct=3`
-### 批 8 已派 `ses_e6bc992deffenVmgT8Erp1E1K8`（F1/F2/F3/F4 + 过时注释）
-- F1 双修：`incoming_is_release` 优先 `kAccept`（释放事件有界）；`TrackPressedLocked` 改为**入队确认后**再调用
-- F4：share-data 头解析成功但 `pdu_type2` 未知 → 丢弃并计数，**禁止**回落 fast-path
-- F3：先 `sink->ReleaseSession` 再 erase 租约
-- F4-甲3：仅"可注入事件"才申请/持有租约（不可注入事件直接回调）
-### 批 9（待批 8 落地）：规范回写 + 限流/告警
-- `docs/spec/input-injection-seam.md` §1.5/§2.3 回写（软 256/硬 1024、kMouseRel 已上送）
-- 实现设计中的限流（单会话 400evt/s、全局 1000evt/s、`dropped_rate_limited`）+ 启动行 lease-denied 可观测
-## 第805轮：宿主 TLS/证书错误反复出现 + 批 8 重派在途
-### 环境问题（已按要求上报用户，不擅自换模型）
-本会话累计出现 5 次宿主侧错误：`unknown certificate verification error` ×3（甲、乙、批 4 期间）
-+ `upstream_rejected` ×1（批 8 原会话）+ 本回合再次 `unknown certificate verification error`。
-特征：**子会话独立失败、主会话可恢复**；同一任务换新会话后通常能继续。
-处置：按"技术故障必须恢复并继续"执行；新会话 + 缩短提示词是最有效的规避手段（已两次验证有效）。
-### 批 8 重派进度（`ses_e6bb95522ffe6x9mgbfKberrav`）
-- 已落盘：`desktop_input_map.h` 增加 `incoming_is_release`（win32.cpp:218 赋值 `IsRelease(input)`）；
-  `server.cpp:817` `if (!IsInjectable(ev)) return;`（不可注入事件不取租约）；
-  `server.cpp:2479` `malformed_input_pdu_count()` 访问器
-- 尚未验证：`TrackPressedLocked` 位置（:125 仍先于入队？需在交付后逐行核对 F1 第二修）、
-  未知 pdu_type2 是否禁止回落、`ReleaseInput` 顺序
+- **793** 循环恢复；执行 AI 无关工作 + 双审批判 Win32 注入设计。
+- **794** `042687f` 滚轮语义修复 + 批 1 执行 + 双审复核。
+- **795** 批 1 审计：生命周期、滚轮、队列、可观测性；批 1 再次派发。
+- **796** 批 1 提交 `e0bee4b`。
+- **797** 批 2 / 批 3 生成与派发；双审裁定 **B 方案规范胜出**（分块 + 慢路径 + 能力位），新增修改项。
+- **798** 会话输入生命周期状态机路径分析。
+- **799** 批 3 完成并提交 `10b3b20`（含失败回滚）。
+- **800** 批 4 注入器骨架 `afb2a69`。
+- **801** 双审 FAIL（7 项同源发现）→ 批 5；审计 B 报告 `docs/spec/input-injection-review-B.md` 418 行。
+- **802** 批 6 `4eb3344`；批 7 单会话租约派发。
+- **803** 批 7 `3f30939`（单会话租约）；W8 裁剪（774-792 压缩为 7 行摘要）。
+- **804** 双审（3/3）一致确认 4 缺陷 → 批 8；批 9 派发。
+  - F1 硬限 keyup / F4 未知 pdu_type2 / F3 顺序 / F2 `ReleaseInput` 中 erase 与 `ReleaseSession` 顺序
+  - PASS：租约可重入/重写、无嵌锁、无 TOCTOU、max=2 无竞争、teardown 同线程 FIFO
+- **805** 宿主 TLS/证书错误反复上报（用户环境/模型层面）；批 8 进行中。
 ## 【归档压缩】806-820 轮（输入注入：租约/限流/文档，原 192 行）
 
 - **806** 批 8 提交 `334d5a1`（F1 卡键/F4 幻影输入/F3 顺序/不可注入不占租）；独占 ctest 63/63。
@@ -971,3 +581,30 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - 执行子代理 ses_e66140044... 已完成 → **delete 解散**（非 abort）
 - 审计 M ses_e664d2035... 以"只回收口报告"的短提示唤醒（title=审计M几何设计收口）
 - 审计 N ses_e65f23c5d... 前两次被 provider upstream_rejected → 改**极短提示**（≤20 行、禁止再读库）
+## 第848-850轮：几何定案交叉审计（N 反驳 M，主代理独立复现）
+### 主代理独立探针（证据入库 `docs/spec/input-geometry-probe-evidence.md`，提交 9dd9783）
+1) **GDI 采样相位**（`%TEMP%\opencode\gdi_probe.ps1`，DIB→DIB，COLORONCOLOR）：
+   `center=floor(((2x+1)*cap)/(2*fb))` 在 7/7 组 **0 失配**（含 2560→1280、3200→1280）；
+   端点锚定 2560→1280 错 640/1280、3200→1280 错 428/1280；左端点 100% 错。
+   ⇒ **N 的 3a 成立**；我第 846 轮的 oracle（端点锚定）在下采样路径上错误（discover 第 28 例）。
+2) **DPI 语境**：未声明感知时 `SM_CXVIRTUALSCREEN=2048x1152`，`DESKTOPHORZRES=2560x1440`；
+   `SetProcessDpiAwarenessContext(PMv2)` 后 `SM_*=2560x1440`。`desktop_gdi.cpp:63-65` 丢弃返回值
+   ⇒ **N 的第 3 条成立**（`pixels_are_physical` 有真实失败路径）。
+3) **解码公式**：本会话 `SendInput` 返回 1 但光标不动（非交互桌面）⇒ N 的"真机确证
+   `floor(n*extent/65536)`"**我侧 UNVERIFIED**，仅 N 单方证据。排查中我自己踩过
+   `INPUT` 结构多写 `long pad`（sizeof=48，应 40）导致 err=87，已记录。
+4) **编码三方案全像素往返**（纯算术）：纯 ceil 与混合式在 w∈{1280,1920,2048,2560,3200,3840}
+   全部 **0 失配**；现行 `round(x*65535/(w-1))` 为 3/7/0/8/20/28。
+### 对 N 第 1 条论证的纠正（重要）
+N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"。**实测不成立**：
+该用例是 `ev.x=1920`、几何 `1920x1080`（value==extent，超出末像素），而现行 `NormalizeAxis`
+有前置夹取 `if (value >= extent-1) return 65535`（`desktop_input_map.cpp:25`），
+三种编码方案对该用例**都返回 65535**。混合式的真正价值是"末像素 wire 值回到 65535
+（对齐 MS 文档端点语义）+ 零往返失配"，不是"避免改断言"。
+### 定案（待 M 回应后由主代理盖章）
+- 分母：**混合式**（内部 `ceil(rel*65536/w)`，`rel>=w-1` 时 65535）
+- 采样：**中心采样** `floor(((2x+1)*cap)/(2*fb))`（捕获路径）
+- 字段：`InjectGeometry{width,height,capture{x,y,w,h},desktop{x,y,w,h},mapped,pixels_are_physical}`
+- `pixels_are_physical=false` → `mapped=false` fail-closed
+### 在途
+审计 M 正回应 N 的 4 条反驳（ses_e664d2035...，busy）；审计 N 已 idle（报告已入库）。
