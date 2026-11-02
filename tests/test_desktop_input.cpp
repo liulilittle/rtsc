@@ -1807,19 +1807,25 @@ RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
     // plain `--seconds` run (batch 27): without it the only guaranteed line
     // was the unconditional `final` one, so deleting the whole call site
     // stayed green (batch 26 F5 residual, reported OPEN).
-    const InputStats base;
+    InputStats base;
+    base.injected = 7;  // non-zero so "print current" != "print a blank snapshot"
+    base.dropped_unmapped = 5;
     const std::string first = PeriodicInputStatsLine(nullptr, base);
     CHECK(!first.empty());
     CHECK_EQ(first.compare(0, 24, "input stats (periodic): "), 0);
-
-    CHECK(PeriodicInputStatsLine(&base, base).empty());
+    // The baseline line must carry the CURRENT values: printing a default
+    // InputStats{} satisfied the prefix check but reported all zeros, so an
+    // operator would see "nothing ever injected" on a busy host. Asserting
+    // two distinct non-zero fields makes that mistake impossible.
+    CHECK(first.find("input_injected=7") != std::string::npos);
+    CHECK(first.find("input_dropped_unmapped=5") != std::string::npos);
 
     InputStats moved = base;
+    moved.injected = 8;
     moved.dropped_unmapped = 3;
     const std::string line = PeriodicInputStatsLine(&base, moved);
     CHECK(!line.empty());
     CHECK_EQ(line.compare(0, 24, "input stats (periodic): "), 0);
-    CHECK(line.find("input_dropped_unmapped=3") != std::string::npos);
     // A `final` line is a different reason and must never be mistaken for one.
     CHECK(line.find("(final)") == std::string::npos);
 

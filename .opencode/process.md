@@ -641,3 +641,16 @@ main 加 `printed_input_valid`；`host_cli_check.cmake` 加 `periodic_stats_line
 ### 又踩一次例 36
 恢复源文件后未重编，`--seconds 12` 仍报 2 行（旧变异体二进制）；重编后 1 行。
 **恢复流程必须：换源 → touch → 重编 → 验证二进制行为**，缺一步就会被旧二进制误导。
+## 第869轮：审计 W 的 D1/D2 收口（主代理自行复现）
+### D1 [中] 基线行数值未断言（假测试）
+我复现：`MUT-D1 = FormatInputStats("periodic", InputStats{})` → **68 tests/13912 checks 全绿**。
+根因：用例的 `base` 全 0，"打印当前值"与"打印默认值"逐字节相同。
+修复：`base.injected=7 + base.dropped_unmapped=5`（两个**不同**非零值），断言两个都出现在基线行。
+同一变异 → **红 :1820/:1821（2 checks）**。
+### D2 [低] checklist 把基线说成通用行为
+实测 `--once` 只走 `log_input_stats("final")`，无 periodic。已在该条补注"仅 --seconds/无界模式"。
+### D3/D4
+D3（缺 `cmake_minimum_required` 会假红）本批已加，记作已闭合；
+D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorder` 阻断，非本批引入）。
+### 验证
+构建 0/0 六类诊断 0；`ctest -j1` **69/69, 0 failed**（87.98s）；`MUT-` 残留 0。
