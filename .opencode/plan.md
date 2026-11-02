@@ -862,3 +862,47 @@ C++ 里 `// log(); // MUT-X`（注释掉的调用）、`#define X 1 /* MUT-X */`
 ### 登录的防复发机制
 `verify.ps1` 现有预检门：`git -C <repo> grep -n --untracked 'MUT-' -- src include tools tests`，
 任何命中即失败，并校验 git 退出码（1=无匹配属正常，>1=失败）。
+## 批 32/33（round 872，提交 `150a6ea` / `22876f2`）—— Linux gate 首次真正跑通
+
+### 转折点：UNVERIFIED 被当成"无需验证"
+此前多轮把 Linux 记为 UNVERIFIED（理由："被 `server.cpp` 既有 `-Werror=reorder` 阻断，非本批引入"），
+**从未实际执行过 gate**。本轮执行发现 `FAILED_COUNT=4`，实际 **5 个错误**，其中 **2 个在生产代码**。
+
+### 批 32（`150a6ea`）—— 5 个跨平台真错误
+| # | 位置 | 错误 | 修法 |
+|---|---|---|---|
+| 1 | `src/server/server.cpp:1400` | `InjectGeometry{w,h}` 只初始化前 2 成员 → `-Wmissing-field-initializers` | 改逐字段赋值（`= InjectGeometry{}` 后逐项设） |
+| 2 | `src/server/server.cpp:715` | 初始化列表顺序 ≠ 成员声明顺序 → `-Wreorder` | 按声明序重排（`input_lease_` 提到前） |
+| 3 | `tests/test_desktop_input.cpp` ×5 | 2 参聚合初始化 | 新增 `PartialGeometry(w,h)`（只设 span，`mapped` 保持 false） |
+| 4 | `tests/test_desktop_input.cpp:108` | `WaitUntil` 在非 Win32 构建未使用 → `-Wunused-function` | 用 `RTSC_DESKTOP_INPUT_TESTING` 围住定义 |
+| 5 | `tools/rtsc_server/main.cpp:593` | switch 漏 `kMouseRel` → `-Wswitch` | 补 case |
+| 6 | `tests/test_server_security.cpp` | `!defined(_WIN32)` 守卫 OpenSSL，但 `RTSC_TLS_OPENSSL` 默认 OFF → `undefined reference to SSL_*` | 改为 `#if defined(RTSC_TLS_OPENSSL)` |
+
+**变异验证**：`inject_geometry_.width` 改取 `desktop_height_` → 红 `:4099` / `:4491`（值断言有效）；
+恢复后全绿。
+
+### 批 33（`22876f2`）—— gate 的 Debug 性能预算
+gate 用 `-DCMAKE_BUILD_TYPE=Debug`（`-g` 无优化），`view_scale_benchmark_budget` 预算按 Release 实测 ×3。
+Debug 下 7 个形状中 3 个超预算（最慢 256ms / 预算 90ms；同机 Release 43.7ms）。
+**性能预算不能在未优化构建上判定**：用 `#if defined(NDEBUG)` 围住判定；未优化构建打印
+`skipped: timing budgets require an optimized build (NDEBUG)`（诚实跳过，不伪装通过）。
+
+### 验证
+| 项 | 结果 |
+|---|---|
+| **Linux gate** | `LINUX GATE PASS`；`CONFIGURE_EXIT=0 BUILD_EXIT=0 FAILED_COUNT=0 WINDOWS_H_COUNT=0 FACTORY_SYMBOL=present`；`67/67 tests passed` |
+| Windows 构建 | exit 0；六类诊断全 0 |
+| Windows ctest | **69/69, 0 failed**（77.45s，独占运行） |
+| 变异 | width 取值错误 → 红 :4099/:4491 |
+| MUT- 残留 | 0 |
+
+### 教训（discover 例 44）
+- **UNVERIFIED 必须定期重试**：它表示"本轮没验证"，不是"无需验证"。
+- **"非本批引入"只影响归因，不豁免修复**：它阻塞验证就必须处理。
+- **MSVC 全绿 ≠ GCC 全绿**：`-Wmissing-field-initializers` / `-Wswitch` 的默认集合不同。
+- 看到 `FAILED_COUNT=N` 要读 N 个目标的**全部** error，不能只读第一条。
+- 本机 `ctest` 与 WSL gate **并行跑**会造成 `desktop_gdi` 伪红（资源竞争），必须独占复跑核实。
+
+### 状态
+Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate 级证据；
+真机项（U1/U2/U4–U9、`--monitor N` 落点）仍 **UNVERIFIED**（需真实多显示器桌面）。

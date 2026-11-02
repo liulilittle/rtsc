@@ -639,3 +639,26 @@ D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorde
   修复：零豁免 + `git -C $root` + `--untracked` + 退出码检查 + 去掉注释里的变异名字面量。
   验证：干净树 passed / 3 行夹具 3 条全报 / 非仓库 128 报错退出；`ctest` 69/69。
   双审一致 PASS（提交级），两角色 `delete` 解散。
+
+## 第872轮：Linux gate 从 FAIL 到 PASS —— 5 个隐藏的真错误
+### 关键转折
+此前多轮我把 Linux 记为 UNVERIFIED("被既有 -Werror=reorder 阻断")，**从没实际跑过 gate**。
+本轮实跑：`FAILED_COUNT=4`，真实错误 **5 个**（reorder 只是其一），其中 **2 个在生产代码**：
+- `server.cpp:1400` `InjectGeometry{a,b}` 只初始化前 2 成员 → `-Wmissing-field-initializers`
+- `server.cpp:715` 初始化列表顺序 ≠ 声明顺序 → `-Wreorder`
+其余：测试 5 处 2 参聚合初始化、`WaitUntil` 未使用、`main.cpp` switch 漏 `kMouseRel`、
+`test_server_security.cpp` 用 `!defined(_WIN32)` 守卫 OpenSSL 但 `RTSC_TLS_OPENSSL` 默认 OFF。
+### 修复与验证
+| 项 | 证据 |
+|---|---|
+| 5 处全修（批32 `150a6ea`） | `LINUX GATE PASS`，`FAILED_COUNT=0` |
+| 变异：`width` 取 `desktop_height_` | 红 `:4099`/`:4491` ⇒ 逐字段赋值被守护 |
+| Windows 回归 | 构建 0/0 六类诊断 0；`ctest -j1` 69/69（77.45s） |
+### 连带：gate 的 Debug 性能预算（批33 `22876f2`）
+gate 用 `-DCMAKE_BUILD_TYPE=Debug`，而 `view_scale_benchmark_budget` 预算按 Release×3 设定
+⇒ Debug 下 3/7 用例超预算（最慢 256ms / 预算 90ms；同机 Release 43.7ms）。
+修：`#if defined(NDEBUG)` 围住判定，未优化构建打印 skipped（诚实跳过）。
+修后 `LINUX GATE PASS` + `67/67 tests passed`。
+### 教训（discover 例 44）
+UNVERIFIED 必须定期重试；"非本批引入"只影响归因，不豁免修复；MSVC 全绿 ≠ GCC 全绿。
+注意：`ctest` 与 WSL gate 并行跑会造成 `desktop_gdi` 伪红，必须独占复跑核实。

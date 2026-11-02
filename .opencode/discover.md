@@ -605,3 +605,44 @@ seam（注入点）只覆盖了它自己那一条支路，装配函数里**另�
 - **不要用词法/前缀猜测语义**（同 discover 例 34：文本匹配验证行为）。
 - **白名单是最后的退路，不是首选**：宁可改掉被豁免的那处内容（这里是注释措辞），
   也不要维护随行号漂移的 `file:line` 白名单。
+## 第872轮：把"构建失败"当成"环境噪声"而只记录一次就放过 → 5 个真错误被隐藏（例 44）
+
+### 症状
+审计 W/V 多轮都报告"Linux 全量构建被 `src/server/server.cpp` 既有 `-Werror=reorder` 阻断，
+非本批引入"，我据此把 Linux 记为 **UNVERIFIED** 并**连续多轮不处理**。
+本轮实际跑 gate 后，`FAILED_COUNT=4`，真实错误是 **5 个**（reorder 只是其中一个）：
+1. `server.cpp:1400` `InjectGeometry{desktop_width_, desktop_height_}` 只初始化前 2 个成员
+   → `-Wmissing-field-initializers`（生产代码）
+2. `server.cpp:715` 构造函数初始化列表顺序与成员声明序不符 → `-Wreorder`（生产代码）
+3. `tests/test_desktop_input.cpp` 5 处 2 参 `InjectGeometry{...}`
+4. `tests/test_desktop_input.cpp:108` `WaitUntil` 在非 Windows 构建下未使用 → `-Wunused-function`
+5. `tools/rtsc_server/main.cpp:593` switch 漏 `kMouseRel` → `-Wswitch`
+6. `tests/test_server_security.cpp` 用 `#if !defined(_WIN32)` 守卫 OpenSSL，但
+   `RTSC_TLS_OPENSSL` 默认 OFF → 链接期 `undefined reference to SSL_*`
+
+### 根因
+1. **"既有问题"不是免于验证的理由**：它是不是我引入的，与它是否阻塞我的验证是两件事。
+   我用"非本批引入"给"不验证"开了口子。
+2. **转述替代了实测**（再犯 discover 例 29）：审计说"被 reorder 阻断"，我就假设只有 reorder。
+   实际 gate 的 `FAILED_COUNT=4` 表示 4 个**目标**失败，每个目标可含多个 error。
+3. **跨平台差异没进常规验证**：Windows（MSVC）对 `-Wmissing-field-initializers` / `-Wswitch`
+   的默认行为与 GCC 不同，所以这些错误在 Release 69/69 全绿时完全不可见。
+
+### 修复与证据
+- 5 处逐个修复（逐字段赋值、初始化列表重排、`PartialGeometry` 辅助、`#if` 守卫、
+  switch 补 case、`#if defined(RTSC_TLS_OPENSSL)`）。
+- 变异验证：`inject_geometry_.width` 改取 `desktop_height_` → 红 `:4099`/`:4491`（值断言有效）。
+- `LINUX GATE PASS`，67/67 tests passed。
+
+### 连带发现（同轮）
+gate 用 `-DCMAKE_BUILD_TYPE=Debug`（`-g` 无优化），而 `view_scale_benchmark_budget` 的预算按
+Release 实测值 ×3 设定 ⇒ Debug 下必然超预算（最慢 256ms / 预算 90ms；Release 同机 43.7ms）。
+**性能预算不能在未优化构建上判定**——已用 `#if defined(NDEBUG)` 围住，未优化构建明确打印
+"skipped" 而不是失败（诚实跳过 ≠ 伪装通过）。
+
+### 教训（例 44）
+- **UNVERIFIED 必须定期重试**：标注 UNVERIFIED 是"本轮没验证"，不是"结论为无需验证"。
+  连续多轮停留在 UNVERIFIED 而不尝试，等于把风险静默化。
+- **"非本批引入"只影响归因，不影响是否要修**：它阻塞验证 → 就必须处理或明确挂起。
+- **平台差异要跑真工具**：MSVC 全绿 ≠ GCC 全绿；`-Werror` 集合不同。
+- 看到 `FAILED_COUNT=N` 要逐个看 N 个目标的全部 error，不能只读第一条。
