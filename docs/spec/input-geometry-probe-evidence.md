@@ -178,3 +178,27 @@ cl /nologo /std:c++20 /EHsc /MD /W4 /I F:\rtsc\include probe_real.cpp ^
 
 > 注意：编译该探针时 `InputEvent` 定义在 `rtsc/server/server.h`，
 > 只包含 `desktop_input_map.h` 会报 `C2065: ev 未声明`。
+---
+
+## 8. `DesktopSource` 扩接口的破坏面（主代理核验，支持"默认实现"决定）
+
+设计 M §5 主张给 `DesktopSource` 加 `virtual DesktopGeometry Geometry() const` 时**必须带默认实现**
+（而非纯虚），理由是"否则所有实现点都要改"。我核实了实现点数量：
+
+```text
+src/server/desktop_gdi.cpp:146                GdiDesktopSourceImpl
+src/server/server.cpp:2705                    TestPatternSource（默认源）
+tests/test_server.cpp:1691                    FailingAfterSource
+tests/test_server.cpp:2632                    ScriptedSource
+tests/test_server.cpp:3421                    BlockingFirstCaptureSource
+tests/test_server_multisession.cpp:150        RecordingSource
+```
+
+共 **6 处**实现。若改为纯虚：
+
+- 这 6 处全部编译失败，需要逐一实现（其中 5 处是测试替身，实现值为"未知几何"）
+- 且每个测试替身都要写一份"返回 unknown"的样板代码
+
+⇒ **默认实现（返回 capture/desktop 全 0、`mapped=false`、`pixels_are_physical=false`）是正确选择**：
+生产实现只覆盖 GDI 一处，测试替身零改动，且默认值本身是 fail-closed（不产出移动），
+不会让未覆盖的替身静默产出错误坐标。
