@@ -596,6 +596,9 @@ int main(int argc, char** argv) {
             case rtsc::server::InputEvent::Kind::kWheel: kind = "wheel"; break;
             case rtsc::server::InputEvent::Kind::kSync: kind = "sync"; break;
             case rtsc::server::InputEvent::Kind::kUnicode: kind = "unicode"; break;
+            case rtsc::server::InputEvent::Kind::kMouseRel:
+                kind = "relative-move";
+                break;
         }
         log.line(std::string("session active: ") + kind + " event forwarded");
     });

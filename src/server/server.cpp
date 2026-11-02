@@ -729,9 +729,12 @@ class RdpSession {
           session_id_(session_id),
           input_sink_(input_sink),
           input_session_id_(input_session_id),
+          // Declaration order is input_lease_, then unknown_input_events_, then
+          // malformed_input_pdus_ (see the member list); a mismatched order is
+          // -Wreorder and therefore an error under -Werror on GCC/Clang.
+          input_lease_(std::move(input_lease)),
           unknown_input_events_(std::move(unknown_input_events)),
-          malformed_input_pdus_(std::move(malformed_input_pdus)),
-          input_lease_(std::move(input_lease)) {
+          malformed_input_pdus_(std::move(malformed_input_pdus)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
         // session's thread. The send lambda reads cliprdr_channel_id_ at send
@@ -1397,7 +1400,13 @@ class RdpSession {
         // mapping layer drop absolute moves instead of guessing.
         const DesktopGeometry geometry =
             source_ != nullptr ? source_->Geometry() : DesktopGeometry{};
-        inject_geometry_ = InjectGeometry{desktop_width_, desktop_height_};
+        // Assign field by field. A braced aggregate initializer that leaves the
+        // trailing members out is -Wmissing-field-initializers, which -Werror
+        // promotes to an error on GCC/Clang (naming the members does not help:
+        // the warning is about the list being shorter than the struct).
+        inject_geometry_ = InjectGeometry{};
+        inject_geometry_.width = desktop_width_;
+        inject_geometry_.height = desktop_height_;
         inject_geometry_.capture =
             InjectRect{geometry.capture_x, geometry.capture_y,
                        geometry.capture_width, geometry.capture_height};

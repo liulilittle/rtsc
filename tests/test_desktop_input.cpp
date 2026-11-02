@@ -61,6 +61,18 @@ InputEvent KeyEvent(uint8_t scancode, bool extended, bool release) {
 // the GDI source reports when the capture rectangle equals the virtual desktop
 // (the BitBlt path, no resampling), and it is the minimum geometry an absolute
 // move needs to be injectable at all.
+// A geometry with ONLY the framebuffer span set: capture/desktop stay at their
+// defaults, so `mapped` stays false. Used where the case is about the span rule
+// or the trust gate rather than the rectangles. A named-member braced
+// initializer cannot express this: GCC -Wmissing-field-initializers (an error
+// under -Werror) complains about every member the list omits, so build the
+// struct normally and set the two fields.
+InjectGeometry PartialGeometry(uint16_t width, uint16_t height) {
+    InjectGeometry g;
+    g.width = width;
+    g.height = height;
+    return g;
+}
 InjectGeometry PhysicalGeometry(uint16_t width, uint16_t height) {
     InjectGeometry g;
     g.width = width;
@@ -105,6 +117,10 @@ int64_t WindowStartCapturePixel(int64_t f, int64_t fb, int64_t cap) {
     return (f * cap) / fb;
 }
 
+// Only the Win32 sink cases (RTSC_DESKTOP_INPUT_TESTING) wait on the worker
+// thread; the null-sink build has no worker, so an unconditional definition is
+// an unused static function there and -Werror rejects it on GCC/Clang.
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
 bool WaitUntil(const std::function<bool()>& pred, int timeout_ms = 5000) {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeout_ms);
@@ -114,6 +130,7 @@ bool WaitUntil(const std::function<bool()>& pred, int timeout_ms = 5000) {
     }
     return pred();
 }
+#endif  // RTSC_DESKTOP_INPUT_TESTING
 
 }  // namespace
 
@@ -195,7 +212,7 @@ RTSC_TEST(desktop_input_pause_sequence_is_fully_suppressed) {
     InputEvent num_up = KeyEvent(0x45, false, true);
     const std::vector<InputEvent> pause = {ctrl_down, num_down, ctrl_up, num_up};
 
-    const InjectGeometry usable{1920, 1080};
+    const InjectGeometry usable = PhysicalGeometry(1920, 1080);
     PauseSequenceFilter filter;
     bool all_dropped = true;
     size_t actions = 0;
@@ -252,7 +269,7 @@ RTSC_TEST(desktop_input_pause_window_closed_by_sync) {
     // half followed by a SYNC would leave the filter armed and swallow the next
     // real NumLock tap -- the same "eat a live key" failure mode that bounds the
     // suppression. The wire form is: E1 CTRL down, SYNC, then a NumLock tap.
-    const InjectGeometry usable{1920, 1080};
+    const InjectGeometry usable = PhysicalGeometry(1920, 1080);
     InputEvent ctrl_down = KeyEvent(0x1D, false, false);
     ctrl_down.extended1 = true;
     InputEvent sync;
@@ -865,11 +882,11 @@ RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     ev.is_move = true;
     ev.x = 0;
     ev.y = 0;
-    CHECK(TranslateInput(ev, InjectGeometry{0, 0}).empty());
-    CHECK(TranslateInput(ev, InjectGeometry{1, 1}).empty());
+    CHECK(TranslateInput(ev, PartialGeometry(0, 0)).empty());
+    CHECK(TranslateInput(ev, PartialGeometry(1, 1)).empty());
     // One usable axis does not help: the other one is still not normalizable.
-    CHECK(TranslateInput(ev, InjectGeometry{2, 1}).empty());
-    CHECK(TranslateInput(ev, InjectGeometry{1, 2}).empty());
+    CHECK(TranslateInput(ev, PartialGeometry(2, 1)).empty());
+    CHECK(TranslateInput(ev, PartialGeometry(1, 2)).empty());
     // Control: both axes have a span AND the geometry is trusted.
     const std::vector<PlatformInput> out =
         TranslateInput(ev, PhysicalGeometry(2, 2));
@@ -884,7 +901,7 @@ RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     click.button = 1;
     click.button_down = true;
     const std::vector<PlatformInput> clicked =
-        TranslateInput(click, InjectGeometry{0, 0});
+        TranslateInput(click, PartialGeometry(0, 0));
     CHECK_EQ(clicked.size(), 1u);
     if (clicked.size() != 1) return;
     CHECK(clicked[0].kind == PlatformInput::Kind::kMouseButton);

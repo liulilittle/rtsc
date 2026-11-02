@@ -28,13 +28,17 @@
 #include "test_framework.h"
 #include "test_main.h"
 
-#if !defined(_WIN32)
+
 // The coalesced-handshake deadlock regression drives a bare OpenSSL client so
 // the same process can build a REAL "[client Finished][first app record]"
 // segment. test_tls_openssl.cpp does not link rtsc_security, so the deadlock
-// (which lives in ServerSecurityLayer::DriveCredssp) cannot be exercised there;
-// this target links BOTH rtsc_security and (transitively on Linux) OpenSSL.
-// On Windows the OpenSSL headers/libs are absent, hence the compile guard.
+// (which lives in ServerSecurityLayer::DriveCredssp) cannot be exercised there.
+//
+// The guard is the BACKEND option, not the platform: RTSC_TLS_OPENSSL defaults
+// to OFF, so a non-Windows build (the Linux gate) has no OpenSSL headers or
+// libs unless it was explicitly enabled. `!defined(_WIN32)` was wrong there and
+// broke the link with undefined SSL_* references.
+#if defined(RTSC_TLS_OPENSSL)
 #include <openssl/ssl.h>
 #endif
 
@@ -437,7 +441,7 @@ RTSC_TEST(server_selects_hybrid_ex_when_client_requests_it) {
     runner.join();
 }
 
-#if !defined(_WIN32)
+#if defined(RTSC_TLS_OPENSSL)
 // ---------------------------------------------------------------------------
 // Coalesced-handshake deadlock regression (P0, D1 dependency).
 //
@@ -590,6 +594,6 @@ RTSC_TEST(tls_server_regression_coalesced_first_record_no_stall) {
     // no kWrite ever materialises, and Step(nullptr, 0) keeps returning kRead.
     CHECK(got_challenge);
 }
-#endif  // !_WIN32
+#endif  // defined(RTSC_TLS_OPENSSL)
 
 int main() { return rtsc::test::run_all("rtsc_server_security_tests"); }
