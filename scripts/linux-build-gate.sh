@@ -138,6 +138,43 @@ if ! nm -C "$LIB" 2>/dev/null | grep -q 'rtsc::tls::CreateTlsTransport'; then
 fi
 echo "FACTORY_SYMBOL=present"
 
+
+# The exit code alone cannot prove *which* tests ran: a guarded-out test still lets
+# ctest report 100% success. That is exactly how the OpenSSL P0 regression went
+# missing (Linux ran 7/45 instead of 8/67 while the gate stayed green), so assert
+# the identity of the tests, not only their aggregate result.
+LIST_LOG="$LOG_DIR/ctest-list.log"
+(cd "$BUILD_DIR" && ctest -N) >"$LIST_LOG" 2>&1
+echo "CTEST_LIST_EXIT=$?"
+
+REQUIRED_TESTS="tls_openssl server_security desktop_input host_cli_periodic_stats_line"
+MISSING_TESTS=""
+for required in $REQUIRED_TESTS; do
+    grep -qE "^ *Test +#[0-9]+: ${required}\$" "$LIST_LOG" || MISSING_TESTS="$MISSING_TESTS $required"
+done
+if [ -n "$MISSING_TESTS" ]; then
+    echo "LINUX GATE FAIL: required tests missing:$MISSING_TESTS"
+    exit 1
+fi
+echo "REQUIRED_TESTS=present"
+
+# tls_openssl existing is not enough: the P0 regression lives inside
+# server_security under #if defined(RTSC_TLS_OPENSSL). Run that binary directly
+# so a silently-compiled-out case cannot pass as a green suite.
+SEC_BIN=$(find "$BUILD_DIR" -name "rtsc_server_security_tests*" -type f -print -quit)
+if [ -z "$SEC_BIN" ]; then
+    echo "LINUX GATE FAIL: rtsc_server_security_tests not produced"
+    exit 1
+fi
+P0_CASE=tls_server_regression_coalesced_first_record_no_stall
+SEC_LOG="$LOG_DIR/server_security.log"
+"$SEC_BIN" >"$SEC_LOG" 2>&1
+grep -q "OK .* ${P0_CASE}\$" "$SEC_LOG" || {
+    echo "LINUX GATE FAIL: ${P0_CASE} did not execute (OpenSSL backend compiled out?)"
+    grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
+    exit 1
+}
+echo "P0_REGRESSION=executed"
 (cd "$BUILD_DIR" && ctest --output-on-failure >"$TEST_LOG" 2>&1)
 CTEST_EXIT=$?
 echo "CTEST_EXIT=$CTEST_EXIT"
