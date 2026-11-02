@@ -945,3 +945,29 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 **误差必须对 oracle 测量，禁止 A/B 互比。**
 ### 待办
 审计 N 仍在途（分母裁决/采样相位/M5 可测性/字段集）；批 21 仍在途。
+## 第847轮：批21 主代理独立验收+三变异全红+提交 d8b312a
+### 验收证据（主代理亲测，非子代理引用）
+- 构建：`cmake --build build --config Release` **exit=0**，日志 warning C / error C / error LNK / warning LNK / error MSB / warning MSB **全 0**
+- 全量：`ctest --test-dir build -C Release` **63/63 passed, 0 failed**（65.34s）
+- 生产库隔离：`build\rtsc_server.vcxproj` 的 4 个配置 PreprocessorDefinitions **无** RTSC_SERVER_TESTING；
+  `build\rtsc_server_testing.vcxproj` **有** ⇒ 宏不会污染生产二进制
+- 错误论断清除：'each one notices the closed transport' grep=0、'Teardown is already done at this point' grep=0
+- Stop() 契约（server.h:331-343）：明确"提前返回即 use-after-free"
+### 变异测试（%TEMP%\opencode\Lexec2，独立 build，工作树未触碰）
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 删 server.cpp 快照失败回退里的 `session->Stop()` | **FAIL** server_stop_delivers_stop_when_snapshot_allocation_fails |
+| B | wait 失败 `catch` 直接 `return`（旧行为） | **FAIL** server_stop_does_not_return_while_session_thread_alive |
+| C | 删 desktop_input_win32.cpp:388 `worker_failures_.fetch_add` | **FAIL** desktop_input_worker_failures_counts_a_failed_dispatch |
+三变异恢复后：server 52 tests/586 checks/**0 failing**、desktop 50 tests/13784 checks/**0 failing**
+### 变异过程中的两个坑（已复现，非推测）
+1) 变异 A 首次写法 `/* comment */;` 触发 **C4189 未引用局部变量**，`/WX` 下直接编译失败 ⇒
+   变异体必须先能编译，否则"红了"可能只是编译失败。改用 `(void)session;` 才测到断言。
+2) `Copy-Item` 恢复后 **保留源 mtime** → MSBuild 判定免重编 → 两个套件"恢复后仍红"（假红）。
+   `touch` 更新时间戳后重编才转绿。⇒ **恢复后必须 touch + 重编，否则绿证无效**
+### 提交
+`d8b312a` 批21（8 文件）；`e9ef8ab` 几何设计 §13 实证探针章节
+### 调度
+- 执行子代理 ses_e66140044... 已完成 → **delete 解散**（非 abort）
+- 审计 M ses_e664d2035... 以"只回收口报告"的短提示唤醒（title=审计M几何设计收口）
+- 审计 N ses_e65f23c5d... 前两次被 provider upstream_rejected → 改**极短提示**（≤20 行、禁止再读库）
