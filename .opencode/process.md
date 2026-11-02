@@ -585,39 +585,18 @@ host `main.cpp` 调用点无行为测试（`--once` 阻塞等待客户端，无�
 恢复后必须 `touch`，且必须确认构建日志里出现该文件的重编行（BUILD_EXIT=0 在"什么都没编"时也成立）。
 ### 残留
 R7 关闭；真机语义项（数字是否随注入变化）仍 UNVERIFIED。
-## 第866轮：审计 T 的批24报告收口（主代理独立复核 4 条）
 
-### T 报告结论
-CONDITIONAL：功能无缺陷，3 项测试盲区 + 2 项文档数字，全 Low。
+## 【归档压缩：864-866 轮（原 33 行）】
 
-### 主代理亲测（不采信转述，自己重做，discover 例 29）
-独立 cl 编译副本 `F:\rtsc\.tmp\mutV25`（test_desktop_gdi.cpp + desktop_gdi.cpp + crash_guard.cpp）：
-| 变异 | 期望 | 实测 |
-|---|---|---|
-| 基线 | 全绿 | `11 tests, 60 checks, 0 failing` |
-| `desktop.right` 由 `SM_CXVIRTUALSCREEN` → `SM_CXSCREEN` | 应红 | **0 failing（全绿）⇒ T-1 成立** |
-| 生产工厂 `AssembleGdiDesktopSource(dpi_ok,...)` → `(true,...)` | 应红 | **0 failing（全绿）⇒ T-2 成立** |
+- **864** 批24 验收 + 提交 `fa79fec`：`ctest` 63/63；R1 变异（决策改 VIRTUALSCREEN）→ `:392` 红；
+  额外自选变异 `desktop.right` 改 `SM_CYVIRTUALSCREEN` → 3 红。真机清单补 `dropped_unmapped` 与未持租约计数 `d2aa9d3`。
+  登记 R7（host 调用点无行为测试）。
+- **865** 批25 提交 `dab111d`：新增 `tests/host_cli_check.cmake`（cmake -P + execute_process）5 个 CASE；
+  `--port 0 --seconds 1` 让 host 自行退出。变异 `main.cpp:611`→`log.line(reason)` → 仅 `host_cli_stats_line` 红（R7 装配点闭合）。
+  拒绝路径 `return 2`→`0` → 2 个 `refuse_*` 红。
+- **866** 审计 T 报告（CONDITIONAL，5 条 Low）。我自行复现 T-1/T-2/T-5，**但 F2 的变异打偏**：
+  `String.Replace` 同时改了生产入口与 seam，`:461` 变红不能证明生产入口（后由审计 U 推翻，见 867）。
 
-### T-4 已确认
-`docs/spec/input-injection-real-machine-checklist.md:85` 原文「六个计数与实际观察一致」，
-而 `FormatInputStats` 实输出 **7** 个计数（`[READ:src/server/desktop_input_stats.cpp:15-27]`）。
-`docs/spec/input-injection-seam.md:173`「五个计数器」+ 表只列 5（缺 `worker_failures`/`dropped_unmapped`），
-同文件 `:92-98` 接口块仍为旧 5 字段，`:100-108` 缺 `NoteUnmappableMove`/`FormatInputStats`。
-
-### 根因（T-1/T-2 同源）
-`AssembleGdiDesktopSource` 虽然收了 `const MetricSource& metrics`，但**只有
-`PixelsArePhysicalFromMetrics` 用它**；desktop 快照（`:354-357`）与捕获矩形解析/裁剪
-（`ResolveCaptureRect` `:120-123`、`:138-141`）仍走全局 `Metric()` = `::GetSystemMetrics`。
-⇒ seam 的 fake 只能控制决策，控制不了 desktop 矩形，故 desktop 快照的变异无人守。
-`dpi_ok` 同理：seam 工厂 `:410` 硬编码 `true`，生产 `:396` 传真实值但 fake 无法覆盖该路径。
-
-### 待 U 收口后定案（批 26 候选）
-- F1 [T-1] 让 metrics 成为装配内**唯一**度量来源（desktop 快照 + ResolveCaptureRect 都走 metrics）
-- F2 [T-2] seam 工厂增加 `dpi_ok` 形参，补"dpi_ok=false ⇒ pixels_are_physical=false"装配点测试
-- F3 [T-3] `server.cpp:892` 内层守卫无覆盖：`ev.button == 0` 在 `!IsInjectable` 前提下恒真；
-  `ev.is_move` 有语义（排除零标志位鼠标事件）。需发零标志位指针事件验证不计数
-- F4 [T-4] 三处文档数字/接口块修正
-- F5 [T-5] `main.cpp:616` 变更检测器无守护（见下"不可达性"分析）
 ## 第867轮：批26 双审收口（F2 返工 + U-1/U-2/U-3/U-4/U-7 + T 的 SKIP 缺口）
 ### 核心事件：我的变异证据被审计 U 推翻
 我用 `String.Replace` 替换了一个在文件里出现 **2** 次的字符串（生产入口 `:404` + seam `:411`），
