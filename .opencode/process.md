@@ -640,3 +640,16 @@ N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"
 - M 自述本次虚报根因："只改了 §2.5/§3.2，没改 §8 表格" → 与 discover 第 30 例一致
 ### 在途
 执行 AI `ses_e6561baf4...` 批 22（busy，尚未写工作树）
+## 第853轮：批22 执行 AI 被 stream_interrupted 中断 → 唤醒续做
+### 断点状态（主代理只读核验）
+工作树 10 文件已改（+583/-42）：
+- `desktop_input.h`：`InjectRect`、`InjectGeometry{width,height,capture,desktop,mapped,pixels_are_physical}`、`InputStats::dropped_unmapped`
+- `server.h`：`DesktopGeometry`（全默认值）+ `virtual DesktopGeometry Geometry() const { return {}; }`（默认实现，6 处实现零改动）
+- `desktop_input_map.h`：`AbsoluteMoveMappable(g)` 内联谓词（mapped && physical && 各 span>1）
+- `desktop_input_map.cpp`：`Clamp` + `MapAxis`（步骤0 clamp → 步骤1 中心采样 `((2f+1)*cap)/(2*fb)` → 步骤2 +capture origin → 步骤3 `relative>=desk-1?65535:ceil(rel*65536/desk)`）
+- 其余：desktop_gdi.cpp / null / win32 / server.cpp / 两个测试文件
+### 处置
+- 子代理 idle（非终结）→ 经 `manage_subagent prompt` 唤醒续做（附断点清单 + 剩余 5 步）
+- 明确要求：独占 ctest、只认 0 failing、三变异 + touch 重编 + Get-FileHash
+### 待办
+构建/测试/变异由执行 AI 完成 → 主代理验收 → 双审
