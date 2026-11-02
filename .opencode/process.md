@@ -694,3 +694,38 @@ UNVERIFIED 必须定期重试；"非本批引入"只影响归因不豁免修复�
 首次用 `ReadAllText`+`WriteAllText` 改 `verify.ps1`，写入 BOM 且把 CRLF 改成 LF，
 产生 `1 file changed, 2 insertions(+), 2 deletions(-)` 的伪 diff（首行注释被改）。
 已 `git checkout` 回滚，改用字节级定位替换，diff 收敛为单行 `1 insertion(+), 1 deletion(-)`。
+## 第876轮：批37 —— 两审计 CONDITIONAL 收口（四条同族缺陷）
+### 审计结论
+X：CONDITIONAL（D1 门可被 skip 短路、D3 Linux 无优化覆盖）
+Y：CONDITIONAL（P1 gate 不判预算、P1 PartialGeometry 无守护、P1 relative-move 零守护、P2 三条）
+双方交叉验证一致；对 `RTSC_TLS_OPENSSL` 传播链结论一致：**传播成功，P0 用例是被关掉的有效测试，批34 是真修复**。
+### 修复（`44636b8`）
+| # | 缺陷 | 修法 |
+|---|---|---|
+| D1 | gate 的 OK 行断言可被用例体 `printf("skipped:")+return` 短路 | OK 行 + 无 `skipped:` + `tests>=8 / checks>=67`（下限，采纳 X 的稳定性质疑） |
+| D3 | gate 用 Debug ⇒ 七条预算断言永不执行 | gate 追加 `RelWithDebInfo` 只跑 `rtsc_view_tests`，要求 `VIEW_BUDGETS=executed` |
+| 新 | `gui_send` 在 Linux 注册 0 用例却 exit 0（修 D1 时暴露） | `test_main.h` `ran_tests==0` → `exit 2`；`gui_send add_test` 加 `if(WIN32)` |
+| P1 | `PartialGeometry` 的 mapped 语义无守护 | 两例从 `PhysicalGeometry(2,2)` 各坏一个信任位 + 按钮对照组 |
+| P2 | `CONFIGURE_EXIT` 被我批34 删掉 | 恢复 |
+### 可证伪性（每项均红→绿）
+| 变异 | 结果 |
+|---|---|
+| P0 用例体 → `if(true){skipped;return;}` | `EXIT=1` `suite self-skipped` |
+| 删 P0 体内 1 条 CHECK | `EXIT=1` `ran less than the full body (checks=66, want >=67)` |
+| `CHECK(best < budget*1e-7)` | `VIEW_RELEASE_EXIT=1`，`:1473` 三条 FAIL |
+| 删 `!g.mapped` | `:751/:905/:914` 红（2 failing） |
+| 删 `!g.pixels_are_physical` | `:755/:908` 红（2 failing） |
+| 拼错 `RTSC_TEST_FILTER` | exit 2（修前 exit 0） |
+### 验证
+- Linux gate：`LINUX GATE PASS`、67/67、`VIEW_BUDGETS=executed`（Release 7348 / Debug 7341）
+- Windows：构建六类诊断全 0；ctest **69/69**
+- 全仓 `MUT-` 残留 0；每个变异体恢复后 SHA256 与备份一致
+### 未修（明确登记，不假装处理）
+- P1-c `kind="relative-move"` 日志文本零守护：纯日志，造断言的代价高于收益；若审计坚持须给出断言形态。
+- Windows `-Wswitch` 零守护（`cl /W4 /WX` 对漏枚举不报错，仅 `/w44062` 报 C4062）。
+- `rtsc_server_tests` checks 655–657 漂移（与本次无关，未对其实施任何 checks 断言）。
+- `scripts/real-server-test.ps1` 不调 ctest（独立线）。
+### 本轮操作失误（记录）
+用 `--clean-first` 只重建单个 target，把其它产物删了却不重建 → ctest 68/69 全崩。
+教训：`--clean-first` 不能与 `--target` 组合用于增量验证；要么全量重建，要么不用 clean。
+另：`Copy-Item` 恢复文件后 mtime 早于产物，MSBuild 不重编，导致"变异仍绿"的假象 —— 必须核对二进制 LastWriteTime（discover 例 36 复发）。

@@ -723,3 +723,53 @@ Linux `server_security` **0.01 秒"通过"**，只跑 7 tests/45 checks（开 Op
   说明该教训需要更强的形式：**每加一条断言，立刻在消费方补一条对应的校验**。
 - **改非 UTF-8/LF 文件必须用字节级替换**：`ReadAllText`+`WriteAllText` 会加 BOM、
   把 CRLF 换成 LF，产生一个与内容无关的巨大 diff（本轮我犯过一次，已回滚重做）。
+## 第876轮：同一族的四处"跑了什么没人断言"（例 48）
+
+### 症状（一次审计收口里，同一根因以四种形态出现）
+两审计独立给出 CONDITIONAL，缺陷全部落在"执行身份未被断言"这一族：
+
+1. **门自我认证**（X，D1）：gate 只 `grep "OK .* <case>$"`。而 `tests/test_main.h`
+   对"用例体内 printf("skipped: ...") 然后 return"**仍然打印 `[  OK  ]`**。
+   红证：把 P0 用例体改成 `if (true) { printf("skipped:"); return; }` →
+   `P0_REGRESSION=executed` + `LINUX GATE PASS` + `EXIT=0`。
+2. **Debug 掩盖优化分支**（Y，P1 / X，D3）：gate 用 `CMAKE_BUILD_TYPE=Debug`，
+   `test_view.cpp` 的预算判定包在 `#if defined(NDEBUG)` 里 ⇒ 七条预算断言在
+   唯一自动化 gate 里**从未执行**。批 33 把"Debug 下必超预算"改成 skip，
+   等于删掉覆盖而不是修正判据。
+3. **零用例却 exit 0**（我自己修第 1 项时被 gate 自己抓出）：
+   `tests/test_gui_send.cpp` 整个包在 `#if defined(_WIN32)` 里，Linux 上
+   `rtsc_gui_send_tests` 注册 0 个用例却 `exit 0` ⇒ `gui_send` **自 gate 存在以来
+   一直是"断言了零件事的绿测试"**。
+4. **语义无守护**（Y，P1；X 纠正归因）：`PartialGeometry` 的 `mapped=false` 语义
+   没有任何断言。首拒点是信任位（`desktop_input_map.h:80`），所以既有用例里的
+   span 破坏永远不会走到 mapped 分支 —— 注释里那句"breaking either one alone
+   turns a case red"是假陈述。
+
+### 根因
+把"测试进程退出 0"当成"断言执行了"。四种形态的**共同结构**是：
+存在一条路径让断言不执行，而所有观测点（退出码 / OK 行 / 汇总行）都表示成功。
+
+### 证据
+- D1：用例体改 `if(true){skipped;return;}` → `EXIT=0` / `LINUX GATE PASS`（修前）
+- D3：Debug → `skipped: timing budgets...` / 7341 checks；Release → 7348 checks（差 7）
+- 零用例：`ctest` 报 `gui_send ... Failed  0.01 sec` + `0 tests, 0 checks`（修 `test_main.h` 后暴露）
+- PartialGeometry：删 `!g.mapped` → `:751/:905/:914` 红；删 `!g.pixels_are_physical` → `:755/:908` 红
+
+### 修复
+1. gate：OK 行 **+** 无 `skipped:` **+** `tests>=8 && checks>=67`（下限而非等号）
+2. gate：追加 `RelWithDebInfo` 构建，只跑 `rtsc_view_tests`，要求 `VIEW_BUDGETS=executed`
+3. `test_main.h`：`ran_tests==0` → `exit 2`（拼错过滤器与空注册都堵，且与 exit 1 可区分）
+4. `CMakeLists.txt`：`gui_send` 的 `add_test` 加 `if(WIN32)`（目标保留以抓构建破坏）
+5. `test_desktop_input.cpp`：两例从 `PhysicalGeometry(2,2)` 出发各坏一个信任位
+
+### 教训（例 48）
+- **断言"执行了什么"，不只断言"是否失败"**。任何"可以合法地不执行"的测试都需要
+  三道证据：用例名出现 + 无 skip 标记 + 产出量下限。
+- **门必须能被打红**：每加一道断言，都要造一个**只触发它**的变异体，否则无法区分
+  多道断言谁在起作用（本轮对 skip 与 checks 下限分别造了独立变异）。
+- **修 A 类缺陷时留意它是否同时暴露 B 类**：改 `test_main.h` 后 gate 立刻报出
+  `gui_send` 的零用例假绿 —— 那是此前所有轮次都没看见的缺陷。
+- **别把 checks 等号当通用守则**：`rtsc_server_tests` 在 655/656/657 间漂移
+  （两处条件执行的 CHECK）。等号只用于已验证稳定的单个套件，且优先用下限。
+- **注释里的"两者都坏会红"必须实测**：`test_desktop_input.cpp:877-879` 的断言
+  是假的（Y 用三种变异全绿证明）。注释是不可执行的断言，必须用变异兑现。

@@ -980,3 +980,31 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 - 断言链必须端到端：每加一条断言，立刻在**消费方**补一条对应校验。
 - 改非 UTF-8/LF 文件必须用字节级替换；`ReadAllText`+`WriteAllText` 会加 BOM 并换行符，
   制造与内容无关的伪 diff（本轮我犯过一次，已回滚重做）。
+### 批 37（`44636b8`）—— 两审计 CONDITIONAL 收口：四条"跑了什么无人断言"
+
+**审计结论**：X 与 Y 独立均判 CONDITIONAL，缺陷同属一族。对 `RTSC_TLS_OPENSSL` 传播链双方结论一致且与我一致：
+**传播成功；批 32 关掉的是一个有效测试，批 34 是真修复（有红证：把 drain 改坏 → P0 用例红）**。
+
+| # | 缺陷 | 来源 | 修法 |
+|---|---|---|---|
+| D1 | gate 的 `OK` 行可被"用例体 printf(`skipped:`)+return"短路（框架仍打印 `[  OK  ]`）⇒ 门自我认证 | X | OK 行 + 无 `skipped:` + `tests>=8 / checks>=67` **下限**（采纳 X：`server_tests` 655–657 漂移，等号只用于稳定套件） |
+| D3 | gate 用 Debug，`test_view.cpp` 的 `#if defined(NDEBUG)` 预算断言**从未执行** | Y/X | gate 追加 `RelWithDebInfo` 构建，只跑 `rtsc_view_tests`，要求 `VIEW_BUDGETS=executed` |
+| 新 | `test_gui_send.cpp` 全在 `#if defined(_WIN32)`，Linux 注册 0 用例却 exit 0（`gui_send` 长期假绿）；**修 D1 时被 gate 自己抓出** | 我 | `test_main.h` `ran_tests==0`→`exit 2`；`gui_send add_test` 加 `if(WIN32)`（目标保留编译） |
+| P1 | `PartialGeometry` 的 `mapped=false` 语义无守护；既有用例因信任位在最前永远打不到 mapped 分支 | Y（X 纠正归因） | 两例从 `PhysicalGeometry(2,2)` 各坏一个信任位 + 按钮对照组 |
+| P2 | `CONFIGURE_EXIT` 被批 34 重写时删掉 | Y | 恢复 |
+
+**可证伪性（每项红→绿）**
+| 变异 | 结果 |
+|---|---|
+| P0 用例体 → `if(true){skipped;return;}` | `EXIT=1`，`suite self-skipped` |
+| 删 P0 体内 1 条 CHECK | `EXIT=1`，`checks=66 want >=67` |
+| `CHECK(best < budget*1e-7)` | `VIEW_RELEASE_EXIT=1`，`:1473` 三条 FAIL |
+| 删 `!g.mapped` | `:751/:905/:914` 红 |
+| 删 `!g.pixels_are_physical` | `:755/:908` 红 |
+| 拼错 `RTSC_TEST_FILTER` | exit 2（修前 exit 0） |
+
+**验证**：Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`（Release 7348 / Debug 7341 checks）；Windows 构建六类诊断全 0 + ctest **69/69**；全仓 `MUT-` 0。
+
+**未修（登记，不假装处理）**：`kind="relative-move"` 日志文本零守护（纯日志，断言成本高于收益）；Windows `-Wswitch` 零守护；`rtsc_server_tests` checks 漂移；`real-server-test.ps1` 不调 ctest。
+
+**教训（discover 例 48）**：断言"执行了什么"而非"是否失败"；门必须能被打红（每道断言配一个只触发它的变异体）；修 A 类缺陷可能暴露 B 类（改 `test_main.h` 后 `gui_send` 现形）；注释里的"两者都坏会红"必须用变异兑现。
