@@ -795,3 +795,25 @@ PAUSE 的语义是"E1 CTRL 按住期间的那个 0x45 不是 NumLock"。两种�
 - **变异只能证明"能抓住这一类"，不能证明"覆盖全"**：M1/M2/M5 能在 ctest 转红，但
   M3b（打断生产 factory）只有 `rtsc_server_host` 构建能抓 → 文档里"任何变异都不能让 ctest 转红"
   是**错的陈述**，必须写成"部分闭合"。
+## 第842轮：我"隔离异常"的修法制造了**更隐蔽的两种失败**（第 26 例）
+### 事实（审计 L 实证，我用行号复核）
+我在批 19 给 `RdpServer::Stop()` 加了三处 `try/catch`。后果：
+- **① 静默跳过 → 永久挂起**：`sessions = registry->sessions` 抛异常被吞 ⇒ `sessions` 为空 ⇒ 一次 `s->Stop()` 都不发。
+  而 `RdpSession::Stop()` 才是置 `stop_requested_` 的唯一入口（`server.cpp:756-759`），`listener->Close()` 不影响已 accept 的 transport
+  ⇒ 会话线程永不退出 ⇒ `live` 永不为 0 ⇒ `cv.wait` **永久挂死**（实测 20s 不返回）。
+  我写的注释"each one notices the closed transport and tears itself down"**是错的**——`transport_->Close()` 从未被调用。
+- **② 静默返回 → UAF 前提**：`cv.wait` 抛异常被吞 ⇒ `Stop()` 立即返回（实测 `live=1`），
+  而 `server.h` 明确契约"借用指针 must outlive the server (including Stop())" ⇒ 宿主销毁对象 ⇒ 会话线程访问已释放对象。
+  我写的注释"Teardown is already done at this point"**也是错的**。
+
+### 教训（第 26 例：**`catch(...)` 不是"安全"，它把失败转移给调用者的假设**）
+- 两条铁律：
+  - **I1 不得静默成功**：catch 之后如果"没做到本该做到的事"，必须留下可诊断输出（计数/告警），禁止空 catch 收尾。
+  - **I2 不得把"未完成"当"完成"**：对"必须等某状态达成"的等待，**超时/异常不得转化为返回**；
+    要么继续等（并周期告警），要么返回明确的失败让调用者处理。**吞掉后 return 是最坏选项**。
+- 判断方法：对每个 `catch(...){}` 问"吞掉之后，**外面的人**会基于什么假设继续？"——如果那个假设可能不成立，
+  这个 catch 就是一个待爆的雷。
+- 反模式清单（本仓已出现）：空 catch 包分配、空 catch 包等待、空 catch 包外部回调、"标志已置位 + 清理跳过"。
+- 附带：**注释里的"安全论证"必须能被代码证伪**。我这两处注释都写了"这样做是安全的，因为…"，
+  而"因为"部分（传输关闭会让会话自行退出、teardown 已完成）在代码里都不成立。
+  **写"因为"之前必须去代码里找到那一行**；找不到就不许写。
