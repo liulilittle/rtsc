@@ -669,3 +669,25 @@ N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"
 - 双审：原 M/N 组已解散，执行 AI 无法直连 → 修完后**新开两个审计 AI**
 ### 已确认正确
 映射实现（MapAxis/中心采样/混合式/末像素/fail-closed）经主代理独立复算与 ctest 双重确认
+## 第855轮：批22 提交 ad5891e + 双审派出（P/Q 新组）
+### 主代理独立验收（全部亲测）
+| 项 | 证据 |
+|---|---|
+| 构建 | `cmake --build build --config Release` exit=0，六类诊断计数全 0 |
+| 全量 | `ctest --test-dir build -C Release` **63/63, 0 failed**（58.79s，独占） |
+| 映射值 | PowerShell 独立重写 MapAxis：cross-monitor `(52429,32768)`→2560；`rel=1→52`；末像素→65535；1:1 恒等 |
+| 多屏判据 | 旧判据残留 grep=**0**；调用点 `PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN), ...)` |
+| 变异（我重做） | 副本改 `SM_CXSCREEN→SM_CXVIRTUALSCREEN` → **1 failing/4 failed checks, EXIT=1**；恢复+touch+hash 相同 → **0 failing, EXIT=0** |
+### 裁决：执行 AI 的反驳成立（我的用例有错）
+我原给 `(true,3200,1080,1920,1080) → true`，但该签名第 2 参是 `primary_w`；
+主屏 3200 与物理 1920 不一致**本就应 false**。`>=` 语义会让变异不转红（假绿）。
+⇒ **采纳严格相等**；多屏场景由 `(true,1920,1080,1920,1080)=true` + 调用点结构守卫覆盖。
+### 新发现（discover 第 32 例）
+结构守卫在**运行时读源码文本**，所以同一 exe 在"源码已恢复"后再跑会变绿。
+⇒ 变异证据必须"改源码→重编→跑→恢复→重编→跑"，且记录当时 hash。
+### 提交
+`ad5891e` 批22（12 文件 +670/-45）
+### 调度
+- 执行 AI **delete 解散**（任务完成）
+- 双审**新开两会话**（原 M/N 组已解散）：P 自顶向下 `ses_e64fc340fffefiPwHITCUqaaW9`、
+  Q 自底向上 `ses_e64fbe978ffeAmiKOui8vVn22l`；已双向补发对方 ID
