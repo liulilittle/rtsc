@@ -694,3 +694,35 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 3. `DesktopSource` 需能报告捕获矩形（新增可选接口或工厂返回值），服务端据此填 `InjectGeometry`
 4. 变异：①忽略 origin ②忽略虚拟桌面范围 ③恒发/不发 VIRTUALDESK —— 各必红
 5. 真机项（`--monitor N` 落点）仍 UNVERIFIED，写入清单
+## 批 22 定案（round 851，M/N 收敛 + 主代理裁决）
+
+### 设计依据
+- `docs/spec/input-geometry-design-M.md`（M 修订版，待其修完 §8/§3.3/§6.1 三处）
+- `docs/spec/input-geometry-design-N.md`（N 交叉审计）
+- `docs/spec/input-geometry-probe-evidence.md`（主代理独立探针，含真实库复现）
+
+### 已定案（不可再改，除非新证据）
+1. **采样相位**：`fb → capture` 用**中心采样**
+   `lx = min(cw-1, ((2*fx+1)*cw) / (2*fbw))`（int64，floor）
+2. **分母**：`capture → wire` 用**混合式**
+   `nx = (rx >= dw-1) ? 65535 : min(65535, ceil(rx*65536/dw))`
+3. **字段**：`InjectGeometry{ width, height, InjectRect capture, InjectRect desktop, bool mapped, bool pixels_are_physical }`
+4. **fail-closed**：`!mapped` 或 `!pixels_are_physical` → 丢弃 `kMouseMove`（按钮/滚轮/键盘不受影响）
+5. **flags**：`MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK` 不变
+
+### 验收判据（执行 AI 必须逐条给出证据）
+- [ ] `TranslateInput(ev(640,512), InjectGeometry{1280,1024, capture{1920,0,1280,1024}, desktop{0,0,3200,1024}, mapped=true, pixels_are_physical=true})`
+      → `n=(52429,32768)`，按 `floor(n*3200/65536)` 落 `(2560,512)`
+- [ ] 1:1 路径（capture==desktop==fb）与现状逐点一致（回归）
+- [ ] `w=1280, rel=1` → `n=52`（杀 M5/M5b）
+- [ ] `rel=w-1` → `n=65535`（末像素端点）
+- [ ] `mapped=false` / `pixels_are_physical=false` → 无 `kMouseMove`，但按钮仍产出
+- [ ] `desktop_gdi.cpp` 的 `SetProcessDpiAwarenessContext` 返回值不再丢弃，且
+      `pixels_are_physical = (SM_*VIRTUALSCREEN == DESKTOPHORZRES/VERTRES)`
+- [ ] 全量 ctest 63/63、`/W4 /WX` 零警告
+- [ ] 变异：改坏中心采样 / 改坏末像素特判 / 改坏 fail-closed，各自必须转红
+
+### 明确不做
+- 不加 DPI 数值字段、不加 `use_virtual_desk`
+- 不改 `tests/test_desktop_input.cpp:272-279` 的既有断言
+- 真机落点（U1/U2/U4-U9）不在本批验收范围，标注 UNVERIFIED
