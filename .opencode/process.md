@@ -645,3 +645,27 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - 它 relay 两个已解散审计会话失败属**预期**（会话已删），无需代转
 ### 待办
 新开双审复核批23
+## 第862-863轮：双审 R/S 收口 + 批24 派发
+### 审计 R（自顶向下，6 条，已逐条核验）
+| # | 发现 | 主代理核验 |
+|---|---|---|
+| R1 | H1 工厂接线无测试保护 | **已复现**：工厂改 VIRTUALSCREEN → `10/57/0 failing, EXIT=0`（假绿） |
+| R2 | M `:431` 端点公式未标否决，与 `:441` B0=1921 矛盾 | 成立 |
+| R3 | `dropped_unmapped` 日志验收仍是 src.find（假测试） | 成立（`:1720,1723`）|
+| R4 | M `:616` 两数字错（应 0/640 与 640/640） | **已复算**成立 |
+| R5 | M 四处实现状态过期（`:254/:318-322/:332/:655`） | 成立 |
+| R6 | H2 接线 y 轴不可见（capture.y=desktop.y=0） | 成立 |
+### 审计 S（自底向上，20 个变异，5 条新发现）
+- **S1 [Medium·回归]** `dropped_unmapped` 对非租约会话归零：`server.cpp:885` `IsInjectable(ev,g)==false` 直接 return，
+  sink 计数永不执行；而 `desktop_input.h:83-87` 仍称"唯一可见信号" ⇒ **批23 引入的回归**
+- S2 三处边界未钉死（right+1 / height>=65536 / capture.height<0，对照侧有 control 会红）
+- S3 清理（`MakeWin32MetricSource` 无调用方、CMake `RTSC_SOURCE_DIR` 过期）
+- S 独立算术穷举：outputs 全 ∈[0,65535]，int64 上界 4.3e9 无 UB
+### 裁决与派发
+- S1 采纳**方案 A**：`DesktopInputSink::NoteUnmappableMove(session_id)` 纯虚 + null 空实现 + win32 计数
+- 批 24 共 9 项（R1-R6 + S1-S3）已固化 plan.md（`fb003af`、`4fa40f8`）
+- 执行 AI `ses_e6475efa1ffe89jIpbNZLZldeO` 已派出（含 9 项 + 变异要求 + F 盘 temp 约束）
+- 审计 R `ses_e648c3fb8...`、S `ses_e648bf021...` 均 **delete 解散**（报告已入库）
+### discover 第 35 例（本轮教训）
+修假测试时只验证"seam 内部能红"，没验证"装配点能红" ⇒ 工厂仍可假绿。
+**修复必须对着缺陷成因验证，不是对着修复形式验证。**
