@@ -179,6 +179,27 @@ constexpr uint16_t kMaxDesktopWidth = 8192;
 constexpr uint16_t kMaxDesktopHeight = 8192;
 constexpr size_t kMaxFramebufferBytes = 32u * 1024u * 1024u;
 
+// Where a DesktopSource's pixels come from, in virtual-screen physical pixels.
+//
+// `capture` is the (already clamped) rectangle Capture() blits from and
+// `desktop` is the virtual-desktop bounding box. The default value means
+// "unknown": a source that only synthesizes an image (or any other
+// implementation that does not override Geometry()) reports zeros and
+// `mapped == false`, so the injection seam drops absolute movement instead of
+// guessing a position.
+struct DesktopGeometry {
+    bool mapped = false;
+    bool pixels_are_physical = false;
+    int32_t capture_x = 0;
+    int32_t capture_y = 0;
+    int32_t capture_width = 0;
+    int32_t capture_height = 0;
+    int32_t desktop_x = 0;
+    int32_t desktop_y = 0;
+    int32_t desktop_width = 0;
+    int32_t desktop_height = 0;
+};
+
 // Produces the desktop image for a session. `rgba` receives
 // width * height * 4 bytes, top-down, 8 bits per channel, R at the lowest
 // address. Implementations must be usable from one thread per session.
@@ -187,6 +208,10 @@ class DesktopSource {
     virtual ~DesktopSource() = default;
     virtual bool Capture(uint16_t width, uint16_t height,
                          std::vector<uint8_t>& rgba) = 0;
+    // Snapshot of the captured region (see DesktopGeometry). The default is
+    // "unknown", so an implementation that only produces a synthetic image
+    // needs no change.
+    virtual DesktopGeometry Geometry() const { return {}; }
 };
 
 // Credentials as sent by the peer in the Client Info PDU.

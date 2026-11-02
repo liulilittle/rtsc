@@ -25,12 +25,37 @@
 
 namespace rtsc::server {
 
-// Geometry the injected coordinates are expressed in: the negotiated desktop
-// the client is drawing into (the framebuffer size). The mapping layer
-// normalizes (x, y) into Win32's 0..65535 absolute range against it.
+// A rectangle in virtual-screen physical pixels. The origin may be negative
+// (a monitor left of or above the primary one).
+struct InjectRect {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+};
+
+// Geometry the injected coordinates are expressed in.
+//
+// `width`/`height` are the negotiated framebuffer the client is drawing into
+// (the client's coordinate space). `capture` is the rectangle of the physical
+// virtual screen that the framebuffer was captured from, and `desktop` is the
+// virtual-desktop bounding box that MOUSEEVENTF_VIRTUALDESK normalizes
+// against. The mapping layer walks framebuffer pixel -> capture pixel ->
+// physical pixel -> 0..65535.
+//
+// `mapped` is false when the capture/desktop rectangles are not known (a
+// synthetic source, or a session that has not negotiated yet) and
+// `pixels_are_physical` is false when the process DPI context could not be
+// verified to report physical pixels. Either one makes absolute movement
+// fail closed: a move is dropped rather than injected at a wrong position.
+// Buttons, wheels and keys are unaffected.
 struct InjectGeometry {
     uint16_t width = 0;
     uint16_t height = 0;
+    InjectRect capture;
+    InjectRect desktop;
+    bool mapped = false;
+    bool pixels_are_physical = false;
 };
 
 // Cumulative injection counters, readable at any time (relaxed atomics in the
@@ -55,7 +80,11 @@ struct InjectGeometry {
 // dropped because one worker iteration threw (an allocation failure while
 // dispatching or emitting): the worker survives and keeps draining, but that
 // action is lost, so the counter is the only visible signal. The null backend
-// has no worker and always reports zero.
+// has no worker and always reports zero. `dropped_unmapped` counts absolute
+// pointer movements dropped because the session's geometry is not trusted
+// (InjectGeometry::mapped or pixels_are_physical is false, or a rectangle is
+// degenerate): the move is fail-closed, so this counter is the only visible
+// signal. The null backend has no geometry and always reports zero.
 struct InputStats {
     size_t injected = 0;
     size_t dropped_queue_full = 0;
@@ -63,6 +92,7 @@ struct InputStats {
     size_t send_failures = 0;
     size_t release_failures = 0;
     size_t worker_failures = 0;
+    size_t dropped_unmapped = 0;
 };
 
 // Receives decoded input for injection. Every method runs on the session thread

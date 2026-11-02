@@ -60,8 +60,21 @@ int Metric(int index) { return ::GetSystemMetrics(index); }
 // the GDI DC report physical pixels. Best effort: the call fails when a
 // manifest or an earlier call already fixed the mode, or on pre-Win10-1607, and
 // in both cases the process keeps whatever mode it has.
-void EnablePerMonitorDpiAwareness() {
-    (void)::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+//
+// Returns true when the process is per-monitor aware after the call. A failed
+// SetProcessDpiAwarenessContext is not by itself "unaware": re-setting an
+// already fixed mode fails with ERROR_ACCESS_DENIED while the mode stays
+// per-monitor (measured; see docs/spec/input-geometry-design-N.md 4.3). The
+// return value feeds InjectGeometry::pixels_are_physical, so it must describe
+// the process, not whether this particular call won.
+bool EnablePerMonitorDpiAwareness() {
+    if (::SetProcessDpiAwarenessContext(
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+        return true;
+    }
+    return ::GetAwarenessFromDpiAwarenessContext(
+               ::GetThreadDpiAwarenessContext()) ==
+           DPI_AWARENESS_PER_MONITOR_AWARE;
 }
 
 BOOL CALLBACK CollectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
@@ -143,9 +156,38 @@ bool ResolveCaptureRect(int monitor_index, int32_t x, int32_t y, int32_t width,
 
 }  // namespace
 
+bool PixelsArePhysical(bool dpi_ok, int primary_width, int primary_height,
+                       int physical_width, int physical_height) {
+    return dpi_ok && physical_width > 0 && physical_height > 0 &&
+           primary_width == physical_width &&
+           primary_height == physical_height;
+}
+
 class GdiDesktopSourceImpl : public DesktopSource {
  public:
-    explicit GdiDesktopSourceImpl(CaptureRect rect) : rect_(rect) {}
+    GdiDesktopSourceImpl(CaptureRect rect, CaptureRect desktop,
+                         bool pixels_are_physical)
+        : rect_(rect),
+          desktop_(desktop),
+          pixels_are_physical_(pixels_are_physical) {}
+
+    DesktopGeometry Geometry() const override {
+        DesktopGeometry geometry;
+        geometry.capture_x = rect_.left;
+        geometry.capture_y = rect_.top;
+        geometry.capture_width = rect_.right - rect_.left;
+        geometry.capture_height = rect_.bottom - rect_.top;
+        geometry.desktop_x = desktop_.left;
+        geometry.desktop_y = desktop_.top;
+        geometry.desktop_width = desktop_.right - desktop_.left;
+        geometry.desktop_height = desktop_.bottom - desktop_.top;
+        geometry.mapped = geometry.capture_width > 0 &&
+                          geometry.capture_height > 0 &&
+                          geometry.desktop_width > 1 &&
+                          geometry.desktop_height > 1;
+        geometry.pixels_are_physical = pixels_are_physical_;
+        return geometry;
+    }
 
     bool Capture(uint16_t width, uint16_t height,
                  std::vector<uint8_t>& rgba) override {
@@ -240,6 +282,8 @@ class GdiDesktopSourceImpl : public DesktopSource {
 
  private:
     CaptureRect rect_;
+    CaptureRect desktop_;
+    bool pixels_are_physical_ = false;
     std::string error_;
 };
 
@@ -247,7 +291,7 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
                                                     int32_t y, int32_t width,
                                                     int32_t height,
                                                     std::string* error) {
-    EnablePerMonitorDpiAwareness();
+    const bool dpi_ok = EnablePerMonitorDpiAwareness();
 
     std::string local_error;
     CaptureRect rect;
@@ -257,8 +301,22 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
         return nullptr;
     }
 
-    // Probe the display so a headless host (no interactive desktop) fails here
-    // with a reason instead of returning a source that can only fail later.
+    // Snapshot the virtual desktop: it is the domain MOUSEEVENTF_VIRTUALDESK
+    // normalizes against, independent of which monitor was captured.
+    CaptureRect desktop;
+    desktop.left = Metric(SM_XVIRTUALSCREEN);
+    desktop.top = Metric(SM_YVIRTUALSCREEN);
+    desktop.right = desktop.left + Metric(SM_CXVIRTUALSCREEN);
+    desktop.bottom = desktop.top + Metric(SM_CYVIRTUALSCREEN);
+
+    // The SM_* metrics are only physical pixels when the process is
+    // per-monitor aware; compare the PRIMARY monitor's size with the display's
+    // real pixel size. DESKTOPHORZRES/VERTRES on the desktop DC describe the
+    // primary monitor (Microsoft Learn, GetDeviceCaps: "if hdc is the desktop,
+    // GetDeviceCaps returns the capabilities of the primary monitor"), so the
+    // virtual-screen bounding box must not be used here -- on a multi-monitor
+    // system it is larger and the comparison would always fail, disabling
+    // absolute movement exactly where --monitor N matters.
     const HDC probe = ::CreateDC(TEXT("DISPLAY"), nullptr, nullptr, nullptr);
     if (probe == nullptr) {
         if (error != nullptr) {
@@ -266,10 +324,17 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
         }
         return nullptr;
     }
+    const int physical_w = ::GetDeviceCaps(probe, DESKTOPHORZRES);
+    const int physical_h = ::GetDeviceCaps(probe, DESKTOPVERTRES);
     (void)::DeleteDC(probe);
 
+    const bool pixels_are_physical =
+        PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN),
+                          physical_w, physical_h);
+
     if (error != nullptr) error->clear();
-    return std::make_unique<GdiDesktopSourceImpl>(rect);
+    return std::make_unique<GdiDesktopSourceImpl>(rect, desktop,
+                                                  pixels_are_physical);
 }
 
 }  // namespace rtsc::server

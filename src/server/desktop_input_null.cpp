@@ -42,6 +42,8 @@ class NullDesktopInputSink final : public DesktopInputSink {
         stats.release_failures = 0;
         // No worker thread either, so no iteration can fail.
         stats.worker_failures = 0;
+        // The null backend has no geometry, so it never fail-closes a move.
+        stats.dropped_unmapped = 0;
         return stats;
     }
 

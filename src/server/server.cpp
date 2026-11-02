@@ -1365,7 +1365,23 @@ class RdpSession {
         // Remember it here; the sink is told only once this session actually
         // acquires the input lease, so a non-holder never appears in the
         // sink's geometry bookkeeping.
+        //
+        // The capture/desktop rectangles come from the source: the capture
+        // may be a single monitor or a sub-rectangle, so only the source knows
+        // where its pixels are on the virtual screen. A source that does not
+        // report them (a synthetic one) leaves `mapped` false, which makes the
+        // mapping layer drop absolute moves instead of guessing.
+        const DesktopGeometry geometry =
+            source_ != nullptr ? source_->Geometry() : DesktopGeometry{};
         inject_geometry_ = InjectGeometry{desktop_width_, desktop_height_};
+        inject_geometry_.capture =
+            InjectRect{geometry.capture_x, geometry.capture_y,
+                       geometry.capture_width, geometry.capture_height};
+        inject_geometry_.desktop =
+            InjectRect{geometry.desktop_x, geometry.desktop_y,
+                       geometry.desktop_width, geometry.desktop_height};
+        inject_geometry_.mapped = geometry.mapped;
+        inject_geometry_.pixels_are_physical = geometry.pixels_are_physical;
         inject_geometry_known_ = true;
 
         std::vector<proto::GccUserData::Block> blocks;

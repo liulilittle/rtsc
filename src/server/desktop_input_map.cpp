@@ -10,21 +10,56 @@
 namespace rtsc::server {
 namespace {
 
-// Maps one absolute coordinate into Win32's normalized 0..65535 range.
+// Clamps into the closed interval [lo, hi]. All mapping arithmetic is int64:
+// the capture/desktop rectangles are physical pixels and the framebuffer is
+// up to 8192 wide, so a 32-bit product would be uncomfortably close to the
+// limit (32766 * 65536 ~ 2.147e9).
+int64_t Clamp(int64_t value, int64_t lo, int64_t hi) {
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+// Maps one wire coordinate through the four steps of
+// docs/spec/input-geometry-design-M.md 3.2:
 //
-// The negotiated framebuffer has `extent` pixels per axis; the client's last
-// valid pixel is extent-1, which maps onto 65535. Values at or beyond the last
-// pixel are clamped rather than allowed to overflow the wire range (the RDP
-// coordinate is a uint16 and may legally carry 65535). Callers reject a
-// geometry whose extent is 0 (not known yet) or 1 (no span) before asking for
-// absolute movement; the guard here only keeps a future caller from dividing by
-// zero.
-int NormalizeAxis(uint16_t value, uint16_t extent) {
-    if (extent <= 1) return static_cast<int>(value);
-    const int last = static_cast<int>(extent) - 1;
-    if (value >= last) return 65535;
-    const int64_t scaled = static_cast<int64_t>(value) * 65535 + last / 2;
-    return static_cast<int>(scaled / last);
+//   framebuffer pixel -> capture pixel (center sampling, floor)
+//                     -> virtual-screen pixel (+ capture origin)
+//                     -> Win32 normalized 0..65535 (+ desktop origin/extent)
+//
+// The caller guarantees AbsoluteMoveMappable(g), so every divisor is positive
+// and every rectangle has a span.
+int MapAxis(uint16_t wire, uint16_t framebuffer, int32_t capture_origin,
+            int32_t capture_extent, int32_t desktop_origin,
+            int32_t desktop_extent) {
+    const int64_t fb = static_cast<int64_t>(framebuffer);
+    const int64_t cap = static_cast<int64_t>(capture_extent);
+    const int64_t desk = static_cast<int64_t>(desktop_extent);
+
+    // Step 0: clamp the untrusted wire value into the client's coordinate space.
+    const int64_t f = Clamp(static_cast<int64_t>(wire), 0, fb - 1);
+
+    // Step 1: centered sampling, matching GDI StretchBlt(COLORONCOLOR). With
+    // capture_extent == framebuffer this is exactly f.
+    int64_t local = 0;
+    if (fb >= 1 && cap > 0) {
+        local = ((2 * f + 1) * cap) / (2 * fb);
+        if (local > cap - 1) local = cap - 1;
+    }
+
+    // Step 2: place the capture pixel on the virtual screen.
+    const int64_t physical = static_cast<int64_t>(capture_origin) + local;
+
+    // Step 3: normalize against the virtual desktop, which is what
+    // MOUSEEVENTF_VIRTUALDESK maps the 0..65535 range onto.
+    const int64_t relative =
+        Clamp(physical - static_cast<int64_t>(desktop_origin), 0, desk - 1);
+    // The last pixel keeps the documented endpoint (65535 maps onto the
+    // lower-right corner); the interior uses ceil(rel*65536/extent), which is
+    // the exact inverse of the OS's floor(n*extent/65536).
+    if (relative >= desk - 1) return 65535;
+    const int64_t normalized = (relative * 65536 + desk - 1) / desk;
+    return static_cast<int>(normalized > 65535 ? 65535 : normalized);
 }
 
 }  // namespace
@@ -69,17 +104,19 @@ std::vector<PlatformInput> TranslateInput(const InputEvent& ev,
             // Only PTRFLAGS_MOVE moves the absolute pointer; a release carries
             // the button bit without MOVE. Treating every kMouse as a move
             // would teleport the cursor to (0, 0) on each button release.
-            // Normalization needs a real pixel span on both axes. With a
-            // geometry of 0 (not negotiated yet) or 1 (no span) the old 1:1
-            // pass-through sent the raw wire value as a normalized coordinate,
-            // which puts the pointer at the wrong place (or leaves it pinned
-            // at the top-left corner). Drop the move rather than inject a
-            // position that cannot be derived.
-            if (ev.is_move && g.width > 1 && g.height > 1) {
+            //
+            // The move is fail-closed when the geometry is not trusted (see
+            // AbsoluteMoveMappable): injecting an un-normalized wire value
+            // pins the pointer to the top-left corner and a wrongly normalized
+            // one lands on the wrong monitor. Buttons are handled below and
+            // are unaffected, so a click whose move was dropped still arrives.
+            if (ev.is_move && AbsoluteMoveMappable(g)) {
                 PlatformInput move;
                 move.kind = PlatformInput::Kind::kMouseMove;
-                move.x = NormalizeAxis(ev.x, g.width);
-                move.y = NormalizeAxis(ev.y, g.height);
+                move.x = MapAxis(ev.x, g.width, g.capture.x, g.capture.width,
+                                 g.desktop.x, g.desktop.width);
+                move.y = MapAxis(ev.y, g.height, g.capture.y, g.capture.height,
+                                 g.desktop.y, g.desktop.height);
                 out.push_back(move);
             }
             // The button identity is present on presses AND releases; dropping

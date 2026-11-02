@@ -13,6 +13,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -153,6 +155,166 @@ RTSC_TEST(desktop_gdi_pixel_matches_getpixel) {
         matched = ok;
     }
     CHECK(matched);
+}
+
+RTSC_TEST(desktop_gdi_geometry_matches_virtual_screen) {
+    // Geometry() must report the same rectangle the capture actually blits
+    // from: the virtual-screen bounding box for monitor -1. The desktop field
+    // (the VIRTUALDESK normalization domain) is that same box.
+    std::string why;
+    if (!HaveInteractiveDesktop(why)) {
+        std::printf("  SKIP: %s\n", why.c_str());
+        return;
+    }
+    std::string error;
+    auto source = rtsc::server::MakeGdiDesktopSource(-1, 0, 0, 0, 0, &error);
+    if (source == nullptr) {
+        std::printf("  SKIP: MakeGdiDesktopSource failed: %s\n", error.c_str());
+        return;
+    }
+    const rtsc::server::DesktopGeometry g = source->Geometry();
+    const int vx = ::GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = ::GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    CHECK(g.mapped);
+    CHECK_EQ(g.capture_x, vx);
+    CHECK_EQ(g.capture_y, vy);
+    CHECK_EQ(g.capture_width, vw);
+    CHECK_EQ(g.capture_height, vh);
+    CHECK_EQ(g.desktop_x, vx);
+    CHECK_EQ(g.desktop_y, vy);
+    CHECK_EQ(g.desktop_width, vw);
+    CHECK_EQ(g.desktop_height, vh);
+
+    // pixels_are_physical must mean exactly what the factory promises: the
+    // PRIMARY monitor's SM_* snapshot equals the desktop DC's real pixel size.
+    // (DESKTOPHORZRES/VERTRES on the desktop DC describe the primary monitor,
+    // so the virtual-screen bounding box is deliberately not compared here.)
+    const HDC screen = ::CreateDC(TEXT("DISPLAY"), nullptr, nullptr, nullptr);
+    if (screen != nullptr) {
+        const int physical_w = ::GetDeviceCaps(screen, DESKTOPHORZRES);
+        const int physical_h = ::GetDeviceCaps(screen, DESKTOPVERTRES);
+        (void)::DeleteDC(screen);
+        CHECK_EQ(g.pixels_are_physical,
+                 ::GetSystemMetrics(SM_CXSCREEN) == physical_w &&
+                     ::GetSystemMetrics(SM_CYSCREEN) == physical_h);
+    }
+}
+
+RTSC_TEST(desktop_gdi_geometry_matches_primary_monitor) {
+    std::string why;
+    if (!HaveInteractiveDesktop(why)) {
+        std::printf("  SKIP: %s\n", why.c_str());
+        return;
+    }
+    std::string error;
+    auto source = rtsc::server::MakeGdiDesktopSource(0, 0, 0, 0, 0, &error);
+    if (source == nullptr) {
+        std::printf("  SKIP: MakeGdiDesktopSource(monitor 0) failed: %s\n",
+                    error.c_str());
+        return;
+    }
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    const POINT origin{0, 0};
+    CHECK(::GetMonitorInfo(::MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY),
+                           &info) != FALSE);
+    const rtsc::server::DesktopGeometry g = source->Geometry();
+    CHECK(g.mapped);
+    CHECK_EQ(g.capture_x, info.rcMonitor.left);
+    CHECK_EQ(g.capture_y, info.rcMonitor.top);
+    CHECK_EQ(g.capture_width, info.rcMonitor.right - info.rcMonitor.left);
+    CHECK_EQ(g.capture_height, info.rcMonitor.bottom - info.rcMonitor.top);
+    // The normalization domain stays the whole virtual desktop, not just the
+    // selected monitor.
+    CHECK_EQ(g.desktop_x, ::GetSystemMetrics(SM_XVIRTUALSCREEN));
+    CHECK_EQ(g.desktop_y, ::GetSystemMetrics(SM_YVIRTUALSCREEN));
+    CHECK_EQ(g.desktop_width, ::GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    CHECK_EQ(g.desktop_height, ::GetSystemMetrics(SM_CYVIRTUALSCREEN));
+}
+
+RTSC_TEST(desktop_gdi_geometry_explicit_rectangle) {
+    std::string why;
+    if (!HaveInteractiveDesktop(why)) {
+        std::printf("  SKIP: %s\n", why.c_str());
+        return;
+    }
+    const int vw = ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int vh = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (vw < 200 || vh < 200) {
+        std::printf("  SKIP: virtual screen too small for a 100x50 sub-rect\n");
+        return;
+    }
+    std::string error;
+    auto source = rtsc::server::MakeGdiDesktopSource(-1, 7, 9, 100, 50, &error);
+    if (source == nullptr) {
+        std::printf("  SKIP: MakeGdiDesktopSource(rect) failed: %s\n",
+                    error.c_str());
+        return;
+    }
+    const rtsc::server::DesktopGeometry g = source->Geometry();
+    CHECK(g.mapped);
+    CHECK_EQ(g.capture_x, ::GetSystemMetrics(SM_XVIRTUALSCREEN) + 7);
+    CHECK_EQ(g.capture_y, ::GetSystemMetrics(SM_YVIRTUALSCREEN) + 9);
+    CHECK_EQ(g.capture_width, 100);
+    CHECK_EQ(g.capture_height, 50);
+    CHECK_EQ(g.desktop_width, vw);
+    CHECK_EQ(g.desktop_height, vh);
+}
+
+RTSC_TEST(desktop_gdi_pixels_are_physical_predicate) {
+    using rtsc::server::PixelsArePhysical;
+    // DPI awareness took effect: primary logical size == physical size.
+    CHECK(PixelsArePhysical(true, 1920, 1080, 1920, 1080));
+    CHECK(PixelsArePhysical(true, 2560, 1440, 2560, 1440));
+    // DPI not in effect: the logical primary is virtualized (smaller).
+    CHECK(!PixelsArePhysical(true, 2048, 1152, 2560, 1440));
+    // The awareness call failed: never trust the metrics.
+    CHECK(!PixelsArePhysical(false, 1920, 1080, 1920, 1080));
+    // Multi-monitor: the primary monitor and the desktop DC's physical size
+    // agree even though the virtual desktop is wider (3200). The predicate is
+    // given the PRIMARY size, never the virtual-screen box. Passing the
+    // virtual width where the primary width belongs is the defect this
+    // predicate must reject.
+    CHECK(PixelsArePhysical(true, 1920, 1080, 1920, 1080));
+    CHECK(!PixelsArePhysical(true, 3200, 1080, 1920, 1080));
+    // Zero/negative physical metrics cannot be trusted.
+    CHECK(!PixelsArePhysical(true, 0, 0, 0, 0));
+}
+
+RTSC_TEST(desktop_gdi_geometry_uses_primary_screen_metrics) {
+    // The factory must feed the predicate SM_CXSCREEN/SM_CYSCREEN, not the
+    // virtual-screen bounding box: GetDeviceCaps on the desktop DC reports the
+    // primary monitor, so comparing it with SM_*VIRTUALSCREEN would report
+    // "not physical" on every multi-monitor system and drop all absolute
+    // movement (the exact bug this batch fixes). A single-monitor host cannot
+    // distinguish the two values at runtime, so the call site is guarded
+    // structurally (the same pattern as the host-wiring checks in
+    // test_desktop_input.cpp).
+#ifdef RTSC_SOURCE_DIR
+    const std::string path =
+        std::string(RTSC_SOURCE_DIR) + "/src/server/desktop_gdi.cpp";
+    std::ifstream in(path, std::ios::binary);
+    CHECK(in.is_open());
+    if (!in.is_open()) return;
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    const size_t call = src.find("PixelsArePhysical(dpi_ok");
+    CHECK(call != std::string::npos);
+    if (call == std::string::npos) return;
+    const size_t end = src.find(");", call);
+    CHECK(end != std::string::npos);
+    if (end == std::string::npos) return;
+    const std::string args = src.substr(call, end - call);
+    CHECK(args.find("SM_CXSCREEN") != std::string::npos);
+    CHECK(args.find("SM_CYSCREEN") != std::string::npos);
+    CHECK(args.find("SM_CXVIRTUALSCREEN") == std::string::npos);
+    CHECK(args.find("SM_CYVIRTUALSCREEN") == std::string::npos);
+#else
+    std::printf("  FAIL: RTSC_SOURCE_DIR not defined\n");
+    CHECK(false);
+#endif
 }
 
 RTSC_TEST(desktop_gdi_unknown_monitor_fails) {

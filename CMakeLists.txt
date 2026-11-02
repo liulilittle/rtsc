@@ -677,9 +677,13 @@ if(WIN32)
     target_include_directories(rtsc_server_desktop_gdi PUBLIC include)
     target_link_libraries(rtsc_server_desktop_gdi PUBLIC gdi32 user32)
 
-    add_executable(rtsc_desktop_gdi_tests tests/test_desktop_gdi.cpp)
-    target_link_libraries(rtsc_desktop_gdi_tests PRIVATE rtsc_server_desktop_gdi rtsc_util)
-    target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
+add_executable(rtsc_desktop_gdi_tests tests/test_desktop_gdi.cpp)
+target_link_libraries(rtsc_desktop_gdi_tests PRIVATE rtsc_server_desktop_gdi rtsc_util)
+target_include_directories(rtsc_desktop_gdi_tests PRIVATE tests)
+# The geometry predicate's call site cannot be distinguished on a
+# single-monitor host, so the suite guards it structurally against the source.
+target_compile_definitions(rtsc_desktop_gdi_tests PRIVATE
+                           "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 endif()
 
 # Server-side desktop input injection. The mapping layer is platform neutral

@@ -56,6 +56,18 @@ struct PlatformInput {
     bool horizontal = false;
 };
 
+// True when an absolute movement can be mapped with `g` without guessing.
+//
+// The mapping needs a trusted capture rectangle inside a known physical
+// virtual desktop, a framebuffer with a real span, and a non-degenerate
+// capture/desktop. When this is false TranslateInput emits no kMouseMove
+// (fail closed): buttons, wheels and keys still translate normally.
+inline bool AbsoluteMoveMappable(const InjectGeometry& g) {
+    return g.mapped && g.pixels_are_physical && g.width > 1 && g.height > 1 &&
+           g.capture.width > 0 && g.capture.height > 0 &&
+           g.desktop.width > 1 && g.desktop.height > 1;
+}
+
 // Translates one decoded RDP input event into zero or more platform actions.
 //
 //   kKey      -> one kKey (scancode copied verbatim, never offset by 0x100);
@@ -64,9 +76,9 @@ struct PlatformInput {
 //                KEYEVENTF_EXTENDED1, and its bare scan code would inject a
 //                plain CTRL/NumLock pair
 //   kUnicode  -> one kKey with `unicode` set (drops a zero code point)
-//   kMouse    -> kMouseMove when is_move is set AND the geometry has a real
-//                span on both axes (> 1 pixel), and/or kMouseButton when a
-//                button identity is present; neither -> empty
+//   kMouse    -> kMouseMove when is_move is set AND AbsoluteMoveMappable(g),
+//                and/or kMouseButton when a button identity is present;
+//                neither -> empty
 //   kWheel    -> one kWheel (x/y are ignored, the wire sends them but they are
 //                meaningless for a wheel event); a zero delta -> empty
 //   kMouseRel -> empty (relative injection is subject to mouse acceleration and

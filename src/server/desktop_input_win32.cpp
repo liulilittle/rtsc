@@ -144,10 +144,22 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             return;
         }
         SessionInputState& session = sessions_[session_id];
+        // A move that cannot be mapped is fail-closed inside TranslateInput.
+        // Count it separately from unrepresentable events so "geometry is
+        // untrusted" is visible to an operator. A click carrying the move is
+        // still translated below, so the button is never lost.
+        const bool unmappable_move =
+            ev.kind == InputEvent::Kind::kMouse && ev.is_move &&
+            !AbsoluteMoveMappable(session.geometry);
+        if (unmappable_move) {
+            dropped_unmapped_.fetch_add(1, std::memory_order_relaxed);
+        }
         const std::vector<PlatformInput> inputs =
             TranslateInput(ev, session.geometry);
         if (inputs.empty()) {
-            dropped_unsupported_.fetch_add(1, std::memory_order_relaxed);
+            if (!unmappable_move) {
+                dropped_unsupported_.fetch_add(1, std::memory_order_relaxed);
+            }
             return;
         }
         for (const PlatformInput& input : inputs) {
@@ -214,6 +226,8 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             release_failures_.load(std::memory_order_relaxed);
         stats.worker_failures =
             worker_failures_.load(std::memory_order_relaxed);
+        stats.dropped_unmapped =
+            dropped_unmapped_.load(std::memory_order_relaxed);
         return stats;
     }
 
@@ -710,6 +724,8 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     std::atomic<uint64_t> injected_failed_{0};
     std::atomic<uint64_t> dropped_queue_full_{0};
     std::atomic<uint64_t> dropped_unsupported_{0};
+    // Absolute moves fail-closed because the session geometry is untrusted.
+    std::atomic<uint64_t> dropped_unmapped_{0};
     // Teardown synthetic ups that could not be queued: the corresponding key or
     // button stays physically down, so this is the only place it is visible.
     std::atomic<uint64_t> release_failures_{0};
