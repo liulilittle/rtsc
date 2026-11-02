@@ -404,3 +404,64 @@ Get-ChildItem "$env:TEMP\opencode\auditQ" -Recurse -File | Select-Object Name,Le
   `BUILD_EXIT=0` 在"什么都没编"时同样成立，这正是假绿/假红的来源。
 - 判据升级：每个变异必须同时记录"被改文件出现在编译输出中"+"目标用例红的名单"；
   恢复后必须记录"hash 相同 + 该文件重编 + 全量绿"。
+## 第866轮：装配函数"半注入"——度量来源分叉，变异全绿（例 37）
+
+### 症状
+`AssembleGdiDesktopSource(bool dpi_ok, const MetricSource& metrics, ...)` 收下了 `metrics`，
+但只有 `PixelsArePhysicalFromMetrics` 用它；desktop 快照与 `ResolveCaptureRect`（捕获矩形
+解析 + 裁剪）仍走全局 `Metric()` = `::GetSystemMetrics`。
+把 `desktop.right` 从 `SM_CXVIRTUALSCREEN` 改成 `SM_CXSCREEN` → **gdi 全绿**；
+把生产工厂的 `dpi_ok` 改成字面量 `true` → **gdi 全绿**。
+
+### 根因
+seam（注入点）只覆盖了它自己那一条支路，装配函数里**另一条支路**仍读全局状态。
+测试用的 fake 无法影响全局 `::GetSystemMetrics`，于是那条支路在单屏机器上永远等于真值，
+任何错误都被真值掩盖。这不是"测试写得不够狠"，而是**注入粒度与装配范围不匹配**。
+
+### 证据
+`[BASH: 独立 cl 编译 test_desktop_gdi.cpp+desktop_gdi.cpp+crash_guard.cpp]`
+- 基线 `11 tests, 60 checks, 0 failing`
+- `desktop.right = ... Metric(SM_CXSCREEN)` → `0 failing`（全绿）
+- 生产工厂 `AssembleGdiDesktopSource(true, ...)` → `0 failing`（全绿）
+修复后（全部度量走 `metrics.SystemMetric`，`dpi_ok` 变成 seam 形参）：
+- `desktop.right` 改 `SM_CXSCREEN` → **FAIL :435/:440，1 failing/2 checks**
+- 生产工厂 `dpi_ok` 改 `true` → **FAIL :461，1 failing/1 check**
+
+### 教训（例 37）
+- **注入的边界必须等于装配的边界**：只要装配函数里还有一处读全局，那条支路的变异就无人守。
+  判断标准不是"这个函数有没有收 metrics"，而是"这个函数**每一处**度量是否都经由它"。
+- **字面量参数是缺口信号**：seam 工厂传 `AssembleGdiDesktopSource(true, ...)` 而生产传真实值，
+  意味着"这一维"在 seam 下不可调、在测试下不可错。凡 seam 把参数写成常量，
+  就问："把它换成常量后谁红？"——答不出即缺口。
+- 修复方向永远是**让 seam 拥有该维度**（加形参），不是给常量加断言注释。
+## 第866轮：用 String.Replace 做变异会同时改掉同形的多处 → 自己的变异证据说谎（例 38）
+
+### 症状
+我报告"F2：生产工厂把 `dpi_ok` 改成 `true` → FAIL :461"，并把这条当作 F2 已闭合的证据。
+审计 U 实测同一变异 **13/73 全绿**，要求我复核落点。
+
+### 根因
+我用的 PowerShell 语句是
+`$s.Replace('    return AssembleGdiDesktopSource(dpi_ok, ...);', '... true ...')`。
+该字符串在文件里**出现两次**（`:404` 生产入口、`:411` seam 工厂），`String.Replace` 替换全部。
+于是 seam 也变成硬编码 `true`，`:461`（只受 seam 形参影响）转红。
+我把"这一行被替换"当成"生产入口被替换"，**没有确认替换次数**。
+
+### 证据
+`[BASH: ([regex]::Matches($s, [regex]::Escape($needle))).Count]` → `occurrences=2`。
+单点变异（用 `IndexOf` 定位到 `MakeGdiDesktopSource(` 之后再插入）：
+- 只改生产入口 `dpi_ok` → **13/73 全绿**（U 正确，我错）
+- 只改 seam（`AssembleGdiDesktopSource(true, ...)`）→ 红 `:461`
+
+### 修复（真正的闭合）
+给生产入口也装上 seam：新增 `MakeGdiDesktopSourceWithDpiProbe(probe, ...)`，
+生产入口变成一行胶水 `return MakeGdiDesktopSourceWithDpiProbe(&EnablePerMonitorDpiAwareness, ...)`。
+变异"装配忽略 probe 结果"→ **红 :561 + :571**；变异"生产入口传 nullptr"→ **红 :561**。
+
+### 教训（例 38）
+- **变异必须定位到唯一位置**：用 `IndexOf`/`LastIndexOf` 取偏移再 `Remove+Insert`，
+  并在替换后 `Select-String 'MUT-'` 确认只有**一处**带标记；`String.Replace` 默认全局，
+  是"变异打偏"的头号来源。
+- **变异目标必须与断言目标一致**：`@:461` 断言的是 seam 形参，用它来证明"生产入口"是错的；
+  正确做法是先问"这条断言能观察到我要改的那一层吗"。
+- 别人的实测与我的声明冲突时，**默认我错**并按对方的落点重跑；审计 U 这次是对的。

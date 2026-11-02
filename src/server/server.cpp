@@ -889,6 +889,15 @@ class RdpSession {
                 // only visible signal for an untrusted geometry. Other
                 // non-injectable events (SYNC, relative moves, zero codes)
                 // are not geometry faults and stay uncounted.
+                //
+                // `ev.button == 0` is redundant here, not load-bearing: this
+                // branch is only reached when IsInjectable(ev, g) is false, and
+                // for a kMouse event that means `!is_move` OR (`is_move` with
+                // an unmappable geometry) with no button, so a button-carrying
+                // move never gets this far. It is kept as the statement of
+                // intent ("a pure move"), and the test sends a flagless pointer
+                // event to pin the `ev.is_move` term, which IS load-bearing
+                // (batch 26 F3).
                 if (ev.kind == InputEvent::Kind::kMouse && ev.is_move &&
                     ev.button == 0) {
                     input_sink_->NoteUnmappableMove(input_session_id_);

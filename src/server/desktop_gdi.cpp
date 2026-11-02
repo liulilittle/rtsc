@@ -54,7 +54,12 @@ struct MonitorEntry {
     bool primary;
 };
 
-int Metric(int index) { return ::GetSystemMetrics(index); }
+// Every SM_* lookup goes through the injected MetricSource so that the whole
+// assembly (capture-rect resolution, desktop snapshot, physical-pixel decision)
+// can be driven by a fake on a single-monitor host. Reading the real metrics in
+// some branches and the injected ones in others left the branches nobody could
+// reach unguarded: changing the desktop snapshot to the primary monitor's size
+// stayed green (see .opencode/discover.md example 37).
 
 // Switches the process to per-monitor-v2 DPI awareness so GetSystemMetrics and
 // the GDI DC report physical pixels. Best effort: the call fails when a
@@ -89,8 +94,9 @@ BOOL CALLBACK CollectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
     return TRUE;
 }
 
-bool ResolveCaptureRect(int monitor_index, int32_t x, int32_t y, int32_t width,
-                        int32_t height, CaptureRect& rect, std::string& error) {
+bool ResolveCaptureRect(const MetricSource& metrics, int monitor_index,
+                        int32_t x, int32_t y, int32_t width, int32_t height,
+                        CaptureRect& rect, std::string& error) {
     if (monitor_index >= 0) {
         std::vector<MonitorEntry> monitors;
         ::EnumDisplayMonitors(nullptr, nullptr, CollectMonitor,
@@ -117,10 +123,10 @@ bool ResolveCaptureRect(int monitor_index, int32_t x, int32_t y, int32_t width,
         rect.right = r.right;
         rect.bottom = r.bottom;
     } else {
-        rect.left = Metric(SM_XVIRTUALSCREEN);
-        rect.top = Metric(SM_YVIRTUALSCREEN);
-        rect.right = rect.left + Metric(SM_CXVIRTUALSCREEN);
-        rect.bottom = rect.top + Metric(SM_CYVIRTUALSCREEN);
+        rect.left = metrics.SystemMetric(SM_XVIRTUALSCREEN);
+        rect.top = metrics.SystemMetric(SM_YVIRTUALSCREEN);
+        rect.right = rect.left + metrics.SystemMetric(SM_CXVIRTUALSCREEN);
+        rect.bottom = rect.top + metrics.SystemMetric(SM_CYVIRTUALSCREEN);
         if (rect.right <= rect.left || rect.bottom <= rect.top) {
             error = "no interactive desktop: the virtual screen is empty";
             return false;
@@ -135,10 +141,10 @@ bool ResolveCaptureRect(int monitor_index, int32_t x, int32_t y, int32_t width,
     int h = height > 0 ? static_cast<int>(height) : base_h;
 
     // Clamp to the virtual desktop so the blit never reads off-screen.
-    const int vx = Metric(SM_XVIRTUALSCREEN);
-    const int vy = Metric(SM_YVIRTUALSCREEN);
-    const int max_x = vx + Metric(SM_CXVIRTUALSCREEN);
-    const int max_y = vy + Metric(SM_CYVIRTUALSCREEN);
+    const int vx = metrics.SystemMetric(SM_XVIRTUALSCREEN);
+    const int vy = metrics.SystemMetric(SM_YVIRTUALSCREEN);
+    const int max_x = vx + metrics.SystemMetric(SM_CXVIRTUALSCREEN);
+    const int max_y = vy + metrics.SystemMetric(SM_CYVIRTUALSCREEN);
     if (rect.left < vx) rect.left = vx;
     if (rect.top < vy) rect.top = vy;
     if (rect.left > max_x) rect.left = max_x;
@@ -342,19 +348,28 @@ class GdiDesktopSourceImpl : public DesktopSource {
 namespace {
 
 // Shared assembly for both factory entries. The capture rectangle is resolved
-// by the caller (it needs the live metrics); everything from the desktop
-// snapshot through the physical-pixel decision is identical here. Routing the
-// test seam through this function is what covers the assembly point: a wrong
-// metric choice below shows up in Geometry().pixels_are_physical.
+// first (it needs the same metrics); everything from the desktop snapshot
+// through the physical-pixel decision is identical here. Routing the test seam
+// through this function is what covers the assembly point: a wrong metric
+// choice below shows up in Geometry().
 std::unique_ptr<DesktopSource> AssembleGdiDesktopSource(
-    bool dpi_ok, const MetricSource& metrics, const CaptureRect& rect) {
+    bool dpi_ok, const MetricSource& metrics, int monitor_index, int32_t x,
+    int32_t y, int32_t width, int32_t height, std::string* error) {
+    CaptureRect rect;
+    std::string local_error;
+    if (!ResolveCaptureRect(metrics, monitor_index, x, y, width, height, rect,
+                            local_error)) {
+        if (error != nullptr) *error = local_error;
+        return nullptr;
+    }
+
     // Snapshot the virtual desktop: it is the domain MOUSEEVENTF_VIRTUALDESK
     // normalizes against, independent of which monitor was captured.
     CaptureRect desktop;
-    desktop.left = Metric(SM_XVIRTUALSCREEN);
-    desktop.top = Metric(SM_YVIRTUALSCREEN);
-    desktop.right = desktop.left + Metric(SM_CXVIRTUALSCREEN);
-    desktop.bottom = desktop.top + Metric(SM_CYVIRTUALSCREEN);
+    desktop.left = metrics.SystemMetric(SM_XVIRTUALSCREEN);
+    desktop.top = metrics.SystemMetric(SM_YVIRTUALSCREEN);
+    desktop.right = desktop.left + metrics.SystemMetric(SM_CXVIRTUALSCREEN);
+    desktop.bottom = desktop.top + metrics.SystemMetric(SM_CYVIRTUALSCREEN);
 
     // The SM_* metrics are only physical pixels when the process is
     // per-monitor aware; compare the PRIMARY monitor's size with the display's
@@ -364,6 +379,8 @@ std::unique_ptr<DesktopSource> AssembleGdiDesktopSource(
     // makes that choice behaviourally testable on a single-monitor host.
     const bool pixels_are_physical =
         PixelsArePhysicalFromMetrics(dpi_ok, metrics);
+
+    if (error != nullptr) error->clear();
     return std::make_unique<GdiDesktopSourceImpl>(rect, desktop,
                                                   pixels_are_physical);
 }
@@ -374,15 +391,31 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
                                                     int32_t y, int32_t width,
                                                     int32_t height,
                                                     std::string* error) {
-    const bool dpi_ok = EnablePerMonitorDpiAwareness();
+    // One line of glue over the injectable entry: the only thing this adds is
+    // WHICH probe is used. Everything else (metric snapshot, capture-rect
+    // resolution, assembly) is shared, so the DPI wiring cannot drift between
+    // what ships and what the tests drive.
+    return MakeGdiDesktopSourceWithDpiProbe(
+        &EnablePerMonitorDpiAwareness, monitor_index, x, y, width, height,
+        error);
+}
 
-    std::string local_error;
-    CaptureRect rect;
-    if (!ResolveCaptureRect(monitor_index, x, y, width, height, rect,
-                            local_error)) {
-        if (error != nullptr) *error = local_error;
-        return nullptr;
-    }
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
+    const MetricSource& metrics, bool dpi_ok, int monitor_index, int32_t x,
+    int32_t y, int32_t width, int32_t height, std::string* error) {
+    return AssembleGdiDesktopSource(dpi_ok, metrics, monitor_index, x, y, width,
+                                    height, error);
+}
+
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithDpiProbe(
+    DpiAwarenessProbe probe, int monitor_index, int32_t x, int32_t y,
+    int32_t width, int32_t height, std::string* error) {
+    // The same body as MakeGdiDesktopSource with exactly one substitution: the
+    // DPI probe. Keeping the two in step is what makes the wiring testable --
+    // the production entry is one line of glue over this function, so a test
+    // that drives this one covers "probe result reaches the assembly" without
+    // needing a real display or a fake DPI context.
+    const bool dpi_ok = (probe != nullptr) ? probe() : false;
 
     Win32MetricSource metrics;
     if (!metrics.has_display()) {
@@ -392,22 +425,8 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
         return nullptr;
     }
 
-    if (error != nullptr) error->clear();
-    return AssembleGdiDesktopSource(dpi_ok, metrics, rect);
-}
-
-std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
-    const MetricSource& metrics, int monitor_index, int32_t x, int32_t y,
-    int32_t width, int32_t height, std::string* error) {
-    std::string local_error;
-    CaptureRect rect;
-    if (!ResolveCaptureRect(monitor_index, x, y, width, height, rect,
-                            local_error)) {
-        if (error != nullptr) *error = local_error;
-        return nullptr;
-    }
-    if (error != nullptr) error->clear();
-    return AssembleGdiDesktopSource(true, metrics, rect);
+    return AssembleGdiDesktopSource(dpi_ok, metrics, monitor_index, x, y, width,
+                                    height, error);
 }
 
 }  // namespace rtsc::server

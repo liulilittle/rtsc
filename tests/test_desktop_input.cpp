@@ -1,4 +1,4 @@
-﻿// Pure mapping tests for the desktop input injection seam.
+// Pure mapping tests for the desktop input injection seam.
 //
 // TranslateInput() is platform neutral by design: it never includes
 // <windows.h> and never calls SendInput, so these cases run on every platform
@@ -43,6 +43,7 @@ using rtsc::server::KeyId;
 using rtsc::server::MakeWin32DesktopInputSink;
 using rtsc::server::PlatformInput;
 using rtsc::server::PauseSequenceFilter;
+using rtsc::server::PeriodicInputStatsLine;
 using rtsc::server::PressedInputs;
 using rtsc::server::TranslateInput;
 
@@ -1736,31 +1737,87 @@ RTSC_TEST(desktop_input_stats_change_detection_covers_all_counters) {
     // The host only logs a periodic line when InputStatsChanged() says so. If a
     // counter is missing from the comparison, a session whose only fault is
     // that counter never produces a line (the batch 24 R3 case was
-    // dropped_unmapped). Each field is bumped alone here.
+    // dropped_unmapped). Each field is bumped alone here, in BOTH directions:
+    // only `injected` used to be checked both ways, so turning `!=` into `<` on
+    // any other field stayed green (audit U, batch 26 U-1).
     const InputStats base;
     CHECK(!InputStatsChanged(base, base));
-    InputStats next = base;
-    next.injected = 1;
-    CHECK(InputStatsChanged(base, next));
-    CHECK(InputStatsChanged(next, base));
-    next = base;
-    next.dropped_queue_full = 1;
-    CHECK(InputStatsChanged(base, next));
-    next = base;
-    next.dropped_rate_limited = 1;
-    CHECK(InputStatsChanged(base, next));
-    next = base;
-    next.send_failures = 1;
-    CHECK(InputStatsChanged(base, next));
-    next = base;
-    next.release_failures = 1;
-    CHECK(InputStatsChanged(base, next));
-    next = base;
-    next.worker_failures = 1;
-    CHECK(InputStatsChanged(base, next));
-    next = base;
-    next.dropped_unmapped = 1;
-    CHECK(InputStatsChanged(base, next));
+    auto bump = [&base](const char* which) {
+        InputStats next = base;
+        if (std::strcmp(which, "injected") == 0) next.injected = 1;
+        if (std::strcmp(which, "queue") == 0) next.dropped_queue_full = 1;
+        if (std::strcmp(which, "rate") == 0) next.dropped_rate_limited = 1;
+        if (std::strcmp(which, "send") == 0) next.send_failures = 1;
+        if (std::strcmp(which, "release") == 0) next.release_failures = 1;
+        if (std::strcmp(which, "worker") == 0) next.worker_failures = 1;
+        if (std::strcmp(which, "unmapped") == 0) next.dropped_unmapped = 1;
+        return next;
+    };
+    for (const char* field :
+         {"injected", "queue", "rate", "send", "release", "worker", "unmapped"}) {
+        const InputStats moved = bump(field);
+        // Forward (a counter grew) and reverse (the arguments are swapped: the
+        // caller's snapshot is the larger one after a restart or a reset).
+        CHECK(InputStatsChanged(base, moved));
+        CHECK(InputStatsChanged(moved, base));
+    }
+}
+
+RTSC_TEST(desktop_input_stats_line_field_order_is_stable) {
+    // Asserting that each `key=value` substring exists says nothing about the
+    // order they appear in, so swapping two whole segments (keys and values
+    // moved together) stayed green (audit U, batch 26 U-2). Operators and log
+    // scrapers match on position, so the order is part of the contract: pin it
+    // once, completely, against a hand-written expected line.
+    InputStats stats;
+    stats.injected = 1;
+    stats.dropped_queue_full = 2;
+    stats.dropped_rate_limited = 3;
+    stats.send_failures = 4;
+    stats.release_failures = 5;
+    stats.worker_failures = 6;
+    stats.dropped_unmapped = 7;
+    const std::string expected =
+        "input stats (periodic): input_injected=1 "
+        "input_dropped_queue=2 input_rate_limited=3 "
+        "input_send_failures=4 input_release_failures=5 "
+        "input_worker_failures=6 input_dropped_unmapped=7";
+    CHECK(FormatInputStats("periodic", stats) == expected);
+}
+
+RTSC_TEST(desktop_input_stats_line_handles_null_reason) {
+    // The host always passes a literal reason, so a null one is only reachable
+    // from a future caller. It must not crash and must not print the word
+    // "null": the prefix is empty (audit U, batch 26 U-3).
+    const InputStats stats;
+    CHECK_EQ(FormatInputStats(nullptr, stats).compare(0, 16, "input stats (): "),
+             0);
+    CHECK(FormatInputStats(nullptr, stats).find("null") == std::string::npos);
+}
+
+
+RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
+    // The host's periodic branch prints ONLY when a counter moved, otherwise a
+    // 5 s sampler would flood the log with identical lines. That branch needs a
+    // live peer to reach (a counter has to change), which the `--seconds` host
+    // runs cannot produce, so the decision lives in PeriodicInputStatsLine and
+    // is asserted here instead (batch 26 F5).
+    const InputStats base;
+    CHECK(PeriodicInputStatsLine(base, base).empty());
+
+    InputStats moved = base;
+    moved.dropped_unmapped = 3;
+    const std::string line = PeriodicInputStatsLine(base, moved);
+    CHECK(!line.empty());
+    CHECK_EQ(line.compare(0, 24, "input stats (periodic): "), 0);
+    CHECK(line.find("input_dropped_unmapped=3") != std::string::npos);
+    // A `final` line is a different reason and must never be mistaken for one.
+    CHECK(line.find("(final)") == std::string::npos);
+
+    // Going back to the printed values produces nothing again: the caller keeps
+    // the last printed snapshot, so an intermediate change does not stick.
+    CHECK(PeriodicInputStatsLine(moved, moved).empty());
+    CHECK(PeriodicInputStatsLine(moved, base).empty() == false);
 }
 
 RTSC_TEST(desktop_input_null_sink_stats_count_injections) {

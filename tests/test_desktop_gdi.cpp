@@ -67,13 +67,16 @@ void CheckFrame(const char* label, rtsc::server::DesktopSource& source,
 class FakeMetrics final : public rtsc::server::MetricSource {
  public:
     FakeMetrics(int primary_w, int primary_h, int virtual_w, int virtual_h,
-                int physical_w, int physical_h)
+                int physical_w, int physical_h, int virtual_x = 0,
+                int virtual_y = 0)
         : primary_w_(primary_w),
           primary_h_(primary_h),
           virtual_w_(virtual_w),
           virtual_h_(virtual_h),
           physical_w_(physical_w),
-          physical_h_(physical_h) {}
+          physical_h_(physical_h),
+          virtual_x_(virtual_x),
+          virtual_y_(virtual_y) {}
 
     int SystemMetric(int index) const override {
         switch (index) {
@@ -81,6 +84,10 @@ class FakeMetrics final : public rtsc::server::MetricSource {
                 return primary_w_;
             case SM_CYSCREEN:
                 return primary_h_;
+            case SM_XVIRTUALSCREEN:
+                return virtual_x_;
+            case SM_YVIRTUALSCREEN:
+                return virtual_y_;
             case SM_CXVIRTUALSCREEN:
                 return virtual_w_;
             case SM_CYVIRTUALSCREEN:
@@ -99,8 +106,22 @@ class FakeMetrics final : public rtsc::server::MetricSource {
     int virtual_h_;
     int physical_w_;
     int physical_h_;
+    // The virtual-screen ORIGIN, which is non-zero (and usually negative) on a
+    // multi-monitor host with a display left of / above the primary. Defaulting
+    // to 0 made SM_X/YVIRTUALSCREEN indistinguishable from "unmodelled", so a
+    // snapshot that dropped the origin stayed green (audit U, batch 26 U-4).
+    int virtual_x_;
+    int virtual_y_;
 };
 
+// A probe that counts how many times the factory consults it. Declared at file
+// scope because DpiAwarenessProbe is a plain function pointer (a capturing
+// lambda cannot convert to it), and the count must survive the call.
+int g_probe_calls = 0;
+bool CountingDpiProbe() {
+    g_probe_calls += 1;
+    return true;
+}
 }  // namespace
 
 RTSC_TEST(desktop_gdi_capture_default) {
@@ -111,8 +132,12 @@ RTSC_TEST(desktop_gdi_capture_default) {
     }
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSource(-1, 0, 0, 0, 0, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource failed: %s\n", error.c_str());
+        std::printf("  factory failed on an interactive desktop: %s\n", error.c_str());
         return;
     }
     CheckFrame("virtual desktop", *source, 320, 240);
@@ -126,8 +151,12 @@ RTSC_TEST(desktop_gdi_capture_primary_monitor) {
     }
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSource(0, 0, 0, 0, 0, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource(monitor 0) failed: %s\n",
+        std::printf("  factory failed for monitor 0: %s\n",
                     error.c_str());
         return;
     }
@@ -143,8 +172,12 @@ RTSC_TEST(desktop_gdi_capture_rect) {
     std::string error;
     // A 160x120 rectangle of the virtual desktop, offset from its origin.
     auto source = rtsc::server::MakeGdiDesktopSource(-1, 0, 0, 160, 120, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource(rect) failed: %s\n",
+        std::printf("  factory failed for an explicit rect: %s\n",
                     error.c_str());
         return;
     }
@@ -206,8 +239,12 @@ RTSC_TEST(desktop_gdi_geometry_matches_virtual_screen) {
     }
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSource(-1, 0, 0, 0, 0, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource failed: %s\n", error.c_str());
+        std::printf("  factory failed on an interactive desktop: %s\n", error.c_str());
         return;
     }
     const rtsc::server::DesktopGeometry g = source->Geometry();
@@ -248,8 +285,12 @@ RTSC_TEST(desktop_gdi_geometry_matches_primary_monitor) {
     }
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSource(0, 0, 0, 0, 0, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource(monitor 0) failed: %s\n",
+        std::printf("  factory failed for monitor 0: %s\n",
                     error.c_str());
         return;
     }
@@ -286,8 +327,12 @@ RTSC_TEST(desktop_gdi_geometry_explicit_rectangle) {
     }
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSource(-1, 7, 9, 100, 50, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSource(rect) failed: %s\n",
+        std::printf("  factory failed for an explicit rect: %s\n",
                     error.c_str());
         return;
     }
@@ -383,9 +428,13 @@ RTSC_TEST(desktop_gdi_factory_feeds_primary_metrics_to_decision) {
     FakeMetrics multi(1920, 1080, 3200, 1080, 1920, 1080);
     std::string error;
     auto source = rtsc::server::MakeGdiDesktopSourceWithMetrics(
-        multi, -1, 0, 0, 0, 0, &error);
+        multi, true, -1, 0, 0, 0, 0, &error);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26).
+    CHECK(source != nullptr);
     if (source == nullptr) {
-        std::printf("  SKIP: MakeGdiDesktopSourceWithMetrics failed: %s\n",
+        std::printf("  seam factory failed on an interactive desktop: %s\n",
                     error.c_str());
         return;
     }
@@ -395,11 +444,131 @@ RTSC_TEST(desktop_gdi_factory_feeds_primary_metrics_to_decision) {
     // defect's signature) must be rejected even through the factory.
     FakeMetrics wrong(3200, 1080, 3200, 1080, 1920, 1080);
     auto rejected = rtsc::server::MakeGdiDesktopSourceWithMetrics(
-        wrong, -1, 0, 0, 0, 0, &error);
+        wrong, true, -1, 0, 0, 0, 0, &error);
     CHECK(rejected != nullptr);
     if (rejected != nullptr) {
         CHECK(!rejected->Geometry().pixels_are_physical);
     }
+}
+
+RTSC_TEST(desktop_gdi_factory_snapshots_desktop_from_injected_metrics) {
+    // The desktop snapshot is the domain MOUSEEVENTF_VIRTUALDESK normalizes
+    // against, so it must describe the whole virtual screen even when only one
+    // monitor is captured. That branch used to read GetSystemMetrics directly
+    // while the decision read the injected source: replacing it with the
+    // primary monitor's size stayed green on a single-monitor host (batch 26
+    // F1, .opencode/discover.md example 37). The fake makes the virtual box
+    // differ from the primary by construction, so the two cannot be confused.
+    //
+    // Non-zero virtual origin catches a snapshot that drops SM_X/YVIRTUALSCREEN
+    // (a secondary monitor left of / above the primary makes the origin
+    // negative in reality); the odd extents catch width/height being swapped.
+    //
+    // The origin used to be omitted from FakeMetrics, so it fell through to
+    // `default: return 0` and was indistinguishable from "unmodelled": deleting
+    // the origin from the snapshot stayed green while this comment claimed it
+    // would not (audit U, batch 26 U-4). The fake now models both origins and
+    // they are non-zero, so the assertion below has something to catch.
+    FakeMetrics metrics(/*primary=*/1920, 1080, /*virtual=*/3201, 1801,
+                        /*physical=*/1920, 1080, /*virtual_x=*/-100,
+                        /*virtual_y=*/-50);
+    // The interactive-desktop guard already ran, so a null source is a factory
+    // failure, not an unsupported environment. Reporting SKIP here turned "the
+    // factory is broken" into a green run (audit T, batch 26: a seam that
+    // always returned nullptr left 11 tests / 57 checks green).
+    std::string error;
+    auto source = rtsc::server::MakeGdiDesktopSourceWithMetrics(
+        metrics, true, -1, 0, 0, 0, 0, &error);
+    CHECK(source != nullptr);
+    if (source == nullptr) {
+        std::printf("  factory failed on an interactive desktop: %s\n",
+                    error.c_str());
+        return;
+    }
+    const rtsc::server::DesktopGeometry g = source->Geometry();
+    CHECK(g.mapped);
+    // Capture defaults to the whole virtual screen (monitor_index == -1), so it
+    // must begin at the virtual-screen origin, not at (0, 0).
+    CHECK_EQ(g.capture_x, -100);
+    CHECK_EQ(g.capture_y, -50);
+    CHECK_EQ(g.capture_width, 3201);
+    CHECK_EQ(g.capture_height, 1801);
+    // The desktop snapshot must be the virtual box, not the primary monitor.
+    CHECK_EQ(g.desktop_x, -100);
+    CHECK_EQ(g.desktop_y, -50);
+    CHECK_EQ(g.desktop_width, 3201);
+    CHECK_EQ(g.desktop_height, 1801);
+    // The assertion above already pins both values; these are redundant but
+    // state the failure mode explicitly so a future edit that reverts to the
+    // primary monitor's size cannot be mistaken for a capture change.
+    CHECK(g.desktop_width != 1920);
+    CHECK(g.desktop_height != 1080);
+}
+
+RTSC_TEST(desktop_gdi_factory_threads_dpi_ok_into_decision) {
+    // Both directions are asserted so the parameter is wired rather than merely
+    // present: identical metrics must flip the result when the probe's answer
+    // flips.
+    FakeMetrics metrics(1920, 1080, 1920, 1080, 1920, 1080);
+    std::string error;
+    auto aware = rtsc::server::MakeGdiDesktopSourceWithMetrics(
+        metrics, /*dpi_ok=*/true, -1, 0, 0, 0, 0, &error);
+    auto unaware = rtsc::server::MakeGdiDesktopSourceWithMetrics(
+        metrics, /*dpi_ok=*/false, -1, 0, 0, 0, 0, &error);
+    CHECK(aware != nullptr);
+    CHECK(unaware != nullptr);
+    if (aware != nullptr && unaware != nullptr) {
+        CHECK(aware->Geometry().pixels_are_physical);
+        CHECK(!unaware->Geometry().pixels_are_physical);
+    }
+}
+
+RTSC_TEST(desktop_gdi_production_entry_threads_probe_result) {
+    // The previous test drives the assembly's dpi_ok PARAMETER. It cannot see
+    // the production entry, whose dpi_ok comes from
+    // EnablePerMonitorDpiAwareness(): replacing that call with the constant
+    // `true` stayed green, because on every modern host the real probe already
+    // returns true, so `true` is an identity substitution no observation can
+    // distinguish (audit T item 1, audit U batch 26 F2 -- my first attempt at
+    // this fix had exactly that hole, see .opencode/discover.md example 38).
+    //
+    // Driving the injectable entry with a probe that RETURNS false makes the
+    // production wiring falsifiable: if the entry stopped threading the probe's
+    // result into the assembly, this test goes red.
+    std::string why;
+    if (!HaveInteractiveDesktop(why)) {
+        std::printf("  SKIP: %s\n", why.c_str());
+        return;
+    }
+
+    auto probes_false = []() -> bool { return false; };
+    auto probes_true = []() -> bool { return true; };
+
+    std::string error;
+    auto unaware = rtsc::server::MakeGdiDesktopSourceWithDpiProbe(
+        probes_false, -1, 0, 0, 0, 0, &error);
+    // A null source here means the real desktop is unavailable, which the
+    // guard above already excluded: treat it as a failure, not a SKIP, so a
+    // broken factory cannot masquerade as an unsupported environment.
+    CHECK(unaware != nullptr);
+    if (unaware == nullptr) return;
+    CHECK(!unaware->Geometry().pixels_are_physical);
+
+    auto aware = rtsc::server::MakeGdiDesktopSourceWithDpiProbe(
+        probes_true, -1, 0, 0, 0, 0, &error);
+    CHECK(aware != nullptr);
+    if (aware == nullptr) return;
+    CHECK(aware->Geometry().pixels_are_physical);
+
+    // The probe is consulted exactly once per factory call: a factory that
+    // ignored it (or called it per-monitor) would show a different count.
+    // A capturing lambda cannot convert to this function-pointer seam, so the
+    // counter lives in a file-scope variable.
+    g_probe_calls = 0;
+    auto via_counted = rtsc::server::MakeGdiDesktopSourceWithDpiProbe(
+        &CountingDpiProbe, -1, 0, 0, 0, 0, &error);
+    CHECK(via_counted != nullptr);
+    CHECK_EQ(g_probe_calls, 1);
 }
 
 RTSC_TEST(desktop_gdi_unknown_monitor_fails) {

@@ -36,4 +36,10 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur) {
            prev.dropped_unmapped != cur.dropped_unmapped;
 }
 
+std::string PeriodicInputStatsLine(const InputStats& printed,
+                                   const InputStats& current) {
+    if (!InputStatsChanged(printed, current)) return std::string();
+    return FormatInputStats("periodic", current);
+}
+
 }  // namespace rtsc::server

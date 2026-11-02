@@ -85,18 +85,42 @@ bool PixelsArePhysicalFromMetrics(bool dpi_ok, const MetricSource& metrics);
 
 // Test-only factory entry: the same assembly as MakeGdiDesktopSource
 // (capture-rect resolution, desktop snapshot, physical-pixel decision) but
-// reading the decision's metrics from `metrics` instead of the live Win32
-// source. dpi_ok is taken as true; the caller supplies the metric snapshot.
+// every metric -- and the DPI-awareness outcome -- comes from the caller
+// instead of the live Win32 source.
 //
 // The production factory and this overload both funnel through the same
-// assembly function, so a defect at the assembly point -- e.g. feeding the
-// virtual-screen box to PixelsArePhysicalFromMetrics instead of the primary
-// monitor's size -- flips Geometry().pixels_are_physical and turns the test
-// red. Driving only PixelsArePhysicalFromMetrics directly would not cover that
-// wiring (see .opencode/discover.md example 35).
-std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
-    const MetricSource& metrics, int monitor_index = -1, int32_t x = 0,
+// assembly function, so a defect at the assembly point flips
+// Geometry().pixels_are_physical or the reported capture/desktop rectangles and
+// turns the test red. Driving only PixelsArePhysicalFromMetrics directly would
+// not cover that wiring (see .opencode/discover.md example 35).
+//
+// `dpi_ok` exists because the assembly used to hard-code `true` here while the
+// production entry passed the real result of EnablePerMonitorDpiAwareness():
+// replacing the production argument with `true` therefore stayed green. With it
+// as a parameter, the "DPI awareness did not take effect" branch is reachable
+// through the assembly too (example 37).
+//
+// `monitor_index >= 0` still enumerates the real monitors
+// (EnumDisplayMonitors); only the virtual-desktop path (the default -1) can be
+// driven entirely by `metrics`.
+//
+// The production entry calls EnablePerMonitorDpiAwareness() to obtain dpi_ok.
+// That call cannot be faked from a test (it reports the process's real state,
+// which is "aware" on any modern host), so replacing its result with the
+// constant `true` stayed green even after `dpi_ok` became a parameter here
+// (audit T item 1 and audit U, batch 26 F2). `MakeGdiDesktopSourceWithDpiProbe`
+// is the injectable form of that entry: it takes the probe's outcome, so the
+// production wiring "probe result -> assembly" is covered rather than only the
+// parameter's pass-through.
+using DpiAwarenessProbe = bool (*)();
+
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithDpiProbe(
+    DpiAwarenessProbe probe, int monitor_index = -1, int32_t x = 0,
     int32_t y = 0, int32_t width = 0, int32_t height = 0,
+    std::string* error = nullptr);
+std::unique_ptr<DesktopSource> MakeGdiDesktopSourceWithMetrics(
+    const MetricSource& metrics, bool dpi_ok, int monitor_index = -1,
+    int32_t x = 0, int32_t y = 0, int32_t width = 0, int32_t height = 0,
     std::string* error = nullptr);
 
 }  // namespace rtsc::server

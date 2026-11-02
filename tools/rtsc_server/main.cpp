@@ -611,10 +611,16 @@ int main(int argc, char** argv) {
         log.line(rtsc::server::FormatInputStats(reason, stats));
         printed_input = stats;
     };
-    auto input_stats_changed = [&]() {
-        if (!input_sink) return false;
-        return rtsc::server::InputStatsChanged(printed_input,
-                                              input_sink->Stats());
+    // One sample: print only when a counter moved. The decision and the text
+    // both live in PeriodicInputStatsLine so the "no change -> no line"
+    // requirement is unit tested; this host run (no peer) cannot reach it.
+    auto log_input_stats_if_changed = [&]() {
+        if (!input_sink) return;
+        const std::string line = rtsc::server::PeriodicInputStatsLine(
+            printed_input, input_sink->Stats());
+        if (line.empty()) return;
+        log.line(line);
+        printed_input = input_sink->Stats();
     };
 
     std::string error;
@@ -698,7 +704,7 @@ int main(int argc, char** argv) {
         }
         if (now >= next_input_stats) {
             next_input_stats = now + kInputStatsInterval;
-            if (input_stats_changed()) log_input_stats("periodic");
+            log_input_stats_if_changed();
         }
         if (bounded && now >= deadline) {
             log.line("run window elapsed; stopping");

@@ -798,3 +798,53 @@ C++ 子进程代码），5 个用例：
 **[x] 已闭合**。此前只能在真机清单里人工验收的两条（`input_dropped_unmapped` 打印、
 纯移动计数），现在由 `host_cli_stats_line` 自动断言"该行确实由主干装配出来"；
 真机仍保留"数字是否随注入变化"的语义验收。
+## 批 26（round 866）——审计 T 五条落地（F1-F5）+ U 等待收口
+
+### 来源
+审计 T 对批 24（`fa79fec`）判 CONDITIONAL，3 项测试盲区 + 2 项文档数字，全 Low。
+主代理对 T-1/T-2/T-5 全部**自行复现**（discover 例 29：不采信转述），T-4 自行核实行号。
+
+### 已完成（工作树，待 U 收口后提交）
+| 项 | 修复 | 变异 → 结果 |
+|---|---|---|
+| F1 [T-1] | `AssembleGdiDesktopSource` 收 `monitor_index/x/y/w/h`，内部先 `ResolveCaptureRect(metrics,...)`；desktop 快照与裁剪全部改 `metrics.SystemMetric`；删除全局 helper `Metric()`。生产与 seam 共用同一装配 | `desktop.right`→`SM_CXSCREEN`：**FAIL :435/:440**（改前全绿） |
+| F2 [T-2] | `MakeGdiDesktopSourceWithMetrics` 增加 `bool dpi_ok` 形参；新增 `desktop_gdi_factory_threads_dpi_ok_into_decision`（同 metrics 下 dpi_ok 翻转必须翻转结果） | 生产工厂 `dpi_ok`→`true`：**FAIL :461**（改前全绿） |
+| F3 [T-3] | `test_server.cpp` 新增"零标志位指针事件"用例（`EncodeMouseEvent(0,...)`×5），断言 `dropped_unmapped` 不变；`server.cpp` 加注释说明 `ev.button == 0` 在 `!IsInjectable` 下恒真 | 删 `ev.is_move` → **1 failing/2 checks**；删 `ev.button == 0` → **仍全绿**（冗余已如实标注） |
+| F4 [T-4] | checklist `:85` 六个→七个并列出七个名字；seam.md `五个`→`七个`、表补 `worker_failures`/`dropped_unmapped` 两行、接口块补 `NoteUnmappableMove`/`FormatInputStats`/`InputStatsChanged`、日志样例补两字段 | grep 验收：`六个`=0、`七个`=2；七个键名 doc/src **逐一对齐 1:1** |
+| F5 [T-5] | 新增纯函数 `PeriodicInputStatsLine(printed,current)`（无变化返回空串，否则 `input stats (periodic): ...`）；main 改为单次调用 | `return std::string()` → **红**；`"periodic"`→`"final"` → **红** |
+| F5 残留 | main 的 lambda 整体 `return;` → **5 个 host_cli 全绿** | **不可达**（`--seconds N` 无客户端时计数恒不变化，周期性分支不执行）。如实登记，不伪造覆盖 |
+
+### 验证
+- 构建：`BUILD_EXIT=0`，六类诊断全 0（含 `/W4 /WX`）
+- 全量：`ctest -j1` **68/68, 0 failed**（60.60s）
+- host 实测：`--seconds 1` → `input stats (final): input_injected=0 ... input_dropped_unmapped=0`（7 字段）
+- 变异恢复：`MUT-`/`MUTANT` 残留 **0**
+- 新增测试计数：desktop_gdi 11→13 tests（60→73 checks）
+### 批 26 审计收口（round 867）——双审一致，F2 返工
+
+**双审一致结论**：批 24 = CONDITIONAL（无生产缺陷，测试/文档缺口全 Low）；批 26 WIP 首版**未达标**，两审独立实测同一件事：
+我把 `String.Replace` 用在出现两次的字符串上，**同时改掉了生产入口与 seam**，所以 `:461` 变红不能证明生产入口。我按单点定位重跑，**确认 U 正确、我错**（discover 例 38）。
+
+**F2 返工（真正闭合）**
+- 新增 `MakeGdiDesktopSourceWithDpiProbe(DpiAwarenessProbe, ...)`（`desktop_gdi.h`），
+  生产入口 `MakeGdiDesktopSource` 变为一行胶水，只负责选择探测函数。
+- 新用例 `desktop_gdi_production_entry_threads_probe_result`：probe→false 必须 `!pixels_are_physical`、
+  probe→true 必须 `pixels_are_physical`、probe 每次工厂调用恰好被调用 **1** 次。
+- 变异验证：装配忽略 probe → **红 :561 + :571**；生产入口传 nullptr → **红 :561**。
+
+**其余各项收口（全部变异红/绿对照）**
+| 项 | 修复 | 变异 → 结果 |
+|---|---|---|
+| U-4 | `FakeMetrics` 增加 `virtual_x/virtual_y`，用例用非零原点 (-100,-50) 并断言 `desktop_x/y` 与 `capture_x/y` | `desktop.left = 0` → **红 :497** |
+| U-1 | 七字段**双向**断言（提取 `bump(field)` 循环） | `!=`→`<` → **红 7 处 + 1**（改前仅 injected 红） |
+| U-2 | 整行相等断言（手写期望串，锁顺序） | 整段换位 → **红 :1785**（改前绿） |
+| U-3 | `reason==nullptr` 前缀断言 + 不含 "null" | 回退串改 `"none"` → **红 :1794** |
+| U-7 | seam.md §1.3 `InjectGeometry` 2 字段 → 6 字段（含 `InjectRect`/`mapped`/`pixels_are_physical`），删「没有 origin」旧注 | grep 字段名与 header 一致 |
+| T 新发现 | 几何用例对 `source==nullptr` 由 SKIP 改为 `CHECK(source != nullptr)`（9 处），SKIP 仅保留交互桌面守卫 | seam 恒 nullptr → **红 3 tests/4 checks**（改前 11 tests/57 checks 全绿） |
+
+**验证**：构建 exit 0、六类诊断全 0；`ctest -j1` **68/68, 0 failed**（77.76s）；desktop_input 68 tests/13910 checks；desktop_gdi 14 tests/89 checks；`MUT-` 残留 0。
+
+**F5 残留（如实登记为 OPEN，不宣称闭合）**
+两审均给出方案对比：F5 纯函数只杀函数内部；"删除 main 的调用 / lambda 整体 return" 仍绿。
+审计 U 实测**方案1（env 门控的测试 sink）能让后者转红**，但需生产 main 多一个可替换后端 + 安全评审；方案3（起真客户端）能全杀但时序 flaky，未实现。
+**处置**：本轮**不实现**（属新的生产面改动，需独立批次与安全评审）；R7 的"函数内部"部分已闭合，"宿主调用点"部分标记 **OPEN**，不计入 R7 已闭合。

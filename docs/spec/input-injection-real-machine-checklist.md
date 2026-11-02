@@ -82,8 +82,10 @@
 - [ ] 断开后继续用另一客户端注入，确认无残留移动/按键，日志无 `sessions_` 相关异常。
 
 ## 10. 可观测（`input stats`）
-- [ ] `--once` 与 `--seconds N` 正常退出时打印 `input stats (final)`，六个计数与实际观察一致
-      （注入成功应有 `input_injected` > 0）。
+- [ ] `--once` 与 `--seconds N` 正常退出时打印 `input stats (final)`，七个计数与实际观察一致
+      （注入成功应有 `input_injected` > 0）。七个计数依次是 `input_injected`、
+      `input_dropped_queue`、`input_rate_limited`、`input_send_failures`、
+      `input_release_failures`、`input_worker_failures`、`input_dropped_unmapped`。
 - [ ] 无界模式（不带 `--seconds`）按 Ctrl+C **不会**打印 final（当前无 SIGINT 处理）——
       确认文档未承诺该行为。
 - [ ] 周期性 `input stats (periodic)` 只在计数变化时出现，**不得刷屏**；`lease denied summary`

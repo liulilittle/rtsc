@@ -4418,6 +4418,27 @@ RTSC_TEST(server_unmappable_move_does_not_hold_lease) {
     // Keys are not unmappable moves: the counter did not move.
     CHECK_EQ(sink.Stats().dropped_unmapped, static_cast<size_t>(5));
 
+    // A pointer event carrying NO flags at all (neither PTRFLAGS_MOVE nor a
+    // button bit) is also not injectable, but it is not a move either: it must
+    // not be counted as an unmappable move. Without this case the inner guard's
+    // `ev.is_move` term had no coverage -- deleting it stayed green because the
+    // only non-injectable pointer events the suite sent were real moves (batch
+    // 26 F3). The outer `!input_lease_held_` check cannot rescue that, since
+    // this session never took the lease.
+    const size_t before_flagsless = sink.Stats().dropped_unmapped;
+    auto send_flagsless = [&mover]() {
+        return WriteAll(*mover.transport,
+                        McsSendData::build_request(
+                            mover.user_channel, mover.io_channel,
+                            EncodeFastPathInputPdu(
+                                {EncodeMouseEvent(0, 320, 240)})));
+    };
+    for (int i = 0; i < 5; ++i) CHECK(send_flagsless());
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK_EQ(sink.Stats().dropped_unmapped, before_flagsless);
+    CHECK_EQ(sink.Stats().dropped_unmapped, static_cast<size_t>(5));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
     server.Stop();
     runner.join();
 }

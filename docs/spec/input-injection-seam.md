@@ -82,11 +82,28 @@
 // include/rtsc/server/desktop_input.h
 namespace rtsc::server {
 
-// RDP 指针坐标所表达的坐标系：协商后的 framebuffer 尺寸。
-// 注意：没有 origin、没有 virtual_desktop 标志（见 §1.7 第 2 条）。
+// 虚拟屏幕物理像素坐标里的矩形；原点可为负（主屏左/上方的显示器）。
+struct InjectRect {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+};
+
+// 注入坐标所在的几何。`width`/`height` 是协商后的 framebuffer（客户端坐标系）；
+// `capture` 是 framebuffer 取自物理虚拟屏幕的哪块；`desktop` 是
+// MOUSEEVENTF_VIRTUALDESK 归一化所用的虚拟桌面外接框。
+// `mapped` 为 false 表示 capture/desktop 未知（合成源或尚未协商）；
+// `pixels_are_physical` 为 false 表示进程 DPI 上下文未证实为物理像素。
+// 两者任一为 false 都让绝对移动 fail-closed，但按钮/滚轮/键盘不受影响。
+// （§1.7 第 2 条描述的"没有 origin"是历史草案，已由本结构取代。）
 struct InjectGeometry {
     uint16_t width = 0;
     uint16_t height = 0;
+    InjectRect capture;
+    InjectRect desktop;
+    bool mapped = false;
+    bool pixels_are_physical = false;
 };
 
 struct InputStats {
@@ -95,6 +112,8 @@ struct InputStats {
     size_t dropped_rate_limited = 0;
     size_t send_failures = 0;       // SendInput 未成功发出 1 个事件
     size_t release_failures = 0;    // teardown 合成 up 无法入队
+    size_t worker_failures = 0;     // worker 线程吞掉的异常动作
+    size_t dropped_unmapped = 0;    // 几何不可信的纯移动（fail-closed）
 };
 
 class DesktopInputSink {
@@ -104,8 +123,15 @@ class DesktopInputSink {
     // 返回值是 void：丢弃只经 InputStats 可见（§1.6）。
     virtual void Inject(uint32_t session_id, const InputEvent& ev) = 0;
     virtual void ReleaseSession(uint32_t session_id) = 0;
+    // 未持租约的会话也必须报：否则几何不可信时 dropped_unmapped 恒为 0。
+    virtual void NoteUnmappableMove(uint32_t session_id) = 0;
     virtual InputStats Stats() const = 0;
 };
+
+// 宿主 `input stats` 行的唯一构造点，抽成纯函数以便直接断言每个字段。
+std::string FormatInputStats(const char* reason, const InputStats& stats);
+// 宿主只在计数变化时打印；逐字段比较，漏掉一个字段该计数就永远不打印。
+bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSink();
 
@@ -170,7 +196,7 @@ void SetInputSink(DesktopInputSink* sink);  // nullptr 关闭注入；指针必�
 （UIPI、锁屏、桌面切换），不是对端违约；断了等于把本机问题变成对端连接问题，还能被普通用户开高完整性
 窗口当成 DoS。协议层惩罚只用于协议违约（未知事件类型 SHOULD 断连，与本议题是两件事）。
 
-对外可观测面 = `InputStats` **五个**计数器（`include/rtsc/server/desktop_input.h`）：
+对外可观测面 = `InputStats` **七个**计数器（`include/rtsc/server/desktop_input.h`）：
 
 | 字段 | 含义 |
 |---|---|
@@ -179,15 +205,17 @@ void SetInputSink(DesktopInputSink* sink);  // nullptr 关闭注入；指针必�
 | `dropped_rate_limited` | 限流拒绝（§2.3） |
 | `send_failures` | `SendInput` 返回值 != 1 |
 | `release_failures` | teardown 的合成 up 无法入队（`AppendReleasesLocked` 抛异常），键/按钮可能仍按下 |
+| `worker_failures` | worker 线程吞掉的异常动作（非 0 表示有注入被静默丢弃） |
+| `dropped_unmapped` | 几何不可信而被 fail-closed 丢弃的纯移动；含**未持租约**的会话（`NoteUnmappableMove`） |
 
 `sink` 内部另有 `dropped_unsupported`（已释放会话的迟到事件、翻译为空的事件），**未接出**结构体。
 `SendInput` 失败日志行为：任意一次失败后，若距上一条失败日志已满 5 s 就打印一行（`kFailureLogInterval`），
 不带失败率判定，也没有"恢复"行。限流丢弃**不打日志**（只经 `dropped_rate_limited` 可见）。
 
-宿主 `main.cpp` 每 5 s 采样一次 `Stats()`，仅在任一计数变化时打印
-`input stats (periodic|final): input_injected=… input_dropped_queue=… input_rate_limited=… input_send_failures=… input_release_failures=…`；
-`(final)` **只**在正常退出路径（`--once`、`--seconds` 到期）打印。无界模式没有
-`SetConsoleCtrlHandler`，Ctrl+C 直接终止进程，**不打印 final**。
+宿主 `main.cpp` 每 5 s 采样一次 `Stats()`，仅在任一计数变化时（`InputStatsChanged`）打印
+`input stats (periodic|final): input_injected=… input_dropped_queue=… input_rate_limited=… input_send_failures=… input_release_failures=… input_worker_failures=… input_dropped_unmapped=…`；
+行文本由纯函数 `FormatInputStats` 构造。`(final)` **只**在正常退出路径（`--once`、`--seconds` 到期）打印。
+无界模式没有 `SetConsoleCtrlHandler`，Ctrl+C 直接终止进程，**不打印 final**。
 
 **回压**：`Inject` 是 `void`（与 §1.3 一致，历史文档的 `bool` 说法已废弃）；丢弃只经计数可见，会话不重传
 （输入是实时语义，重传旧键位比丢掉更糟）。全仓唯一注入出口是 `RdpSession::InjectIfLeasable` 里的
