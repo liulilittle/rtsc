@@ -931,3 +931,31 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 - 可选后端默认 OFF 时，gate 必须显式打开，否则测试被 `#if` 静默编译掉。
 - `core.autocrlf=true` 的仓库必须有 `.gitattributes` 钉 `*.sh` 为 `eol=lf`。
 - **0.01 秒"通过"是可疑信号**：含 TLS 握手的套件瞬间通过，应怀疑"没跑"。
+### 批 35（`3bb033f`）—— gate 只信退出码 ⇒ 抓不住"用例被守卫掉"
+
+**问题**：批 34 修了 gate 的配置，但 gate 的断言仍全是聚合结果
+（`BUILD_EXIT`/`FAILED_COUNT`/`CTEST_EXIT`）。被 `#if` 守卫掉的用例在 ctest 上
+照样 `100% tests passed` ⇒ **批 34 修的缺陷，批 34 的 gate 抓不住**。
+
+**修复**：两道身份断言
+1. `ctest -N` 必须列出 `tls_openssl server_security desktop_input host_cli_periodic_stats_line`
+2. 直接执行 `rtsc_server_security_tests`，要求含
+   `OK ... tls_server_regression_coalesced_first_record_no_stall`
+
+**可证伪性（第16条：红→红→绿）**
+| 变异 | 输出 |
+|---|---|
+| M1 gate `ON`→`OFF` | `LINUX GATE FAIL: required tests missing: tls_openssl` |
+| M2 `:444 #if defined(RTSC_TLS_OPENSSL)`→`#if 0` | `P0 ... did not execute` **且** `REQUIRED_TESTS=present` ⇒ 第2道断言独立有效 |
+| 恢复 | SHA256 `3AE7AFC7...9A8A` 一致；全仓 `MUT-` 残留 0 |
+| 绿证 | `LINUX GATE PASS`、68/68、`P0_REGRESSION=executed`、`FAILED_COUNT=0`、`WINDOWS_H_COUNT=0` |
+| 语法 | `bash -n` → `SYNTAX_OK` |
+
+**平台差异精确化**（`ctest -N --show-only=json-v1` 对比）
+- Linux 68 / Windows 69
+- Windows-only: `desktop_gdi`, `tls`
+- Linux-only: `tls_openssl`
+- 其余 67 项完全同名 ⇒ 差异是平台后端替换，**不是用例丢失**
+
+**教训（discover 例 46）**：聚合断言不覆盖身份；修"验证漏检"后必须问
+"我的 gate 现在能抓住它吗"；新增断言必须构造**只触发该断言**的变异来证明其独立有效。

@@ -640,48 +640,37 @@ D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorde
   验证：干净树 passed / 3 行夹具 3 条全报 / 非仓库 128 报错退出；`ctest` 69/69。
   双审一致 PASS（提交级），两角色 `delete` 解散。
 
-## 第872轮：Linux gate 从 FAIL 到 PASS —— 5 个隐藏的真错误
-### 关键转折
-此前多轮我把 Linux 记为 UNVERIFIED("被既有 -Werror=reorder 阻断")，**从没实际跑过 gate**。
-本轮实跑：`FAILED_COUNT=4`，真实错误 **5 个**（reorder 只是其一），其中 **2 个在生产代码**：
-- `server.cpp:1400` `InjectGeometry{a,b}` 只初始化前 2 成员 → `-Wmissing-field-initializers`
-- `server.cpp:715` 初始化列表顺序 ≠ 声明顺序 → `-Wreorder`
-其余：测试 5 处 2 参聚合初始化、`WaitUntil` 未使用、`main.cpp` switch 漏 `kMouseRel`、
-`test_server_security.cpp` 用 `!defined(_WIN32)` 守卫 OpenSSL 但 `RTSC_TLS_OPENSSL` 默认 OFF。
-### 修复与验证
-| 项 | 证据 |
+## 第872-874轮（合并）：Linux gate 三层缺陷 —— 从"跑不起来"到"跑起来也没证明"
+
+### 三层（逐层加深，每层都是"绿但没证明"）
+| 层 | 缺陷 | 证据 | 修复 |
+|---|---|---|---|
+| 1 | `.sh` 被 `core.autocrlf=true` 检出为 CRLF，bash 起不来 | `file` → CRLF；gate EXIT=2 | `.gitattributes` `*.sh eol=lf` |
+| 2 | gate 用 `RTSC_TLS_OPENSSL` 默认 OFF ⇒ OpenSSL 后端未编译，P0 用例被 `#if` 守卫掉 | `server_security` `Passed 0.01 sec`，7/45 | gate 显式 `-DRTSC_TLS_OPENSSL=ON` |
+| 3 | gate 只断言聚合结果 ⇒ 被守卫掉的用例照样 100% | M2 下 `REQUIRED_TESTS=present` 仍绿 | 两道身份断言 |
+
+### 批32 `150a6ea`：5 个真实跨平台错误（此前只知"reorder"1 个）
+`server.cpp:1400` 聚合初始化缺成员；`server.cpp:715` 初始化列表顺序；
+测试 3 处 2 参聚合；`WaitUntil` 未使用；`main.cpp` switch 漏 `kMouseRel`；
+`test_server_security.cpp` 守卫错（`!defined(_WIN32)` → `RTSC_TLS_OPENSSL`）。
+### 批33 `22876f2`：Debug 构建下的性能预算
+`#if defined(NDEBUG)` 围住判定，未优化构建打印 skipped。
+### 批34 `36430c1` + 批35 `3bb033f`：见上表 1/2 层与第 3 层
+
+### 可证伪性验证（两红两绿）
+| 变异 | 结果 |
 |---|---|
-| 5 处全修（批32 `150a6ea`） | `LINUX GATE PASS`，`FAILED_COUNT=0` |
-| 变异：`width` 取 `desktop_height_` | 红 `:4099`/`:4491` ⇒ 逐字段赋值被守护 |
-| Windows 回归 | 构建 0/0 六类诊断 0；`ctest -j1` 69/69（77.45s） |
-### 连带：gate 的 Debug 性能预算（批33 `22876f2`）
-gate 用 `-DCMAKE_BUILD_TYPE=Debug`，而 `view_scale_benchmark_budget` 预算按 Release×3 设定
-⇒ Debug 下 3/7 用例超预算（最慢 256ms / 预算 90ms；同机 Release 43.7ms）。
-修：`#if defined(NDEBUG)` 围住判定，未优化构建打印 skipped（诚实跳过）。
-修后 `LINUX GATE PASS` + `67/67 tests passed`。
-### 教训（discover 例 44）
-UNVERIFIED 必须定期重试；"非本批引入"只影响归因，不豁免修复；MSVC 全绿 ≠ GCC 全绿。
-注意：`ctest` 与 WSL gate 并行跑会造成 `desktop_gdi` 伪红，必须独占复跑核实。
-## 第873轮：Linux gate 的 gate —— 工具自己坏了 + 认证错配置（批34）
-### 两层发现
-1. `scripts/linux-build-gate.sh` 被 `core.autocrlf=true` 检出为 CRLF →
-   bash `$'\r': command not found` → **gate 在 Linux 上根本起不来**。
-2. gate 用 `RTSC_TLS_OPENSSL` 默认 **OFF** 构建 ⇒ OpenSSL 后端从未编译，
-   P0 用例 `tls_server_regression_coalesced_first_record_no_stall` 被 `#if` 守卫掉，
-   Linux `server_security` **0.01s "通过"**，只跑 7 tests/45 checks。
-### 修复（`36430c1`）
-- gate 显式 `-DRTSC_TLS_OPENSSL=ON`
-- 新增 `.gitattributes`（`*.sh text eol=lf`）+ `git add --renormalize`
-### 验证
-| 配置 | 结果 |
-|---|---|
-| gate + OpenSSL ON | `LINUX GATE PASS`，**68/68**；`server_security` **8/67**；P0 用例 `[ OK ]` |
-| gate 默认（OFF） | 构建 0 失败；`server_security` 7/45 全过（设计性降级，非删测试） |
-| `.gitattributes` 生效 | 删后 `git checkout` → CR 字节 **0**，`file` 报纯 ASCII |
-| Windows | 构建 0/0 六类诊断 0；`ctest -j1` **69/69**（99.96s） |
-### 教训（discover 例 45）
-验证工具本身要被验证；默认 OFF 的可选后端必须由 gate 显式打开；
-CRLF 是跨平台验证的隐形杀手；0.01 秒"通过"是可疑信号。
-### 调度
-审计 X/Y 因上游 UnknownError 中断（idle 未终结），已按调度条款 prompt 恢复，
-审计对象扩展为批 32/33/34。
+| M1 gate `ON`→`OFF` | EXIT=1，`required tests missing: tls_openssl` |
+| M2 `test_server_security.cpp:444 #if`→`#if 0`（目标仍在） | EXIT=1，`P0 ... did not execute`，且 `REQUIRED_TESTS=present` |
+| 恢复 | SHA256 `3AE7AFC7...9A8A` 一致；全仓 `MUT-` 0 |
+| 绿证 | EXIT=0、`LINUX GATE PASS`、68/68、`P0_REGRESSION=executed` |
+| 语法 | `bash -n` → `SYNTAX_OK` |
+
+### 平台差异（精确比对，非笼统说法）
+Linux 68 / Windows 69；Windows-only: `desktop_gdi`,`tls`；Linux-only: `tls_openssl`；
+其余 67 项完全同名 ⇒ 平台后端替换，**不是用例丢失**。
+
+### 教训（discover 例 44-46 合并）
+UNVERIFIED 必须定期重试；"非本批引入"只影响归因不豁免修复；
+**"绿"必须能被证明是"该绿的绿"**：凡可被条件编译移除的测试，聚合断言无效，必须断言身份。
+
