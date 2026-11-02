@@ -959,3 +959,24 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 
 **教训（discover 例 46）**：聚合断言不覆盖身份；修"验证漏检"后必须问
 "我的 gate 现在能抓住它吗"；新增断言必须构造**只触发该断言**的变异来证明其独立有效。
+### 批 36（`d46b2c3`）—— 断言链端到端：verify.ps1 必须校验 gate 的新断言
+
+**问题**：批 35 给 gate 加了两道身份断言，但 gate 的唯一消费者
+`verify.ps1:448-464` 仍只校验四项（`FAILED_COUNT`/`WINDOWS_H_COUNT`/`FACTORY_SYMBOL`）。
+**断言存在 ≠ 断言被消费** —— 这是批 34/35 教训（discover 例 46）的同型复发。
+
+**修复**：`verify.ps1:458` needle 列表补 `REQUIRED_TESTS=present`、`P0_REGRESSION=executed`，
+沿用既有 line-anchored 正则（不放宽为子串）。
+
+**可证伪性**
+| 变异 | 输出 |
+|---|---|
+| gate 两条 `echo` → `true`（gate 仍 EXIT=0） | `verify.ps1` 断言块：`MISSING -> REQUIRED_TESTS=present`、`MISSING -> P0_REGRESSION=executed` |
+| 恢复 | 全仓 `MUT-` 残留 0 |
+| 编码保真 | 首字节 `35`（无 BOM）、`CR=482` 均未变（字节级替换） |
+| 语法 | PowerShell 5.1 Parser `PARSE_OK` |
+
+**教训（discover 例 47）**
+- 断言链必须端到端：每加一条断言，立刻在**消费方**补一条对应校验。
+- 改非 UTF-8/LF 文件必须用字节级替换；`ReadAllText`+`WriteAllText` 会加 BOM 并换行符，
+  制造与内容无关的伪 diff（本轮我犯过一次，已回滚重做）。

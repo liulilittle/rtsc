@@ -689,3 +689,37 @@ Linux `server_security` **0.01 秒"通过"**，只跑 7 tests/45 checks（开 Op
 - **新增断言必须做可证伪性演练**，且构造"只触发该断言"的变异（M2 就是），
   否则无法区分多道断言谁在起作用。
 
+
+## 第875轮：把断言加进 gate，却没加进调用 gate 的脚本（例 47）
+
+### 症状
+批 35 给 `scripts/linux-build-gate.sh` 加了两道身份断言（`REQUIRED_TESTS=present`、
+`P0_REGRESSION=executed`），gate 变绿。但 `verify.ps1` 的 `-LinuxBuild` 段
+（`:448-464`）捕获 gate 输出后，仍只做**四项** line-anchored 校验：
+`FAILED_COUNT=0`、`WINDOWS_H_COUNT=0`、`FACTORY_SYMBOL=present`。
+新加的两道断言**没有被上层脚本校验**。
+
+### 根因
+把"gate 会输出这两行"当成"这两行被校验了"。断言存在 ≠ 断言被消费。
+`verify.ps1` 是 gate 的唯一消费者，消费方不校验，断言就只是日志。
+
+### 证据
+- 变异：把 gate 的两条 `echo` 换成 `true`（gate 自己也不再输出）：
+  `gate EXIT=0`（其它四项仍满足），但 `verify.ps1` 的断言块报
+  `MISSING -> REQUIRED_TESTS=present`、`MISSING -> P0_REGRESSION=executed`
+  ⇒ 修正后的 needle 列表**确实生效，不是死代码**
+- 恢复后全仓 `MUT-` 残留 0
+- 编码：改动前后首字节均 `35`（`#`，无 BOM）、`CR=482` 不变 ⇒ 未破坏原文件格式
+- 语法：PowerShell 5.1 Parser `PARSE_OK`
+
+### 修复
+`verify.ps1:458` 的 needle 列表补 `REQUIRED_TESTS=present`、`P0_REGRESSION=executed`，
+沿用既有 line-anchored 正则（`(?m)^...\r?$`），不放宽为子串匹配。
+
+### 教训（例 47）
+- **断言链要端到端**：新增一个输出行，必须同时检查"谁消费它、消费方是否校验它"。
+  gate 与 verify.ps1 是生产-消费关系，只改生产方等于没改。
+- **这是例 46 第 2 条教训的同型复发**（"修了漏检却留下同样漏检的上层"）。
+  说明该教训需要更强的形式：**每加一条断言，立刻在消费方补一条对应的校验**。
+- **改非 UTF-8/LF 文件必须用字节级替换**：`ReadAllText`+`WriteAllText` 会加 BOM、
+  把 CRLF 换成 LF，产生一个与内容无关的巨大 diff（本轮我犯过一次，已回滚重做）。

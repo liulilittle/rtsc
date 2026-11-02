@@ -674,3 +674,23 @@ Linux 68 / Windows 69；Windows-only: `desktop_gdi`,`tls`；Linux-only: `tls_ope
 UNVERIFIED 必须定期重试；"非本批引入"只影响归因不豁免修复；
 **"绿"必须能被证明是"该绿的绿"**：凡可被条件编译移除的测试，聚合断言无效，必须断言身份。
 
+
+## 第875轮：批36 —— verify.ps1 传播 gate 的两道身份断言
+### 缺口（例 46 教训的同型复发）
+批35 给 gate 加了两行身份输出，但 `verify.ps1:448-464` 这个**唯一消费方**
+仍只校验四项（FAILED_COUNT / WINDOWS_H_COUNT / FACTORY_SYMBOL）。
+断言存在 ≠ 断言被消费。
+### 修复
+`verify.ps1:458` needle 列表补 `REQUIRED_TESTS=present`、`P0_REGRESSION=executed`，
+沿用 line-anchored 正则。
+### 可证伪性
+| 变异 | 结果 |
+|---|---|
+| gate 两条 echo → `true`（gate 仍 EXIT=0） | `verify.ps1` 断言块：`MISSING -> REQUIRED_TESTS=present`、`MISSING -> P0_REGRESSION=executed` |
+| 恢复 | 全仓 `MUT-` 0 |
+| 编码 | 首字节 `35`（无 BOM）、`CR=482` 均不变（字节级替换） |
+| 语法 | PowerShell 5.1 Parser `PARSE_OK` |
+### 本轮自身失误（已修正并记录）
+首次用 `ReadAllText`+`WriteAllText` 改 `verify.ps1`，写入 BOM 且把 CRLF 改成 LF，
+产生 `1 file changed, 2 insertions(+), 2 deletions(-)` 的伪 diff（首行注释被改）。
+已 `git checkout` 回滚，改用字节级定位替换，diff 收敛为单行 `1 insertion(+), 1 deletion(-)`。
