@@ -331,6 +331,16 @@ class RdpServer {
     bool Start(std::string& error);
     // Closes the listener and every live session, then joins their threads.
     // Idempotent.
+    //
+    // Blocking contract: the normal path blocks until every session thread has
+    // actually exited (the live count reaches zero), because session threads
+    // call the borrowed DesktopSource / DesktopInputSink / Clipboard /
+    // FileListProvider until they finish and those objects may be destroyed
+    // right after Stop() returns (see SetDesktopSource / SetInputSink /
+    // SetClipboard). If a session never exits, Stop() keeps blocking instead of
+    // returning early, and periodically reports the number of sessions still
+    // live on stderr. That is deliberate: returning early would be a
+    // use-after-free, and a silent return would hide it.
     void Stop();
 
     // The TCP port the server is actually listening on, or 0 before the first

@@ -22,12 +22,16 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <exception>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <set>
+#include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -107,6 +111,46 @@ constexpr size_t kReadChunk = 16384;
 // counter) froze the desktop whenever the client streamed input faster than
 // the idle threshold could expire.
 constexpr std::chrono::milliseconds kRefreshInterval{1000};
+
+// ---- teardown failure injection (test-only) --------------------------------
+// RdpServer::Stop() has two steps that can only fail under a real
+// std::bad_alloc (the registry snapshot copy) or std::system_error (the
+// condition-variable wait). Neither can be triggered deterministically from a
+// test, so the test build of this file (RTSC_SERVER_TESTING) lets
+// RTSC_TEST_STOP_FAIL force one of them on:
+//   * "snapshot": the next snapshot copies behave as if the allocation failed;
+//   * "wait": every condition-variable wait behaves as std::system_error.
+// The production library does not contain this code (the macro is never
+// defined there). Even when forced, Stop() must honour its contract -- deliver
+// the stop request and never return early -- so the suite drives the shipped
+// teardown paths rather than a test-only duplicate.
+enum class StopFailureInjection { kNone, kSnapshot, kWait };
+
+#if defined(RTSC_SERVER_TESTING)
+StopFailureInjection StopFailureFromEnvironment() {
+#if defined(_MSC_VER)
+    char* buffer = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&buffer, &length, "RTSC_TEST_STOP_FAIL") != 0 ||
+        buffer == nullptr) {
+        return StopFailureInjection::kNone;
+    }
+    const std::string value(buffer);
+    std::free(buffer);
+#else
+    const char* raw = std::getenv("RTSC_TEST_STOP_FAIL");
+    if (raw == nullptr) return StopFailureInjection::kNone;
+    const std::string value(raw);
+#endif
+    if (value == "snapshot") return StopFailureInjection::kSnapshot;
+    if (value == "wait") return StopFailureInjection::kWait;
+    return StopFailureInjection::kNone;
+}
+#else
+StopFailureInjection StopFailureFromEnvironment() {
+    return StopFailureInjection::kNone;
+}
+#endif
 
 // Writes a BER length determinant (short form, or the 0x81 / 0x82 long form).
 void WriteBerLength(ByteWriter& w, size_t len) {
@@ -2501,33 +2545,129 @@ void RdpServer::Stop() {
     // joined, so the wait is on the registry's live count -- the same
     // guarantee the join used to give.
     //
-    // The snapshot copy allocates, so it is isolated too: losing it only means
-    // this side does not actively Stop() the sessions (each one notices the
-    // closed transport and tears itself down), which is strictly better than
-    // letting std::bad_alloc escape into ~RdpServer.
+    // Two invariants this function must never break:
+    //
+    // I1 -- never silently succeed. Every path where the teardown could not be
+    // performed has to leave a diagnostic line on stderr (with the number of
+    // sessions still live). A quiet return would make a lost teardown
+    // indistinguishable from a clean one.
+    //
+    // I2 -- never return while a session thread may still touch a borrowed
+    // host object. The session threads call the borrowed DesktopSource /
+    // DesktopInputSink / Clipboard / FileListProvider, and server.h documents
+    // that those objects may be destroyed right after Stop() returns. The
+    // listener close alone does NOT unblock an accepted session (it only stops
+    // new accepts); only RdpSession::Stop() closes that session's transport.
+    // So the only safe exit is live == 0. A timeout is not success and must
+    // never end the wait.
+    const StopFailureInjection injection = StopFailureFromEnvironment();
+
+    // Snapshot so the sessions can be stopped outside the registry lock. The
+    // copy allocates, so it can fail (std::bad_alloc). Losing the snapshot must
+    // not lose the stop requests: fall back to walking the registry under the
+    // lock. RdpSession::Stop() is one atomic store plus one transport Close(),
+    // and the transport tolerates a concurrent close (see RdpSession::Stop),
+    // so calling it under the lock is safe and always delivers the request.
     std::vector<std::shared_ptr<RdpSession>> sessions;
+    bool snapshot_taken = false;
     try {
+        if (injection == StopFailureInjection::kSnapshot) {
+            throw std::bad_alloc();
+        }
         std::lock_guard<std::mutex> lock(registry->mu);
         sessions = registry->sessions;
+        snapshot_taken = true;
     } catch (...) {
-    }
-    for (const auto& s : sessions) {
+        // I1: an allocation failure is exactly the case that used to skip every
+        // s->Stop() and leave Stop() waiting forever. Report how many sessions
+        // are still live, then stop the sessions in place.
+        const size_t live_before_stop =
+            registry->live.load(std::memory_order_relaxed);
+        std::fprintf(stderr,
+                     "[rtsc-server] stop: session snapshot failed; %zu "
+                     "session(s) live; stopping them under the registry lock\n",
+                     live_before_stop);
         try {
-            s->Stop();
+            std::lock_guard<std::mutex> lock(registry->mu);
+            for (const auto& session : registry->sessions) {
+                try {
+                    session->Stop();
+                } catch (...) {
+                }
+            }
         } catch (...) {
+            // Cannot even take the registry lock (programmer error / mutex
+            // misuse). Still report: the wait below will keep reporting too.
+            std::fprintf(stderr,
+                         "[rtsc-server] stop: registry lock failed; %zu "
+                         "session(s) may still be live and the stop requests "
+                         "could not be delivered\n",
+                         registry->live.load(std::memory_order_relaxed));
         }
     }
-    // The wait is the last step and may throw too (std::system_error on mutex
-    // misuse). Teardown is already done at this point, so swallowing it is
-    // correct: Stop() must never let anything escape, because ~RdpServer calls
-    // it and an escaping exception would terminate the process.
-    try {
-        std::unique_lock<std::mutex> lock(registry->mu);
-        registry->cv.wait(lock, [&registry]() { return registry->live == 0; });
-    } catch (...) {
+    if (snapshot_taken) {
+        for (const auto& session : sessions) {
+            try {
+                session->Stop();
+            } catch (...) {
+            }
+        }
     }
     // Dropping `sessions` releases any session the thread had not released yet;
     // it also frees its credentials with the object.
+    sessions.clear();
+
+    // I2: wait for the detached session threads to finish. A failure of the
+    // wait itself (std::system_error on mutex misuse) is NOT a completed
+    // teardown -- swallowing it and returning used to hand the host a server
+    // whose session threads were still calling the borrowed objects (UAF).
+    // Timeouts are not completion either. So this loop only exits on live == 0;
+    // every other iteration reports what is still outstanding and keeps going.
+    const auto wait_started = std::chrono::steady_clock::now();
+    for (;;) {
+        bool stopped = false;
+        bool wait_failed = false;
+        try {
+            std::unique_lock<std::mutex> lock(registry->mu);
+            // The predicate is checked before the (possibly failing) wait, so a
+            // teardown that already finished returns immediately even when the
+            // wait itself is broken.
+            if (registry->live.load(std::memory_order_relaxed) == 0) {
+                stopped = true;
+            } else if (injection == StopFailureInjection::kWait) {
+                throw std::system_error(
+                    std::make_error_code(std::errc::operation_canceled));
+            } else {
+                stopped = registry->cv.wait_for(
+                    lock, std::chrono::seconds(2),
+                    [&registry] { return registry->live == 0; });
+            }
+        } catch (...) {
+            wait_failed = true;
+        }
+        if (stopped) return;
+        const size_t live = registry->live.load(std::memory_order_relaxed);
+        if (live == 0) return;
+        const auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                         std::chrono::steady_clock::now() -
+                                         wait_started)
+                                         .count();
+        if (wait_failed) {
+            std::fprintf(stderr,
+                         "[rtsc-server] stop: wait failed; %zu session(s) still "
+                         "live after %llds; still waiting\n",
+                         live, static_cast<long long>(elapsed_seconds));
+            // A permanently broken condition variable must not spin a core at
+            // 100%: back off between retries. The wait stays bounded by the
+            // live count, never by a timeout.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } else {
+            std::fprintf(stderr,
+                         "[rtsc-server] stop: %zu session(s) still live after "
+                         "%llds\n",
+                         live, static_cast<long long>(elapsed_seconds));
+        }
+    }
 }
 
 size_t RdpServer::session_count() const {

@@ -1293,6 +1293,50 @@ RTSC_TEST(desktop_input_shutdown_joins_worker_when_append_throws) {
         (void)leaked;
     }
 }
+RTSC_TEST(desktop_input_worker_failures_counts_a_failed_dispatch) {
+    // J-3a: every existing assertion pinned worker_failures == 0, so deleting
+    // the count point (desktop_input_win32.cpp WorkerMain's catch) or the
+    // catch itself left the suite green. Force one worker iteration to throw
+    // and prove the counter actually rises -- the only visible signal that a
+    // queued platform action was dropped.
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    // Deterministic precondition: the worker must be parked, so the injected
+    // event is drained by exactly one Dispatch after the hook is armed.
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestWorkerWaiting(sink.get());
+    }));
+    CHECK_EQ(sink->Stats().worker_failures, static_cast<size_t>(0));
+
+    rtsc::server::SetDesktopInputDispatchFailureHook(
+        [](uint32_t) { return true; });
+    rtsc::server::InputEvent ev;
+    ev.kind = rtsc::server::InputEvent::Kind::kKey;
+    ev.scancode = 0x1E;
+    sink->Inject(1, ev);
+    const bool counted = WaitUntil([&sink]() {
+        return sink->Stats().worker_failures >= 1;
+    });
+    rtsc::server::SetDesktopInputDispatchFailureHook(nullptr);
+    CHECK(counted);
+    CHECK(sink->Stats().worker_failures >= 1);
+    // The worker survived the throw and still drains: a later event is
+    // dispatched normally (no failure hook armed) instead of the thread dying.
+    rtsc::server::InputEvent ev2;
+    ev2.kind = rtsc::server::InputEvent::Kind::kKey;
+    ev2.scancode = 0x1F;
+    sink->Inject(2, ev2);
+    rtsc::server::DesktopInputTestShutdown(sink.get());
+    CHECK(!rtsc::server::DesktopInputTestWorkerJoinable(sink.get()));
+    if (rtsc::server::DesktopInputTestWorkerJoinable(sink.get())) {
+        // Keep the object alive so a broken join is reported, not terminate.
+        static rtsc::server::DesktopInputSink* leaked = sink.release();
+        (void)leaked;
+    }
+}
+
 #endif  // RTSC_DESKTOP_INPUT_TESTING
 
 int main() { return rtsc::test::run_all("rtsc_desktop_input_tests"); }

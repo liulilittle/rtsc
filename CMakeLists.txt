@@ -597,6 +597,18 @@ add_library(rtsc_server STATIC
     src/server/rsa_posix_stub.cpp
     src/crypto/rsa_server.cpp)
 target_include_directories(rtsc_server PUBLIC include)
+# The suite compiles the same server sources a second time with
+# RTSC_SERVER_TESTING so it can force the two teardown-only failure modes
+# (a failed registry snapshot, a failed condition-variable wait) that cannot be
+# triggered with real std::bad_alloc / std::system_error. The production
+# library above has no such code: the macro is never defined for it.
+add_library(rtsc_server_testing STATIC
+    src/server/server.cpp
+    src/server/rsa_posix_stub.cpp
+    src/crypto/rsa_server.cpp)
+target_include_directories(rtsc_server_testing PUBLIC include)
+target_compile_definitions(rtsc_server_testing PRIVATE RTSC_SERVER_TESTING)
+target_link_libraries(rtsc_server_testing PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr rtsc_rdpdr rtsc_rdpsnd)
 # The server's cliprdr static virtual channel runs the CliprdrServer handler
 # (src/channel/cliprdr_server.cpp, built into rtsc_cliprdr); the rdpdr static
 # virtual channel runs the RdpdrServer minimum handshake (built into
@@ -606,7 +618,11 @@ target_include_directories(rtsc_server PUBLIC include)
 target_link_libraries(rtsc_server PUBLIC rtsc_proto rtsc_crypto rtsc_net rtsc_security rtsc_cliprdr rtsc_rdpdr rtsc_rdpsnd)
 
 add_executable(rtsc_server_tests tests/test_server.cpp)
-target_link_libraries(rtsc_server_tests PRIVATE rtsc_server rtsc_proto rtsc_crypto rtsc_net rtsc_util)
+# The suite links the RTSC_SERVER_TESTING build so Stop()'s two teardown-only
+# failure branches (snapshot allocation failure, condition-variable wait
+# failure) can be forced through RTSC_TEST_STOP_FAIL. Behaviour without the
+# variable is identical to the production library.
+target_link_libraries(rtsc_server_tests PRIVATE rtsc_server_testing rtsc_proto rtsc_crypto rtsc_net rtsc_util)
 target_include_directories(rtsc_server_tests PRIVATE tests)
 
 # RDP server multi-session concurrency: N concurrent clients over Standard RDP
@@ -878,6 +894,7 @@ if(MSVC)
     target_compile_options(rtsc_ntlm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_credssp_sm_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server PRIVATE /W4 /WX)
+    target_compile_options(rtsc_server_testing PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_multisession_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_server_cliprdr_e2e_tests PRIVATE /W4 /WX)

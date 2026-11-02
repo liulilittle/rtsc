@@ -64,6 +64,7 @@
 #include <new>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -89,6 +90,7 @@ using Clock = std::chrono::steady_clock;
 
 #if defined(RTSC_DESKTOP_INPUT_TESTING)
 std::atomic<DesktopInputAppendFailureHook> g_append_failure_hook{nullptr};
+std::atomic<DesktopInputDispatchFailureHook> g_dispatch_failure_hook{nullptr};
 #endif
 
 constexpr size_t kMaxQueue = 256;
@@ -470,6 +472,16 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     }
 
     void Dispatch(QueuedInput item) {
+        // Test seam: a forced platform failure inside the worker iteration.
+        // The worker's catch counts it in worker_failures and keeps draining;
+        // this is what makes that counter observable-and-increasing.
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+        const DesktopInputDispatchFailureHook hook =
+            g_dispatch_failure_hook.load(std::memory_order_relaxed);
+        if (hook != nullptr && hook(item.session_id)) {
+            throw std::runtime_error("forced dispatch failure");
+        }
+#endif
         // The rate limiter already ran in Inject(), before the event could
         // enter the queue, so a queued item is always admitted (including the
         // synthetic ups AppendReleasesLocked queues for teardown, which must
@@ -715,6 +727,10 @@ class Win32DesktopInputSink final : public DesktopInputSink {
 
 void SetDesktopInputAppendFailureHook(DesktopInputAppendFailureHook hook) {
     g_append_failure_hook.store(hook, std::memory_order_relaxed);
+}
+
+void SetDesktopInputDispatchFailureHook(DesktopInputDispatchFailureHook hook) {
+    g_dispatch_failure_hook.store(hook, std::memory_order_relaxed);
 }
 
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSinkForTest() {

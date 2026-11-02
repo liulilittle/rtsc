@@ -337,7 +337,7 @@ G 的 E7-a/b/c/d 我全部复核成立（§5-Q2/Q5/Q6）；G 未覆盖的 F-1（
 | `tests/test_desktop_input.cpp`（随后被并发改动） | 新增 `desktop_input_rate_limit_held_release_keeps_token`（`:681-744`） | **我复核有效**：pristine `41 tests, 11611 checks, 0 failing`；同一用例在 mutC 上 `FAIL tests:724` ⇒ E1-T 已闭合（会话桶） |
 | 同上的**残留**（低） | 新用例只钉住**会话桶** | **mutC2**（held up 只扣**全局**桶）仍 `41/11611/0` **存活** ⇒ 全局桶未被钉住。最小补法：在用例末尾耗尽全局（s1 800 + s2 800 + s3 399，全局剩 1），做 100 条 held up，再 `CHECK(Allow(4,false))`（保留的 1 令牌可花）+ `CHECK(!Allow(4,false))` |
 
-**已修复（a59a594）**：F-1（`ReleaseInput` 的 `holders.erase` 已移出可抛调用，`server.cpp:776-791`）。F-2/F-3（`win32.cpp` 只改注释，行为未变）仍未修复。
+**已修复（6fc5614）**：F-1（`ReleaseInput` 的 `holders.erase` 已移出可抛调用，`server.cpp:776-791`）。F-2/F-3（`win32.cpp` 只改注释，行为未变）仍未修复。
 
 ### 6.1 批 11 执行报告复核（执行 AI `ses_e69f47a99ffe7vXb014jKHPhZp`）
 

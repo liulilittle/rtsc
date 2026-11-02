@@ -29,6 +29,15 @@ using DesktopInputAppendFailureHook = bool (*)(uint32_t session_id,
 
 void SetDesktopInputAppendFailureHook(DesktopInputAppendFailureHook hook);
 
+// Returns true when the next worker Dispatch of `session_id` must fail as if
+// the platform call threw. The worker catches it, counts it in
+// InputStats::worker_failures and keeps draining; this is the only seam that
+// makes the worker_failures counter increase, so a deleted count point (or a
+// changed catch) turns the suite red instead of staying silently green.
+using DesktopInputDispatchFailureHook = bool (*)(uint32_t session_id);
+
+void SetDesktopInputDispatchFailureHook(DesktopInputDispatchFailureHook hook);
+
 // The Win32 sink with the test hooks; the normal factory is compiled out in the
 // test build so the suite keeps the null sink for its accounting test.
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSinkForTest();

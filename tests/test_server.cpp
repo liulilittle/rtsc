@@ -3377,6 +3377,246 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
 
 namespace {
 
+// ---- Stop() teardown failure injection (J-1) -------------------------------
+//
+// RdpServer::Stop() has two steps that can only fail with a real
+// std::bad_alloc (the registry snapshot copy) or std::system_error (the
+// condition-variable wait). The test build of the server (RTSC_SERVER_TESTING,
+// see CMakeLists.txt) lets RTSC_TEST_STOP_FAIL force each one, so these cases
+// drive the shipped teardown paths instead of a test-only duplicate.
+
+void SetStopFailureEnvironment(const char* value) {
+#if defined(_MSC_VER)
+    _putenv_s("RTSC_TEST_STOP_FAIL", value);
+#else
+    if (value == nullptr || value[0] == '\0') {
+        unsetenv("RTSC_TEST_STOP_FAIL");
+    } else {
+        setenv("RTSC_TEST_STOP_FAIL", value, 1);
+    }
+#endif
+}
+
+// Runs Stop() on a worker so a hang is a bounded red instead of a suite hang.
+// Returns true when Stop() returned within timeout_ms.
+bool StopReturnsWithin(RdpServer& server, int timeout_ms,
+                       std::thread& stopper) {
+    std::atomic<bool> done{false};
+    stopper = std::thread([&server, &done]() {
+        server.Stop();
+        done.store(true);
+    });
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (done.load()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return done.load();
+}
+
+// A DesktopSource whose first Capture blocks until the test opens the gate.
+// While it is blocked the session thread is alive and inside a borrowed host
+// object -- exactly the state Stop() must not return from (I2).
+class BlockingFirstCaptureSource final : public rtsc::server::DesktopSource {
+ public:
+    bool Capture(uint16_t width, uint16_t height,
+                 std::vector<uint8_t>& rgba) override {
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            entered_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this]() { return released_; });
+        }
+        rgba.assign(static_cast<size_t>(width) * height * 4, 0);
+        return true;
+    }
+
+    bool WaitEntered(int timeout_ms) {
+        std::unique_lock<std::mutex> lock(mu_);
+        return cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                            [this]() { return entered_; });
+    }
+
+    void Release() {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            released_ = true;
+        }
+        cv_.notify_all();
+    }
+
+ private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    bool entered_ = false;
+    bool released_ = false;
+};
+
+}  // namespace
+
+RTSC_TEST(server_stop_delivers_stop_when_snapshot_allocation_fails) {
+    // J-1(1): the registry snapshot copy allocates. Before the fix, a failed
+    // copy left `sessions` empty, so not one s->Stop() ran; the listener close
+    // does not unblock an accepted session, so `live` never reached zero and
+    // Stop() hung forever (measured: no return in 20 s). The stop request must
+    // reach the sessions even when the snapshot fails, so Stop() returns.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    // Heap-owned: a red run can leak the server instead of hanging here.
+    auto server = std::make_unique<RdpServer>(cfg);
+    server->SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server->Start(error));
+    std::thread runner([&server]() { server->Run(); });
+
+    HandshakeResult r =
+        DriveToActive(server->bound_port(), false, 64, 48,
+                      /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    CHECK_EQ(server->session_count(), 1);
+
+    SetStopFailureEnvironment("snapshot");
+    std::thread stopper;
+    // Bounded: a Stop() that never returns is a red, never a suite hang.
+    const bool stopped = StopReturnsWithin(*server, 10000, stopper);
+    SetStopFailureEnvironment("");
+    CHECK(stopped);
+    if (!stopped) {
+        // Bound the damage of a red: closing the client transport drains the
+        // session, so the (buggy) wait can still converge.
+        r.transport.reset();
+        r.reader.reset();
+        for (int i = 0; i < 500; ++i) {
+            if (server->session_count() == 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        for (int i = 0; i < 500; ++i) {
+            // A second Stop() with no injection must observe zero.
+            if (server->session_count() == 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    // I2: whatever path was taken, the client is released after Stop().
+    r.transport.reset();
+    r.reader.reset();
+    for (int i = 0; i < 500; ++i) {
+        if (server->session_count() == 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    // A Stop() that returned must have seen live == 0 (never a silent success).
+    if (stopped) CHECK_EQ(server->session_count(), 0);
+
+    if (!stopped) {
+        // The buggy wait never returns on its own; release the client so the
+        // detached session thread can exit, then let the wait converge. The
+        // server is leaked if even that fails, to keep the suite alive.
+        const bool drained = WaitUntil([&server]() {
+            return server->session_count() == 0;
+        }, 5000);
+        if (!drained) {
+            stopper.detach();
+            runner.detach();
+            (void)server.release();
+            return;
+        }
+        if (stopper.joinable()) stopper.join();
+        runner.join();
+        return;
+    }
+    stopper.join();
+    runner.join();
+}
+
+RTSC_TEST(server_stop_does_not_return_while_session_thread_alive) {
+    // J-1(2): swallowing a failed cv.wait and returning handed the host a
+    // server whose session thread was still calling the borrowed source/sink
+    // (use-after-free: server.h says those objects die right after Stop()).
+    // With the wait forced to fail, Stop() must keep waiting until live == 0,
+    // not return early. The session is blocked inside DesktopSource::Capture,
+    // so only opening the gate can end it.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    BlockingFirstCaptureSource source;
+    auto server = std::make_unique<RdpServer>(cfg);
+    server->SetDesktopSource(&source);
+    std::string error;
+    CHECK(server->Start(error));
+    std::thread runner([&server]() { server->Run(); });
+
+    HandshakeResult r =
+        DriveToActive(server->bound_port(), false, 64, 48,
+                      /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    // The session thread must be inside Capture before Stop() starts.
+    CHECK(source.WaitEntered(5000));
+    CHECK_EQ(server->session_count(), 1);
+
+    SetStopFailureEnvironment("wait");
+    std::thread stopper;
+    std::atomic<bool> done{false};
+    stopper = std::thread([&server, &done]() {
+        server->Stop();
+        done.store(true);
+    });
+    // Longer than one 2 s poll window: a return here means Stop() treated a
+    // failed wait as a completed teardown (the UAF precondition).
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+    const bool returned_while_alive = done.load();
+    CHECK(!returned_while_alive);
+    if (returned_while_alive) {
+        // Red already. Keep the process sane: let the session finish, then
+        // make sure a later Stop() converges.
+        SetStopFailureEnvironment("");
+        source.Release();
+        for (int i = 0; i < 500 && !done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (done.load()) {
+            stopper.join();
+            runner.join();
+            r.transport.reset();
+            r.reader.reset();
+        } else {
+            stopper.detach();
+            runner.detach();
+            (void)server.release();
+        }
+        return;
+    }
+
+    // I2 confirmation: once the session really ends, Stop() returns and the
+    // live count is zero.
+    SetStopFailureEnvironment("");
+    source.Release();
+    bool stopped = false;
+    for (int i = 0; i < 1500 && !done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    stopped = done.load();
+    CHECK(stopped);
+    CHECK_EQ(server->session_count(), 0);
+    if (!stopped) {
+        r.transport.reset();
+        r.reader.reset();
+        stopper.detach();
+        runner.detach();
+        (void)server.release();
+        return;
+    }
+    stopper.join();
+    runner.join();
+}
+
+// ---- server-side CLIPRDR integration ----------------------------------------
+
+namespace {
+
 // A minimal in-memory clipboard double for the server cliprdr integration
 // tests. The server's cliprdr handler reads the negotiated S-clipboard from it.
 class ServerClipboard final : public rtsc::clipboard::Clipboard {
