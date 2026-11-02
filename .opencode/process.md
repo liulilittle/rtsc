@@ -834,3 +834,16 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - `--monitor N` 真机落点仍 UNVERIFIED
 ### 在途
 审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验，重点 UAF）+ 设计审计 M
+## 第841轮：W8 裁剪（process.md 1010→836 行）+ 双审在途
+### 裁剪（字节级操作，遵循 discover 第 21 例）
+- 把 806-820 轮（192 行逐轮细节）压缩为 8 行归档摘要（保留：所有提交号、失败判定、
+  关键教训指针、被驳回的疑点）
+- 方法：`ReadAllText(UTF8)` → 行切片 → `WriteAllText(UTF8)`（**全程字符串级，无 latin1 中转**）
+- 校验三件事：①字节数方向 91585→73829（变小 ✅）②`U+FFFD`=0 ✅ ③标题结构完好（42 个 `## `，
+  821-840 逐轮保留）✅
+- 备份：`.opencode/backups/process.md.pre841`
+### 四文件现状
+`discover.md` 797 行/65.2KB、`memory.md` 764 行/159.8KB、`plan.md` 696 行/57.4KB、`process.md` 836 行/72.1KB
+### 在途
+审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验：UAF/挂起/RTTI/lost-wakeup）、
+设计审计 M `ses_e664d2035ffev3TAIwV4TuCE9J`（几何定案）
