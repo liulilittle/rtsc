@@ -1807,18 +1807,29 @@ RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
     // plain `--seconds` run (batch 27): without it the only guaranteed line
     // was the unconditional `final` one, so deleting the whole call site
     // stayed green (batch 26 F5 residual, reported OPEN).
+    // Every field distinct and non-zero: a fixture of all-zeros cannot tell
+    // "print current" from "print a blank snapshot", and two fields cannot tell
+    // a dropped field from a swapped one. Seven distinct values plus a full-line
+    // comparison cover both (audit W, D1e).
     InputStats base;
-    base.injected = 7;  // non-zero so "print current" != "print a blank snapshot"
-    base.dropped_unmapped = 5;
+    base.injected = 11;
+    base.dropped_queue_full = 12;
+    base.dropped_rate_limited = 13;
+    base.send_failures = 14;
+    base.release_failures = 15;
+    base.worker_failures = 16;
+    base.dropped_unmapped = 17;
     const std::string first = PeriodicInputStatsLine(nullptr, base);
-    CHECK(!first.empty());
-    CHECK_EQ(first.compare(0, 24, "input stats (periodic): "), 0);
-    // The baseline line must carry the CURRENT values: printing a default
-    // InputStats{} satisfied the prefix check but reported all zeros, so an
-    // operator would see "nothing ever injected" on a busy host. Asserting
-    // two distinct non-zero fields makes that mistake impossible.
-    CHECK(first.find("input_injected=7") != std::string::npos);
-    CHECK(first.find("input_dropped_unmapped=5") != std::string::npos);
+    // Full-line equality alone is not enough (FormatInputStats dropping a field
+    // would change both sides); the literal assertions below pin the fields.
+    CHECK(first == FormatInputStats("periodic", base));
+    CHECK(first.find("input_injected=11") != std::string::npos);
+    CHECK(first.find("input_dropped_queue=12") != std::string::npos);
+    CHECK(first.find("input_rate_limited=13") != std::string::npos);
+    CHECK(first.find("input_send_failures=14") != std::string::npos);
+    CHECK(first.find("input_release_failures=15") != std::string::npos);
+    CHECK(first.find("input_worker_failures=16") != std::string::npos);
+    CHECK(first.find("input_dropped_unmapped=17") != std::string::npos);
 
     InputStats moved = base;
     moved.injected = 8;
@@ -1828,6 +1839,13 @@ RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
     CHECK_EQ(line.compare(0, 24, "input stats (periodic): "), 0);
     // A `final` line is a different reason and must never be mistaken for one.
     CHECK(line.find("(final)") == std::string::npos);
+    // The change branch must carry the CURRENT values, not the previous
+    // snapshot and not a blank one. Batch 28 deleted the old literal
+    // assertion while adding the baseline one, leaving only the prefix check:
+    // printing *printed (the old snapshot) then stayed green (audit W, B1).
+    CHECK(line.find("input_injected=8") != std::string::npos);
+    CHECK(line.find("input_dropped_unmapped=3") != std::string::npos);
+    CHECK(line == FormatInputStats("periodic", moved));
 
     // Going back to the printed values produces nothing again: the caller keeps
     // the last printed snapshot, so an intermediate change does not stick.

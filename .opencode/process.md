@@ -625,3 +625,22 @@ D3（缺 `cmake_minimum_required` 会假红）本批已加，记作已闭合；
 D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorder` 阻断，非本批引入）。
 ### 验证
 构建 0/0 六类诊断 0；`ctest -j1` **69/69, 0 failed**（87.98s）；`MUT-` 残留 0。
+
+## 第870轮：审计 W 的 B1/D1e —— 我引入的判据回归（discover 例 42）
+### B1（我引入的假测试，W 发现，我复现）
+批 28 修 D1 时用行索引切片重建用例，**删掉了** change 分支的
+`CHECK(line.find("input_dropped_unmapped=3")...)` 且未补等价物。
+复现：`MUT-B1 = FormatInputStats("periodic", *printed)`（change 分支打印旧快照）
+→ 修复前 **68 tests/13912 checks 全绿**；同一变异在 `db5f764` 版本下是红的 ⇒ 我造成的回归。
+### 修复
+- change 分支补：`input_injected=8` / `input_dropped_unmapped=3` 字面量 + `line == FormatInputStats("periodic", moved)` 整行
+- 基线分支 D1e：七个字段设为 **11/12/13/14/15/16/17**（互不相同非零）+ `first == FormatInputStats(...)` + 七条字面量
+### 变异矩阵（全部实测）
+| 变异 | 结果 |
+|---|---|
+| `MUT-B1` change 分支打印旧快照 | **红 :1846/:1847/:1848（3 checks）** |
+| `MUT-D1` 基线打印全 0 | **红 :1825-1832（8 checks）** |
+| `MUT-D1e` queue/rate 整段换位 | 红 `desktop_input_stats_line_field_order_is_stable:1785` |
+| 基线（无变异） | `68 tests, 13919 checks, 0 failing` |
+### 验证
+构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（75.56s）；`MUT-` 残留 0；stats 文件 hash 与备份一致。
