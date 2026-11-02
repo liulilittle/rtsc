@@ -239,6 +239,12 @@ if ! cmake --build "$REL_BUILD_DIR" --target rtsc_view_tests >"$REL_BUILD_LOG" 2
     exit 1
 fi
 VIEW_LOG="$LOG_DIR/view-release.log"
+# Seven bench cases each contribute exactly one CHECK under NDEBUG. Debug
+# evaluates 7341 checks, optimized evaluates 7348; the delta IS the proof that
+# the budget bodies ran. A lower bound, so adding assertions to test_view.cpp
+# does not break the gate. If test_view.cpp gains or loses a bench case this
+# number must be re-derived from the two runs.
+VIEW_MIN_CHECKS=7348
 "$REL_BUILD_DIR/rtsc_view_tests" >"$VIEW_LOG" 2>&1
 VIEW_EXIT=$?
 echo "VIEW_RELEASE_EXIT=$VIEW_EXIT"
@@ -247,11 +253,26 @@ if [ "$VIEW_EXIT" -ne 0 ]; then
     echo "LINUX GATE FAIL: view budget under optimization"
     exit 1
 fi
+# "No string called `skipped: timing budgets`" is a proxy for "the budget body ran",
+# and it is exactly the proxy that failed for D1 above: renaming the message,
+# an early return, or wrapping the block in `#if 0` all leave the string absent
+# while the assertions never execute (audit X, V8: a ninja-ed `#if 0` still
+# produced VIEW_BUDGETS=executed + LINUX GATE PASS). Assert the observable that
+# only the real bodies produce: the optimized run evaluates 7 more checks than
+# the Debug run (7341 -> 7348), one per bench case. Printing that number is not
+# enough -- it has to be asserted.
 if grep -q "skipped: timing budgets" "$VIEW_LOG"; then
     echo "LINUX GATE FAIL: view budgets still skipped in an optimized build"
     exit 1
 fi
-grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1
+VIEW_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1)
+VIEW_CHECKS=$(printf '%s' "$VIEW_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
+if [ "${VIEW_CHECKS:-0}" -lt "$VIEW_MIN_CHECKS" ]; then
+    echo "LINUX GATE FAIL: view budget bodies did not run (checks=${VIEW_CHECKS:-?}, want >=${VIEW_MIN_CHECKS}; Debug is ${VIEW_MIN_CHECKS}-7 because the seven bench CHECKs are compiled out there)"
+    printf '%s\n' "$VIEW_SUMMARY"
+    exit 1
+fi
+printf '%s\n' "$VIEW_SUMMARY"
 echo "VIEW_BUDGETS=executed"
 rm -rf -- "$REL_BUILD_DIR"
 
