@@ -80,13 +80,18 @@ elseif(CASE STREQUAL "periodic_stats_line")
     # returning early from the lambda, removes that line (batch 27 closed the
     # batch 26 F5 residual this way, without adding a test-only backend to the
     # production host).
-    set(args --allow-input --allow-input-unverified --port 0 --seconds 7)
+    # The window must cover AT LEAST TWO sampling ticks (kInputStatsInterval is
+    # 5 s): with --seconds 7 only one tick fires, so a host that printed on
+    # every tick was indistinguishable from one that printed the baseline and
+    # then stayed quiet -- the flood assertion below passed either way. 12 s
+    # guarantees two ticks at 5 s and 10 s.
+    set(args --allow-input --allow-input-unverified --port 0 --seconds 12)
     set(expect_exit 0)
     list(APPEND must_have "input stats (final): input_injected=")
     # Exactly one periodic line: the baseline prints once, and the remaining
     # samples are unchanged so they must print nothing. "at least one" alone
     # would pass a host that logs every tick (the flood the sampler exists to
-    # prevent).
+    # prevent), and so would a window shorter than the sampling interval.
     list(APPEND exactly_once "input stats (periodic): input_injected=")
 else()
     message(FATAL_ERROR "unknown CASE '${CASE}'")
@@ -97,7 +102,7 @@ execute_process(
     RESULT_VARIABLE rc
     OUTPUT_VARIABLE out
     ERROR_VARIABLE err
-    TIMEOUT 10)
+    TIMEOUT 25)
 
 set(text "${out}${err}")
 

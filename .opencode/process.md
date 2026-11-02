@@ -621,3 +621,23 @@ main 加 `printed_input_valid`；`host_cli_check.cmake` 加 `periodic_stats_line
 **教训**：备份文件名应记录到变量并在恢复时引用，不能手抄时间戳。
 ### R7
 **[x] 完全闭合**（函数内部 + 宿主调用点），无生产后门。
+
+## 第868轮续：主代理自查发现判据盲区（discover 例 40）并修复
+### 两个真缺陷（我自己引入）
+1. `host_cli_periodic_stats_line` 用 `--seconds 7`（采样 5s）断言"periodic 恰好 1 次"——
+   **窗口内只有 1 次采样**，"打印一次"与"每次打印"观测相同。刷屏变异（删 `printed_input_valid = true`）
+   下用例仍绿。
+2. `execute_process(TIMEOUT 10)` 小于新窗口 12s → 用例退化为超时失败。
+### 修复
+`--seconds 7` → `12`（覆盖 5s、10s 两次采样）；`TIMEOUT 10` → `25`；注释写明"窗口必须 ≥2 个采样周期"。
+### 复验
+| 场景 | 结果 |
+|---|---|
+| 基线 | `CASE periodic_stats_line: OK` |
+| 刷屏变异（不置 valid） | **红 `found 2`**（改前绿） |
+| 删调用 / lambda early return / nullptr 返空 | 全红（前一轮已验证） |
+### 全量
+构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（89.59s）；实测 `--seconds 12` → periodic=1 final=1。
+### 又踩一次例 36
+恢复源文件后未重编，`--seconds 12` 仍报 2 行（旧变异体二进制）；重编后 1 行。
+**恢复流程必须：换源 → touch → 重编 → 验证二进制行为**，缺一步就会被旧二进制误导。
