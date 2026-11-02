@@ -62,10 +62,36 @@ struct PlatformInput {
 // virtual desktop, a framebuffer with a real span, and a non-degenerate
 // capture/desktop. When this is false TranslateInput emits no kMouseMove
 // (fail closed): buttons, wheels and keys still translate normally.
+//
+// The containment check is load bearing: the capture rectangle is translated
+// onto the virtual screen by adding its origin and then normalized against the
+// desktop box. A capture rectangle that is not inside that box (a stale or
+// mixed-up source) would produce a physical point outside the domain the OS
+// normalizes against, so the resulting 0..65535 value would land somewhere the
+// client never pointed at. Clamping cannot repair that: the point is wrong,
+// not merely out of range.
+//
+// `desktop.width/height <= 65536` is the addressability limit: MOUSEINPUT
+// absolute coordinates have 65536 steps per axis, so a box larger than that
+// cannot be addressed pixel by pixel (docs/spec/input-geometry-design-M.md 2.4
+// and U9). Beyond it a wire step would skip pixels, so such a desktop is
+// treated as unusable rather than silently imprecise.
 inline bool AbsoluteMoveMappable(const InjectGeometry& g) {
-    return g.mapped && g.pixels_are_physical && g.width > 1 && g.height > 1 &&
-           g.capture.width > 0 && g.capture.height > 0 &&
-           g.desktop.width > 1 && g.desktop.height > 1;
+    if (!g.mapped || !g.pixels_are_physical) return false;
+    if (g.width <= 1 || g.height <= 1) return false;
+    if (g.capture.width <= 0 || g.capture.height <= 0) return false;
+    if (g.desktop.width <= 1 || g.desktop.height <= 1) return false;
+    if (g.desktop.width > 65536 || g.desktop.height > 65536) return false;
+    const int64_t capture_right =
+        static_cast<int64_t>(g.capture.x) + g.capture.width;
+    const int64_t capture_bottom =
+        static_cast<int64_t>(g.capture.y) + g.capture.height;
+    const int64_t desktop_right =
+        static_cast<int64_t>(g.desktop.x) + g.desktop.width;
+    const int64_t desktop_bottom =
+        static_cast<int64_t>(g.desktop.y) + g.desktop.height;
+    return g.capture.x >= g.desktop.x && g.capture.y >= g.desktop.y &&
+           capture_right <= desktop_right && capture_bottom <= desktop_bottom;
 }
 
 // Translates one decoded RDP input event into zero or more platform actions.
@@ -191,6 +217,12 @@ bool IsHeldRelease(const PlatformInput& input, const PressedInputs& pressed);
 // Keep this predicate in lock step with TranslateInput; the tests cross-check
 // the two for every InputEvent kind. Defined inline so a caller (the server)
 // does not need to link the mapping library just for this predicate.
+//
+// This form answers "can this event EVER become an action", independent of the
+// session geometry. A pure move whose geometry is untrusted can never become
+// an action for that session, so a caller that knows the geometry must use the
+// overload below; otherwise such a move would take the lease while producing
+// nothing.
 inline bool IsInjectable(const InputEvent& ev) {
     switch (ev.kind) {
         case InputEvent::Kind::kKey:
@@ -206,6 +238,16 @@ inline bool IsInjectable(const InputEvent& ev) {
             return false;
     }
     return false;
+}
+
+// Geometry-aware form of IsInjectable: identical to the one-argument form
+// except that a pure move additionally needs AbsoluteMoveMappable(g), exactly
+// as TranslateInput requires before it emits a kMouseMove. A click (move plus
+// button) stays injectable because its button is still translated even when
+// the move is fail-closed.
+inline bool IsInjectable(const InputEvent& ev, const InjectGeometry& g) {
+    if (ev.kind != InputEvent::Kind::kMouse) return IsInjectable(ev);
+    return (ev.is_move && AbsoluteMoveMappable(g)) || ev.button != 0;
 }
 
 // What the bounded injection queue must do with one incoming platform input.

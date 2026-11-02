@@ -163,6 +163,58 @@ bool PixelsArePhysical(bool dpi_ok, int primary_width, int primary_height,
            primary_height == physical_height;
 }
 
+bool PixelsArePhysicalFromMetrics(bool dpi_ok, const MetricSource& metrics) {
+    // The PRIMARY monitor's logical size (SM_CXSCREEN/SM_CYSCREEN) is the only
+    // correct left-hand side: the desktop DC's DESKTOPHORZRES/VERTRES describe
+    // the primary monitor too (Microsoft Learn, GetDeviceCaps: "if hdc is the
+    // desktop, GetDeviceCaps returns the capabilities of the primary monitor").
+    // Using SM_CX*VIRTUALSCREEN here compares the whole bounding box against
+    // one monitor and reports "not physical" on every multi-monitor system,
+    // which disables absolute movement exactly where --monitor N matters.
+    return PixelsArePhysical(dpi_ok, metrics.SystemMetric(SM_CXSCREEN),
+                             metrics.SystemMetric(SM_CYSCREEN),
+                             metrics.PhysicalWidth(), metrics.PhysicalHeight());
+}
+
+namespace {
+
+// Reads the real system metrics. The display DC is created once (in the
+// constructor) so the two capability lookups are a snapshot of the same
+// moment; a source that cannot reach a display reports 0, which the decision
+// rejects as untrustworthy.
+class Win32MetricSource final : public MetricSource {
+ public:
+    Win32MetricSource() : probe_(::CreateDC(TEXT("DISPLAY"), nullptr, nullptr,
+                                            nullptr)) {
+        if (probe_ != nullptr) {
+            physical_w_ = ::GetDeviceCaps(probe_, DESKTOPHORZRES);
+            physical_h_ = ::GetDeviceCaps(probe_, DESKTOPVERTRES);
+        }
+    }
+
+    ~Win32MetricSource() override {
+        if (probe_ != nullptr) (void)::DeleteDC(probe_);
+    }
+
+    Win32MetricSource(const Win32MetricSource&) = delete;
+    Win32MetricSource& operator=(const Win32MetricSource&) = delete;
+
+    int SystemMetric(int index) const override {
+        return ::GetSystemMetrics(index);
+    }
+    int PhysicalWidth() const override { return physical_w_; }
+    int PhysicalHeight() const override { return physical_h_; }
+
+    bool has_display() const { return probe_ != nullptr; }
+
+ private:
+    HDC probe_ = nullptr;
+    int physical_w_ = 0;
+    int physical_h_ = 0;
+};
+
+}  // namespace
+
 class GdiDesktopSourceImpl : public DesktopSource {
  public:
     GdiDesktopSourceImpl(CaptureRect rect, CaptureRect desktop,
@@ -287,6 +339,10 @@ class GdiDesktopSourceImpl : public DesktopSource {
     std::string error_;
 };
 
+std::unique_ptr<MetricSource> MakeWin32MetricSource() {
+    return std::make_unique<Win32MetricSource>();
+}
+
 std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x,
                                                     int32_t y, int32_t width,
                                                     int32_t height,
@@ -311,26 +367,20 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(int monitor_index, int32_t x
 
     // The SM_* metrics are only physical pixels when the process is
     // per-monitor aware; compare the PRIMARY monitor's size with the display's
-    // real pixel size. DESKTOPHORZRES/VERTRES on the desktop DC describe the
-    // primary monitor (Microsoft Learn, GetDeviceCaps: "if hdc is the desktop,
-    // GetDeviceCaps returns the capabilities of the primary monitor"), so the
-    // virtual-screen bounding box must not be used here -- on a multi-monitor
-    // system it is larger and the comparison would always fail, disabling
-    // absolute movement exactly where --monitor N matters.
-    const HDC probe = ::CreateDC(TEXT("DISPLAY"), nullptr, nullptr, nullptr);
-    if (probe == nullptr) {
+    // real pixel size. The metric selection lives in
+    // PixelsArePhysicalFromMetrics (see the comment there and in the header):
+    // it is the one place that must name SM_CXSCREEN/SM_CYSCREEN, and the seam
+    // makes that choice behaviourally testable on a single-monitor host.
+    Win32MetricSource metrics;
+    if (!metrics.has_display()) {
         if (error != nullptr) {
             *error = "CreateDC(\"DISPLAY\") failed: no interactive desktop";
         }
         return nullptr;
     }
-    const int physical_w = ::GetDeviceCaps(probe, DESKTOPHORZRES);
-    const int physical_h = ::GetDeviceCaps(probe, DESKTOPVERTRES);
-    (void)::DeleteDC(probe);
 
     const bool pixels_are_physical =
-        PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN),
-                          physical_w, physical_h);
+        PixelsArePhysicalFromMetrics(dpi_ok, metrics);
 
     if (error != nullptr) error->clear();
     return std::make_unique<GdiDesktopSourceImpl>(rect, desktop,

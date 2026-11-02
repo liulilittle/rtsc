@@ -865,12 +865,15 @@ class RdpSession {
 
  private:
     // Hands one decoded event to the sink, taking the lease only when the event
-    // can actually become a platform input. A non-injectable event (kSync,
-    // kMouseRel, a zero scan code or code point, or a bare kMouse) must not be
-    // able to hold the single lease: otherwise one SYNC could starve every peer
-    // that really controls the desktop. A session that already holds the lease
-    // still forwards the event so the sink's unsupported-event counter keeps
-    // counting it.
+    // can actually become a platform input for THIS session. A non-injectable
+    // event (kSync, kMouseRel, a zero scan code or code point, or a bare
+    // kMouse) must not be able to hold the single lease: otherwise one SYNC
+    // could starve every peer that really controls the desktop. A pure move
+    // whose geometry is not mappable (AbsoluteMoveMappable false) is in the
+    // same class: TranslateInput fail-closes it to no action, so taking the
+    // lease for it would starve a session that can really inject. A session
+    // that already holds the lease still forwards the event so the sink's
+    // unsupported-event counter keeps counting it.
     void InjectIfLeasable(const InputEvent& ev) {
         if (input_sink_ == nullptr) return;
         // The PAUSE sequence (0xE1 envelope) has no faithful SendInput form and
@@ -879,7 +882,7 @@ class RdpSession {
         // the single lease slot without producing a real action.
         if (pause_filter_.ShouldDrop(ev)) return;
         if (!input_lease_held_) {
-            if (!IsInjectable(ev)) return;
+            if (!IsInjectable(ev, inject_geometry_)) return;
             if (!AcquireInputLease()) return;
         }
         input_sink_->Inject(input_session_id_, ev);

@@ -53,6 +53,41 @@ std::unique_ptr<DesktopSource> MakeGdiDesktopSource(
 bool PixelsArePhysical(bool dpi_ok, int primary_width, int primary_height,
                        int physical_width, int physical_height);
 
+// The metric lookups the physical-pixel decision needs, behind an interface so
+// the decision's CHOICE of metric can be tested behaviorally instead of by
+// reading this file's source text.
+//
+// A single-monitor host cannot distinguish SM_CXSCREEN from SM_CXVIRTUALSCREEN
+// at runtime (they are equal), so a test that only drove the real factory could
+// never catch the defect that matters: feeding the virtual-screen box to a
+// comparison against the primary monitor's physical size. A fake source makes
+// the two values differ on any host, so pointing the decision at the wrong
+// metric flips the result and turns the test red.
+class MetricSource {
+ public:
+    virtual ~MetricSource() = default;
+    // GetSystemMetrics(index): SM_CXSCREEN, SM_CYSCREEN, SM_CXVIRTUALSCREEN,
+    // SM_CYVIRTUALSCREEN. Returns 0 for an index a source does not model.
+    virtual int SystemMetric(int index) const = 0;
+    // GetDeviceCaps(desktop DC, DESKTOPHORZRES / DESKTOPVERTRES).
+    virtual int PhysicalWidth() const = 0;
+    virtual int PhysicalHeight() const = 0;
+};
+
+// The production decision, reading every metric through `metrics`:
+//
+//   dpi_ok && primary (SM_CXSCREEN/SM_CYSCREEN)
+//              == physical (DESKTOPHORZRES/DESKTOPVERTRES) and both > 0
+//
+// Kept separate from the raw 5-argument predicate so the metric selection is
+// covered by a behavioural test (see MetricSource).
+bool PixelsArePhysicalFromMetrics(bool dpi_ok, const MetricSource& metrics);
+
+// The real Win32 source (GetSystemMetrics + CreateDC("DISPLAY") once, cached).
+// Returns a source that models no metrics when the display DC cannot be opened;
+// every lookup then reports 0, which the decision rejects.
+std::unique_ptr<MetricSource> MakeWin32MetricSource();
+
 }  // namespace rtsc::server
 
 #endif  // _WIN32

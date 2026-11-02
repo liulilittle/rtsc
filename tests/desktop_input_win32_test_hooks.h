@@ -65,6 +65,12 @@ bool DesktopInputTestWorkerJoinable(DesktopInputSink* sink);
 // notify_one would still look green.
 bool DesktopInputTestWorkerWaiting(DesktopInputSink* sink);
 
+// Events dropped because they have no platform form at all (a bare kMouse, a
+// zero scan code, kSync, ...). Not part of InputStats: this hook exists so a
+// test can prove a geometry fail-closed move is counted ONLY in
+// InputStats::dropped_unmapped and never additionally here.
+size_t DesktopInputTestDroppedUnsupported(DesktopInputSink* sink);
+
 }  // namespace rtsc::server
 
 #endif  // RTSC_DESKTOP_INPUT_TESTING

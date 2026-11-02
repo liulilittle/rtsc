@@ -545,8 +545,12 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
                      const rtsc::server::InjectGeometry& g) override {
         std::lock_guard<std::mutex> lock(mu_);
         geometry_ids_.push_back(session_id);
-        geometry_width_ = g.width;
-        geometry_height_ = g.height;
+        // The WHOLE structure is recorded, not just width/height: the server's
+        // only job at this seam is to forward the source's capture/desktop
+        // rectangles and both trust bits unchanged, so a swapped or dropped
+        // field must be visible to the test.
+        geometry_ = g;
+        have_geometry_ = true;
     }
 
     void Inject(uint32_t session_id,
@@ -575,13 +579,21 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
         std::lock_guard<std::mutex> lock(mu_);
         return release_ids_;
     }
+    rtsc::server::InjectGeometry geometry() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return geometry_;
+    }
+    bool has_geometry() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return have_geometry_;
+    }
     uint16_t geometry_width() const {
         std::lock_guard<std::mutex> lock(mu_);
-        return geometry_width_;
+        return geometry_.width;
     }
     uint16_t geometry_height() const {
         std::lock_guard<std::mutex> lock(mu_);
-        return geometry_height_;
+        return geometry_.height;
     }
 
  private:
@@ -589,9 +601,62 @@ class RecordingInputSink final : public rtsc::server::DesktopInputSink {
     std::vector<uint32_t> inject_ids_;
     std::vector<uint32_t> geometry_ids_;
     std::vector<uint32_t> release_ids_;
-    uint16_t geometry_width_ = 0;
-    uint16_t geometry_height_ = 0;
+    rtsc::server::InjectGeometry geometry_;
+    bool have_geometry_ = false;
     rtsc::server::InputEvent last_event_;
+};
+
+// Builds a DesktopGeometry field by field (the struct is a plain aggregate with
+// a "mapped" first field, so named arguments keep the call sites readable).
+rtsc::server::DesktopGeometry MakeSourceGeometry(
+    int32_t capture_x, int32_t capture_y, int32_t capture_width,
+    int32_t capture_height, int32_t desktop_x, int32_t desktop_y,
+    int32_t desktop_width, int32_t desktop_height, bool mapped,
+    bool pixels_are_physical) {
+    rtsc::server::DesktopGeometry g;
+    g.mapped = mapped;
+    g.pixels_are_physical = pixels_are_physical;
+    g.capture_x = capture_x;
+    g.capture_y = capture_y;
+    g.capture_width = capture_width;
+    g.capture_height = capture_height;
+    g.desktop_x = desktop_x;
+    g.desktop_y = desktop_y;
+    g.desktop_width = desktop_width;
+    g.desktop_height = desktop_height;
+    return g;
+}
+
+// A desktop source that reports a fixed geometry and counts Geometry() calls.
+//
+// The count is the seam for "the server actually consulted the source": a
+// server that never calls Geometry() cannot forward capture/desktop at all.
+// The fixed geometry lets a test give the capture a NON-ZERO origin, which the
+// synthetic test pattern (mapped=false, all zeros) cannot.
+class RecordingGeometrySource final : public rtsc::server::DesktopSource {
+ public:
+    explicit RecordingGeometrySource(rtsc::server::DesktopGeometry geometry)
+        : geometry_(geometry) {}
+
+    bool Capture(uint16_t width, uint16_t height,
+                 std::vector<uint8_t>& rgba) override {
+        return pattern_->Capture(width, height, rgba);
+    }
+
+    rtsc::server::DesktopGeometry Geometry() const override {
+        geometry_calls_.fetch_add(1, std::memory_order_relaxed);
+        return geometry_;
+    }
+
+    size_t geometry_calls() const {
+        return geometry_calls_.load(std::memory_order_relaxed);
+    }
+
+ private:
+    rtsc::server::DesktopGeometry geometry_;
+    mutable std::atomic<size_t> geometry_calls_{0};
+    std::unique_ptr<rtsc::server::DesktopSource> pattern_ =
+        rtsc::server::MakeTestPatternSource();
 };
 
 // A sink that widens the ReleaseInput hand-off window on purpose. The server
@@ -4255,6 +4320,171 @@ RTSC_TEST(server_non_injectable_input_does_not_hold_lease) {
     CHECK(injected);
     CHECK_EQ(DistinctIds(sink.inject_ids()), static_cast<size_t>(1));
     CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_unmappable_move_does_not_hold_lease) {
+    // The lease must not be taken by an event that produces NOTHING for this
+    // session. A pure pointer move with untrusted geometry is fail-closed in
+    // TranslateInput (no kMouseMove), so a peer that only moves the pointer
+    // cannot grab the single lease and starve a peer that really injects.
+    //
+    // The synthetic test pattern reports no geometry (mapped=false), which is
+    // exactly the untrusted case: session A sends only moves, session B sends a
+    // key, and B must become the holder without a denial.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult mover =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(mover.reached_active);
+    HandshakeResult key_sender =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(key_sender.reached_active);
+
+    auto send_move = [&mover]() {
+        return WriteAll(*mover.transport,
+                        McsSendData::build_request(
+                            mover.user_channel, mover.io_channel,
+                            EncodeFastPathInputPdu(
+                                {EncodeMouseEvent(kPtrMove, 320, 240)})));
+    };
+    for (int i = 0; i < 5; ++i) CHECK(send_move());
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // The move-only session never reached the sink and never took the lease.
+    CHECK(sink.inject_ids().empty());
+    CHECK(sink.geometry_ids().empty());
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    // The other session takes the lease with a key that always translates.
+    bool injected = false;
+    for (int i = 0; i < 300 && !injected; ++i) {
+        CHECK(SendTestInput(key_sender));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        injected = !sink.inject_ids().empty();
+    }
+    CHECK(injected);
+    CHECK_EQ(DistinctIds(sink.inject_ids()), static_cast<size_t>(1));
+    CHECK_EQ(server.input_lease_denied_count(), static_cast<size_t>(0));
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_sink_geometry_matches_source_geometry) {
+    // The server does not invent geometry: the source's capture and desktop
+    // rectangles and both trust bits must reach the sink unchanged (under the
+    // lease holder's id), with the negotiated framebuffer as width/height.
+    //
+    // The capture has a NON-ZERO origin and the desktop a different extent, so
+    // the four fields are pairwise distinguishable: swapping capture/desktop,
+    // dropping pixels_are_physical, forcing mapped true, or never calling
+    // Geometry() each changes an asserted value.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    RecordingGeometrySource source(MakeSourceGeometry(
+        /*capture*/ 1920, 0, 1280, 1024,
+        /*desktop*/ 0, 0, 3200, 1024,
+        /*mapped=*/true, /*pixels_are_physical=*/true));
+    RdpServer server(cfg);
+    server.SetDesktopSource(&source);
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    CHECK(SendTestInput(r));
+    CHECK(WaitUntil([&sink]() {
+        return !sink.geometry_ids().empty() && !sink.inject_ids().empty();
+    }));
+    CHECK_EQ(DistinctIds(sink.geometry_ids()), static_cast<size_t>(1));
+    CHECK(sink.geometry_ids().size() == 1 &&
+          sink.geometry_ids().front() == sink.inject_ids().front());
+
+    // The server must have asked the source (a source-derived geometry cannot
+    // appear otherwise).
+    CHECK(source.geometry_calls() >= 1);
+
+    const rtsc::server::InjectGeometry g = sink.geometry();
+    CHECK_EQ(g.width, static_cast<uint16_t>(64));
+    CHECK_EQ(g.height, static_cast<uint16_t>(48));
+    CHECK_EQ(g.capture.x, static_cast<int32_t>(1920));
+    CHECK_EQ(g.capture.y, static_cast<int32_t>(0));
+    CHECK_EQ(g.capture.width, static_cast<int32_t>(1280));
+    CHECK_EQ(g.capture.height, static_cast<int32_t>(1024));
+    CHECK_EQ(g.desktop.x, static_cast<int32_t>(0));
+    CHECK_EQ(g.desktop.y, static_cast<int32_t>(0));
+    CHECK_EQ(g.desktop.width, static_cast<int32_t>(3200));
+    CHECK_EQ(g.desktop.height, static_cast<int32_t>(1024));
+    CHECK(g.mapped);
+    CHECK(g.pixels_are_physical);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_sink_geometry_reports_untrusted_bits) {
+    // A source that cannot vouch for its pixels must be forwarded as
+    // untrusted. Forcing either bit to true would make the sink inject a
+    // wrongly normalized move instead of fail-closing it.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    cfg.enable_desktop_input = true;
+    cfg.max_input_sessions = 1;
+
+    RecordingInputSink sink;
+    RecordingGeometrySource source(MakeSourceGeometry(
+        /*capture*/ 0, 0, 0, 0,
+        /*desktop*/ 0, 0, 0, 0,
+        /*mapped=*/false, /*pixels_are_physical=*/false));
+    RdpServer server(cfg);
+    server.SetDesktopSource(&source);
+    server.SetInputSink(&sink);
+
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r =
+        DriveToActive(server.bound_port(), false, 64, 48, /*expect_frame=*/false);
+    CHECK(r.reached_active);
+    // A key is injectable regardless of geometry, so the lease (and therefore
+    // SetGeometry) is still taken.
+    CHECK(SendTestInput(r));
+    CHECK(WaitUntil([&sink]() { return sink.has_geometry(); }));
+    CHECK(sink.has_geometry());
+    CHECK(!sink.geometry().mapped);
+    CHECK(!sink.geometry().pixels_are_physical);
+    CHECK(source.geometry_calls() >= 1);
 
     server.Stop();
     runner.join();

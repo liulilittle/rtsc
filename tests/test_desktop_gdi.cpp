@@ -13,8 +13,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -284,37 +282,85 @@ RTSC_TEST(desktop_gdi_pixels_are_physical_predicate) {
 }
 
 RTSC_TEST(desktop_gdi_geometry_uses_primary_screen_metrics) {
-    // The factory must feed the predicate SM_CXSCREEN/SM_CYSCREEN, not the
-    // virtual-screen bounding box: GetDeviceCaps on the desktop DC reports the
-    // primary monitor, so comparing it with SM_*VIRTUALSCREEN would report
-    // "not physical" on every multi-monitor system and drop all absolute
-    // movement (the exact bug this batch fixes). A single-monitor host cannot
-    // distinguish the two values at runtime, so the call site is guarded
-    // structurally (the same pattern as the host-wiring checks in
-    // test_desktop_input.cpp).
-#ifdef RTSC_SOURCE_DIR
-    const std::string path =
-        std::string(RTSC_SOURCE_DIR) + "/src/server/desktop_gdi.cpp";
-    std::ifstream in(path, std::ios::binary);
-    CHECK(in.is_open());
-    if (!in.is_open()) return;
-    const std::string src((std::istreambuf_iterator<char>(in)),
-                          std::istreambuf_iterator<char>());
-    const size_t call = src.find("PixelsArePhysical(dpi_ok");
-    CHECK(call != std::string::npos);
-    if (call == std::string::npos) return;
-    const size_t end = src.find(");", call);
-    CHECK(end != std::string::npos);
-    if (end == std::string::npos) return;
-    const std::string args = src.substr(call, end - call);
-    CHECK(args.find("SM_CXSCREEN") != std::string::npos);
-    CHECK(args.find("SM_CYSCREEN") != std::string::npos);
-    CHECK(args.find("SM_CXVIRTUALSCREEN") == std::string::npos);
-    CHECK(args.find("SM_CYVIRTUALSCREEN") == std::string::npos);
-#else
-    std::printf("  FAIL: RTSC_SOURCE_DIR not defined\n");
-    CHECK(false);
-#endif
+    using rtsc::server::MetricSource;
+    using rtsc::server::PixelsArePhysicalFromMetrics;
+
+    // The decision must read SM_CXSCREEN/SM_CYSCREEN (the PRIMARY monitor) and
+    // compare them with the desktop DC's DESKTOPHORZRES/DESKTOPVERTRES, which
+    // describes the primary monitor as well. On a multi-monitor system the
+    // virtual-screen box is larger, so a decision that read
+    // SM_CX*VIRTUALSCREEN would report "not physical" and drop all absolute
+    // movement -- the exact defect this batch fixes.
+    //
+    // A single-monitor test host cannot tell the two metrics apart at runtime
+    // (they are equal), so the metric LOOKUP is behind an injectable source and
+    // this test drives the production decision with a fake that makes them
+    // differ. Guarding the call site by grepping the source text was a false
+    // test: a comment mentioning the correct call made the grep pass while the
+    // real call was wrong, and a comment mentioning the old call made it fail.
+    class FakeMetrics final : public MetricSource {
+     public:
+        FakeMetrics(int primary_w, int primary_h, int virtual_w, int virtual_h,
+                    int physical_w, int physical_h)
+            : primary_w_(primary_w),
+              primary_h_(primary_h),
+              virtual_w_(virtual_w),
+              virtual_h_(virtual_h),
+              physical_w_(physical_w),
+              physical_h_(physical_h) {}
+
+        int SystemMetric(int index) const override {
+            switch (index) {
+                case SM_CXSCREEN:
+                    return primary_w_;
+                case SM_CYSCREEN:
+                    return primary_h_;
+                case SM_CXVIRTUALSCREEN:
+                    return virtual_w_;
+                case SM_CYVIRTUALSCREEN:
+                    return virtual_h_;
+                default:
+                    return 0;
+            }
+        }
+        int PhysicalWidth() const override { return physical_w_; }
+        int PhysicalHeight() const override { return physical_h_; }
+
+     private:
+        int primary_w_;
+        int primary_h_;
+        int virtual_w_;
+        int virtual_h_;
+        int physical_w_;
+        int physical_h_;
+    };
+
+    // Single monitor: every metric agrees, the process is physical.
+    CHECK(PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(1920, 1080, 1920, 1080, 1920, 1080)));
+    // Multi-monitor: primary 1920 == physical 1920, virtual box 3200. Only the
+    // primary-based decision accepts this; reading the virtual width would
+    // reject it (3200 != 1920) and disable absolute movement on every
+    // multi-monitor host.
+    CHECK(PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(1920, 1080, 3200, 1080, 1920, 1080)));
+    // Same shape, vertical axis: the virtual height differs from the primary's.
+    CHECK(PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(1920, 1080, 1920, 2160, 1920, 1080)));
+    // A source reporting the virtual box as the "primary" size (the defect's
+    // signature) must be rejected: primary 3200 is not the monitor's physical
+    // 1920.
+    CHECK(!PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(3200, 1080, 3200, 1080, 1920, 1080)));
+    // DPI awareness did not take effect: the primary is virtualized smaller.
+    CHECK(!PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(2048, 1152, 2048, 1152, 2560, 1440)));
+    // A failed DPI-awareness call never trusts the metrics.
+    CHECK(!PixelsArePhysicalFromMetrics(
+        false, FakeMetrics(1920, 1080, 3200, 1080, 1920, 1080)));
+    // Unavailable metrics cannot be trusted.
+    CHECK(!PixelsArePhysicalFromMetrics(
+        true, FakeMetrics(0, 0, 0, 0, 0, 0)));
 }
 
 RTSC_TEST(desktop_gdi_unknown_monitor_fails) {

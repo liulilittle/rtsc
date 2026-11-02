@@ -326,10 +326,10 @@ struct InjectGeometry {
 | 字段 | 来源 | 填入时机 |
 |---|---|---|
 | `width/height` | `desktop_width_/desktop_height_` | 与现在相同：`DoConnectResponse` [READ:src/server/server.cpp:1324] |
-| `capture` | `DesktopSource::Geometry()`（GDI 实现返回其 `rect_`，即**钳制后**最终矩形） | 同上；另在 `AcquireInputLease` 前复测一次 |
+| `capture` | `DesktopSource::Geometry()`（GDI 实现返回其 `rect_`，即**钳制后**最终矩形） | 连接建立（`DoConnectResponse`）时一次性快照，**会话期间不变** |
 | `desktop` | 同一工厂内一次性取 `SM_X/Y/CX/CYVIRTUALSCREEN` 快照 | 同上 |
 | `mapped` | `capture.width>0 && capture.height>0 && desktop.width>1 && desktop.height>1` | 同上 |
-| `pixels_are_physical` | PMv2 生效且 `SM_*VIRTUALSCREEN == GetDeviceCaps(DESKTOPHORZRES/VERTRES)`（[READ:src/server/desktop_gdi.cpp:63-65] 目前丢弃返回值） | 同上 |
+| `pixels_are_physical` | PMv2 生效且 `SM_CXSCREEN/SM_CYSCREEN == GetDeviceCaps(DESKTOPHORZRES/VERTRES)`（**主显示器**口径；[READ:src/server/desktop_gdi.cpp:159-164] 目前丢弃返回值） | 同上 |
 
 **禁止**在 sink / 映射层调用 `GetSystemMetrics`：`desktop_input_map.cpp` 必须保持平台中立
 [READ:include/rtsc/server/desktop_input_map.h:1-12]，且注入线程 DPI 语境不可保证。
@@ -354,7 +354,7 @@ struct InjectGeometry {
 | ① | 新增 `virtual bool CaptureRect(int32_t*, …×8)` | 改动集中 | 纯虚会**打断所有嵌入方**编译；8 个出参易错序；`bool` 无法区分“未知”与“全零” | 否 |
 | ② | 工厂返回结构体 `{source, geometry, error}` | 不动抽象 | 改返回类型 → `main.cpp:541`、`test_desktop_gdi.cpp:73/88/105/128/160` 全改；服务端需第二条入口（`SetDesktopGeometry`）与 `SetDesktopSource` 可失配；构造期快照无法复测 | 次优 |
 | ③ | 调用方按 `--monitor/--width` 自己算 | 零接口改动 | **必然错**：`ResolveCaptureRect` 会重排索引（F8）、把 x,y 相对所选显示器平移（F12）、再钳制缩小（F7）；调用方算不出实际矩形 | 否决 |
-| **④** | `virtual DesktopGeometry Geometry() const`（**非纯虚、默认 `{}`**） | 单入口、可复测、老实现零改动、字段可扩展不破签名 | 是**快照**：热插拔不自动刷新（用“取租约时复测”覆盖常见场景） | **推荐** |
+| **④** | `virtual DesktopGeometry Geometry() const`（**非纯虚、默认 `{}`**） | 单入口、老实现零改动、字段可扩展不破签名 | 是**快照**：几何在连接建立时取一次，会话期间不变；热插拔不自动刷新，需重连 | **推荐** |
 
 ```cpp
 // include/rtsc/server/server.h
@@ -507,7 +507,7 @@ class DesktopSource {
 | **M4** | 归一化域用**捕获矩形**而非虚拟桌面 | A1,A2,A3,A4,B0,B1,B2,C1,C2,C3,D2,D3,F2,F3 | 14 | **14** | A2→`(1600,512)`、C1→`(960,540)`、F2→`(1920,540)`（跨屏）、F3→`(3838,1079)` |
 | **M5** | 分母改回 `65535/(dw-1)`（保留末像素） | A1,A2,B0,B1,C1,C2,C3,D2,D3,E2,F2,F3,G2 | 13 | **0** | 落点级全相同；单点 `w=1280,rel=1` 就能杀（ceil 52→落点 1，extent-1 51→落点 0） |
 | **M5b** | 分母改用 `65536/dw` 但 **round** | A3,A4,B0,B1,B2,C2,C3,D2,D3,E2,E3,F3,G1 | 13 | **8** | B0→`(1920,1)`；B1→`(2560,513)`；E2→`(959,538)`；F3→`(1919,1078)` |
-| **M6** | 步骤 1 改用**端点锚定** `round(x*(cw-1)/(fw-1))` | B0 | 1 | **1** | B0→`(1920,0)`；真机实测 GDI 为中心采样 |
+| **M6** | 步骤 1 改用**端点锚定** `round(x*(cw-1)/(fw-1))`（**已否决**，见 §2.5） | B0 | 1 | **1** | B0→`(1920,0)`；真机实测 GDI 为中心采样 |
 | **M6s** | 步骤 1 改用**窗口起点** `x*cw/fw` | B0,B1,B2,E2,E3 | 5 | **5** | B0→`(1920,0)`；B1→`(2560,512)`；E2→`(958,538)` |
 | **M7** | `dwFlags` 去掉 `MOUSEEVENTF_VIRTUALDESK`（或 `ABSOLUTE`） | 对 `INPUT.dwFlags` 的断言 | — | — | flag 断言红（像素级不受影响，但语义失效） |
 | **M8** | 捕获 origin **符号取反**（`cx=-cx`） | A1,A2,A3,A4,B0,B1,B2,C1,C2,C3,D1,D2,D3 | 13 | **13** | A2→`(0,512)`、D2→`(1919,512)` |
@@ -550,7 +550,7 @@ class DesktopSource {
 | U2 | 反解分母是 `extent` 还是 `extent-1` | 若真是 `extent-1`，§2.4 裁决要反过来 | **编码侧已证**（ceil 0 失配，§6.5）；**OS 解码侧 UNVERIFIED**（同 U1） |
 | U3 | GDI `StretchBlt(COLORONCOLOR)` 的采样相位（中心 vs 起点） | 步骤 1 可能差 1 px（§2.5：1280→3200 时 428 个源像素不同） | **已确证：中心采样**。三方独立实测：M 的 `phaseM.exe`（1280→640 端点错 163840/327680、中心 0）、N 的 21 组、主代理 7 组 DIB→DIB |
 | U4 | 混合 DPI 多屏下 `SM_*VIRTUALSCREEN` 与 `MOUSEINPUT` 绝对空间是否一致 | 决定要不要 DPI 字段 | 2 屏不同缩放，注入 `desktop` 四角并读回 |
-| U5 | 显示器热插拔后不重启是否可接受 | 快照几何会过期 | 运行中插拔观察落点；本设计只保证“取租约时复测” |
+| U5 | 显示器热插拔后不重启是否可接受 | 快照几何会过期 | 运行中插拔观察落点。**本设计不承诺“取租约时复测”**：几何在连接建立时快照、会话期间不变（见 §4.2/§5），热插拔后需重新连接；理由是非 const 复读会在“读几何”与“注入”之间引入 TOCTOU 竞争窗口，且当前无测试能覆盖该路径 |
 | U6 | “`dx=0` 在 Win10 FCU 后不生效”的传闻（Chromium 注释 `max(1.0, …)`） | 若成立，左上角 1 px 不可达 | 真机注入 `(0,0)` 读回 `GetCursorPos`；**未证实前禁止加 `max(1,·)`**（会破坏 §2.4 的精确性） |
 | U7 | `--monitor N` 的索引稳定性（F8：0=主屏，其余是枚举顺序） | 重启后同一 N 可能指向另一块屏 | 文档化“索引不保证跨重启稳定”；正确性不依赖它（公式用实际矩形） |
 | U8 | 多屏**非矩形**布局（L 形/上下错位）时包围盒内的空洞 | 空洞区仍可被点到（物理上有效） | 真机观察；本设计不需要特殊处理（不裁剪到屏幕） |
@@ -565,12 +565,12 @@ class DesktopSource {
 | `include/rtsc/server/desktop_input.h` | `InjectRect` + `InjectGeometry` 扩字段（`width/height` 保持在前，两参数聚合初始化不变） |
 | `include/rtsc/server/server.h` | 新增 `DesktopGeometry` + `virtual DesktopGeometry Geometry() const`（**带默认实现**） |
 | `src/server/desktop_gdi.cpp` | `GdiDesktopSourceImpl` 保存并返回 `rect_` + 工厂期 `SM_*VIRTUALSCREEN` 快照 |
-| `src/server/server.cpp` | `DoConnectResponse`(1324) 与 `AcquireInputLease`(873) 组装几何；**不改公告尺寸** |
+| `src/server/server.cpp` | `DoConnectResponse`(1374) 一次性组装几何快照，`AcquireInputLease`(918) 只下发该快照（**不再复测**）；**不改公告尺寸** |
 | `src/server/desktop_input_map.cpp` | 用 §3 公式替换 `NormalizeAxis`；`mapped` 门槛；`int64` 中间量 |
 | `src/server/desktop_input_win32.cpp` | flag 不变；`SetGeometry` 存全结构 |
 | `src/server/desktop_input_null.cpp` | 签名不变（结构体变大） |
 | `tests/test_desktop_input.cpp` | 新增 A/B/C/D/E/F/G 用例；**改** `desktop_input_absolute_move_full_range` 期望（§2.4）；新增 `mapped=false`；加 `dwFlags` 断言 |
-| `tests/test_server.cpp` | `RecordingInputSink` 记录 `capture/desktop/mapped`；补“租约时复测”用例 |
+| `tests/test_server.cpp` | `RecordingInputSink` 记录 `capture/desktop/mapped/pixels_are_physical` 全字段，并对 `Geometry()` 计数；断言服务端只转发源快照（含 capture origin 非 0 与两个信任位为 false 的场景） |
 | `tests/test_desktop_gdi.cpp` | 断言 `Geometry()` 与 `GetMonitorInfo`/`SM_*` 一致；子矩形钳制后的值 |
 | `docs/spec/input-injection-evidence.md` | §1.5 公式与 U2 结论同步修订（分母裁决） |
 | `CMakeLists.txt` | **无改动**（`desktop_input_map` 已在纯函数库里） |
@@ -587,13 +587,13 @@ class DesktopSource {
 def ceil_div(a, b):                 # a >= 0, b > 0
     return -((-a) // b)
 
-def round_div(a, b):                # a >= 0, b > 0, half-up
-    return (2 * a + b) // (2 * b)
-
 def map_axis(wire, fb, cap, cap0, desk0, desk_n):
     """wire -> Win32 normalized; exact inverse of floor(n*desk_n/65536)."""
     f = max(0, min(wire, fb - 1))                       # step 0
-    local = 0 if fb <= 1 else min(cap - 1, round_div(f * (cap - 1), fb - 1))  # step 1
+    # step 1: center sampling, floor (adopted in §2.5). The endpoint-anchoring
+    # "round_div(f*(cap-1), fb-1)" form is REJECTED（已否决）-- it does not
+    # match the measured GDI sampling phase.
+    local = 0 if fb <= 1 else min(cap - 1, ((2 * f + 1) * cap) // (2 * fb))
     phys = cap0 + local                                 # step 2
     rel = max(0, min(phys - desk0, desk_n - 1))         # step 3
     return min(65535, ceil_div(rel * 65536, desk_n))
@@ -606,9 +606,10 @@ def decode(n, desk0, desk_n):                            # what the OS does
 
 - **落点恒等**：对全部 `p ∈ [0, fb)`，
   `decode(map_axis(p, fb, cap, cap0, desk0, desk_n), desk0, desk_n) == cap0 + step1(p)`，
-  其中 `step1(p) = round_div(p*(cap-1), fb-1)`（§3 公式本身）。实测 `fb=1280,cap=1920,desk=1920`：
-  `0/1310720` 像素失配（§10 实测行）。
-- **端点**：`step1(0) == 0`、`step1(fb-1) == cap-1`（捕获矩形两端可达）。
+  其中 `step1(p) = min(cap-1, ((2*p+1)*cap) // (2*fb))`（§3.2 的中心采样公式本身）。
+  实测 `fb=1280,cap=1920,desk=1920`：`0/1310720` 像素失配（§10 实测行）。
+- **端点**：`step1(fb-1) == cap-1`（捕获矩形右端可达）。`step1(0)` **不是** 0：
+  中心采样下它是 `cap // (2*fb)`（`fb=640,cap=1280` 时为 1，见 §2.5 的候选表）。
 - **1:1 恒等**：`cap == fb` 时 `step1(p) == p`（`BitBlt` 路径零取整）。
 - **桌面段**：对 `desk_n ∈ {1280,1920,2560,3200,3840,8192}` 与全部 `p`，
   `decode(map_axis(p, desk_n, desk_n, 0, 0, desk_n), 0, desk_n) == p`（0 失配）。
@@ -647,7 +648,7 @@ def decode(n, desk0, desk_n):                            # what the OS does
 
 | 任务问题 | 答案位置 | 一句话结论 |
 |---|---|---|
-| 1a 正确映射公式（含取整） | §3.2、§2.5 | 步骤 0 钳制 → 步骤 1 `round(x*(cw-1)/(fw-1))` → 步骤 2 `+capture_origin` → 步骤 3 `ceil(rel*65536/desk_w)` |
+| 1a 正确映射公式（含取整） | §3.2、§2.5 | 步骤 0 钳制 → 步骤 1 中心采样 `floor(((2x+1)*cw)/(2*fw))`（**端点锚定 `round(x*(cw-1)/(fw-1))` 已否决**，见 §2.5）→ 步骤 2 `+capture_origin` → 步骤 3 `ceil(rel*65536/desk_w)` |
 | 1b `MOUSEINPUT` 原文 | §2.1 | `ABSOLUTE` 归一化 0..65535，两端点对应域两角；`VIRTUALDESK` 把域改成整个虚拟桌面 |
 | 1c 成熟实现对照 | §2.3 | Wine/ReactOS 反解 `floor(n*w/65536)`；Chromium `ui/base` 正向 `ceil(p*65536/w)` 与本文一致；FreeRDP 手工加 origin 但域固定主屏；rdev 落点等价 |
 | 1d 分母是 `宽-1` 还是 `宽` | §2.4、§6.5 | **用 `宽`（`65536/宽`，向上取整）**；`宽-1` 与解码不互逆（1280 宽有 3 个像素偏 1） |

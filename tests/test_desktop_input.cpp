@@ -79,6 +79,29 @@ int64_t DecodeAxis(int normalized, int32_t origin, int32_t extent) {
            (static_cast<int64_t>(normalized) * extent) / 65536;
 }
 
+// Step 1 of the mapping as the design fixes it: the framebuffer pixel is
+// sampled at the CENTER of its cell inside the capture rectangle, with integer
+// floor (docs/spec/input-geometry-design-M.md 2.5 / 3.2, adopted after the GDI
+// StretchBlt(COLORONCOLOR) measurement). This is the specification, used as an
+// oracle; it is not derived from the implementation.
+int64_t SpecCapturePixel(int64_t f, int64_t fb, int64_t cap) {
+    if (fb <= 1 || cap <= 0) return 0;
+    const int64_t local = ((2 * f + 1) * cap) / (2 * fb);
+    return local > cap - 1 ? cap - 1 : local;
+}
+
+// The two formulas the design rejected for step 1 (endpoint anchoring and
+// window start), kept here only so the dense table can prove it distinguishes
+// them instead of merely agreeing with one implementation.
+int64_t EndpointCapturePixel(int64_t f, int64_t fb, int64_t cap) {
+    if (fb <= 1) return 0;
+    return (2 * f * (cap - 1) + (fb - 1)) / (2 * (fb - 1));
+}
+
+int64_t WindowStartCapturePixel(int64_t f, int64_t fb, int64_t cap) {
+    return (f * cap) / fb;
+}
+
 bool WaitUntil(const std::function<bool()>& pred, int timeout_ms = 5000) {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeout_ms);
@@ -431,6 +454,261 @@ RTSC_TEST(desktop_input_absolute_move_last_pixel_is_65535) {
     CHECK_EQ(out[0].y, 65535);
 }
 
+RTSC_TEST(desktop_input_absolute_move_translates_desktop_origin) {
+    // A monitor LEFT of the primary puts the virtual-desktop origin at a
+    // negative x: desktop{-1280,0,3200,1024} is a 1920-wide primary at x=0
+    // plus a 1280-wide monitor at x=-1280, and capture{0,0,1280,1024} is that
+    // LEFT monitor. The client pixel (640,512) is physical (640,512), which is
+    // 1920 px into a domain that starts at -1280.
+    //
+    // Step 3 must subtract the DESKTOP origin before normalizing. Dropping
+    // "- desktop_origin" normalizes 640 as if the domain started at 0, so the
+    // landing point moves 1280 px to the right of where the client pointed.
+    InjectGeometry g;
+    g.width = 1280;
+    g.height = 1024;
+    g.capture = InjectRect{0, 0, 1280, 1024};
+    g.desktop = InjectRect{-1280, 0, 3200, 1024};
+    g.mapped = true;
+    g.pixels_are_physical = true;
+
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kMouse;
+    ev.is_move = true;
+    ev.x = 640;
+    ev.y = 512;
+    const std::vector<PlatformInput> out = TranslateInput(ev, g);
+    CHECK_EQ(out.size(), 1u);
+    if (out.size() != 1) return;
+    CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
+    // rel = 0 + 640 - (-1280) = 1920 of 3200 -> ceil(1920*65536/3200) = 39322.
+    CHECK_EQ(out[0].x, 39322);
+    CHECK_EQ(DecodeAxis(out[0].x, g.desktop.x, g.desktop.width),
+             static_cast<int64_t>(640));
+    CHECK_EQ(DecodeAxis(out[0].y, g.desktop.y, g.desktop.height),
+             static_cast<int64_t>(512));
+}
+
+RTSC_TEST(desktop_input_absolute_move_axes_are_independent) {
+    // Each axis must use ITS OWN origin and ITS OWN extent: x from
+    // desktop.{x,width}, y from desktop.{y,height}. Every wrong pairing is
+    // made observably different by this geometry:
+    //   desktop.x (-900) != desktop.y (150)
+    //   capture.height (600) != desktop.height (768)
+    // so a y axis that reads desktop.x as its origin, or capture.height as its
+    // extent, lands somewhere else.
+    InjectGeometry g;
+    g.width = 1280;
+    g.height = 600;
+    g.capture = InjectRect{0, 300, 1280, 600};
+    g.desktop = InjectRect{-900, 150, 3200, 768};
+    g.mapped = true;
+    g.pixels_are_physical = true;
+
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kMouse;
+    ev.is_move = true;
+    ev.x = 640;
+    ev.y = 300;
+    const std::vector<PlatformInput> out = TranslateInput(ev, g);
+    CHECK_EQ(out.size(), 1u);
+    if (out.size() != 1) return;
+    CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
+    // x: physical 640 -> rel 1540 of 3200 -> ceil(1540*65536/3200) = 31540.
+    CHECK_EQ(out[0].x, 31540);
+    // y: physical 300+300 = 600 -> rel 450 of 768 -> 450*65536/768 = 38400.
+    CHECK_EQ(out[0].y, 38400);
+    CHECK_EQ(DecodeAxis(out[0].x, g.desktop.x, g.desktop.width),
+             static_cast<int64_t>(640));
+    CHECK_EQ(DecodeAxis(out[0].y, g.desktop.y, g.desktop.height),
+             static_cast<int64_t>(600));
+}
+
+RTSC_TEST(desktop_input_absolute_move_samples_center_of_each_cell) {
+    // Dense phase table: EVERY framebuffer pixel of both axes is compared with
+    // the specified center sampling, for upscaling (cap > fb) and for
+    // downscaling (cap < fb). The old scaled case only probed the single pixel
+    // x=0, where endpoint anchoring and window start also agree with center
+    // sampling, so a phase change could stay green.
+    //
+    // The 1:1 capture/desktop domain makes the landing point equal the sampled
+    // capture pixel, so the comparison is exact (no normalization rounding).
+    struct DenseCase {
+        uint16_t fbw;
+        uint16_t fbh;
+        int32_t capw;
+        int32_t caph;
+    };
+    const DenseCase cases[] = {
+        {640, 512, 1280, 1024},    // 2x upscale
+        {1920, 1024, 1280, 1024},  // downsample 1.5:1
+        {800, 600, 1920, 1080},    // non-integer ratio both ways
+    };
+    for (const DenseCase& c : cases) {
+        // The table is discriminating: both rejected formulas differ from the
+        // specification on this many source pixels. (Design 2.5: 640->1280
+        // differs on 320/640 for endpoint anchoring and for window start.)
+        size_t endpoint_diff = 0;
+        size_t start_diff = 0;
+        for (int f = 0; f < c.fbw; ++f) {
+            const int64_t center = SpecCapturePixel(f, c.fbw, c.capw);
+            if (center != EndpointCapturePixel(f, c.fbw, c.capw)) {
+                ++endpoint_diff;
+            }
+            if (center != WindowStartCapturePixel(f, c.fbw, c.capw)) {
+                ++start_diff;
+            }
+        }
+        CHECK(endpoint_diff > 0);
+        CHECK(start_diff > 0);
+
+        InjectGeometry g;
+        g.width = c.fbw;
+        g.height = c.fbh;
+        g.capture = InjectRect{0, 0, c.capw, c.caph};
+        g.desktop = g.capture;
+        g.mapped = true;
+        g.pixels_are_physical = true;
+
+        size_t mismatches = 0;
+        for (int f = 0; f < c.fbw; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>(f);
+            ev.y = static_cast<uint16_t>((c.fbh - 1) / 2);
+            const std::vector<PlatformInput> out = TranslateInput(ev, g);
+            if (out.size() != 1 ||
+                out[0].kind != PlatformInput::Kind::kMouseMove ||
+                DecodeAxis(out[0].x, 0, c.capw) !=
+                    SpecCapturePixel(f, c.fbw, c.capw)) {
+                ++mismatches;
+            }
+        }
+        for (int f = 0; f < c.fbh; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>((c.fbw - 1) / 2);
+            ev.y = static_cast<uint16_t>(f);
+            const std::vector<PlatformInput> out = TranslateInput(ev, g);
+            if (out.size() != 1 ||
+                out[0].kind != PlatformInput::Kind::kMouseMove ||
+                DecodeAxis(out[0].y, 0, c.caph) !=
+                    SpecCapturePixel(f, c.fbh, c.caph)) {
+                ++mismatches;
+            }
+        }
+        CHECK_EQ(mismatches, static_cast<size_t>(0));
+    }
+}
+
+RTSC_TEST(desktop_input_absolute_move_dense_table) {
+    // Exhaustive per-pixel table for the common desktop widths/heights, in two
+    // shapes:
+    //
+    //   A. 1:1 (capture == desktop == framebuffer): every pixel must decode
+    //      back to itself. The old identity case sampled every 37th/41st pixel,
+    //      so an interior off-by-one in the normalization could hide between
+    //      the samples.
+    //   B. scaled (framebuffer = half the capture size): every framebuffer
+    //      pixel must land on the SPECIFIED center-sampled capture pixel. This
+    //      is the dense table that distinguishes the sampling phase: with a
+    //      1:1 shape endpoint anchoring is the identity and cannot be told
+    //      apart, so the scaled shape is what makes a phase change red.
+    //
+    // Axes are independent, so covering every x and every y covers every pixel.
+    const int32_t widths[] = {1280, 1920, 3200, 3840};
+    const int32_t heights[] = {720, 1080, 1024, 1200};
+    for (size_t i = 0; i < 4; ++i) {
+        // A. 1:1 identity.
+        const InjectGeometry identity =
+            PhysicalGeometry(static_cast<uint16_t>(widths[i]),
+                             static_cast<uint16_t>(heights[i]));
+        size_t identity_mismatches = 0;
+        for (int32_t f = 0; f < widths[i]; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>(f);
+            ev.y = static_cast<uint16_t>(heights[i] / 2);
+            const std::vector<PlatformInput> out = TranslateInput(ev, identity);
+            if (out.size() != 1 ||
+                DecodeAxis(out[0].x, identity.desktop.x,
+                           identity.desktop.width) != f) {
+                ++identity_mismatches;
+            }
+        }
+        for (int32_t f = 0; f < heights[i]; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>(widths[i] / 2);
+            ev.y = static_cast<uint16_t>(f);
+            const std::vector<PlatformInput> out = TranslateInput(ev, identity);
+            if (out.size() != 1 ||
+                DecodeAxis(out[0].y, identity.desktop.y,
+                           identity.desktop.height) != f) {
+                ++identity_mismatches;
+            }
+        }
+        CHECK_EQ(identity_mismatches, static_cast<size_t>(0));
+
+        // B. Scaled: framebuffer half the capture, capture == desktop.
+        const uint16_t fbw = static_cast<uint16_t>(widths[i] / 2);
+        const uint16_t fbh = static_cast<uint16_t>(heights[i] / 2);
+        InjectGeometry scaled;
+        scaled.width = fbw;
+        scaled.height = fbh;
+        scaled.capture = InjectRect{0, 0, widths[i], heights[i]};
+        scaled.desktop = scaled.capture;
+        scaled.mapped = true;
+        scaled.pixels_are_physical = true;
+
+        size_t scaled_mismatches = 0;
+        for (int32_t f = 0; f < fbw; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>(f);
+            ev.y = static_cast<uint16_t>((fbh - 1) / 2);
+            const std::vector<PlatformInput> out = TranslateInput(ev, scaled);
+            if (out.size() != 1 ||
+                out[0].kind != PlatformInput::Kind::kMouseMove ||
+                DecodeAxis(out[0].x, 0, widths[i]) !=
+                    SpecCapturePixel(f, fbw, widths[i])) {
+                ++scaled_mismatches;
+            }
+        }
+        for (int32_t f = 0; f < fbh; ++f) {
+            InputEvent ev;
+            ev.kind = InputEvent::Kind::kMouse;
+            ev.is_move = true;
+            ev.x = static_cast<uint16_t>((fbw - 1) / 2);
+            ev.y = static_cast<uint16_t>(f);
+            const std::vector<PlatformInput> out = TranslateInput(ev, scaled);
+            if (out.size() != 1 ||
+                out[0].kind != PlatformInput::Kind::kMouseMove ||
+                DecodeAxis(out[0].y, 0, heights[i]) !=
+                    SpecCapturePixel(f, fbh, heights[i])) {
+                ++scaled_mismatches;
+            }
+        }
+        CHECK_EQ(scaled_mismatches, static_cast<size_t>(0));
+
+        // The scaled shape is discriminating: endpoint anchoring disagrees with
+        // center sampling on many of these framebuffer pixels.
+        size_t endpoint_diff = 0;
+        for (int32_t f = 0; f < fbw; ++f) {
+            if (SpecCapturePixel(f, fbw, widths[i]) !=
+                EndpointCapturePixel(f, fbw, widths[i])) {
+                ++endpoint_diff;
+            }
+        }
+        CHECK(endpoint_diff > 0);
+    }
+}
+
 RTSC_TEST(desktop_input_absolute_move_requires_trusted_geometry) {
     // Either trust bit being false drops the MOVE only: a button still has to
     // reach the desktop or the peer's click is lost and its later release
@@ -496,14 +774,65 @@ RTSC_TEST(desktop_input_absolute_move_degenerate_geometry) {
     g = PhysicalGeometry(2, 2);
     g.desktop.height = 1;
     CHECK(TranslateInput(ev, g).empty());
+
+    // The capture rectangle must lie INSIDE the desktop box. Step 2/3 turn a
+    // capture pixel into a physical point and then normalize it against the
+    // desktop, so a capture that starts outside the box or runs past its right
+    // or bottom edge would produce a normalized value for a point the client
+    // never pointed at (clamping cannot repair it: the point is wrong).
+    g = PhysicalGeometry(2, 2);
+    g.capture.x = -1;  // left of the desktop origin
+    CHECK(TranslateInput(ev, g).empty());
+
+    g = PhysicalGeometry(2, 2);
+    g.capture.x = 2;  // x + width = 3 > desktop 0 + 2
+    CHECK(TranslateInput(ev, g).empty());
+
+    g = PhysicalGeometry(2, 2);
+    g.capture.y = -1;  // above the desktop origin
+    CHECK(TranslateInput(ev, g).empty());
+
+    g = PhysicalGeometry(2, 2);
+    g.capture.height = 3;  // y + height = 3 > desktop 0 + 2
+    CHECK(TranslateInput(ev, g).empty());
+
+    // MOUSEINPUT absolute coordinates have 65536 steps per axis, so a desktop
+    // box larger than that cannot be addressed pixel by pixel: a wire step
+    // would skip pixels. Treat it as unusable rather than silently imprecise.
+    g = PhysicalGeometry(2, 2);
+    g.desktop.width = 65537;
+    g.capture.width = 2;
+    CHECK(TranslateInput(ev, g).empty());
+
+    g = PhysicalGeometry(2, 2);
+    g.desktop.height = 65537;
+    g.capture.height = 2;
+    CHECK(TranslateInput(ev, g).empty());
+
+    // Control: exactly 65536 is the largest addressable box and still maps.
+    g = PhysicalGeometry(2, 2);
+    g.desktop.width = 65536;
+    g.capture.width = 2;
+    const std::vector<PlatformInput> addressable = TranslateInput(ev, g);
+    CHECK_EQ(addressable.size(), 1u);
+    if (addressable.size() == 1) {
+        CHECK(addressable[0].kind == PlatformInput::Kind::kMouseMove);
+    }
 }
 
 RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
-    // T6: normalization needs a real pixel span on both axes. With a geometry
-    // of 0 or 1 (not negotiated yet, or a degenerate capture) the old 1:1
-    // pass-through sent the raw wire value as a normalized coordinate, so a
-    // move to (0, 0) stayed at the top-left corner and any other value was
-    // meaningless. Drop the move instead of injecting a wrong position.
+    // A geometry built from the negotiated size alone -- the shape
+    // InjectGeometry had before the capture/desktop rectangles were added, and
+    // the shape an embedder still gets by aggregate-initializing only
+    // width/height -- carries mapped=false. The move is therefore rejected by
+    // the TRUST gate, not by the span rule: an unknown capture rectangle is
+    // exactly as unusable as a degenerate one.
+    //
+    // The span rule itself (width/height of 0 or 1 with a trusted geometry) is
+    // deliberately exercised in desktop_input_absolute_move_degenerate_geometry,
+    // which uses PhysicalGeometry so mapped stays true and only the span is
+    // broken. Keeping the two reasons apart means breaking either one alone
+    // turns a case red.
     InputEvent ev;
     ev.kind = InputEvent::Kind::kMouse;
     ev.is_move = true;
@@ -514,14 +843,14 @@ RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     // One usable axis does not help: the other one is still not normalizable.
     CHECK(TranslateInput(ev, InjectGeometry{2, 1}).empty());
     CHECK(TranslateInput(ev, InjectGeometry{1, 2}).empty());
-    // Control: both axes have a span.
+    // Control: both axes have a span AND the geometry is trusted.
     const std::vector<PlatformInput> out =
         TranslateInput(ev, PhysicalGeometry(2, 2));
     CHECK_EQ(out.size(), 1u);
     if (out.size() != 1) return;
     CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
 
-    // Only the un-normalizable MOVE is suppressed: a button press carries no
+    // Only the unmappable MOVE is suppressed: a button press carries no
     // coordinates and still has to reach the desktop, or the peer's click is
     // lost (and its later release leaves the local button stuck).
     InputEvent click = ev;
@@ -1318,13 +1647,15 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     sync.kind = InputEvent::Kind::kSync;
     events.push_back(sync);
 
-    // A usable geometry: IsInjectable() has no geometry argument, so the
-    // cross-check covers the "can this event ever become an action" question.
-    // The degenerate-geometry rule (T6) is geometry-dependent and is pinned by
-    // desktop_input_absolute_move_requires_usable_geometry instead.
+    // The one-argument form answers "can this event ever become an action",
+    // independent of geometry, so it is cross-checked against a usable
+    // geometry. The geometry-aware form must agree with TranslateInput for the
+    // very same geometry, including the case where a pure move is fail-closed
+    // and only a button survives.
     const InjectGeometry usable = PhysicalGeometry(1920, 1080);
     for (const InputEvent& ev : events) {
         CHECK(IsInjectable(ev) == !TranslateInput(ev, usable).empty());
+        CHECK(IsInjectable(ev, usable) == !TranslateInput(ev, usable).empty());
     }
     // Pin the non-injectable kinds explicitly so a change to TranslateInput
     // cannot silently make them take the lease.
@@ -1335,6 +1666,13 @@ RTSC_TEST(desktop_input_is_injectable_matches_translation) {
     CHECK(!IsInjectable(bare_mouse));
     CHECK(!IsInjectable(extended1_key));
     CHECK(!IsInjectable(zero_wheel));
+
+    // With untrusted geometry a pure move can never become an action, so the
+    // geometry-aware form must reject it (the one-argument form still reports
+    // "in principle yes"). A click keeps its button and stays injectable.
+    const InjectGeometry untrusted;
+    CHECK(!IsInjectable(mouse_move, untrusted));
+    CHECK(IsInjectable(mouse_button, untrusted));
 }
 
 RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
@@ -1377,6 +1715,13 @@ RTSC_TEST(desktop_input_host_reports_input_state_and_lease_denial) {
     CHECK(src.find("input_release_failures=") != std::string::npos);
     // Worker iterations that threw and were skipped are only visible here.
     CHECK(src.find("input_worker_failures=") != std::string::npos);
+    // Moves dropped because the session geometry is untrusted are only
+    // observable through this counter, so the shipped host must print it...
+    CHECK(src.find("input_dropped_unmapped=") != std::string::npos);
+    // ... and must include it in the change detector, or a session whose only
+    // fault is untrusted geometry would never produce a periodic line.
+    CHECK(src.find("stats.dropped_unmapped != printed_input.dropped_unmapped") !=
+          std::string::npos);
     // The final value is printed before the process exits.
     CHECK(src.find("\"final\"") != std::string::npos);
 #else
@@ -1418,6 +1763,12 @@ RTSC_TEST(desktop_input_null_sink_stats_count_injections) {
 }
 
 #if defined(RTSC_DESKTOP_INPUT_TESTING)
+// Forces one worker iteration to throw before it reaches SendInput, so a case
+// can drive the mappable-move accounting without touching the real desktop.
+namespace {
+bool AlwaysFailDispatch(uint32_t /*session_id*/) { return true; }
+}  // namespace
+
 RTSC_TEST(desktop_input_unmapped_move_is_counted_separately) {
     // A move with untrusted geometry is fail-closed: it never reaches the
     // queue/worker (no SendInput) and its drop is visible in its own counter,
@@ -1439,6 +1790,51 @@ RTSC_TEST(desktop_input_unmapped_move_is_counted_separately) {
     sink->Inject(1, move);
     CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(1));
     CHECK_EQ(sink->Stats().injected, static_cast<size_t>(0));
+}
+
+RTSC_TEST(desktop_input_unmapped_move_is_not_double_counted) {
+    // The two drop counters answer DIFFERENT questions and must not overlap:
+    //   dropped_unmapped    = a move fail-closed because the geometry is not
+    //                         trusted (an operator can fix the capture side)
+    //   dropped_unsupported = an event with no platform form at all (nothing
+    //                         the operator can do)
+    // Double counting would make them indistinguishable, and counting every
+    // move as unmapped would report a fault on a healthy session.
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+
+    InputEvent move;
+    move.kind = InputEvent::Kind::kMouse;
+    move.is_move = true;
+    move.x = 640;
+    move.y = 512;
+
+    InjectGeometry untrusted;
+    untrusted.width = 1280;
+    untrusted.height = 1024;
+    sink->SetGeometry(1, untrusted);
+    sink->Inject(1, move);
+    CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(1));
+    // ... and NOT additionally as unsupported.
+    CHECK_EQ(rtsc::server::DesktopInputTestDroppedUnsupported(sink.get()),
+             static_cast<size_t>(0));
+
+    // A move that IS mappable must not raise dropped_unmapped at all. The
+    // dispatch hook makes the worker iteration throw before it reaches
+    // SendInput, so the real desktop is never touched while the Inject()-side
+    // accounting is still exercised.
+    rtsc::server::SetDesktopInputDispatchFailureHook(&AlwaysFailDispatch);
+    sink->SetGeometry(2, PhysicalGeometry(1280, 1024));
+    sink->Inject(2, move);
+    const bool dispatched = WaitUntil(
+        [&sink]() { return sink->Stats().worker_failures >= 1; });
+    rtsc::server::SetDesktopInputDispatchFailureHook(nullptr);
+    CHECK(dispatched);
+    CHECK_EQ(sink->Stats().dropped_unmapped, static_cast<size_t>(1));
+    CHECK_EQ(rtsc::server::DesktopInputTestDroppedUnsupported(sink.get()),
+             static_cast<size_t>(0));
 }
 
 RTSC_TEST(desktop_input_release_session_clears_state_when_append_throws) {

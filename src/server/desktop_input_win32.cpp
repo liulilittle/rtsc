@@ -255,6 +255,13 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     bool WorkerWaitingForTest() {
         return worker_waiting_.load(std::memory_order_acquire);
     }
+    // The "no platform form at all" counter. It is deliberately NOT part of
+    // InputStats (an operator cannot act on it), but the fail-closed move path
+    // must not double count a geometry drop here, so the suite reads it.
+    size_t DroppedUnsupportedForTest() const {
+        return static_cast<size_t>(
+            dropped_unsupported_.load(std::memory_order_relaxed));
+    }
 #endif
 
  private:
@@ -805,6 +812,12 @@ bool DesktopInputTestWorkerWaiting(DesktopInputSink* sink) {
     auto* win32 = AsWin32(sink);
     if (win32 == nullptr) return false;
     return win32->WorkerWaitingForTest();
+}
+
+size_t DesktopInputTestDroppedUnsupported(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return 0;
+    return win32->DroppedUnsupportedForTest();
 }
 
 #else
