@@ -627,3 +627,21 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 工作树已改 12 文件（含 test_desktop_gdi.cpp / test_server.cpp / main.cpp）
 ### 验收时使用
 主代理将用 §9 的 oracle 独立核对执行 AI 的稠密表数值，不采信其报告数字
+## 第861轮：批23 主代理验收 + 提交 12a9348
+### 主代理亲测（不读报告）
+| 项 | 证据 |
+|---|---|
+| 构建 | `cmake --build build --config Release` **exit=0**，六类诊断**全 0** |
+| 全量 | `ctest --test-dir build -C Release -j1` **63/63, 0 failed**（58.16s） |
+| H1 源码守卫已删 | `Select-String tests/test_desktop_gdi.cpp -Pattern 'RTSC_SOURCE_DIR\|PixelsArePhysical\(dpi_ok'` = **0** |
+| H1 行为 seam | `:284-360` `FakeMetrics : MetricSource` 驱动 `PixelsArePhysicalFromMetrics`，7 条断言 |
+| **H1 变异（我重做）** | 副本把 `SM_CXSCREEN→SM_CXVIRTUALSCREEN` → **FAIL :346/:349 两条行为断言，1 failing/2 failed checks，EXIT=1**（纯行为，非文本）；恢复+touch+hash 相同 → **0 failing** |
+| dropped_unmapped 日志 | `main.cpp:622/623` 打印 + `:636` 变更检测（3 命中） |
+| 稠密表 | `test_desktop_input.cpp:606-700` A(1:1 全像素×4宽4高) + B(cap=2×fb 中心采样) + 端点差异自证 |
+### 提交
+`12a9348` 批23（11 文件 +915/-90）
+### 调度
+- 执行 AI `ses_e64c0da68...` **delete 解散**（任务完成）
+- 它 relay 两个已解散审计会话失败属**预期**（会话已删），无需代转
+### 待办
+新开双审复核批23
