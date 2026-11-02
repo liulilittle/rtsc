@@ -764,3 +764,46 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
    修复：§10 步骤 1 改 `floor(((2f+1)*cap)/(2*fb))`；§12 索引同步；§4.2 的
    `pixels_are_physical` 判据改为 `SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES`。
 8. **[Medium] `plan.md` 批 22 判据第 6 条需正式改判**（已由主代理在批 23 清单体现）。
+### 批 23 追加清单（round 858，P/Q 双审一致签字后补充；与原 8 项合并执行）
+
+**H1 [High·必须] 重写结构守卫为行为 seam**
+`tests/test_desktop_gdi.cpp:295-317` 用 `src.find("PixelsArePhysical(dpi_ok")` 取首个匹配 + 首个 `);`。
+主代理已独立复现两种失效：
+- 假绿：正确调用**上方**加注释 `// PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN), physical_w, physical_h);`
+  + 真实调用改 `SM_CX*VIRTUALSCREEN` → `10 tests, 57 checks, 0 failing`（EXIT=0）
+- 假红：正确代码 + 注释 `// old: PixelsArePhysical(dpi_ok, Metric(SM_CXVIRTUALSCREEN), ...)` → `1 failing`, 4 failed checks（EXIT=1）
+修复（第 16 条"改坏仍全绿即假测试，必须重写"）：
+- **删除读源码文本的守卫**
+- 改成行为 seam：把"取 metric → 判定"抽成可注入的函数（如
+  `bool PixelsArePhysical(const MetricsProvider&)` 或保留现纯函数 + 在工厂里注入 provider），
+  测试直接驱动 seam，不 grep 源码
+- 纯函数多屏数值表必须覆盖：`(true,1920,1080,1920,1080)=true`、`(true,3200,1080,1920,1080)=false`
+  （主屏宽 3200 与物理 1920 不符 → 拒绝）、`(true,2048,1152,2560,1440)=false`、`(false,…)=false`
+- 验收：把调用点改成 `SM_CXVIRTUALSCREEN` 必须**行为上**转红（不是靠文本匹配）
+
+**H2 [High·必须] 接线测试扩为四字段 + 调用计数**
+`RecordingInputSink` 记录 `capture{x,y,width,height}`、`desktop{...}`、`mapped`、`pixels_are_physical`，
+并对 `DesktopSource::Geometry()` 计数。Q 实测四处改坏全部 0 failing：
+capture/desktop 互换、删 `pixels_are_physical`、`mapped` 恒 true、完全不调 `Geometry()`。
+验收：四个变异各自必须转红。
+
+**M5 [Medium] 补覆盖（Q 用变异实证均 0 failing）**
+1. `cap < fb` 下采样：改坏采样公式仅在下采样时 → 必须转红
+   （现有 `cross_monitor_scaled` 只测 x=0 单点）
+2. 步骤 1 内部像素中心采样：把内部点改成 window-start → 必须转红
+3. y 轴 origin 与域解耦：y 用 `desktop.x` 当 origin、y 域用 `capture.height` → 必须转红
+4. 稠密往返表：`w ∈ {1280,1920,3200,3840}` 全像素（现有 1:1 用例只是 stride 37/41 抽样，
+   `tests/test_desktop_input.cpp:379-380`）
+   验收：把中心采样改成端点锚定后，稠密表必须报非 0 失配
+
+**M6 [Medium] `dropped_unmapped` 语义钉死**
+补断言：不可映射移动计入 `dropped_unmapped` 时 `dropped_unsupported` 必须为 0（不双计）；
+`mapped && physical` 的移动 `dropped_unmapped` 必须恒 0（不过计）。
+Q 实测："双计"与"全记 unmapped"两个变异均 0 failing，只有"永不计数"转红。
+
+**H3 [Low·需裁决] 热插拔复测承诺**
+设计 §4.2/§5 承诺"取租约时复测 geometry"，但 `server.cpp:917-918` 直接复用 `DoConnectResponse`
+`(:1375)` 的快照，且 `GdiDesktopSourceImpl::Geometry()` 是 const 返回冻结值。
+**裁决：删除该承诺**（改为"几何在连接建立时快照，会话期间不变；显示器热插拔需重连"），
+理由：实现非 const 复读会引入读几何与注入之间的竞争窗口（D15-D17 TOCTOU），
+且当前无任何测试能覆盖热插拔路径。文档必须同步说明该限制。
