@@ -653,3 +653,19 @@ N 称"纯 ceil 会打断 `tests/test_desktop_input.cpp:272-279` 的既有断言"
 - 明确要求：独占 ctest、只认 0 failing、三变异 + touch 重编 + Get-FileHash
 ### 待办
 构建/测试/变异由执行 AI 完成 → 主代理验收 → 双审
+## 第854轮：批22 主代理验收（构建/测试过，发现 1 个 High 缺陷）
+### 主代理亲测（非引用报告）
+- `cmake --build build --config Release` **exit=0**，warning C/error C/error LNK/warning LNK/error MSB/warning MSB **全 0**
+- `ctest --test-dir build -C Release` **63/63 passed, 0 failed**（79.20s，独占）
+- 独立复算（PowerShell 重写 MapAxis）与验收值**逐条一致**：
+  cross-monitor `n=(52429,32768)`→decode 2560；`rel=1→52`；末像素→65535；1:1 恒等（0/100/639/640/1279 全部 land==wire）
+### 发现的 High 缺陷（第 31 例，已入 discover）
+`desktop_gdi.cpp:321-324` 用 **虚拟桌面宽** 比对 `DESKTOPHORZRES`（桌面 DC 返回**主显示器**能力）
+⇒ 多显示器下 `pixels_are_physical` 恒 false ⇒ 绝对移动全丢 ⇒ `--monitor N` 完全不可用。
+单屏两者相等，故测试全绿、缺陷不可见。测试还把该错误判据写成断言（保护缺陷）。
+### 处置
+- 退回执行 AI 修（title=批22修多屏判据）：判据改 `SM_CXSCREEN/SM_CYSCREEN` 比对；
+  抽纯函数 `PixelsArePhysical` 加多屏单测（虚拟桌面更宽仍 true）；变异验证
+- 双审：原 M/N 组已解散，执行 AI 无法直连 → 修完后**新开两个审计 AI**
+### 已确认正确
+映射实现（MapAxis/中心采样/混合式/末像素/fail-closed）经主代理独立复算与 ctest 双重确认
