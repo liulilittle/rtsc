@@ -565,39 +565,17 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 host `main.cpp` 调用点无行为测试（`--once` 阻塞等待客户端，无法低成本自动化）
 ### 调度
 执行 AI `ses_e6475efa1...` **delete 解散**
-## 第865轮：批25 —— 闭合 R7（host 装配点行为测试）+ 启动安全闸首次覆盖
-### 做了什么
-新增 `tests/host_cli_check.cmake`（cmake -P + execute_process）+ CMakeLists 5 条 `host_cli_*`。
-`--seconds 1` 让 host 自行到期退出，绕开 `--once` 等连接的阻塞，从而能观测
-`main.cpp:611` 的装配点与启动安全闸。
-### 验证
-| 项 | 证据 |
-|---|---|
-| 配置 | exit 0；`CTestTestfile.cmake` 5 条 |
-| 构建 | exit 0；六类诊断 0/0 |
-| 全量 | **68/68, 0 failed**（72.55s）|
-| 变异 A（`main.cpp:611` → `log.line(reason)`） | `host_cli_stats_line` 唯一红 ⇒ R7 真闭合 |
-| 变异 B（拒绝路径 `return 2`→`0`） | 两个 `refuse_*` 红 |
-| 变异 C（改计数键名） | `desktop_input` + `stats_line` 红 |
-| 恢复 | hash 一致、MUTANT 残留 0、重编 68/68 |
-### 新教训（discover 例 36）
-`Copy-Item` 恢复会带回旧 mtime → MSBuild 不重编 → 二进制仍是变异体 → 下一个变异证据被污染。
-恢复后必须 `touch`，且必须确认构建日志里出现该文件的重编行（BUILD_EXIT=0 在"什么都没编"时也成立）。
-### 残留
-R7 关闭；真机语义项（数字是否随注入变化）仍 UNVERIFIED。
 
-## 【归档压缩：864-866 轮（原 33 行）】
+## 【归档压缩：865-867 轮（原 33 行）】
 
-- **864** 批24 验收 + 提交 `fa79fec`：`ctest` 63/63；R1 变异（决策改 VIRTUALSCREEN）→ `:392` 红；
-  额外自选变异 `desktop.right` 改 `SM_CYVIRTUALSCREEN` → 3 红。真机清单补 `dropped_unmapped` 与未持租约计数 `d2aa9d3`。
-  登记 R7（host 调用点无行为测试）。
-- **865** 批25 提交 `dab111d`：新增 `tests/host_cli_check.cmake`（cmake -P + execute_process）5 个 CASE；
-  `--port 0 --seconds 1` 让 host 自行退出。变异 `main.cpp:611`→`log.line(reason)` → 仅 `host_cli_stats_line` 红（R7 装配点闭合）。
-  拒绝路径 `return 2`→`0` → 2 个 `refuse_*` 红。
-- **866** 审计 T 报告（CONDITIONAL，5 条 Low）。我自行复现 T-1/T-2/T-5，**但 F2 的变异打偏**：
-  `String.Replace` 同时改了生产入口与 seam，`:461` 变红不能证明生产入口（后由审计 U 推翻，见 867）。
-
-## 第867轮：批26 双审收口（F2 返工 + U-1/U-2/U-3/U-4/U-7 + T 的 SKIP 缺口）
+- **865** 批25 `dab111d`：`tests/host_cli_check.cmake` 5 CASE；变异 `main:611`→`log.line(reason)` 仅 `host_cli_stats_line` 红；
+  拒绝路径 `return 2`→`0` → 2 个 `refuse_*` 红。首次覆盖宿主启动安全闸。
+- **866** 审计 T 报告（CONDITIONAL，5 条 Low）。我复现 T-1/T-2/T-5；**但 F2 变异打偏**
+  （`String.Replace` 同时改生产入口与 seam，`:461` 变红不能证明生产入口）。
+- **867** 审计 U 推翻我的 F2 结论（13/73 全绿），单点重跑确认 **U 对、我错**（discover 例 38）。
+  批26 `2dfedac` 九项收口：F1 metrics 单一来源、F2 加 `MakeGdiDesktopSourceWithDpiProbe`、
+  U-1 七字段双向、U-2 整行顺序、U-3 nullptr、U-4 FakeMetrics origin、U-7 seam.md 2→6 字段、
+  T 的 SKIP→CHECK。`ctest` 68/68。
 ### 核心事件：我的变异证据被审计 U 推翻
 我用 `String.Replace` 替换了一个在文件里出现 **2** 次的字符串（生产入口 `:404` + seam `:411`），
 两处同时改掉，于是 `:461`（只受 seam 影响）变红被我误当成"生产入口已测"。U 实测 13/73 全绿。

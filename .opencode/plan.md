@@ -759,76 +759,32 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 `input_dropped_unmapped` 必须打印、未持租约会话也必须计数）。UNVERIFIED 保留。
 **若将来要自动化**：加一条 ctest 启动 host + 用测试客户端建会话再断言 stdout，
 或把 `LogInputStats` 的参数从 `InputStats` 改为可注入的输出回调（sink），在单测里捕获。
-## 批 25（round 865）——闭合 R7：host 装配点行为测试 + 启动安全闸首次覆盖
 
-### 推导起点（第一性原理）
-R7 缺口的事实：`tests/` 下 0 处出现 `rtsc_server_host`/`CreateProcess`，
-`allow_input_unverified`/`refusing to start` 在测试里 0 处命中
-⇒ host 可执行文件的**全部**行为零覆盖，含一条安全契约（未验证凭据 + `--allow-input`
-必须拒绝启动）与 R3 的装配点（`main.cpp:611` 调 `FormatInputStats`）。
-`main.cpp:627-634` 给出可用出口：`--once` 阻塞等连接，但 `--seconds N` 让 accept
-循环**自行到期退出**，且退出前 `log_input_stats("final")` 必打一行
-⇒ 无需模拟客户端即可观测装配点。实测 `--seconds 1` EXIT=0 且打印
-`input stats (final): input_injected=0 ... input_dropped_unmapped=0`。
+## 【归档压缩：批 25 / 批 26（原 70 行，已完成项）】
 
-### 方案（最小改动，纯增量）
-新增 `tests/host_cli_check.cmake`（`cmake -P` 驱动 execute_process，跨平台、无需
-C++ 子进程代码），5 个用例：
-| CASE | 参数 | 断言 |
+### 批 25（`dab111d`）—— 闭合 R7 的"装配点"部分
+新增 `tests/host_cli_check.cmake`（`cmake -P` + `execute_process`，跨平台），5 个 CASE：
+`help` / `refuse_no_enhanced` / `refuse_any_credentials` / `acknowledged_start` / `stats_line`。
+`--port 0` 避让端口，`--seconds 1` 让 host 自行退出（无孤儿）。
+变异 `main.cpp:611`→`log.line(reason)` → **只有 `host_cli_stats_line` 红**；
+拒绝路径 `return 2`→`0` → 两个 `refuse_*` 红。首次覆盖宿主的启动安全闸。
+
+### 批 26（`2dfedac`）—— 审计 T/U 九项收口
+| 项 | 内容 | 变异证据 |
 |---|---|---|
-| help | `--help` | exit 0；含 `--allow-input`/`--allow-input-unverified`；无 `refusing to start` |
-| refuse_no_enhanced | `--allow-input --no-enhanced` | exit 2；含 `refusing to start` + `conflicting option --no-enhanced` |
-| refuse_any_credentials | `--allow-input --allow-any-credentials` | exit 2；含对应冲突行；**不得**含 `--no-enhanced` 冲突行 |
-| acknowledged_start | `--allow-input --allow-input-unverified --port 0 --seconds 1` | exit 0；含 `listening on`/`input=on`/`WARNING: desktop input injection is ENABLED` |
-| stats_line | 同上 | exit 0；含 `input stats (final): input_injected=` 及 7 个计数键 |
-`--port 0` 避免与真实运行抢端口；`--seconds 1` 使进程自行退出，杜绝孤儿。
+| F1 | 装配内所有 SM_* 走注入 `metrics`，删除全局 `Metric()` | `desktop.right`→`SM_CXSCREEN` → 红 |
+| F2（返工） | 新增 `MakeGdiDesktopSourceWithDpiProbe`，生产入口变一行胶水 | 装配忽略 probe → 红 :561/:571 |
+| F3 | 零标志位指针事件用例 | 删 `ev.is_move` → 红；删 `ev.button==0` → 绿（冗余已注明） |
+| F4/U-7 | checklist 七个计数；seam.md 七字段表 + `InjectGeometry` 2→6 字段 | grep 1:1 |
+| U-1 | `InputStatsChanged` 七字段**双向** | `!=`→`<` → 红 8 处 |
+| U-2 | `FormatInputStats` 整行相等（锁顺序） | 整段换位 → 红 |
+| U-3 | `reason==nullptr` 前缀断言 | 回退串 `"none"` → 红 |
+| U-4 | `FakeMetrics` 补 `virtual_x/y` + 非零原点断言 | `desktop.left=0` → 红 |
+| T 新发现 | 几何用例 `nullptr` 由 SKIP 改 `CHECK` | seam 恒 nullptr → 红 3 tests |
 
-### 验证（已全部完成）
-| 项 | 证据 |
-|---|---|
-| 配置 | `cmake -S . -B build` exit 0，`CTestTestfile.cmake` 出现 5 条 `host_cli_*` |
-| 构建 | exit 0，六类诊断全 0 |
-| 全量 | 68/68，0 failed（72.55s）|
-| 变异 A：`main.cpp:611` 改 `log.line(reason)` | **只有** `host_cli_stats_line` 红（1/5 failed）⇒ 装配点被独占守护，R7 闭合 |
-| 变异 B：拒绝路径 `return 2` → `return 0` | 两个 `refuse_*` 红，其余绿（2/5）|
-| 变异 C：`FormatInputStats` 键名改 `input_dropped_unknown` | `desktop_input` + `host_cli_stats_line` 红，其余绿（2/6）|
-| 恢复 | 两个被改文件 hash 与备份一致、`MUTANT` 残留 0、重编后 68/68 |
-
-### R7 状态
-**[x] 已闭合**。此前只能在真机清单里人工验收的两条（`input_dropped_unmapped` 打印、
-纯移动计数），现在由 `host_cli_stats_line` 自动断言"该行确实由主干装配出来"；
-真机仍保留"数字是否随注入变化"的语义验收。
-## 批 26（round 866-867，提交 `2dfedac`）—— 双审收口，已全部落地
-
-**来源**：审计 T（`fa79fec` CONDITIONAL）× 审计 U（独立复核 + 变异穷举），两审收敛无分歧。
-
-**核心事件（discover 例 38）**：我首版 F2 的变异用 `String.Replace` 打在一个出现 **2** 次的字符串上，
-同时改了生产入口与 seam，`:461` 变红被我误当成"生产入口已覆盖"。审计 U 实测 13/73 全绿并推翻我；
-单点定位重跑后 **U 对、我错**。
-
-**落地项（每项都有红/绿对照）**
-| 项 | 修复 | 变异 → 结果 |
-|---|---|---|
-| F1 | 装配内所有 SM_* 走注入的 `metrics`；`ResolveCaptureRect` 收 metrics；删除全局 `Metric()` | `desktop.right`→`SM_CXSCREEN` → 红 :435/:440 |
-| F2 | 新增 `MakeGdiDesktopSourceWithDpiProbe`；生产入口变一行胶水 | 装配忽略 probe → 红 :561/:571；生产传 nullptr → 红 :561 |
-| F3 | 零标志位指针事件用例 + 说明 `ev.button==0` 恒真 | 删 `ev.is_move` → 红；删 `ev.button==0` → 绿（冗余已注明） |
-| F4/U-7 | checklist 七个计数；seam.md 七字段表、接口块、§1.3 `InjectGeometry` 2→6 字段 | grep 字段名与 header 1:1 |
-| F5 | `PeriodicInputStatsLine` 纯函数（无变化返回空串） | 恒返回空 → 红；`periodic`→`final` → 红 |
-| U-1 | `InputStatsChanged` 七字段**双向** | `!=`→`<` → 红 8 处（改前仅 1 处红） |
-| U-2 | `FormatInputStats` 整行相等（锁顺序） | 整段换位 → 红 :1785（改前绿） |
-| U-3 | `reason==nullptr` 前缀断言 | 回退串 `"none"` → 红 :1794 |
-| U-4 | `FakeMetrics` 补 `virtual_x/y`，用例用 (-100,-50) 断言原点 | `desktop.left=0` → 红 :497 |
-| T 新发现 | 几何用例 `nullptr` 由 SKIP 改 `CHECK`（9 处） | seam 恒 nullptr → 红 3 tests/4 checks（改前 11/57 全绿） |
-
-**验证**：构建 exit 0 / 六类诊断全 0；`ctest -j1` **68/68, 0 failed**（78.07s）；
-desktop_input 68 tests/13910 checks；desktop_gdi 14 tests/89 checks；`MUT-` 残留 0。
-
-**OPEN（不宣称闭合）**
-- **R7 的"宿主调用点"部分**：`PeriodicInputStatsLine` 只锁函数内部；删除 main 的调用 / lambda 整体 `return`
-  仍全绿。审计 U 实测方案1（env 门控测试 sink）可让后者转红，但需给生产 main 加可替换后端 + 安全评审；
-  方案3（host_cli 起真客户端）能全杀但时序 flaky 且未实现。**需独立批次 + 安全评审**。
-- 真机项：U1（真机解码）/U2（extent vs extent-1）/U4（混合 DPI）/U5-U9/`--monitor N` 落点，
-  以及"计数是否随注入变化"的语义验收，全部 **UNVERIFIED**（本机 `SendInput` 返回 1 但光标不动）。
+**关键教训（discover 例 38）**：我首版 F2 用 `String.Replace` 打在一个出现 2 次的字符串上，
+生产入口与 seam 被同时改掉，`:461` 变红被误当"生产入口已覆盖"。审计 U 用 13/73 全绿推翻我；
+单点定位重跑确认 **U 对、我错**。
 ## 批 27（round 868，提交见下）——闭合 R7 的宿主调用点（无生产后门）
 
 ### 第一性原理推导
