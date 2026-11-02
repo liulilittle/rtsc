@@ -825,3 +825,40 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 ### 新发现（待立项，非本批引入）
 `src/server/server.cpp` 在非 MSVC/非 Windows 构建下存在 `-Werror=reorder` 报错，
 阻断 Linux 全量构建与 ctest，从而无法验证 `host_cli_*` 在 Linux 的行为。
+
+## 批 30/31（round 870-871，提交 `bc8e41f` / `62eaf2c`）—— 双审收口，已闭合
+
+### 批 29（`bc8e41f`）—— 审计 W 的 B1/D1e
+**B1 是我在批 28 引入的判据回归**：用行索引切片重建用例时删掉了 change 分支的
+`CHECK(line.find("input_dropped_unmapped=3")...)` 且未补等价物。
+`MUT-B1`（change 分支打印旧快照）在修复前 **68 tests/13912 checks 全绿**，
+同一变异在 `db5f764` 下是红的（discover 例 42）。
+修复：补 `input_injected=8` / `input_dropped_unmapped=3` 字面量 + `line == FormatInputStats("periodic", moved)`。
+D1e：基线夹具改七字段互异非零（11..17）+ 整行相等 + 七条字面量。
+
+### 批 30/31（`62eaf2c`）—— verify.ps1 机械门自身假绿（discover 例 43）
+新增"变异残留门"防 B2 类事故。首版用 `StartsWith('//'|'#'|'*'|'/*')` 豁免"仅注释"行 ⇒
+C++ 里 `// log(); // MUT-X`（注释掉的调用）、`#define X 1 /* MUT-X */`、`*p=5; // MUT-X`
+全是代码却被放行（3 行夹具只报 1 条）。而这正是 B2 残留的形态（`:714` 是纯注释行）。
+修复：**零豁免**（任何命中即失败）+ `git -C $root`（D3）+ `--untracked`（D4）+
+校验退出码 `>1`（D6）+ 注释写明范围依据（D7）+ 去掉测试注释里的变异名字面量。
+
+### 变异矩阵（全部实测）
+| 变异 / 场景 | 结果 |
+|---|---|
+| `MUT-B1` change 分支打印旧快照 | 红 :1846/:1847/:1848 |
+| `MUT-D1` 基线打印全 0 | 红 :1825-1832（8 checks） |
+| `MUT-D1e` 单字段归零 / queue-rate 换位 | 红 |
+| 门：3 行变异夹具（外部 CWD + 未跟踪） | 3 条全报，EXIT=1（旧门只报 1 条） |
+| 门：干净仓库（从 `C:\Windows` 跑） | `passed`, EXIT=0 |
+| 门：非仓库路径 | `git grep` 128 → 门报错退出 1 |
+| 门：`MUT-V27ONCE` 采样移出循环 | `stats_line` 红（`must_not_have`） |
+
+### 验证
+构建 exit 0 / 六类诊断全 0；`ctest -j1` **69/69, 0 failed**（82.21s）；
+全仓 `MUT-` 残留 **0**（含注释）；`main.cpp` blob 与 HEAD 逐字节一致。
+双审 W/V 独立复现并一致 **PASS（提交级）**，两角色已 `delete` 解散。
+
+### 登录的防复发机制
+`verify.ps1` 现有预检门：`git -C <repo> grep -n --untracked 'MUT-' -- src include tools tests`，
+任何命中即失败，并校验 git 退出码（1=无匹配属正常，>1=失败）。

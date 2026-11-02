@@ -626,39 +626,16 @@ D4 跨平台 Linux 实跑 **UNVERIFIED**（被 server.cpp 既有 `-Werror=reorde
 ### 验证
 构建 0/0 六类诊断 0；`ctest -j1` **69/69, 0 failed**（87.98s）；`MUT-` 残留 0。
 
-## 第870轮：审计 W 的 B1/D1e —— 我引入的判据回归（discover 例 42）
-### B1（我引入的假测试，W 发现，我复现）
-批 28 修 D1 时用行索引切片重建用例，**删掉了** change 分支的
-`CHECK(line.find("input_dropped_unmapped=3")...)` 且未补等价物。
-复现：`MUT-B1 = FormatInputStats("periodic", *printed)`（change 分支打印旧快照）
-→ 修复前 **68 tests/13912 checks 全绿**；同一变异在 `db5f764` 版本下是红的 ⇒ 我造成的回归。
-### 修复
-- change 分支补：`input_injected=8` / `input_dropped_unmapped=3` 字面量 + `line == FormatInputStats("periodic", moved)` 整行
-- 基线分支 D1e：七个字段设为 **11/12/13/14/15/16/17**（互不相同非零）+ `first == FormatInputStats(...)` + 七条字面量
-### 变异矩阵（全部实测）
-| 变异 | 结果 |
-|---|---|
-| `MUT-B1` change 分支打印旧快照 | **红 :1846/:1847/:1848（3 checks）** |
-| `MUT-D1` 基线打印全 0 | **红 :1825-1832（8 checks）** |
-| `MUT-D1e` queue/rate 整段换位 | 红 `desktop_input_stats_line_field_order_is_stable:1785` |
-| 基线（无变异） | `68 tests, 13919 checks, 0 failing` |
-### 验证
-构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（75.56s）；`MUT-` 残留 0；stats 文件 hash 与备份一致。
-## 第871轮：审计 W/V 的 D3/D4/D5/D6/D7 —— verify.ps1 机械门自身假绿
-### 我的缺陷（V 的 D5 最严重，我复现）
-门用 `StartsWith('//'|'#'|'*'|'/*')` 豁免"仅注释"行。C++ 里
-`// log(); // MUT-X`（注释掉的调用）、`#define X 1 /* MUT-X */`、`*p=5; // MUT-X` 全是代码。
-复现：3 行夹具 → 旧门只报 1 条（放走 2/3）；而这正是 B2 残留的形态（`:714` 是纯注释行）。
-### 修复
-1. 把 `host_cli_check.cmake:73` 的变异名改成不含该 token 的描述（消除唯一豁免需求）
-2. 门简化为"**任何命中即失败**"，删启发式与白名单
-3. 保留 D3 `git -C $root`、D4 `--untracked`、D6 校验 `$LASTEXITCODE > 1`
-4. D7 在注释里写明排除范围与依据（`git log --all -S'MUT-' -- CMakeLists.txt verify.ps1 scripts cmake` 为空）
-### 验证
-| 场景 | 结果 |
-|---|---|
-| 干净仓库（从 `C:\Windows` 跑） | `passed`, EXIT=0 |
-| 3 行变异夹具（外部 CWD，未跟踪文件） | **3 条全报**, EXIT=1 |
-| 非仓库路径（`git -C` 失败） | EXIT=128 → 门报"could not run"并退出 1 |
-### 全量
-构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（82.21s）；`MUT-` 全仓残留 **0**（含注释）。
+
+## 【归档压缩：870-871 轮（原 36 行）】
+
+- **870** 审计 W 报 B1（change 分支值断言在批 28 被删除、无替代）。我复现：
+  `MUT-B1`（change 分支打印旧快照）→ 修复前 **68/13912 全绿**；同一变异在 `db5f764` 下红
+  ⇒ 批 28 引入的判据回归（discover 例 42）。修复后红 :1846/:1847/:1848。
+  D1e：基线夹具改七字段互异非零（11..17）+ 整行相等 + 七条字面量。
+- **871** 双审报 `verify.ps1` 机械门 5 条缺陷（D3 CWD 未锚定 / D4 漏 untracked /
+  **D5 注释豁免放过"注释掉代码"** / D6 未校验退出码 / D7 范围）。D5 我复现：
+  3 行变异夹具旧门只报 1 条，而 B2 残留正是纯注释行形态（discover 例 43）。
+  修复：零豁免 + `git -C $root` + `--untracked` + 退出码检查 + 去掉注释里的变异名字面量。
+  验证：干净树 passed / 3 行夹具 3 条全报 / 非仓库 128 报错退出；`ctest` 69/69。
+  双审一致 PASS（提交级），两角色 `delete` 解散。
