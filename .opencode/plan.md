@@ -1,4 +1,4 @@
-﻿# RTSC 计划（plan.md）
+# RTSC 计划（plan.md）
 
 ## 目标
 以 REA/Ghidra 对 mstsc.exe / mstscax.dll 的静态取证 + 官方规范 [MS-RDPBCGR] 为双重依据，
@@ -726,167 +726,27 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - 不加 DPI 数值字段、不加 `use_virtual_desk`
 - 不改 `tests/test_desktop_input.cpp:272-279` 的既有断言
 - 真机落点（U1/U2/U4-U9）不在本批验收范围，标注 UNVERIFIED
-## 批 23 待修清单（round 856，来自审计 P + 主代理核验；待 Q 报告补充）
 
-### 已核验成立
-1. **[Medium] `dropped_unmapped` 未接入运维出口**
-   `tools/rtsc_server/main.cpp:611-620` 只打印 injected/dropped_queue/send/release/worker。
-   修复：加 `input_dropped_unmapped=`，并纳入 `input_stats_changed` 变更检测。
-   验收：新测试或既有 stats 测试证明该字段出现在日志行且变化时会重印。
+## 【归档压缩：批 23 / 批 24 清单（原 161 行，已完成项）】
 
-2. **[Medium] 服务端→sink 几何接线无测试**
-   `tests/test_server.cpp:544-550` `RecordingInputSink::SetGeometry` 只存 width/height。
-   修复：记录 capture/desktop/mapped/pixels_are_physical 四字段；新增断言
-   （server.cpp:1374-1385 传的是 source_->Geometry() 的值，含 capture origin 非 0 的场景）。
+### 批 23（提交 `12a9348`，14 项全部落地并验收）
+- 原 8 项：`dropped_unmapped` 接日志、`RecordingInputSink` 全字段、`desktop` 负原点用例、
+  `AbsoluteMoveMappable` 补 capture⊆desktop 与 ≤65536、`IsInjectable(ev,g)` 几何门槛、
+  修正过时注释、M 文档同步、plan 改判记录。
+- 追加 6 项（双审 P/Q 签字后）：**H1 重写结构守卫为行为 seam**（删读源码、`MetricSource` 注入）、
+  **H2 接线四字段 + `Geometry()` 调用计数**、M5 四处覆盖（cap<fb 下采样 / 内部像素 / y 轴解耦 / 稠密表）、
+  M6 `dropped_unmapped` 语义（不双计、不过计）、H3 删除"取租约复测"承诺。
+- 我亲测：17 变异中重做 H1 变异 → `:346/:349` 红；稠密表与 §9 oracle 一致。
 
-3. **[Medium] `desktop` origin 平移零覆盖**
-   现有用例 `desktop = InjectRect{0,0,3200,1024}` 原点恒 0；变异 M3（去掉 `-desktop_origin`）不转红。
-   修复：补用例 desktop{ -1280, 0, 3200, 1024 }（副屏在主屏左侧），断言落点 = capture_origin + local + 1280。
-   验收：变异去掉 `- desktop_origin` 必须转红。
-
-4. **[Low] `AbsoluteMoveMappable` 不完备**
-   未校验 capture 落在 desktop 内、未限 desktop<=65536。
-   修复：加 `capture.x >= desktop.x && capture.y >= desktop.y &&
-   capture.x+capture.width <= desktop.x+desktop.width && 同 y` 与 `desktop.width <= 65536`。
-
-5. **[Low] `IsInjectable` 不含几何门槛**
-   `desktop_input_map.h:200-201` `kMouse: return ev.is_move || ev.button != 0`：
-   几何不可信时纯移动仍抢租约。修复：`IsInjectable` 需要几何参数，或 server 侧在抢租约前
-   先判 `AbsoluteMoveMappable`（纯移动且不可映射则不抢租约）。注意保持与 TranslateInput 同步。
-
-6. **[Low] 旧测试注释与实际理由不符**
-   `tests/test_desktop_input.cpp:501-506` 注释称在测 span，实际因 `mapped=false` 而 fail-closed
-   （span 由 `..._degenerate_geometry` 覆盖）。修复：改注释或改为 `PhysicalGeometry` 后只破坏 span。
-
-### 文档（由执行 AI 或审计角色改，非主代理）
-7. **[Medium] `docs/spec/input-geometry-design-M.md` §10/§12 残留已否决公式**
-   `:596` `round_div(f*(cap-1), fb-1)`、`:650` `round(x*(cw-1)/(fw-1))` 与 §3.2 矛盾。
-   修复：§10 步骤 1 改 `floor(((2f+1)*cap)/(2*fb))`；§12 索引同步；§4.2 的
-   `pixels_are_physical` 判据改为 `SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES`。
-8. **[Medium] `plan.md` 批 22 判据第 6 条需正式改判**（已由主代理在批 23 清单体现）。
-### 批 23 追加清单（round 858，P/Q 双审一致签字后补充；与原 8 项合并执行）
-
-**H1 [High·必须] 重写结构守卫为行为 seam**
-`tests/test_desktop_gdi.cpp:295-317` 用 `src.find("PixelsArePhysical(dpi_ok")` 取首个匹配 + 首个 `);`。
-主代理已独立复现两种失效：
-- 假绿：正确调用**上方**加注释 `// PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN), physical_w, physical_h);`
-  + 真实调用改 `SM_CX*VIRTUALSCREEN` → `10 tests, 57 checks, 0 failing`（EXIT=0）
-- 假红：正确代码 + 注释 `// old: PixelsArePhysical(dpi_ok, Metric(SM_CXVIRTUALSCREEN), ...)` → `1 failing`, 4 failed checks（EXIT=1）
-修复（第 16 条"改坏仍全绿即假测试，必须重写"）：
-- **删除读源码文本的守卫**
-- 改成行为 seam：把"取 metric → 判定"抽成可注入的函数（如
-  `bool PixelsArePhysical(const MetricsProvider&)` 或保留现纯函数 + 在工厂里注入 provider），
-  测试直接驱动 seam，不 grep 源码
-- 纯函数多屏数值表必须覆盖：`(true,1920,1080,1920,1080)=true`、`(true,3200,1080,1920,1080)=false`
-  （主屏宽 3200 与物理 1920 不符 → 拒绝）、`(true,2048,1152,2560,1440)=false`、`(false,…)=false`
-- 验收：把调用点改成 `SM_CXVIRTUALSCREEN` 必须**行为上**转红（不是靠文本匹配）
-
-**H2 [High·必须] 接线测试扩为四字段 + 调用计数**
-`RecordingInputSink` 记录 `capture{x,y,width,height}`、`desktop{...}`、`mapped`、`pixels_are_physical`，
-并对 `DesktopSource::Geometry()` 计数。Q 实测四处改坏全部 0 failing：
-capture/desktop 互换、删 `pixels_are_physical`、`mapped` 恒 true、完全不调 `Geometry()`。
-验收：四个变异各自必须转红。
-
-**M5 [Medium] 补覆盖（Q 用变异实证均 0 failing）**
-1. `cap < fb` 下采样：改坏采样公式仅在下采样时 → 必须转红
-   （现有 `cross_monitor_scaled` 只测 x=0 单点）
-2. 步骤 1 内部像素中心采样：把内部点改成 window-start → 必须转红
-3. y 轴 origin 与域解耦：y 用 `desktop.x` 当 origin、y 域用 `capture.height` → 必须转红
-4. 稠密往返表：`w ∈ {1280,1920,3200,3840}` 全像素（现有 1:1 用例只是 stride 37/41 抽样，
-   `tests/test_desktop_input.cpp:379-380`）
-   验收：把中心采样改成端点锚定后，稠密表必须报非 0 失配
-
-**M6 [Medium] `dropped_unmapped` 语义钉死**
-补断言：不可映射移动计入 `dropped_unmapped` 时 `dropped_unsupported` 必须为 0（不双计）；
-`mapped && physical` 的移动 `dropped_unmapped` 必须恒 0（不过计）。
-Q 实测："双计"与"全记 unmapped"两个变异均 0 failing，只有"永不计数"转红。
-
-**H3 [Low·需裁决] 热插拔复测承诺**
-设计 §4.2/§5 承诺"取租约时复测 geometry"，但 `server.cpp:917-918` 直接复用 `DoConnectResponse`
-`(:1375)` 的快照，且 `GdiDesktopSourceImpl::Geometry()` 是 const 返回冻结值。
-**裁决：删除该承诺**（改为"几何在连接建立时快照，会话期间不变；显示器热插拔需重连"），
-理由：实现非 const 复读会引入读几何与注入之间的竞争窗口（D15-D17 TOCTOU），
-且当前无任何测试能覆盖热插拔路径。文档必须同步说明该限制。
-**批 22 判据 6 改判记录**：批 22 判据第 6 条已由主代理正式改判为 `SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES`（主显示器口径，多屏正确性）；原 SM_*VIRTUALSCREEN 写法在多显示器下恒 false，已否决。
-
-## 批 24 待修清单（round 862，审计 R 报告 + 主代理独立核验）
-
-### R1 [Medium·H1] 工厂接线无测试保护（主代理已独立复现）
-`src/server/desktop_gdi.cpp:382-383` 调用 `PixelsArePhysicalFromMetrics(dpi_ok, metrics)`，
-但测试（`tests/test_desktop_gdi.cpp:284-363`）只驱动**自由函数**，无任何测试经工厂。
-**主代理实测**：把工厂改成
-`PixelsArePhysical(dpi_ok, metrics.SystemMetric(SM_CXVIRTUALSCREEN), metrics.SystemMetric(SM_CYVIRTUALSCREEN), ...)`
-→ `10 tests, 57 checks, 0 failing tests, 0 failed checks`，**EXIT=0（假绿）**。
-⇒ 批 23 的 H1 验收判据"调用点改 VIRTUALSCREEN 必须行为转红"**只对 seam 内部成立**。
-修复：给工厂加 test-only 入口（如 `MakeGdiDesktopSourceWithMetrics(const MetricSource&, ...)`
-或注入 provider 的工厂重载），用 `primary=1920 / virtual=3200 / physical=1920` 的 fake
-断言 `Geometry().pixels_are_physical == true`；再断言 `primary=3200` 的 fake 得 false。
-验收：把生产工厂的 metric 选择改成 VIRTUALSCREEN 必须转红。
-
-### R2 [Medium·docs] M 文档 `:431-433` 仍写端点锚定公式且未标已否决
-`:431` "规范落点 = cx + round(fx*(cw-1)/(fbw-1))（端点锚定）...也是 §3 公式输出的真实落点"，
-与同表 `:441` B0 行给出的 1921（中心采样值）**自相矛盾**，也与 §2.5/§3.2/§10 矛盾。
-修复：改为中心采样 `cx + floor(((2fx+1)*cw)/(2*fbw))`，并复核表内"规范落点"列全部数值。
-
-### R3 [Medium·test] `dropped_unmapped` 日志验收仍是源码文本匹配
-`tests/test_desktop_input.cpp:1720,1723` 用 `src.find("input_dropped_unmapped=")` 与
-`src.find("stats.dropped_unmapped != printed_input.dropped_unmapped")`。
-R 实测：把真实打印改成 `input_dropped_unmapped_DISABLED=` 并加注释 `// input_dropped_unmapped=`
-→ `1 tests, 17 checks, 0 failing, EXIT=0`（假绿）。**违反 discover 第 34 例**。
-修复：把日志行构造抽成可测纯函数（如 `BuildInputStatsLine(const InputStats&, const char* reason)`
-返回 `std::string`），测试直接断言返回值字符串含正确字段与数值；
-变更检测抽成 `InputStatsChanged(before, after)` 纯函数，用真实 struct 驱动。
-验收：删掉打印或删掉变更检测，纯函数测试必须转红（不依赖源码文本）。
-
-### R4 [Low·docs] M `:616` 两个数字都错（主代理已复算）
-文档写"`step1` 与中心采样在 320/640 个 p 上不同，与窗口起点也在 320/640 不同"。
-实测（fb=640, cap=1280 全枚举）：
-- `step1` 现在**就是**中心采样 ⇒ 差异 **0/640**
-- 中心采样 vs 窗口起点 ⇒ 差异 **640/640**
-修复：两个数字改为 0/640 与 640/640，并说明"step1 与中心采样恒等（这是设计意图）"。
-
-### R5 [Low·docs] M 文档四处实现状态过期
-- `:254` 溢出分析仍用端点分子 `fx*(cw-1)*2` → 改 `(2*fx+1)*cw`，重算上界
-- `:318-322` 称几何丢弃计入内部 `dropped_unsupported_` 且"不在 InputStats"
-  → 实际已是 `InputStats::dropped_unmapped`（`desktop_input.h:95`），改文档
-- `:332` 称 `SetProcessDpiAwarenessContext` 返回值"目前丢弃" → 实际 `:70-78` 已使用
-- `:655` 目标结构漏列 `pixels_are_physical` → 补上
-
-### R6 [Low·test] H2 接线测试 y 轴不可见
-`tests/test_server.cpp:4409-4410` 的 capture.y 与 desktop.y 均为 0、高度均 1024
-⇒ y 轴 origin/extent 被互换或丢失时测试不转红。
-修复：改用 `capture{1920, 100, 1280, 1024}`、`desktop{0, 50, 3200, 1100}` 之类的非零异值。
-验收：互换 y 轴 capture/desktop 必须转红。
-### 批 24 追加（round 863，审计 S 报告 + 主代理核验；与原 R1-R6 合并执行）
-
-**S1 [Medium·回归] `dropped_unmapped` 对非租约会话归零**
-批 23 引入 `IsInjectable(ev, g)` 几何门槛后（`src/server/server.cpp:884-888`），
-不可映射的纯移动在**未持有租约**时直接 `return`，`DesktopInputSink::Inject` 不被调用
-⇒ `desktop_input_win32.cpp:151-156` 的 `dropped_unmapped_` 计数**永不执行**
-⇒ 而 `include/rtsc/server/desktop_input.h:83-87` 仍宣称该计数器是"唯一可见信号"。
-批 22 的旧 gate 会进 sink 计数，批 23 的新 gate 使 pure move 归零 —— **这是批 23 引入的回归**。
-修复（二选一，主代理裁决：选 A）：
-- **A（采纳）**：`DesktopInputSink` 新增 `virtual void NoteUnmappableMove(uint32_t session_id) = 0;`
-  （null 后端空实现），server 在 `IsInjectable(ev,g)==false && ev 是不可映射纯移动` 时调用它，
-  使计数与日志仍然可见。理由：保持"fail-closed 可观测"的交付承诺，且不改租约语义。
-- B（备选，仅当 A 会破坏接口预算）：文档降级为"仅租约持有者可见"，并在真机清单里去掉该断言。
-验收：新用例证明"未持有租约的不可映射纯移动使 `dropped_unmapped` +1"，且租约未被占用。
-
-**S2 [Low] `AbsoluteMoveMappable` 三处边界未钉死**
-审计 S 实测三个变异均 0 failing（对照侧有 control 会红）：
-| 变异 | 现状 |
-|---|---|
-| `capture_right <= desktop_right + 1` | 0 failing（bottom+1 在 `:797` 红） |
-| `desktop.height >= 65536` | 0 failing（width 侧 `:814` 有 control） |
-| `capture.height < 0`（改写 `<= 0`） | 0 failing（width=0 在 `:767` 有） |
-补三条用例：`capture.x=1`（x+width=3 > desktop 0+2）、`desktop.height=65536`（期望 mappable）、
-`capture.height=0`（期望空）。验收：上述三个变异各自必须转红。
-
-**S3 [Info] 清理**
-- `MakeWin32MetricSource`（`src/server/desktop_gdi.cpp:342`）无调用方 → 删除或用于 R1 的工厂注入
-- `CMakeLists.txt:683-686` 对 desktop_gdi 测试的 `RTSC_SOURCE_DIR` 定义与注释已过期
-  （读源码的守卫已删）→ 删除该定义与注释
-### 批 25 候选（round 864）——主代理发现的残余缺口
+### 批 24（提交 `fa79fec`，9 项全部落地并验收）
+- R1 工厂接线（抽 `AssembleGdiDesktopSource` 共用 + `MakeGdiDesktopSourceWithMetrics`）
+- R2/R4/R5 文档修正（M §6.4 落点、§10 两数字、四处状态过期）
+- R3 日志验收去文本匹配（`FormatInputStats`/`InputStatsChanged` 纯函数 + 新 TU）
+- R6 H2 接线 y 轴用非零异值
+- S1 可观测回归（`DesktopInputSink::NoteUnmappableMove`）
+- S2 三处边界（capture.x=1 / capture.height=0 / desktop.height=65536）
+- S3 清理（删 `MakeWin32MetricSource` 与两处过期 `RTSC_SOURCE_DIR`）
+- 我亲测：决策改 VIRTUALSCREEN → `:392` 红（此前假绿）；desktop.right 改 CY → 3 failing。
 
 **R7 [Low·诚实登记] host 的 `main.cpp` 调用点仍无行为测试**
 批 24 把日志行构造抽成纯函数 `FormatInputStats` / `InputStatsChanged`（`src/server/desktop_input_stats.cpp`），

@@ -444,145 +444,25 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - `--monitor N` 真机落点仍 UNVERIFIED
 ### 在途
 审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验，重点 UAF）+ 设计审计 M
-## 第841轮：W8 裁剪（process.md 1010→836 行）+ 双审在途
-### 裁剪（字节级操作，遵循 discover 第 21 例）
-- 把 806-820 轮（192 行逐轮细节）压缩为 8 行归档摘要（保留：所有提交号、失败判定、
-  关键教训指针、被驳回的疑点）
-- 方法：`ReadAllText(UTF8)` → 行切片 → `WriteAllText(UTF8)`（**全程字符串级，无 latin1 中转**）
-- 校验三件事：①字节数方向 91585→73829（变小 ✅）②`U+FFFD`=0 ✅ ③标题结构完好（42 个 `## `，
-  821-840 逐轮保留）✅
-- 备份：`.opencode/backups/process.md.pre841`
-### 四文件现状
-`discover.md` 797 行/65.2KB、`memory.md` 764 行/159.8KB、`plan.md` 696 行/57.4KB、`process.md` 836 行/72.1KB
-### 在途
-审计 L `ses_e66978403ffeW2pFrvAxAFLkgp`（批 19 复验：UAF/挂起/RTTI/lost-wakeup）、
-设计审计 M `ses_e664d2035ffev3TAIwV4TuCE9J`（几何定案）
-## 第842轮：审计 L 判 J-1 FAIL(High，挂起 + UAF) → 批 21 已派
-### 审计 L（`docs/spec/input-batch19-review-L.md`）
-- **J-1 FAIL(High，两项)**：
-  ① 快照分配失败被吞 ⇒ `sessions` 空 ⇒ 一次 `s->Stop()` 都不发；`RdpSession::Stop()`（`server.cpp:756-759`）
-     才是置 `stop_requested_` 的唯一入口，`listener->Close()` 不影响已 accept 的 transport ⇒ 会话线程不退出 ⇒
-     `live` 永不为 0 ⇒ `cv.wait` **永久挂死**（实测 20s）
-  ② `cv.wait` catch 吞掉后立即返回（实测 `live=1`），违反 `server.h:293-295/304-310/317-324` 的
-     "借用指针 must outlive the server (including Stop())" ⇒ **UAF**
-  - 我写的两处"安全论证"注释（`:2504-2507`、`:2520-2523`）**都被代码证伪**
-- J-2 PASS（`dynamic_cast` 在 `:731-733`；全仓零 `/GR-`；6 个 hook 全 nullptr 早退；还原 static_cast 后新用例挂死 30s）
-- J-3a PASS + Low（三个断言全是 `==0`，删 `fetch_add` 仍绿 ⇒ "能涨"侧无回归保护）
-- J-3b PASS（`store(true)` 在 `mu_` 内且 wait 前，notify 方持同一 `mu_` ⇒ 无 lost-wakeup）
-- J-4 PASS（双 IRP；逐项 `break` 与整圈 catch 两种变异均红）
-- J-5 PASS + Low（`review-F.md:340` 括注 `a59a594` 与行号 `776-791`（属 `6fc5614`）不匹配）
-- 回归：build 零错零警告、ctest 63/63、三套件 0 failing
-- 如实披露：08:09 一次 `server` 失败 13 次重跑不复现（在报告上未归因）；一次探针误写入共享工作树已按同一 blob 恢复
-### 批 21 `ses_e66140044ffeWtCbsIG4OB7yES`
-新增两条不变式并要求写进注释：
-- **I1 不得静默成功**：任何"没能确认全部会话已停止"的路径必须留可诊断输出
-- **I2 不得 UAF**：仍有会话线程可能访问借用指针时 `Stop()` 不得返回；超时不得当成功
-修法：①快照失败时改为**锁内直接遍历 `registry->sessions` 调 `s->Stop()`**（无分配）②等待改 `wait_for` 循环 + 周期告警
-+ ③删改两处错误注释 + ④`server.h` Stop 契约补"会阻塞到全部退出"
-测试：`server_stop_delivers_stop_when_snapshot_allocation_fails`、`server_stop_does_not_return_while_session_thread_alive`
-+ J-3a 补"能涨"断言 + J-5 括注修正；变异 2 个
-### 教训
-`discover.md` 第 26 例：**`catch(...)` 不是安全，它把失败转移给调用者的假设**；注释里的"安全论证"必须能被代码证伪。
-## 第843轮：设计审计 M 交付（几何定案草案）→ 已派第二名审计 N 交叉
-### M 的核心定案（`docs/spec/input-geometry-design-M.md`，653 行）
-1) 四步公式：`fx=clamp(wx,0,fbw-1)` → `lx=round(fx*(cw-1)/(fbw-1))`（端点锚定）→ `px=cx+lx` →
-   `rel=clamp(px-dx,0,dw-1)` → `nx=min(65535,ceil(rel*65536/dw))`；flag 恒 `MOVE|ABSOLUTE|VIRTUALDESK`
-2) **分母裁决（争议）**：用 `65536/width`（解码侧 `n*w>>16` 的互逆），判现有 `extent-1` **为错**；
-   代价是改一条已绿断言 `tests/test_desktop_input.cpp:272-279`（`(1920,1080)→65535` 改 `65502`）
-3) `InjectGeometry` 最小集：`width/height + capture{4} + desktop{4} + bool mapped`；**不加 DPI、不加 `use_virtual_desk`**
-4) `DesktopSource` 推荐**方案④** `virtual DesktopGeometry Geometry() const { return {}; }`（非纯虚带默认，老实现零改动）
-5) 变异 9 项；**诚实披露**：M5（分母）在**稀疏落点级 0 命中**、M6（采样相位）只有 B0 一个稀疏点能抓
-6) 可达性数值例：monitor1(1920,0) 1280x1024、桌面 3200x1024、fb 1280x1024、客户端(640,512)
-   → 应落 **(2560,512)**，现实现落 **(1601,512)**（偏 −959 px 且跨屏）；`--monitor -1` 方向正确但 49.18% 偏 1 px
-- 自检：落点表 21 行、变异表 9 行、§6.1 全像素 1310720、§6.5 分母枚举 5 组 → 全部 0 不符；文档 lint 通过
-- UNVERIFIED 9 项（U1-U9）；§11 冲突登记含 `input-injection-evidence.md:139,144` 分母与 `tests:272-279` 端点
-### 第二名审计 N `ses_e66????????`（已派）
-必答四项：①分母裁决（自取证 `MOUSEINPUT` 原文 + 解码源码，自己枚举 5 个宽度全像素算失配）
-②采样相位（端点 vs 中心 vs 起点，找 GDI `StretchBlt` 真实证据）
-③M5 稀疏 0 命中是否意味着**无法被测住**，给出能抓住它的最小断言
-④字段集是否会丢信息（混合 DPI / `VIRTUALDESK` 恒开）
-### 状态
-审计 M 待 N 的交叉回执后再收口；批 21（J-1 挂起/UAF）仍在途，与 N 只读审计无冲突
-## 第844轮：批 21 落盘已核（等 relay）；真机清单补计数与 Stop 契约
-### 批 21 工作树核验（只读，未提交）
-- `server.cpp:2548-2562` 已写入不变式 **I1/I2** 注释（含"listener close alone does NOT unblock an accepted session"
-  与"a timeout is not success and must never end the wait"）
-- `:2565-2613` 快照失败 → 打印诊断 + **锁内直接遍历 `registry->sessions` 调 `Stop()`**；成功则锁外遍历
-- `:2615-2665` 等待改为 `wait_for(2s)` 循环，每轮超时打印 `[rtsc-server] stop: N session(s) still live after Xs`，
-  `wait_failed` 时额外打印并 `sleep_for(100ms)` 退避；**只有 `live==0` 才 return**
-- 新测试：`tests/test_server.cpp:3458 server_stop_delivers_stop_when_snapshot_allocation_fails`、
-  `:3534 server_stop_does_not_return_while_session_thread_alive`
-- J-3a 已补"能涨"：`tests/test_desktop_input.cpp:1296 desktop_input_worker_failures_counts_a_failed_dispatch`
-  + hook（`test_hooks.h:34-35`）；`win32.cpp:388/395` 两处 `fetch_add`
-- 环境注入开关 `StopFailureInjection`（`server.cpp:117-145`，env-gated，仅测试用）
-### 本轮独立产出（与批 21 不冲突）
-`docs/spec/input-injection-real-machine-checklist.md` 补 §10 两条计数（`input_release_failures` 应恒 0、
-`input_worker_failures` 应恒 0）+ 新增 §11「停止与退出（`Stop()` 契约）」三条真机项
-（有限时间返回、关闭后销毁宿主对象不崩、无输入会话应立即返回）→ 文件 102 行、`U+FFFD`=0
-### 在途
-批 21（等 relay 报告）、审计 N（几何定案交叉）
-## 第845轮：主代理独立复算分母裁决（审计 M 的核心争议）
-### 方法
-纯整数探针（PowerShell int64，非编译代码），对 w∈{1280,1920,2560,3840,8192} 枚举**全像素** x∈[0,w-1]，
-三类编码各自与解码 `dec(n) = (n*w) >> 16`（floor）做往返，统计失配数：
-- A = 现行 `round(x*65535/(w-1))`（extent-1）
-- B = 审计 M 主张 `ceil(x*65536/w)`
-- C = `round(x*65536/w)`
-### 结果（[BASH] 实测）
-| w | A (extent-1) | B (ceil 65536) | C (round 65536) |
-|---|---|---|---|
-| 1280 | 3 | **0** | 512 |
-| 1920 | 7 | **0** | 896 |
-| 2560 | 8 | **0** | 1024 |
-| 3840 | 28 | **0** | 1792 |
-| 8192 | 0 | **0** | 0 |
-### 结论
-- **B 在全部测试宽度上往返零失配**，A 在 4/5 宽度上失配（3/7/8/28），C 大面积失配 ⇒ **审计 M 的方向正确**
-- 与 M 报告的差异：M 称 2560 为 20，我实测 **8**（其余 3/7/28 一致）。差异不影响结论（A≠0、B=0），但记录在案：
-  **引用他人数值前必须自己复算**（与 memory 第 20 例同源）
-- 注：8192 时 A 恰好 0（整除），说明"整除比例掩盖取整差异"（memory 已有该教训）
-## 第846轮：几何数值复核（含一次自纠）
-### 修正后的正确度量（oracle = 端点锚定意图 `truth=round(x*(cw-1)/(fbw-1))`）
-- 现实现 `round(x*65535/(fbw-1))` + `dec=n*dw>>16`：相对 truth **mean=0.332px, max=1px**
-- 审计 M 的新公式（capture 映射 + `ceil(px*65536/dw)`）：**mean=0, max=0**
-⇒ M 的"最大 1px、约 49% 像素偏 1px"量级与我一致；M 的修法在端点锚定定义下精确
-### M 的必答数值例已独立复现
-- monitor1 起点 (1920,0)、捕获 1280x1024、桌面 3200x1024、fb 1280x1024、客户端 (640,512)：
-  - 现实现：`n=32793 → land x=1601`（第一块屏，M 说 1601 ✅）
-  - 新公式：`lx=640 → px=2560 → n=52429 → land x=2560`（第二块屏，M 说 2560 ✅）
-### 我的自纠（已入 discover 第 27 例）
-我先用"新旧实现 decode 结果互比"得到 99.77%，那是**伪度量**（衡量两实现差异而非对真值误差）。
-**误差必须对 oracle 测量，禁止 A/B 互比。**
-### 待办
-审计 N 仍在途（分母裁决/采样相位/M5 可测性/字段集）；批 21 仍在途。
-## 第847轮：批21 主代理独立验收+三变异全红+提交 d8b312a
-### 验收证据（主代理亲测，非子代理引用）
-- 构建：`cmake --build build --config Release` **exit=0**，日志 warning C / error C / error LNK / warning LNK / error MSB / warning MSB **全 0**
-- 全量：`ctest --test-dir build -C Release` **63/63 passed, 0 failed**（65.34s）
-- 生产库隔离：`build\rtsc_server.vcxproj` 的 4 个配置 PreprocessorDefinitions **无** RTSC_SERVER_TESTING；
-  `build\rtsc_server_testing.vcxproj` **有** ⇒ 宏不会污染生产二进制
-- 错误论断清除：'each one notices the closed transport' grep=0、'Teardown is already done at this point' grep=0
-- Stop() 契约（server.h:331-343）：明确"提前返回即 use-after-free"
-### 变异测试（%TEMP%\opencode\Lexec2，独立 build，工作树未触碰）
-| # | 变异 | 结果 |
-|---|---|---|
-| A | 删 server.cpp 快照失败回退里的 `session->Stop()` | **FAIL** server_stop_delivers_stop_when_snapshot_allocation_fails |
-| B | wait 失败 `catch` 直接 `return`（旧行为） | **FAIL** server_stop_does_not_return_while_session_thread_alive |
-| C | 删 desktop_input_win32.cpp:388 `worker_failures_.fetch_add` | **FAIL** desktop_input_worker_failures_counts_a_failed_dispatch |
-三变异恢复后：server 52 tests/586 checks/**0 failing**、desktop 50 tests/13784 checks/**0 failing**
-### 变异过程中的两个坑（已复现，非推测）
-1) 变异 A 首次写法 `/* comment */;` 触发 **C4189 未引用局部变量**，`/WX` 下直接编译失败 ⇒
-   变异体必须先能编译，否则"红了"可能只是编译失败。改用 `(void)session;` 才测到断言。
-2) `Copy-Item` 恢复后 **保留源 mtime** → MSBuild 判定免重编 → 两个套件"恢复后仍红"（假红）。
-   `touch` 更新时间戳后重编才转绿。⇒ **恢复后必须 touch + 重编，否则绿证无效**
-### 提交
-`d8b312a` 批21（8 文件）；`e9ef8ab` 几何设计 §13 实证探针章节
-### 调度
-- 执行子代理 ses_e66140044... 已完成 → **delete 解散**（非 abort）
-- 审计 M ses_e664d2035... 以"只回收口报告"的短提示唤醒（title=审计M几何设计收口）
-- 审计 N ses_e65f23c5d... 前两次被 provider upstream_rejected → 改**极短提示**（≤20 行、禁止再读库）
 
-## 【归档压缩：848-857 轮（原 142 行）】
+## 【归档压缩：841-859 轮（原 139 行）】
+
+- **841** W8 裁剪（process 1010→836）+ 双审在途。
+- **842** 审计 L 判 J-1 FAIL(High，挂起/UAF) → 批 21。
+- **843** 派发 M 几何设计；N 为第二审计。
+- **844** 批21 落盘核验（等 relay）；真机清单补 `input_release_failures`/`input_worker_failures` 与 `Stop()` 契约。
+- **845** 主代理独立复算分母：`ceil(x*65536/w)` 全宽度零失配 vs `extent-1` 3/7/8/28。
+- **846** 几何数值复核 + **自我纠错**：用"新旧实现互比"得 99.77% 是伪度量（discover 第 27 例）。
+- **847** 批21 验收（构建 0/0、ctest 63/63）+ 三变异全红 + 提交 `d8b312a`；几何 §13 入库 `e9ef8ab`。
+- **848-850** N 反驳 M（中心采样/混合式/DPI 位/M5 单点）；我独立 GDI 探针 7/7 组证实中心采样；
+  我的端点锚定 oracle 作废（第 28 例）；N 的"纯 ceil 会打断既有断言"实测不成立（第 29 例）。
+- **851** M/N 收敛；真实库复现跨屏 `(1601,512)` vs 应 `(2560,512)`。
+- **852** M 文档三处修正 grep 验收；核验 `DesktopSource` 6 处实现 → 默认实现正确。
+- **853** 批22 执行 AI `stream_interrupted` → 唤醒续做。
+- **854** 批22 验收发现 High：`pixels_are_physical` 用虚拟桌面宽比对主屏口径（第 31 例）。
+- **855** 批22 提交 `ad5891e`；裁决严格相等；第 32 例（运行时读源码测试）。
+- **856-857** 审计 P 8 条核验；批23 派发。
+- **858-859** 双审 P/Q 签字；我复现结构守卫可假绿/假红；追加 6 项；第 34 例（文本匹配测试三重失效）。
 
 - **848-850** 几何交叉审计：N 反驳 M（中心采样/混合式分母/DPI 位/M5 单点）。主代理独立 GDI 探针 7/7 组
   证实中心采样 `floor((2x+1)*cap/(2*fb))` 零失配；DPI 虚拟化实测复现。**我第 846 轮的端点锚定 oracle 作废**
