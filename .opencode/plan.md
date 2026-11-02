@@ -886,3 +886,16 @@ R 实测：把真实打印改成 `input_dropped_unmapped_DISABLED=` 并加注释
 - `MakeWin32MetricSource`（`src/server/desktop_gdi.cpp:342`）无调用方 → 删除或用于 R1 的工厂注入
 - `CMakeLists.txt:683-686` 对 desktop_gdi 测试的 `RTSC_SOURCE_DIR` 定义与注释已过期
   （读源码的守卫已删）→ 删除该定义与注释
+### 批 25 候选（round 864）——主代理发现的残余缺口
+
+**R7 [Low·诚实登记] host 的 `main.cpp` 调用点仍无行为测试**
+批 24 把日志行构造抽成纯函数 `FormatInputStats` / `InputStatsChanged`（`src/server/desktop_input_stats.cpp`），
+测试只验证**纯函数**。`tests/test_desktop_input.cpp` 里原来那条读源码文本的宿主测试已按 R3 删除。
+⇒ 若 `tools/rtsc_server/main.cpp:611/616` 不再调用这两个函数，**没有任何测试会红**。
+这是第 35 例（seam 须经装配点覆盖）在 host 层的同型残留。
+**为何本轮不修**：`rtsc_server_host.exe --once` 实测会**阻塞等待客户端**（`[BASH] 超时 120s 无输出`），
+要走到 stats 行需要模拟完整 RDP 会话；现有 ctest 没有跑 host 可执行文件的用例。
+**处置**：已把它下沉为**真机验收项**（`input-injection-real-machine-checklist.md` §10 新增两条：
+`input_dropped_unmapped` 必须打印、未持租约会话也必须计数）。UNVERIFIED 保留。
+**若将来要自动化**：加一条 ctest 启动 host + 用测试客户端建会话再断言 stdout，
+或把 `LogInputStats` 的参数从 `InputStats` 改为可注入的输出回调（sink），在单测里捕获。

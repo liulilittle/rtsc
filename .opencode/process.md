@@ -669,3 +669,19 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 ### discover 第 35 例（本轮教训）
 修假测试时只验证"seam 内部能红"，没验证"装配点能红" ⇒ 工厂仍可假绿。
 **修复必须对着缺陷成因验证，不是对着修复形式验证。**
+## 第864轮：批24 主代理验收 + 提交 fa79fec
+### 主代理亲测
+| 项 | 证据 |
+|---|---|
+| 构建 | exit=0，六类诊断全 0 |
+| 全量 | `ctest --test-dir build -C Release -j1` **63/63, 0 failed**（59.78s） |
+| **R1 修复真有效（我重做变异）** | 复刻 seam 无关的最小编译（test_desktop_gdi.cpp + desktop_gdi.cpp + crash_guard.cpp，独立 cl 编译）<br>基线 `11 tests, 60 checks, 0 failing`；把决策改 `PixelsArePhysical(..., SM_CXVIRTUALSCREEN, ...)` → **FAIL :392 `source->Geometry().pixels_are_physical`，1 failing/1 check，EXIT=1**；恢复+touch → 0 failing，hash_same=True |
+| 额外变异（我自选，R/S 未提） | `desktop.right` 改用 `SM_CYVIRTUALSCREEN` → **3 failing**（`:225/:271/:300`）⇒ desktop 矩形本身有运行时保护 |
+| R3 装配 | `main.cpp:611` 调 `FormatInputStats`、`:616` 调 `InputStatsChanged` |
+| S1 | `server.cpp:885-897` 未持租约且不可映射纯移动时调 `NoteUnmappableMove` |
+### 提交
+`fa79fec` 批24（12 文件，含新 TU `desktop_input_stats.cpp`）；`d2aa9d3` 真机清单 §10 两条
+### 残余缺口（诚实登记，已入 plan.md 批25候选 R7）
+host `main.cpp` 调用点无行为测试（`--once` 阻塞等待客户端，无法低成本自动化）
+### 调度
+执行 AI `ses_e6475efa1...` **delete 解散**
