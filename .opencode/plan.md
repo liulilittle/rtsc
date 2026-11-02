@@ -726,3 +726,41 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - 不加 DPI 数值字段、不加 `use_virtual_desk`
 - 不改 `tests/test_desktop_input.cpp:272-279` 的既有断言
 - 真机落点（U1/U2/U4-U9）不在本批验收范围，标注 UNVERIFIED
+## 批 23 待修清单（round 856，来自审计 P + 主代理核验；待 Q 报告补充）
+
+### 已核验成立
+1. **[Medium] `dropped_unmapped` 未接入运维出口**
+   `tools/rtsc_server/main.cpp:611-620` 只打印 injected/dropped_queue/send/release/worker。
+   修复：加 `input_dropped_unmapped=`，并纳入 `input_stats_changed` 变更检测。
+   验收：新测试或既有 stats 测试证明该字段出现在日志行且变化时会重印。
+
+2. **[Medium] 服务端→sink 几何接线无测试**
+   `tests/test_server.cpp:544-550` `RecordingInputSink::SetGeometry` 只存 width/height。
+   修复：记录 capture/desktop/mapped/pixels_are_physical 四字段；新增断言
+   （server.cpp:1374-1385 传的是 source_->Geometry() 的值，含 capture origin 非 0 的场景）。
+
+3. **[Medium] `desktop` origin 平移零覆盖**
+   现有用例 `desktop = InjectRect{0,0,3200,1024}` 原点恒 0；变异 M3（去掉 `-desktop_origin`）不转红。
+   修复：补用例 desktop{ -1280, 0, 3200, 1024 }（副屏在主屏左侧），断言落点 = capture_origin + local + 1280。
+   验收：变异去掉 `- desktop_origin` 必须转红。
+
+4. **[Low] `AbsoluteMoveMappable` 不完备**
+   未校验 capture 落在 desktop 内、未限 desktop<=65536。
+   修复：加 `capture.x >= desktop.x && capture.y >= desktop.y &&
+   capture.x+capture.width <= desktop.x+desktop.width && 同 y` 与 `desktop.width <= 65536`。
+
+5. **[Low] `IsInjectable` 不含几何门槛**
+   `desktop_input_map.h:200-201` `kMouse: return ev.is_move || ev.button != 0`：
+   几何不可信时纯移动仍抢租约。修复：`IsInjectable` 需要几何参数，或 server 侧在抢租约前
+   先判 `AbsoluteMoveMappable`（纯移动且不可映射则不抢租约）。注意保持与 TranslateInput 同步。
+
+6. **[Low] 旧测试注释与实际理由不符**
+   `tests/test_desktop_input.cpp:501-506` 注释称在测 span，实际因 `mapped=false` 而 fail-closed
+   （span 由 `..._degenerate_geometry` 覆盖）。修复：改注释或改为 `PhysicalGeometry` 后只破坏 span。
+
+### 文档（由执行 AI 或审计角色改，非主代理）
+7. **[Medium] `docs/spec/input-geometry-design-M.md` §10/§12 残留已否决公式**
+   `:596` `round_div(f*(cap-1), fb-1)`、`:650` `round(x*(cw-1)/(fw-1))` 与 §3.2 矛盾。
+   修复：§10 步骤 1 改 `floor(((2f+1)*cap)/(2*fb))`；§12 索引同步；§4.2 的
+   `pixels_are_physical` 判据改为 `SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES`。
+8. **[Medium] `plan.md` 批 22 判据第 6 条需正式改判**（已由主代理在批 23 清单体现）。
