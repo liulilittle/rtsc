@@ -148,3 +148,33 @@ old        w=1280 n=65535 land=1279 | w=1920 n=65535 land=1919 | w=2560 n=65535 
 - `--monitor N` 的注入端到端落点：受第 3 节限制，无法验证。
 - 以上均保持 UNVERIFIED，需用户在有真实交互桌面的机器上按
   `docs/spec/input-injection-real-machine-checklist.md` 执行。
+
+---
+
+## 7. 用**真实库**复现跨屏缺陷（主代理亲测，非引用他人）
+
+探针 `%TEMP%\opencode\probe_real.cpp` 链接仓库产物
+`build/Release/rtsc_server_desktop_input_map.lib`，直接调用线上函数 `TranslateInput`，
+再用 OS 的解码语义 `floor(n*extent/65536)`（VIRTUALDESK 按虚拟桌面 3200x1024）还原落点：
+
+```text
+场景：--monitor 1（第二块屏，origin 1920,0），捕获 1280x1024，虚拟桌面 3200x1024，
+      客户端 framebuffer 1280x1024，客户端点 (640,512)
+wire n=(32793,32800) landing=(1601,512)
+expected landing=(2560,512)  (monitor1 origin 1920 + 640)
+[RED] cross-monitor
+```
+
+结论：**跨屏缺陷用真实产物可复现**，落点在第一块屏 `x=1601`，应在第二块屏 `x=2560`，
+偏 **959 px**。这与审计 M §13.1 的红证数值一致（`n=(32793,32800)`、`(1601,512)`）。
+
+编译命令（可复跑）：
+
+```text
+call "<VS>\VC\Auxiliary\Build\vcvars64.bat"
+cl /nologo /std:c++20 /EHsc /MD /W4 /I F:\rtsc\include probe_real.cpp ^
+   /Fe:probe_real.exe F:\rtsc\build\Release\rtsc_server_desktop_input_map.lib
+```
+
+> 注意：编译该探针时 `InputEvent` 定义在 `rtsc/server/server.h`，
+> 只包含 `desktop_input_map.h` 会报 `C2065: ev 未声明`。
