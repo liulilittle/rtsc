@@ -893,3 +893,21 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 ④字段集是否会丢信息（混合 DPI / `VIRTUALDESK` 恒开）
 ### 状态
 审计 M 待 N 的交叉回执后再收口；批 21（J-1 挂起/UAF）仍在途，与 N 只读审计无冲突
+## 第844轮：批 21 落盘已核（等 relay）；真机清单补计数与 Stop 契约
+### 批 21 工作树核验（只读，未提交）
+- `server.cpp:2548-2562` 已写入不变式 **I1/I2** 注释（含"listener close alone does NOT unblock an accepted session"
+  与"a timeout is not success and must never end the wait"）
+- `:2565-2613` 快照失败 → 打印诊断 + **锁内直接遍历 `registry->sessions` 调 `Stop()`**；成功则锁外遍历
+- `:2615-2665` 等待改为 `wait_for(2s)` 循环，每轮超时打印 `[rtsc-server] stop: N session(s) still live after Xs`，
+  `wait_failed` 时额外打印并 `sleep_for(100ms)` 退避；**只有 `live==0` 才 return**
+- 新测试：`tests/test_server.cpp:3458 server_stop_delivers_stop_when_snapshot_allocation_fails`、
+  `:3534 server_stop_does_not_return_while_session_thread_alive`
+- J-3a 已补"能涨"：`tests/test_desktop_input.cpp:1296 desktop_input_worker_failures_counts_a_failed_dispatch`
+  + hook（`test_hooks.h:34-35`）；`win32.cpp:388/395` 两处 `fetch_add`
+- 环境注入开关 `StopFailureInjection`（`server.cpp:117-145`，env-gated，仅测试用）
+### 本轮独立产出（与批 21 不冲突）
+`docs/spec/input-injection-real-machine-checklist.md` 补 §10 两条计数（`input_release_failures` 应恒 0、
+`input_worker_failures` 应恒 0）+ 新增 §11「停止与退出（`Stop()` 契约）」三条真机项
+（有限时间返回、关闭后销毁宿主对象不崩、无输入会话应立即返回）→ 文件 102 行、`U+FFFD`=0
+### 在途
+批 21（等 relay 报告）、审计 N（几何定案交叉）
