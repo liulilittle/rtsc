@@ -808,3 +808,52 @@ Q 实测："双计"与"全记 unmapped"两个变异均 0 failing，只有"永不
 理由：实现非 const 复读会引入读几何与注入之间的竞争窗口（D15-D17 TOCTOU），
 且当前无任何测试能覆盖热插拔路径。文档必须同步说明该限制。
 **批 22 判据 6 改判记录**：批 22 判据第 6 条已由主代理正式改判为 `SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES`（主显示器口径，多屏正确性）；原 SM_*VIRTUALSCREEN 写法在多显示器下恒 false，已否决。
+
+## 批 24 待修清单（round 862，审计 R 报告 + 主代理独立核验）
+
+### R1 [Medium·H1] 工厂接线无测试保护（主代理已独立复现）
+`src/server/desktop_gdi.cpp:382-383` 调用 `PixelsArePhysicalFromMetrics(dpi_ok, metrics)`，
+但测试（`tests/test_desktop_gdi.cpp:284-363`）只驱动**自由函数**，无任何测试经工厂。
+**主代理实测**：把工厂改成
+`PixelsArePhysical(dpi_ok, metrics.SystemMetric(SM_CXVIRTUALSCREEN), metrics.SystemMetric(SM_CYVIRTUALSCREEN), ...)`
+→ `10 tests, 57 checks, 0 failing tests, 0 failed checks`，**EXIT=0（假绿）**。
+⇒ 批 23 的 H1 验收判据"调用点改 VIRTUALSCREEN 必须行为转红"**只对 seam 内部成立**。
+修复：给工厂加 test-only 入口（如 `MakeGdiDesktopSourceWithMetrics(const MetricSource&, ...)`
+或注入 provider 的工厂重载），用 `primary=1920 / virtual=3200 / physical=1920` 的 fake
+断言 `Geometry().pixels_are_physical == true`；再断言 `primary=3200` 的 fake 得 false。
+验收：把生产工厂的 metric 选择改成 VIRTUALSCREEN 必须转红。
+
+### R2 [Medium·docs] M 文档 `:431-433` 仍写端点锚定公式且未标已否决
+`:431` "规范落点 = cx + round(fx*(cw-1)/(fbw-1))（端点锚定）...也是 §3 公式输出的真实落点"，
+与同表 `:441` B0 行给出的 1921（中心采样值）**自相矛盾**，也与 §2.5/§3.2/§10 矛盾。
+修复：改为中心采样 `cx + floor(((2fx+1)*cw)/(2*fbw))`，并复核表内"规范落点"列全部数值。
+
+### R3 [Medium·test] `dropped_unmapped` 日志验收仍是源码文本匹配
+`tests/test_desktop_input.cpp:1720,1723` 用 `src.find("input_dropped_unmapped=")` 与
+`src.find("stats.dropped_unmapped != printed_input.dropped_unmapped")`。
+R 实测：把真实打印改成 `input_dropped_unmapped_DISABLED=` 并加注释 `// input_dropped_unmapped=`
+→ `1 tests, 17 checks, 0 failing, EXIT=0`（假绿）。**违反 discover 第 34 例**。
+修复：把日志行构造抽成可测纯函数（如 `BuildInputStatsLine(const InputStats&, const char* reason)`
+返回 `std::string`），测试直接断言返回值字符串含正确字段与数值；
+变更检测抽成 `InputStatsChanged(before, after)` 纯函数，用真实 struct 驱动。
+验收：删掉打印或删掉变更检测，纯函数测试必须转红（不依赖源码文本）。
+
+### R4 [Low·docs] M `:616` 两个数字都错（主代理已复算）
+文档写"`step1` 与中心采样在 320/640 个 p 上不同，与窗口起点也在 320/640 不同"。
+实测（fb=640, cap=1280 全枚举）：
+- `step1` 现在**就是**中心采样 ⇒ 差异 **0/640**
+- 中心采样 vs 窗口起点 ⇒ 差异 **640/640**
+修复：两个数字改为 0/640 与 640/640，并说明"step1 与中心采样恒等（这是设计意图）"。
+
+### R5 [Low·docs] M 文档四处实现状态过期
+- `:254` 溢出分析仍用端点分子 `fx*(cw-1)*2` → 改 `(2*fx+1)*cw`，重算上界
+- `:318-322` 称几何丢弃计入内部 `dropped_unsupported_` 且"不在 InputStats"
+  → 实际已是 `InputStats::dropped_unmapped`（`desktop_input.h:95`），改文档
+- `:332` 称 `SetProcessDpiAwarenessContext` 返回值"目前丢弃" → 实际 `:70-78` 已使用
+- `:655` 目标结构漏列 `pixels_are_physical` → 补上
+
+### R6 [Low·test] H2 接线测试 y 轴不可见
+`tests/test_server.cpp:4409-4410` 的 capture.y 与 desktop.y 均为 0、高度均 1024
+⇒ y 轴 origin/extent 被互换或丢失时测试不转红。
+修复：改用 `capture{1920, 100, 1280, 1024}`、`desktop{0, 50, 3200, 1100}` 之类的非零异值。
+验收：互换 y 轴 capture/desktop 必须转红。
