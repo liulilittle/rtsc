@@ -479,3 +479,23 @@ Get-ChildItem "$env:TEMP\opencode\auditQ" -Recurse -File | Select-Object Name,Le
 - 任何"看看有什么"的探查，必须带：**具体子目录 + 时间窗 + 列白名单 + 条数上限**。
 - 与既有第 24 例（工具证据口径窄）/第 25 例（集合运算）同源：先定口径，再输出。
 - 附带：这类噪声会挤占上下文，比"没查到"代价更高。
+## 第859轮：我的"结构守卫"测试是假测试——文本匹配测试的三重失效（第 34 例）
+### 事故（我自己写的测试，批22 引入）
+`tests/test_desktop_gdi.cpp:295-317` 为验证"调用点传的是 SM_CXSCREEN 而非 SM_CXVIRTUALSCREEN"，
+用 `src.find("PixelsArePhysical(dpi_ok")` 取**首个**匹配、再取**首个** `);`，然后 grep 实参文本。
+### 主代理实测的三种失效
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| 正确调用**上方**加注释 `// PixelsArePhysical(dpi_ok, Metric(SM_CXSCREEN), Metric(SM_CYSCREEN), ...)`，真实调用改回 `SM_CX*VIRTUALSCREEN` | 红 | **绿**（`10 tests, 57 checks, 0 failing`，EXIT=0）|
+| 正确代码 + 注释 `// old: PixelsArePhysical(dpi_ok, Metric(SM_CXVIRTUALSCREEN), ...)` | 绿 | **红**（4 failed checks，EXIT=1）|
+| 实参 x/y 互换 | 红 | **绿**（只查存在性，不查顺序）|
+### 教训（第 34 例：**禁止用"读源码文本"验证行为；必须走行为 seam**）
+- 文本匹配测试的三种必然失效：**假绿**（注释/字符串伪装）、**假红**（注释含被禁词）、
+  **不查顺序/结构**（存在性 ≠ 语义）。
+- 根因：它验证的是"源码里出现过某串"，而需求是"调用时传对了参数"——**被测物选错了**。
+- 正确做法：把决策抽成**可注入的 seam**（如 metric provider、纯函数 + 依赖注入），
+  测试驱动 seam 的输入/输出；或把校验放在类型系统里（强类型 struct 而非裸 int 参数）。
+- 同型风险：`RTSC_SOURCE_DIR` 源扫描测试（本仓库已有多处）、grep 注释判断"是否实现"、
+  用日志文本断言行为。
+- 附带：这正是我在批22 自己违反第 16 条（"改坏仍全绿即假测试"）的产物——**测试必须能被变异打死**，
+  而该守卫在关键变异下依然绿，说明它从未真正守护任何东西。
