@@ -132,6 +132,11 @@ class DesktopInputSink {
 std::string FormatInputStats(const char* reason, const InputStats& stats);
 // 宿主只在计数变化时打印；逐字段比较，漏掉一个字段该计数就永远不打印。
 bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
+// 周期性采样行的判定 + 构造（合为一个函数，便于直接单测）。
+// `printed == nullptr` 表示"尚无基线"（首次采样）：必定返回一行，
+// 这样空闲宿主也能在启动后看到一次计数（否则永远没有任何 periodic 行）。
+std::string PeriodicInputStatsLine(const InputStats* printed,
+                                   const InputStats& current);
 
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSink();
 
@@ -212,7 +217,7 @@ void SetInputSink(DesktopInputSink* sink);  // nullptr 关闭注入；指针必�
 `SendInput` 失败日志行为：任意一次失败后，若距上一条失败日志已满 5 s 就打印一行（`kFailureLogInterval`），
 不带失败率判定，也没有"恢复"行。限流丢弃**不打日志**（只经 `dropped_rate_limited` 可见）。
 
-宿主 `main.cpp` 每 5 s 采样一次 `Stats()`，仅在任一计数变化时（`InputStatsChanged`）打印
+宿主 `main.cpp` 每 5 s 采样一次 `Stats()`；**第一次采样必定打印一行基线**，其后仅在任一计数变化时打印
 `input stats (periodic|final): input_injected=… input_dropped_queue=… input_rate_limited=… input_send_failures=… input_release_failures=… input_worker_failures=… input_dropped_unmapped=…`；
 行文本由纯函数 `FormatInputStats` 构造。`(final)` **只**在正常退出路径（`--once`、`--seconds` 到期）打印。
 无界模式没有 `SetConsoleCtrlHandler`，Ctrl+C 直接终止进程，**不打印 final**。

@@ -111,12 +111,16 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 // changed (so the host prints nothing and the log does not flood), otherwise
 // exactly the `input stats (periodic): ...` line for `current`.
 //
-// Exists as one function rather than two calls at the call site because the
-// host's periodic branch runs only when a counter actually moves, which needs a
-// live peer. Folding the decision and the formatting together means the
-// decision itself is covered by a unit test even though the host's `--seconds`
-// runs (no client) can never reach it (batch 26 F5).
-std::string PeriodicInputStatsLine(const InputStats& printed,
+// `printed` is null before the first sample. The baseline is always emitted:
+// otherwise an operator sees nothing at all until the first counter moves,
+// and a host that never receives input produces no periodic line ever -- which
+// also made the periodic call site unreachable from an automated run
+// (.opencode/plan.md batch 27). A null baseline therefore means "print".
+//
+// Exists as one function rather than two calls at the call site so the
+// decision is covered by a unit test even though a `--seconds` run with no
+// peer can only ever reach the baseline branch.
+std::string PeriodicInputStatsLine(const InputStats* printed,
                                    const InputStats& current);
 
 // Receives decoded input for injection. Every method runs on the session thread

@@ -1797,17 +1797,26 @@ RTSC_TEST(desktop_input_stats_line_handles_null_reason) {
 
 
 RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
-    // The host's periodic branch prints ONLY when a counter moved, otherwise a
-    // 5 s sampler would flood the log with identical lines. That branch needs a
-    // live peer to reach (a counter has to change), which the `--seconds` host
-    // runs cannot produce, so the decision lives in PeriodicInputStatsLine and
-    // is asserted here instead (batch 26 F5).
+    // Requirements, in order:
+    //   1. no baseline (first sample)  -> print
+    //   2. baseline equal to current   -> nothing (no log flood)
+    //   3. a counter moved             -> print `periodic`
+    //   4. back to the printed values  -> nothing
+    //   5. a counter going backwards   -> print
+    // Case 1 is what makes the host periodic call site observable from a
+    // plain `--seconds` run (batch 27): without it the only guaranteed line
+    // was the unconditional `final` one, so deleting the whole call site
+    // stayed green (batch 26 F5 residual, reported OPEN).
     const InputStats base;
-    CHECK(PeriodicInputStatsLine(base, base).empty());
+    const std::string first = PeriodicInputStatsLine(nullptr, base);
+    CHECK(!first.empty());
+    CHECK_EQ(first.compare(0, 24, "input stats (periodic): "), 0);
+
+    CHECK(PeriodicInputStatsLine(&base, base).empty());
 
     InputStats moved = base;
     moved.dropped_unmapped = 3;
-    const std::string line = PeriodicInputStatsLine(base, moved);
+    const std::string line = PeriodicInputStatsLine(&base, moved);
     CHECK(!line.empty());
     CHECK_EQ(line.compare(0, 24, "input stats (periodic): "), 0);
     CHECK(line.find("input_dropped_unmapped=3") != std::string::npos);
@@ -1816,8 +1825,8 @@ RTSC_TEST(desktop_input_periodic_line_is_empty_until_a_counter_moves) {
 
     // Going back to the printed values produces nothing again: the caller keeps
     // the last printed snapshot, so an intermediate change does not stick.
-    CHECK(PeriodicInputStatsLine(moved, moved).empty());
-    CHECK(PeriodicInputStatsLine(moved, base).empty() == false);
+    CHECK(PeriodicInputStatsLine(&moved, moved).empty());
+    CHECK(PeriodicInputStatsLine(&moved, base).empty() == false);
 }
 
 RTSC_TEST(desktop_input_null_sink_stats_count_injections) {

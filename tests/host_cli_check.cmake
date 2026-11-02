@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+
 # Behavioural checks for the rtsc_server_host command line.
 #
 # The host binary is not linked into any test executable: it owns its own
@@ -19,6 +21,7 @@ endif()
 
 set(must_have "")
 set(must_not_have "")
+set(exactly_once "")
 
 if(CASE STREQUAL "help")
     # --help must be free of side effects: it prints usage and exits 0 even
@@ -69,6 +72,22 @@ elseif(CASE STREQUAL "stats_line")
     list(APPEND must_have "input_release_failures=")
     list(APPEND must_have "input_worker_failures=")
     list(APPEND must_have "input_dropped_unmapped=")
+elseif(CASE STREQUAL "periodic_stats_line")
+    # The periodic sampler prints a baseline line on its first tick and then
+    # only on change. Running longer than the 5 s sampling interval with no
+    # peer therefore yields exactly one `periodic` line and nothing more, which
+    # is what makes the call site itself observable: deleting the call, or
+    # returning early from the lambda, removes that line (batch 27 closed the
+    # batch 26 F5 residual this way, without adding a test-only backend to the
+    # production host).
+    set(args --allow-input --allow-input-unverified --port 0 --seconds 7)
+    set(expect_exit 0)
+    list(APPEND must_have "input stats (final): input_injected=")
+    # Exactly one periodic line: the baseline prints once, and the remaining
+    # samples are unchanged so they must print nothing. "at least one" alone
+    # would pass a host that logs every tick (the flood the sampler exists to
+    # prevent).
+    list(APPEND exactly_once "input stats (periodic): input_injected=")
 else()
     message(FATAL_ERROR "unknown CASE '${CASE}'")
 endif()
@@ -93,6 +112,28 @@ foreach(need IN LISTS must_have)
     if(found EQUAL -1)
         message(FATAL_ERROR
                 "CASE ${CASE}: output is missing '${need}'. Output:\n${text}")
+    endif()
+endforeach()
+
+foreach(once IN LISTS exactly_once)
+    # Count plain substring occurrences. REGEX MATCHALL cannot be used here:
+    # the needle contains '(' and ')' (and the host wraps long lines), so a
+    # regex would either mis-match or fail to match at all.
+    set(remaining "${text}")
+    set(hit_count 0)
+    while(TRUE)
+        string(FIND "${remaining}" "${once}" at)
+        if(at EQUAL -1)
+            break()
+        endif()
+        math(EXPR hit_count "${hit_count} + 1")
+        math(EXPR next "${at} + 1")
+        string(SUBSTRING "${remaining}" ${next} -1 remaining)
+    endwhile()
+    if(NOT hit_count EQUAL 1)
+        message(FATAL_ERROR
+                "CASE ${CASE}: expected exactly one '${once}', found "
+                "${hit_count}. Output:\n${text}")
     endif()
 endforeach()
 

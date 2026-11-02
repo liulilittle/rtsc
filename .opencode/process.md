@@ -619,3 +619,27 @@ R7 关闭；真机语义项（数字是否随注入变化）仍 UNVERIFIED。
 构建 exit 0 / 六类诊断 0；`ctest -j1` **68/68**（77.76s）；desktop_input 68/13910；desktop_gdi 14/89；MUT- 残留 0。
 ### 残留
 R7 的"宿主调用点"部分 **OPEN**（方案1 需生产面改动 + 安全评审；方案3 未实现）。
+
+## 第868轮：批27 —— 用"修正产品行为"闭合 R7 宿主调用点（无测试后门）
+### 第一性原理
+原需求"只在计数变化时打印"导致**空闲宿主永远不打印任何 periodic 行**——这本身是运维缺口。
+让**首次采样无条件打印基线**：既补上运维可见性，又让调用点可从 `--seconds 7` 观测。
+不需要 env 门控 sink、不需要生产后可替换后端、不需要安全评审（这两点是审计 U 的方案1 的代价）。
+### 改动
+`PeriodicInputStatsLine(const InputStats* printed, ...)`（nullptr=无基线必打印）；
+main 加 `printed_input_valid`；`host_cli_check.cmake` 加 `periodic_stats_line` CASE，
+用纯子串计数断言 periodic 行**恰好 1 次**（"至少一次"会放过刷屏）；
+加 `cmake_minimum_required(3.20)`（否则 `while(TRUE)` 的条件被当字符串，`hits=0`）。
+### 变异矩阵
+| 变异 | 结果 |
+|---|---|
+| 删 main 的调用（occ=1 已验证） | 仅 `host_cli_periodic_stats_line` 红 |
+| lambda 整体 `return;` | 同上红 |
+| `nullptr` 返空（无基线不打印） | `desktop_input` + `periodic_stats_line` 双红 |
+### 验证
+构建 exit 0 / 六类诊断 0；`ctest -j1` **69/69, 0 failed**（73.49s）；实测 host `--seconds 7` → periodic=1 final=1。
+### 过程事故（自我记录）
+恢复变异时用错时间戳备份名 → 变异体残留一轮，`ctest` 97% 假红；改用 `Get-ChildItem` 列出真实备份名后恢复。
+**教训**：备份文件名应记录到变量并在恢复时引用，不能手抄时间戳。
+### R7
+**[x] 完全闭合**（函数内部 + 宿主调用点），无生产后门。

@@ -36,9 +36,12 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur) {
            prev.dropped_unmapped != cur.dropped_unmapped;
 }
 
-std::string PeriodicInputStatsLine(const InputStats& printed,
+std::string PeriodicInputStatsLine(const InputStats* printed,
                                    const InputStats& current) {
-    if (!InputStatsChanged(printed, current)) return std::string();
+    // The first sample has no baseline to compare against: print it, so the
+    // operator sees the counters at least once even when nothing moves.
+    if (printed == nullptr) return FormatInputStats("periodic", current);
+    if (!InputStatsChanged(*printed, current)) return std::string();
     return FormatInputStats("periodic", current);
 }
 

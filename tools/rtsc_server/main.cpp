@@ -605,22 +605,28 @@ int main(int argc, char** argv) {
     // changed, plus one final line on exit. Without this the rate-limit and
     // queue drops are invisible to whoever runs rtsc_server_host.
     rtsc::server::InputStats printed_input{};
+    bool printed_input_valid = false;
     auto log_input_stats = [&](const char* reason) {
         if (!input_sink) return;
         const rtsc::server::InputStats stats = input_sink->Stats();
         log.line(rtsc::server::FormatInputStats(reason, stats));
         printed_input = stats;
+        printed_input_valid = true;
     };
-    // One sample: print only when a counter moved. The decision and the text
-    // both live in PeriodicInputStatsLine so the "no change -> no line"
-    // requirement is unit tested; this host run (no peer) cannot reach it.
+    // One sample: the first one always prints (there is no baseline yet), later
+    // ones only when a counter moved. Both the decision and the text live in
+    // PeriodicInputStatsLine, so the "no change -> no line" requirement is unit
+    // tested, and the call site itself is observable from a plain
+    // `--seconds` run because the baseline line appears without any peer.
     auto log_input_stats_if_changed = [&]() {
         if (!input_sink) return;
+        const rtsc::server::InputStats current = input_sink->Stats();
         const std::string line = rtsc::server::PeriodicInputStatsLine(
-            printed_input, input_sink->Stats());
+            printed_input_valid ? &printed_input : nullptr, current);
         if (line.empty()) return;
         log.line(line);
-        printed_input = input_sink->Stats();
+        printed_input = current;
+        printed_input_valid = true;
     };
 
     std::string error;

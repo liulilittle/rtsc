@@ -822,7 +822,7 @@ add_test(NAME server_rdpsnd_e2e COMMAND rtsc_server_rdpsnd_e2e_tests)
 # combined silently with credentials that are not verified) and the shutdown
 # counter line that main() assembles from FormatInputStats().
 foreach(host_cli_case IN ITEMS help refuse_no_enhanced refuse_any_credentials
-                               acknowledged_start stats_line)
+                               acknowledged_start stats_line periodic_stats_line)
     add_test(NAME host_cli_${host_cli_case}
              COMMAND ${CMAKE_COMMAND}
                      -DHOST=$<TARGET_FILE:rtsc_server_host>

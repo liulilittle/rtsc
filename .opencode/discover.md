@@ -465,3 +465,31 @@ seam（注入点）只覆盖了它自己那一条支路，装配函数里**另�
 - **变异目标必须与断言目标一致**：`@:461` 断言的是 seam 形参，用它来证明"生产入口"是错的；
   正确做法是先问"这条断言能观察到我要改的那一层吗"。
 - 别人的实测与我的声明冲突时，**默认我错**并按对方的落点重跑；审计 U 这次是对的。
+## 第868轮：备份文件名手抄时间戳 → 恢复失败，变异体残留一轮（例 39）
+
+### 症状
+做完 `MUT-M27C` 变异后想恢复，我写了
+`Copy-Item '.opencode\backups\src_server_desktop_input_stats.cpp.20261102210506'`。
+该文件不存在（真实备份是 `...210559`）。`Copy-Item` 报 `PathNotFound`，
+但我没检查 `$LASTEXITCODE`/错误就继续跑 `cmake --build` + `ctest`，
+拿到 `97% tests passed, 2 failed out of 69`——把**变异体残留**误读成"还有真缺陷"。
+
+### 根因
+1. 备份时间戳靠**手抄**（我写了 `$ts` 变量，却在恢复时重新手写一个不同的字面量）。
+2. 恢复失败后没有断言"目标文件已恢复"（hash 对比、`MUT-` 残留计数）。
+
+### 证据
+`[BASH: Get-ChildItem .opencode\backups -Filter 'src_server_desktop_input_stats.cpp.*']`
+→ 实际有 `...180005 / ...195558 / ...204034 / ...205555 / ...210559`，**没有 210506**。
+`[BASH: Select-String -Path src\server\desktop_input_stats.cpp -Pattern 'MUT-']`
+→ `43: if (printed == nullptr) return std::string();  // MUT-M27C`（确实还在）。
+改用 `...210559` 恢复后：`MUTANT残留=0`，`ctest` **69/69**。
+
+### 教训（例 39）
+- **备份与恢复必须共用同一个变量**：保存时 `$bk = "...\$name.$ts"; Copy-Item ... $bk`，
+  恢复时 `Copy-Item $bk`。禁止在恢复时重写时间戳字面量。
+  更稳的做法：`Get-ChildItem <pattern> | Sort LastWriteTime | Select -Last 1`。
+- **每次恢复后必须验证三件事**：`MUT-` 残留为 0、hash 与备份一致、该文件在构建日志里**重新编译**。
+  （第三件来自 discover 例 36。）
+- **构建/测试失败先查"是不是我自己的变异还在"**，再查产品缺陷；
+  恢复命令的失败不能只靠肉眼看输出。

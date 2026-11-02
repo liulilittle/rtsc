@@ -88,8 +88,9 @@
       `input_release_failures`、`input_worker_failures`、`input_dropped_unmapped`。
 - [ ] 无界模式（不带 `--seconds`）按 Ctrl+C **不会**打印 final（当前无 SIGINT 处理）——
       确认文档未承诺该行为。
-- [ ] 周期性 `input stats (periodic)` 只在计数变化时出现，**不得刷屏**；`lease denied summary`
-      不应与首次 WARNING 重复刷同一条。
+- [ ] 周期性 `input stats (periodic)`：启动后约 5 s 出现**一行基线**（即使计数全为 0，这是
+      空闲宿主确认"注入链路活着且计数确实为 0"的唯一信号），其后**只在计数变化时**再出现，
+      **不得刷屏**；`lease denied summary` 不应与首次 WARNING 重复刷同一条。
 - [ ] UIPI 静默失败场景下，`input_send_failures` 应增长（用于区分"没反应"与"没送到"）。
 - [ ] 异常断开（拔网线/杀进程）后 `input_release_failures` 应保持 0（补发 up 成功）；
       若增长说明合成 up 入队失败，本地可能残留按住状态——与 §9 的"不得残留"互为对照。
