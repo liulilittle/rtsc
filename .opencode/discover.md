@@ -465,3 +465,17 @@ build -> 10 tests, 57 checks, 0 failing, EXIT=0                          ✅ 绿
   结构守卫只作为"调用点传参正确"的补充，不承担语义断言。
 - 同型风险：任何 `RTSC_SOURCE_DIR` 源扫描测试（本仓库已有多处），
   以及读配置/环境/文件系统状态的测试。
+## 第858轮：把"全部历史目录"当审计产物目录 —— 输出 3000+ 行噪声（第 33 例）
+### 事故
+为查审计 Q 的产物，我跑了：
+```powershell
+Get-ChildItem "$env:TEMP\opencode\auditQ" -Recurse -File | Select-Object Name,Length,LastWriteTime
+```
+`$env:TEMP\opencode` 下有**几十个历史批次目录**（Laudit 262MB、mutJ* 多个 85MB、geom_green...），
+`-Recurse` 加上 `Select-Object` 未限列宽，输出被截断到 3000+ 行，实际有效信息 0。
+### 教训（第 33 例：**目录探针必须先限定范围与列，再输出**）
+- `Get-ChildItem -Recurse` 在共享临时根上必然爆量；正确做法：
+  `Get-ChildItem <具体子目录> -File | Where-Object LastWriteTime -gt (Get-Date).AddHours(-1) | Select-Object Name,Length`
+- 任何"看看有什么"的探查，必须带：**具体子目录 + 时间窗 + 列白名单 + 条数上限**。
+- 与既有第 24 例（工具证据口径窄）/第 25 例（集合运算）同源：先定口径，再输出。
+- 附带：这类噪声会挤占上下文，比"没查到"代价更高。
