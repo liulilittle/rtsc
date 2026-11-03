@@ -1120,3 +1120,28 @@ Windows Release 六类诊断全 0 + **69/69**(74.33s)；Windows Debug **69/69**(
 
 **教训（discover 例 52/53）**：判断"某段代码执行了吗"的唯一可靠证据是该段代码**自己产生的副作用**；
 写注释前必须逐行核对判定顺序、`&&`/`||` 方向与默认值，改三次仍错就改为先做实验。
+### 批 43（`f8c24e8`）—— 用例 52 的原则回头扫：P0 断言也有"补 CHECK"洞
+
+批 42 修完 view/ui 后，把例 52 的判据（**"这个证据，除了我要证明的那段代码，还有谁能产生？"**）
+当作**检查项**回头扫 gate 的其余断言，当场发现批 35 的 P0 有完全相同的洞。
+
+| 项 | 内容 |
+|---|---|
+| 缺陷 | gate 断言 `tests>=8 && checks>=67`；把 `CHECK(got_challenge)` 换成两个 `CHECK(true)`，checks 67→68（仍≥67）⇒ `EXIT=0` / `P0_REGRESSION=executed` / `LINUX GATE PASS`，drain 回归断言消失 |
+| 修复 | P0 成功路径打印 `  drain: challenge surfaced after coalesced record`（全仓唯一）；gate 断言该行 |
+| 红证 | 同一攻击 ⇒ `EXIT=1`，`drain marker missing`，且变异体 checks=68 **仍高于 67** ⇒ 抓住它的是标记行 |
+| 绿证 | 未改代码 ⇒ `P0_REGRESSION=executed`，8 tests/**67** checks，PASS |
+
+**gate 断言分类自查（此后必须维持）**
+- **身份类**（不可被别处产生）：`REQUIRED_TESTS`(ctest -N 名字) / `FACTORY_SYMBOL`(nm 符号) /
+  `P0_REGRESSION`(体内标记行) / `VIEW_BUDGETS`([bench] 行数) / `UI_RATIO`(测量行)
+- **零值类**（不能假）：`FAILED_COUNT=0` / `WINDOWS_H_COUNT=0` / 各 `*_EXIT=0`
+- **下限类**（仅辅助，不再承担举证）：`SEC/VIEW/UI_MIN_CHECKS`
+⇒ 已无任何断言依赖"总数达到下限"来证明某段代码执行过。
+
+**本轮自身失误**：提交信息写"修后 8 tests/68 checks"，实测仍是 **67**（新增 printf 不产生 CHECK）。
+凭推理写数字 = 未验证断言，已更正。
+
+**验证**：Linux `LINUX GATE PASS` 67/67 + `P0_REGRESSION=executed` + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)；Windows Release 六类全 0 + **69/69**(73.93s)；全仓 `MUT-` 0。
+
+**教训（discover 例 54）**：新原则确立后必须立刻回扫既有全部同类断言；"加了两道断言"≠"两道都可靠"（可能依赖同一个可旁路量，应按证据来源分组而非按条数）；**修改后必须重新测量数字，凭推理写的数字同样是未验证断言**。

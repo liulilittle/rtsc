@@ -982,3 +982,39 @@ checks 下限**降级**为"套件规模异常"的辅助检查，不再承担举�
   （审计 X 就是这么做的：12/12 单比特翻转实测。）
 - 这类错误的代价不是编译失败，而是**误导后来者**：如果有人照 v3 的注释去"优化"，
   以为 `mapped=true` 就会开始 mapping，会得出完全错误的结论。
+## 第882轮：用新原则回头扫，立刻又发现一个同族洞（例 54）
+
+### 症状
+批 42 修完 view/ui 的"补 CHECK"洞后，我把例 52 的判据（**"这个证据，除了我要证明的那段代码，还有谁能产生？"**）
+当成检查项回头扫了一遍 gate 的**其余**断言，当场发现批 35 的 P0 断言有完全相同的洞：
+
+`tests/test_server_security.cpp` 的 P0 用例体末尾
+```cpp
+if (got_challenge) printf(...);      // <- 没有这行（修复前）
+CHECK(got_challenge);
+```
+gate 断言 `tests>=8 && checks>=67`。把 `CHECK(got_challenge)` 换成两个 `CHECK(true)`：
+checks 67 → 68（仍 ≥ 67）→ **`EXIT=0` / `P0_REGRESSION=executed` / `LINUX GATE PASS`**。
+drain 回归断言被删掉而 gate 报绿。
+
+### 根因
+与例 52 完全相同，只是位置不同：**checks 计数不是该体独有的副作用**。
+我批 35 修 D1 时以为"再加两道断言就安全"，但第二道（checks 下限）用的是同一类可被补足的量。
+
+### 证据
+- 攻击（真 gate）：`CHECK(got_challenge)` → `CHECK(true); CHECK(true);` ⇒ `EXIT=0`、`LINUX GATE PASS`
+- 修复后同一攻击：`EXIT=1`、`body did not reach its success path (drain marker missing)`，
+  且变异体 checks=68 **仍高于下限 67** ⇒ 证明抓住它的是标记行而不是计数
+
+### 修复
+1. P0 成功路径打印 `  drain: challenge surfaced after coalesced record`（全仓唯一）
+2. gate 断言该行存在
+
+### 教训（例 54）
+- **新原则确立后必须立刻回扫既有的全部同类断言**。我批 42 只改了"这一批新加的"两处，
+  若不是主动回扫，批 35 的洞会继续存在。
+- **"我加了两道断言"不等于"两道都可靠"**：可能两道依赖同一个可被旁路的量
+  （本例：`tests` 下限 + `checks` 下限，两个都由同一个计数系统给出）。
+  判断可靠性要按"证据来源是否唯一"分组，而不是按"断言条数"计数。
+- **修改后必须重新测量数字**：我提交信息里写"修后 68 checks"，实测仍是 67
+  （新增的 printf 分支不产生 CHECK）。**凭推理写下的数字同样是未验证断言。**
