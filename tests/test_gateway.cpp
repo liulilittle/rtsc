@@ -136,6 +136,86 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
     rtsc::tls::Error ok_{};
 };
 
+// A backend holding only a PARTIAL record. `buffered_input()` stays > 0 while
+// Receive can never produce plaintext (it needs more ciphertext first). A
+// transport adaptor that loops on "buffered_input() > 0" alone spins forever;
+// it must fall through and read the socket instead.
+class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
+ public:
+    int receive_calls = 0;
+    size_t buffered = 3;  // one record header is 5 bytes, so 3 is incomplete
+
+    rtsc::tls::Error Handshake(const uint8_t*, size_t in_size, size_t& consumed,
+                               std::vector<uint8_t>& out) override {
+        consumed = in_size;
+        out.clear();
+        handshaken_ = true;
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Send(const uint8_t*, size_t size, size_t& consumed,
+                          std::vector<uint8_t>& out) override {
+        consumed = size;
+        out.assign(size, 0x5A);
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Receive(const uint8_t*, size_t,
+                             std::vector<uint8_t>& plaintext,
+                             size_t) override {
+        ++receive_calls;
+        plaintext.clear();
+        rtsc::tls::Error e;
+        // Bail out instead of hanging the suite: if the adaptor spins, this
+        // caps the run so the test reports a failure rather than timing out.
+        if (receive_calls > 100) {
+            e.status = rtsc::tls::Status::kProtocolError;
+            e.message = "adaptor spun on a partial record";
+            return e;
+        }
+        e.status = rtsc::tls::Status::kNeedMoreInput;
+        return e;
+    }
+    rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKeyInfo(
+        std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error negotiated(rtsc::tls::NegotiatedInfo& out) const override {
+        out = rtsc::tls::NegotiatedInfo{};
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::RecordSizes record_sizes() const override {
+        return rtsc::tls::RecordSizes{};
+    }
+    rtsc::tls::Error Shutdown(std::vector<uint8_t>& out) override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    bool handshake_complete() const noexcept override { return handshaken_; }
+    bool closed() const noexcept override { return false; }
+    size_t buffered_input() const noexcept override { return buffered; }
+    const rtsc::tls::Error& last_error() const noexcept override { return ok_; }
+    const char* backend_name() const noexcept override { return "partial"; }
+
+ private:
+    bool handshaken_ = false;
+    rtsc::tls::Error ok_{};
+};
 // A loopback datagram socket pair: Send() delivers to the peer's queue.
 // Thread safe: the mutual-write concurrency test sends and receives from
 // different threads on the same socket object.
@@ -3557,4 +3637,27 @@ RTSC_TEST(tls_byte_transport_read_buffers_the_tail) {
     CHECK_EQ(delivered, static_cast<size_t>(516));
 }
 
+RTSC_TEST(tls_byte_transport_partial_record_does_not_spin) {
+    // A backend that holds an incomplete TLS record reports buffered_input() > 0
+    // forever: it cannot produce plaintext until more ciphertext arrives. An
+    // adaptor that loops while "buffered_input() > 0" spins without ever reading
+    // the socket (measured: the pre-fix code called Receive 101+ times and never
+    // returned). It must fall through and read the socket when a drain call made
+    // no progress.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    auto tls = std::make_unique<ScriptedPartialRecordTls>();
+    ScriptedPartialRecordTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    // MockTransport has no queued bytes, so a correct adaptor reaches the socket
+    // and reports a read timeout instead of spinning on the staged record.
+    CHECK_EQ(n, kReadTimeout);
+    CHECK_EQ(tlsp->receive_calls, 1);
+    CHECK_EQ(rawp->read_offset, static_cast<size_t>(0));
+}
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }

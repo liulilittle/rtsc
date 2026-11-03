@@ -542,6 +542,7 @@ int TlsByteTransport::Read(uint8_t* buf, size_t size) {
     // Drain records the backend already holds before asking the socket.
     for (;;) {
         std::vector<uint8_t> plaintext;
+        const size_t buffered_before = tls_->buffered_input();
         const tls::Error e = tls_->Receive(nullptr, 0, plaintext, size);
         if (e.status != tls::Status::kOk &&
             e.status != tls::Status::kClosed &&
@@ -552,7 +553,14 @@ int TlsByteTransport::Read(uint8_t* buf, size_t size) {
         if (!plaintext.empty() && e.status != tls::Status::kClosed) {
             return ServePlaintext(buf, size, plaintext);
         }
-        if (tls_->buffered_input() > 0) continue;
+        // Only loop back when this drain actually consumed buffered input.
+        // buffered_input() > 0 alone is NOT progress: a partially received
+        // record keeps the backend non-empty while Receive can only answer
+        // kNeedMoreInput, so re-calling it spins without ever reading the
+        // socket (measured: 101 Receive calls, no return). Falling through
+        // reads the socket, which is the only way the rest of the record can
+        // arrive.
+        if (tls_->buffered_input() < buffered_before) continue;
 
         uint8_t chunk[16384];
         const int n = raw_->Read(chunk, sizeof(chunk));
