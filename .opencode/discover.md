@@ -816,3 +816,50 @@ skip 短路：换文案、提前 return、`#if 0`、未来重构。这与 D1 在
   用"断言字符串缺席"。**新原则必须立刻回头扫一遍本次改动本身**。
 - **可观测量的差值比绝对值更可靠**：7348−7341=7 正好等于七条预算断言 ——
   一条被跳过则差值归零。差值把"配置形状"翻译成"执行结果"。
+## 第878轮：变异全绿不等于"规则无人守"——我误判了自己的修复（例 50）
+
+### 症状
+批 37 我新增了一段用例（`requires_usable_geometry` 里的 `:903-914`），注释宣称
+"start from a geometry that is otherwise fully usable and break ONE trust bit at a time"，
+理由是"`PartialGeometry` 的三种变异全绿 ⇒ 信任位无人守护"。
+
+两审计独立否证：
+- 旧用例 `desktop_input_absolute_move_requires_trusted_geometry`（`:750-766`，
+  自 `150a6ea^` 就存在）**早已逐位隔离两个信任位**：删 `!g.mapped` → `:751` 红；
+  删 `!g.pixels_are_physical` → `:755` 红。
+- 我加的那段是**重复覆盖**：删掉它，上述两个变异仍然红（T0/T1）。
+
+### 根因（两层误判）
+1. **"变异全绿"不能推出"规则无人守"**。`PartialGeometry` 的变异全绿，是因为它的
+   所有调用点都传 `w/h ∈ {0,1}`，被 span 规则在 `:81` 拦下 —— 变异打中的是
+   **调用点的下游规则**，而不是 **辅助函数自身的输出契约**。要证明"无人守"，
+   必须区分"哪条规则、在哪一层被谁拒绝"。
+2. **我连注释里的因果都写错了**（Y 抓到）：我写"span 规则先拒绝 PartialGeometry"，
+   实际 `PartialGeometry(1920,1080)` 的 span 合法（1920>1、1080>1），先拒它的是
+   trust 位（`:80`），其次空 capture（`:82`）。**被 span 拒的是调用点，不是辅助函数。**
+   同一文件里 X 也曾把"span 无人守"当成结论，随后自我作废。
+
+### 证据
+- 旧用例独立守护：删 `!g.mapped` → `:751` 红（`requires_trusted_geometry`）
+- `PartialGeometry` 三种变异全绿：68 tests / 13922 checks，0 failing
+- 新增辅助函数契约用例后，同样三种变异全部红（PG+mapped / +pixels / +capture.width）
+- `cl /W4 /WX` 对漏枚举**不报错**，仅 `/w44062` 报 C4062 ⇒ main.cpp 的 switch
+  在 Windows 上长期无保护，改 `"relative-move"→"mouse"` 后 `ctest -R host_cli` 6/6 全绿
+
+### 修复
+1. **删除**重复覆盖块（无损失，由旧用例承担）。
+2. **新增** `desktop_input_partial_geometry_helper_contract`，断言辅助函数**自身输出**
+   （width/height/两信任位/两矩形/`AbsoluteMoveMappable`）—— 这才是无人守护的那一层。
+3. 按事实重写注释，显式区分"辅助函数被谁拒"与"调用点被谁拒"。
+4. 把 `main.cpp` 的 switch 提成 `InputEventKindToken()` 放 `desktop_input_stats.cpp`，
+   该文件已有 `FormatInputStats` 先例；switch 结构性消失，`-Wswitch` 隐患在该站点消除；
+   新增逐值枚举用例，`"relative-move"→"mouse"` 立即红。
+
+### 教训（例 50）
+- **"变异全绿"只说明"这个变异没被抓住"，不说明"没有别的守卫"**。必须先枚举
+  全部拒绝路径（本例 `:80`/`:81`/`:82`/`:83`/`:84` 五道），再判断变异实际打到哪一道。
+- **"无人守护"的结论必须给出反证**：删掉既有用例后变异是否仍红？红 ⇒ 有人守。
+- **注释里的因果链是不可执行断言**，写"X 拒绝了 Y"之前必须逐行核对判定顺序；
+  本轮我和 X 各错一次，都是把"调用点行为"当成"辅助函数行为"。
+- **宏/枚举 switch 在 MSVC 默认无保护**：想守住"每个枚举值都有处理"，
+  必须把 switch 提成可被单测覆盖的纯函数，而不是依赖 `-Wswitch`。

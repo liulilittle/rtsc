@@ -753,3 +753,28 @@ X 亦纠正我一处：删 1 条 CHECK=66、删 3 条=64，均红，数字差异
 "能观测"≠"已断言"：凡 `printf`/`echo` 出来供人看的数字，必须问"它错了谁会失败"。
 新原则必须立刻回扫本次改动本身（我在同一提交里立了原则又违反）。
 可观测量的**差值**比绝对值更可靠（7348−7341=7 恰等于七条断言）。
+## 第878轮：批39 —— 两审计 P1 收口（`cc1591e`）
+### 1. 我的重复覆盖 + 事实错误（两审计独立否证）
+- 批37 的 `:903-914` 是**重复覆盖**：旧用例 `:750-766`（自 `150a6ea^`）已逐位守两信任位；删新块后 `:751/:755` 仍红（T0/T1）。**已删**。
+- 我的注释写"span 先拒 PartialGeometry"是**事实错误**：`PartialGeometry(1920,1080)` span 合法，先拒的是 `:80` trust、其次 `:82` 空 capture。**已按事实重写**。
+### 2. 真正无人守护的是辅助函数自身输出
+- `PartialGeometry` 三种变异全绿（68 tests/13922 checks）——因为调用点 `w/h∈{0,1}` 被 `:81` span 拦下，变异打的是下游规则。
+- 新增 `desktop_input_partial_geometry_helper_contract` 断言辅助函数输出（width/height/mapped/pixels/capture/desktop/AbsoluteMoveMappable）。
+- 三变异皆红：`PG+mapped=true` / `PG+pixels=true` / `PG+capture.width=1920`。
+### 3. Y 的 P1-c：`InputEventKindToken`
+- `main.cpp` 内联 switch → 纯函数放 `src/server/desktop_input_stats.cpp`（与 `FormatInputStats` 同范式）。switch 结构性消失（`cl /W4 /WX` 本就不报漏枚举，仅 `/w44062` 报 C4062）。
+- 新增 `desktop_input_kind_token_covers_every_kind` 枚举 6 值；变异 `kMouseRel→"mouse"` → `:2186` 红（修前 `ctest -R host_cli` 6/6 全绿）。
+### 4. 未采纳项（附理由）
+Y 的"VIEW_MIN_CHECKS=7348 是魔数"：**暂不处理**。7348 是"7 条预算执行过"的唯一可观测证据，从运行结果推导即自证；已做下限比较 + 注释"增减 bench 须重新标定"。
+### 验证
+- Windows：构建六类诊断全 0；ctest **69/69**（75.22s）；`rtsc_desktop_input_tests` **70 tests / 13934 checks**，0 failing
+- Linux：`LINUX GATE PASS` 67/67 + `P0_REGRESSION=executed` + `VIEW_BUDGETS=executed`(7348)
+- 行尾：`git cat-file` 逐字节核对 HEAD blob，四文件纯 LF（`test_desktop_input.cpp` LF=2187/CR=0）
+### 本轮自身失误
+- 用 `for($i=866...)` 造出意外空文件 `=866`（PowerShell 解析问题），已删除。
+- 多次遇到"`Copy-Item` 恢复后 mtime 早于产物 → MSBuild 不重编 → 变异仍绿"（例 36 复发），靠改 mtime + 核对二进制时间戳解决。
+- 一次插入用例时留下重复的 `RTSC_TEST(...)` 行（C2267/C2601 75 个错误），已修正。
+### 教训（discover 例 50）
+"变异全绿"≠"规则无人守"，必须先枚举全部拒绝路径再判断变异打到哪一道；
+"无人守护"必须给反证（删既有用例后是否仍红）；注释里的因果链是不可执行断言；
+MSVC 默认不报漏枚举，必须把 switch 提成可单测的纯函数。

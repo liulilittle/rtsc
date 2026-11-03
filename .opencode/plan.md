@@ -1032,3 +1032,19 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 
 **教训（discover 例 49）**："能观测"≠"已断言"——凡被打印出来的数字，问"它错了谁会失败"；
 新原则必须立刻回扫本次改动；可观测量的差值比绝对值更可靠。
+### 批 39（`cc1591e`）—— 两审计 P1 收口（重复覆盖 / 事实错误 / 未守护层）
+
+两审计双向收敛判 **PASS**（批 32/33/34/37/38），附两条非阻塞项。本批处理。
+
+| 项 | 事实 | 处置 |
+|---|---|---|
+| 我的重复覆盖 | 批 37 的 `:903-914` 与旧用例 `:750-766`（自 `150a6ea^`）重复；删新块后 `:751/:755` 仍红（X 的 T0/T1） | **删除**，无覆盖损失 |
+| 我的注释事实错误 | `PartialGeometry(1920,1080)` 的 span 合法，先拒的是 `:80` trust 再 `:82` 空 capture；被 span 拒的是**调用点**不是辅助函数（Y 指出） | 按事实重写，显式区分两层 |
+| 真正无人守护的层 | `PartialGeometry` 三种变异全绿（68/13922）——打的是调用点下游规则 | 新增 `desktop_input_partial_geometry_helper_contract` 断言**辅助函数自身输出**；三变异皆红 |
+| Y 的 P1-c | `main.cpp` 内联 switch 不可断言，MSVC `-Wswitch` 不保护（仅 `/w44062` C4062） | 提为 `InputEventKindToken()` 放 `desktop_input_stats.cpp`；switch 结构性消失；新增逐值枚举用例；`kMouseRel→"mouse"` 红 |
+
+**未采纳**：Y 的"`VIEW_MIN_CHECKS=7348` 是魔数"。理由：7348 是"七条预算执行过"的唯一可观测证据，从运行结果推导即自证；已用下限比较 + 注释"增减 bench 须重新标定"。
+
+**验证**：Windows 构建六类诊断全 0 + ctest **69/69**；Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348)；`rtsc_desktop_input_tests` **70 tests / 13934 checks**；HEAD blob 四文件纯 LF。
+
+**教训（discover 例 50）**："变异全绿"≠"规则无人守"——必须先枚举全部拒绝路径再判断变异打到哪一道；"无人守护"必须给反证（删既有用例后是否仍红）；注释里的因果链是不可执行断言，写"X 拒绝了 Y"前必须逐行核对判定顺序；MSVC 默认不报漏枚举，要守住枚举完备性必须把 switch 提成可单测纯函数。
