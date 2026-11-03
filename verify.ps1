@@ -445,9 +445,22 @@ if ($LinuxBuild) {
     # Capture the output so the gate can be checked positively, not just by
     # exit code (audit B0-07). A gate that exits 0 without printing its PASS
     # line has been neutered, and an exit-code-only check would not notice.
-    $gateOut = (& wsl -e bash $gateWsl 2>&1 | Out-String)
+    # A blocking `& wsl ...` has no timeout: if WSL hangs (systemd user session
+    # failure, a wedged 9p mount, a stuck build) this script waits forever and
+    # the whole verification silently never finishes. The gate now runs two
+    # builds (Debug + RelWithDebInfo), so its wall time grew from ~79s to ~129s
+    # and the margin for "hangs vs slow" narrowed. Run it under an explicit
+    # timeout and treat expiry as a FAIL, not a skip -- same rule as a missing
+    # toolchain above (audit Y).
+    $gateTimeoutSec = 900
+    $gateOut = (& wsl -e timeout --signal=TERM --kill-after=30 $gateTimeoutSec bash $gateWsl 2>&1 | Out-String)
+    $gateExit = $LASTEXITCODE
     Write-Host $gateOut
-    if ($LASTEXITCODE -ne 0) { Write-Error "linux build gate failed"; exit 1 }
+    if ($gateExit -eq 124 -or $gateExit -eq 137) {
+        Write-Error "linux build gate exceeded ${gateTimeoutSec}s and was killed (treated as FAIL; a hung WSL is not a pass)"
+        exit 1
+    }
+    if ($gateExit -ne 0) { Write-Error "linux build gate failed"; exit 1 }
     if ($gateOut -notmatch 'LINUX GATE PASS') {
         Write-Error "linux build gate exited 0 but never printed LINUX GATE PASS (gate is not doing its job)"
         exit 1
