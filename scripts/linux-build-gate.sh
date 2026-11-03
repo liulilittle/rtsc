@@ -191,6 +191,15 @@ if grep -q "skipped:" "$SEC_LOG"; then
     grep -n "skipped:" "$SEC_LOG" | tail -5
     exit 1
 fi
+# Same rule as the view/ui blocks below: a check count cannot prove this body
+# ran (swapping the two real CHECKs for `CHECK(true)` keeps the total at 67 while
+# the drain regression goes untested -- measured). Require the marker the success
+# path prints; nothing else in the tree emits this string.
+if ! grep -q "drain: challenge surfaced after coalesced record" "$SEC_LOG"; then
+    echo "LINUX GATE FAIL: ${P0_CASE} body did not reach its success path (drain marker missing)"
+    grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
+    exit 1
+fi
 SEC_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$SEC_LOG" | tail -1)
 SEC_TESTS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^([0-9]+) tests,.*/\1/')
 SEC_CHECKS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')

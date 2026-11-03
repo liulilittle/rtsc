@@ -592,6 +592,13 @@ RTSC_TEST(tls_server_regression_coalesced_first_record_no_stall) {
     }
     // RED before the DriveCredssp drain hoist: the record stays in the backend,
     // no kWrite ever materialises, and Step(nullptr, 0) keeps returning kRead.
+    //
+    // The marker line is printed only on the success path, and the gate asserts
+    // it. A check COUNT is not proof this body ran: checks are counted per CHECK,
+    // so the two assertions above can be swapped for `CHECK(true)` pairs that keep
+    // the total at 67 while the drain regression goes untested (measured by
+    // mutating this body). The line below cannot be produced by anything else.
+    if (got_challenge) std::printf("  drain: challenge surfaced after coalesced record\n");
     CHECK(got_challenge);
 }
 #endif  // defined(RTSC_TLS_OPENSSL)
