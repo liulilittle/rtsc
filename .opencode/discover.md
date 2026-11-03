@@ -1018,3 +1018,49 @@ drain 回归断言被删掉而 gate 报绿。
   判断可靠性要按"证据来源是否唯一"分组，而不是按"断言条数"计数。
 - **修改后必须重新测量数字**：我提交信息里写"修后 68 checks"，实测仍是 67
   （新增的 printf 分支不产生 CHECK）。**凭推理写下的数字同样是未验证断言。**
+## 第883轮：我宣布"修复生效"的那个变异，其实改的是别的东西（例 55）
+
+### 症状
+批 43 我声称："攻击 B（`CHECK(got_challenge)` → 两个 `CHECK(true)`）→ `EXIT=1`，
+`drain marker missing`"。审计 X 用真 gate 复现得到 **`EXIT=0` / `LINUX GATE PASS`**。
+我独立重做，确认 **X 正确、我的提交信息是错的**。
+
+原因：我那次变异把 **printf 与 CHECK 一起删掉了**，所以 marker 才会消失；
+而"只把 CHECK 换成 `CHECK(true)`"时 marker 照常打印，gate 照常通过。
+
+### 二阶洞（比批 42 的更深一层）
+批 42 的 view/ui marker 有效，是因为 `#if 0` 会让**整个体**（含 printf）消失。
+P0 不同：成功路径照常执行、printf 照常打印，**只有末尾那条 CHECK 被替换**。
+
+两条独立语句：
+```cpp
+607: if (got_challenge) std::printf("  drain: ...\n");   // marker
+608: CHECK(got_challenge);                                // assertion
+```
+删掉 608 不影响 607。
+
+### 根因（原理性，非实现缺陷）
+`CHECK` 宏只调用 `report_failure`，**不中止、不改变控制流**（`tests/test_framework.h:47-53`）。
+因此任何"产出物断言"（日志行、文件、计数器）都只能证明**这段路径被走到了**，
+不能证明**某条断言语句还在**。审计 X 验证了互斥成功/失败双标记设计，
+同样关不掉"删断言"。
+
+### 结论与处置
+- **"删断言"原理上无法用产出物断言关闭**。能做的只有：
+  1. 让断言失败表现为非零退出码（已有）
+  2. 明确声明覆盖边界，不虚报
+  3. 把"断言存在性"交给代码评审
+- gate 断言分类更正为三档：
+  - **身份类**（不可补足）：`REQUIRED_TESTS`（ctest -N 名字）/ `FACTORY_SYMBOL`（nm 符号）
+  - **路径类**（证明走到了、不证明断言在）：`P0_REGRESSION` / `VIEW_BUDGETS` / `UI_RATIO`
+  - **计数类**（仅辅助）：`SEC/VIEW/UI_MIN_CHECKS`
+- 已把边界写进 `scripts/linux-build-gate.sh` 与 `tests/test_server_security.cpp` 的注释。
+
+### 教训（例 55）
+1. **变异必须唯一**：我改成"删 printf + 换 CHECK"，却以为在验"换 CHECK"。
+   这与 discover 例 38（`String.Replace` 替换全部同形匹配）同类：
+   **先写清变异到底改了什么，再声称它证明了什么**。
+2. **"修复生效"的证据必须由攻击脚本产生，不能由我口述**。
+   我这次是先写结论、后跑变异，结果两者不对应。正确顺序：先跑、贴原始输出、再写结论。
+3. **产出物断言的覆盖上限是"路径"**。凡写"某断言会执行"的论断，
+   必须区分"执行了"（path）与"还在"（assertion exists）——前者可测，后者不可测。

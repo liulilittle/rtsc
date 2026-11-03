@@ -882,3 +882,26 @@ Windows Release 六类全 0 + **69/69**(74.33s)；Windows Debug **69/69**(75.82s
 ### 验证
 Linux `LINUX GATE PASS` 67/67 + `P0_REGRESSION=executed` + `VIEW_BUDGETS=executed`(7348)
 + `UI_RATIO=executed`(86)；Windows Release 六类全 0 + **69/69**(73.93s)；全仓 `MUT-` 0。
+## 第883轮：批44 —— 更正批43 的覆盖声明（`a9f69ca`）
+### 审计 X 推翻我两处结论，我独立复现确认他全对
+1. 批43 声称"攻击 B（`CHECK` → 两个 `CHECK(true)`）→ EXIT=1"。实测 **EXIT=0**。
+   我那次变异把 **printf 与 CHECK 一起删了**，所以 marker 消失；只换 CHECK 时 marker 照常打印。
+2. 攻击 C（只删 `CHECK(got_challenge)`、保留 printf）→ 同样 **EXIT=0** / `P0_REGRESSION=executed`。
+3. 根因（原理性）：`CHECK` 只调 `report_failure`、不改控制流（`test_framework.h:47-53`），
+   所以任何产出物断言只能证明"路径走到了"，不能证明"断言还在"。
+4. 我的断言分类误判：`P0_REGRESSION` 不是身份类，是**路径类**。
+### 处置
+- 不加新机制（没有能检测"删断言"的机制），而是**把边界写进代码注释**：
+  gate 新增 COVERAGE BOUNDARY 段；`test_server_security.cpp` 写 What it proves / What it does NOT prove。
+- 三档分类更正：身份类（`REQUIRED_TESTS`/`FACTORY_SYMBOL`）/ 路径类（`P0_REGRESSION`/`VIEW_BUDGETS`/`UI_RATIO`）/ 计数类（`*_MIN_CHECKS`）。
+### 验证
+Linux `LINUX GATE PASS` + P0/VIEW/UI 三标记均 executed；Windows Release 六类全 0 + **69/69**(81.79s)；全仓 `MUT-` 0。
+### 本轮额外探查（未改代码）
+为确认 P0 是否守护 drain 实现，我对 `tls_schannel.cpp` / `tls_openssl.cpp` /
+`security_layer.cpp` 的 drain 位置做了 4 次变异，**P0 均未变红**
+（`M7`、`max_out>=1`、两处 `buffered_input` 循环、`pending_cipher_` 不 Receive）。
+最后一种被其它用例抓到（3 failing tests），但 P0 不是那个守卫者。
+⇒ 登记：**P0 用例的 drain 语义守护强度未验证**，不宣称它守住了 drain。
+### 教训（discover 例 55）
+变异必须唯一且先跑后写；"修复生效"的证据必须由脚本输出产生，不能口述；
+产出物断言的覆盖上限是"路径"，不是"断言存在"。

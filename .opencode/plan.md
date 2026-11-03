@@ -1145,3 +1145,37 @@ Windows Release 六类诊断全 0 + **69/69**(74.33s)；Windows Debug **69/69**(
 **验证**：Linux `LINUX GATE PASS` 67/67 + `P0_REGRESSION=executed` + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)；Windows Release 六类全 0 + **69/69**(73.93s)；全仓 `MUT-` 0。
 
 **教训（discover 例 54）**：新原则确立后必须立刻回扫既有全部同类断言；"加了两道断言"≠"两道都可靠"（可能依赖同一个可旁路量，应按证据来源分组而非按条数）；**修改后必须重新测量数字，凭推理写的数字同样是未验证断言**。
+### 批 44（`a9f69ca`）—— 更正批 43 的覆盖声明：标记行证明路径，不证明断言存在
+
+审计 X 用真 gate 推翻我两处结论，我独立复现确认**他全对**。
+
+| 我的错误 | 实测 |
+|---|---|
+| 批 43 声称"攻击 B（`CHECK` → 两个 `CHECK(true)`）→ EXIT=1, drain marker missing" | **EXIT=0 / LINUX GATE PASS**。我当时把 printf 与 CHECK **一起删了**，那才是 marker 消失的原因 |
+| 断言分类把 `P0_REGRESSION` 归入"身份类（不可补足）" | 攻击 C（只删 `CHECK(got_challenge)`、保留 printf）→ **EXIT=0**。它是**路径类** |
+
+**根因（原理性）**：`CHECK` 宏只调 `report_failure`，**不中止、不改控制流**（`tests/test_framework.h:47-53`）。
+任何"产出物断言"（日志行 / 文件 / 计数）只能证明**这段路径被走到**，不能证明**某条断言语句还在**。
+X 验证了互斥成功/失败双标记设计，同样关不掉"删断言"。
+
+**处置**：不加新机制（不存在能检测"删断言"的机制），而是**把边界写进代码**
+- `scripts/linux-build-gate.sh`：新增 COVERAGE BOUNDARY 段
+- `tests/test_server_security.cpp`：写明 What it proves / What it does NOT prove
+
+**gate 断言三档分类（更正后）**
+| 档 | 断言 | 能力 |
+|---|---|---|
+| 身份类 | `REQUIRED_TESTS`(ctest -N 名字) / `FACTORY_SYMBOL`(nm 符号) | 不可被补足 |
+| **路径类** | `P0_REGRESSION` / `VIEW_BUDGETS` / `UI_RATIO` | 证明"走到了"，不证明"断言还在" |
+| 计数类 | `SEC/VIEW/UI_MIN_CHECKS` | 仅辅助 |
+
+**额外探查（未改代码，登记为未验证）**：为确认 P0 是否守护 drain 实现，对
+`tls_schannel.cpp` / `tls_openssl.cpp` / `security_layer.cpp` 的 4 处 drain 位置做变异，
+**P0 均未变红**（`M7`、`max_out>=1`、两处 `buffered_input` 循环、`pending_cipher_` 不 Receive）。
+最后一种被其它用例抓到（3 failing），但 P0 不是守卫者。
+⇒ **P0 的 drain 语义守护强度 UNVERIFIED，不宣称它守住了 drain。**
+
+**验证**：Linux `LINUX GATE PASS` + 三标记均 executed；Windows Release 六类全 0 + **69/69**(81.79s)；全仓 `MUT-` 0。
+
+**教训（discover 例 55）**：变异必须唯一且**先跑后写**——我这次先写结论后跑变异，结果两者不对应；
+"修复生效"的证据必须由脚本原始输出产生；产出物断言的覆盖上限是"路径"而非"断言存在"。
