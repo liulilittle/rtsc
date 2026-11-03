@@ -863,3 +863,53 @@ skip 短路：换文案、提前 return、`#if 0`、未来重构。这与 D1 在
   本轮我和 X 各错一次，都是把"调用点行为"当成"辅助函数行为"。
 - **宏/枚举 switch 在 MSVC 默认无保护**：想守住"每个枚举值都有处理"，
   必须把 switch 提成可被单测覆盖的纯函数，而不是依赖 `-Wswitch`。
+## 第879轮：主验证脚本的主路径从来没绿过（例 51）
+
+### 症状
+跑 `verify.ps1 -LinuxBuild`（我之前从未端到端跑过它）时，**Windows 侧 ctest 直接挂**：
+```
+FAIL tests/test_ui.cpp:252  new_us <= 0.6 * ref_us
+rgba->bgra 1280x1024: reference 3155.4 us, vectorised 2440.1 us (ratio 0.77, limit 0.60)
+```
+三次复跑 ratio 0.77 / 0.79 / 0.77（稳定，非抖动）；同一份代码 Release 是 0.39 / 0.41。
+
+### 根因
+`test_ui.cpp` 的断言是**相对倍率**（`new_us <= 0.6 * ref_us`），而 `-Od` 会把
+标量参考循环与被向量化的快路径一起放慢，比值反转（0.60 → 0.78）。这是
+**构建类型属性**，不是缺陷。而 `verify.ps1` 默认 `-DCMAKE_BUILD_TYPE=Debug`。
+⇒ 自 `f77b90f` 引入该断言起，`verify.ps1` 的主验证路径**每次都红**。
+
+与批 33 的 `view_scale_benchmark_budget` 是同一族：优化构建才可观测的
+相对性能断言，被放在未优化构建里执行。
+
+### 为什么长期没被发现
+- 我所有 "全绿" 结论都来自 **Release** 的 `ctest`（`build` 目录），而 `verify.ps1`
+  用的是 **Debug**（`build\verify`）。**两个构建目录，我只盯了其中一个。**
+- `verify.ps1 -LinuxBuild` 我此前记作 UNVERIFIED 却一直没跑；审计 X 也把它标 UNVERIFIED。
+- 这正是 discover 例 44 的形态："记成 UNVERIFIED 就当它没问题"。
+
+### 证据
+- Debug ratio 0.77/0.79/0.77（三次）→ `1 failing tests, 1 failed checks`
+- Release ratio 0.39/0.41 → `0 failing`
+- Linux Debug 84 checks / RelWithDebInfo 86 checks（差 2 = 两条计时断言）
+- 修后：Windows Debug ctest **69/69**（修前 68/69）；Release **69/69**
+
+### 修复
+1. `test_ui.cpp`：`#if defined(NDEBUG)` 围住测量与两条断言，未优化构建打印
+   `skipped: relative timing requires an optimized build (NDEBUG)`。
+2. **同时**在 gate 的 RelWithDebInfo 阶段增跑 `rtsc_ui_tests`，断言
+   `UI_RELEASE_EXIT=0` + 无 skip 文案 + `checks >= 86`。
+   —— 批 33 的教训是"改成 skip 就完事等于删覆盖"，所以必须补回可观测构建里的断言。
+3. `verify.ps1` needle 补 `UI_RATIO=executed`（断言链端到端，例 47）。
+
+### 教训（例 51）
+- **"我跑过全绿"必须指明是哪个构建类型、哪个目录**。`Release` 绿 ≠ `Debug` 绿，
+  尤其对性能断言。
+- **默认配置才是主路径**：`verify.ps1` 是"主验证脚本"，它的默认 `Debug` 挂了，
+  等于主路径从来没绿过，而我一直拿旁路（Release ctest）当证据。
+- **UNVERIFIED 会累积成盲区**：连续多轮把它记成 UNVERIFIED 而不跑，缺陷就一直藏着。
+  每轮应收敛至少一个 UNVERIFIED。
+- **同一族缺陷会成对出现**：view 预算是第一个，ui 倍率是第二个。修第一个时没有
+  全局扫描"还有哪些相对性能断言"，导致第二个又存活了几十个轮次。
+  ⇒ **修一类缺陷后必须全仓扫描同型**（本例 `grep 'CHECK(.*<.*us\|ms'` 找到全部 7 处，
+  其中只有 2 处是相对倍率，其余 5 处是宽松超时上限）。

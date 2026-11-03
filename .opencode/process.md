@@ -778,3 +778,34 @@ Y 的"VIEW_MIN_CHECKS=7348 是魔数"：**暂不处理**。7348 是"7 条预算�
 "变异全绿"≠"规则无人守"，必须先枚举全部拒绝路径再判断变异打到哪一道；
 "无人守护"必须给反证（删既有用例后是否仍红）；注释里的因果链是不可执行断言；
 MSVC 默认不报漏枚举，必须把 switch 提成可单测的纯函数。
+## 第879轮：批41 —— verify.ps1 主路径从未通过（`9e30a01`）
+### 发现
+后台跑 `verify.ps1 -LinuxBuild`（默认 Debug）→ `ui` 测试红：
+`test_ui.cpp:252 new_us <= 0.6 * ref_us`，Debug ratio **0.77/0.79/0.77**（三次稳定），Release **0.39/0.41**。
+相对倍率断言在 `-Od` 下确定性失败 ⇒ 自 `f77b90f` 起 `verify.ps1` 默认路径**每次都红**。
+### 为什么长期没发现
+我所有"全绿"都来自 Release 的 `build`；`verify.ps1` 用 Debug 的 `build\verify`。**两个构建目录，只盯了一个。**
+且 `verify.ps1 -LinuxBuild` 被我连续多轮记为 UNVERIFIED 而未运行（例 44 形态）。
+### 修复
+1. `test_ui.cpp` `#if defined(NDEBUG)` 围住测量+断言，Debug 打印 skip
+2. gate RelWithDebInfo 阶段增跑 `rtsc_ui_tests`，断言 `UI_RELEASE_EXIT=0` + 无 skip + `checks>=86`
+   （**不重犯批33**：不是"改 skip 就完事"，而是把断言放回可观测构建执行）
+3. `verify.ps1` needle 补 `UI_RATIO=executed`；124/137 拆成两种措辞（采纳审计X）
+### UI_MIN_CHECKS=86 的来由
+Linux 20 tests/86 checks；Windows 50/265（Win32-only 用例差额）。Linux Debug 84 / Release 86，差 2 = 两条计时断言。
+### 可证伪性
+| 变异 | 结果 |
+|---|---|
+| `RgbaToBgra` 每次迭代插 64 次 volatile 自旋 | Release ratio 11.31，`:253`/`:254` 双红 |
+| `#if defined(NDEBUG)`→`#if 0` + 改 skip 文案 | `UI_RELEASE_EXIT=0` 但 `ui ratio body did not run (checks=84, want >=86)` |
+### 验证
+Windows Release 构建六类全 0 + ctest **69/69**；Windows Debug ctest **69/69**（修前 68/69）；
+Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)。
+### 本轮自身失误
+1. 变异时 `$t2` 为 null 导致 `WriteAllText` 把 `src/ui/surface.cpp` 写成 0 字节；
+   已从备份恢复并逐字节核对与 HEAD blob 相同（6889B）。**教训：写入前必须校验长度/索引**。
+2. 恢复 `test_ui.cpp` 时用了旧备份，把刚加的 guard 一起回滚；已重新应用。
+3. 陈旧二进制问题又出现两次（`Copy-Item` 保留旧 mtime），靠 `LastWriteTime=Get-Date` 强制重编解决。
+### 教训（discover 例 51）
+"全绿"必须指明构建类型与目录；默认配置才是主路径；UNVERIFIED 会累积成盲区；
+修一类缺陷必须全仓扫描同型（本例 7 处计时断言中仅 2 处是相对倍率）。

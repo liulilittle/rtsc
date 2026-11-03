@@ -1048,3 +1048,36 @@ Linux 的 `host_cli_*` / `desktop_gui` 等此前 UNVERIFIED 项现已有 gate �
 **验证**：Windows 构建六类诊断全 0 + ctest **69/69**；Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348)；`rtsc_desktop_input_tests` **70 tests / 13934 checks**；HEAD blob 四文件纯 LF。
 
 **教训（discover 例 50）**："变异全绿"≠"规则无人守"——必须先枚举全部拒绝路径再判断变异打到哪一道；"无人守护"必须给反证（删既有用例后是否仍红）；注释里的因果链是不可执行断言，写"X 拒绝了 Y"前必须逐行核对判定顺序；MSVC 默认不报漏枚举，要守住枚举完备性必须把 switch 提成可单测纯函数。
+### 批 41（`9e30a01`）—— `verify.ps1` 主路径从未通过（Debug 下的相对倍率断言）
+
+**发现**（本轮首次端到端跑 `verify.ps1 -LinuxBuild`）：`ui` 测试在 Debug 下确定性失败。
+```
+FAIL tests/test_ui.cpp:252  new_us <= 0.6 * ref_us
+Debug ratio 0.77 / 0.79 / 0.77 (三次稳定)   Release ratio 0.39 / 0.41
+```
+该断言是**相对倍率**，`-Od` 下标量参考循环与被向量化的快路径一起放慢、比值反转。
+⇒ 自 `f77b90f` 引入起，`verify.ps1` 的默认路径**每次都红**。
+
+**为什么长期未发现**：我所有"全绿"都来自 Release 的 `build`；`verify.ps1` 用 Debug 的 `build\verify`。
+**两个构建目录，只盯了一个**。且 `-LinuxBuild` 连续多轮记 UNVERIFIED 而未运行（例 44 形态）。
+
+| 项 | 处置 |
+|---|---|
+| `test_ui.cpp` | `#if defined(NDEBUG)` 围住测量 + 两条断言；Debug 打印 `skipped: relative timing requires an optimized build (NDEBUG)` |
+| gate | RelWithDebInfo 阶段增建并执行 `rtsc_ui_tests`，断言 `UI_RELEASE_EXIT=0` + 无 skip 文案 + `checks >= 86`；**不重犯批 33 的"改成 skip 就完事"** |
+| `verify.ps1` | needle 补 `UI_RATIO=executed`；124/137 拆两种措辞（采纳审计 X） |
+| 注释 | 修正批 39 那段自相矛盾的注释（求值顺序 + `:81/:82` 对 PG 输出不起决定作用） |
+| 文档 | `docs/spec/input-injection-seam.md` 补 `InputEventKindToken` 声明（批 39 漏） |
+
+**`UI_MIN_CHECKS=86` 来由**：Linux 20 tests/86 checks；Windows 50/265（Win32-only 用例差额）。
+实测 Linux Debug 84 / Release 86，差 2 = 两条计时断言。
+
+**可证伪性**
+| 变异 | 结果 |
+|---|---|
+| `RgbaToBgra` 每次迭代插 64 次 volatile 自旋 | Release ratio 11.31，`:253`/`:254` 双红 |
+| `#if defined(NDEBUG)`→`#if 0` + 改 skip 文案 | `UI_RELEASE_EXIT=0` 但 `ui ratio body did not run (checks=84, want >=86)` |
+
+**验证**：Windows Release 六类诊断全 0 + ctest **69/69**；Windows Debug ctest **69/69**（修前 68/69）；Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)。
+
+**教训（discover 例 51）**："全绿"必须指明构建类型与目录；默认配置才是主路径；UNVERIFIED 会累积成盲区；修一类缺陷必须全仓扫描同型（本例 7 处计时断言中仅 2 处是相对倍率）。
