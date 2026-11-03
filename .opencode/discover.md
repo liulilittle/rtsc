@@ -1064,3 +1064,39 @@ P0 不同：成功路径照常执行、printf 照常打印，**只有末尾那�
    我这次是先写结论、后跑变异，结果两者不对应。正确顺序：先跑、贴原始输出、再写结论。
 3. **产出物断言的覆盖上限是"路径"**。凡写"某断言会执行"的论断，
    必须区分"执行了"（path）与"还在"（assertion exists）——前者可测，后者不可测。
+## 第884轮：我读了自己的测试文件，却没读进去（例 56）
+
+### 症状
+批 44 我宣布"P0 没有守住 drain"，依据是 4 个变异全绿。审计 X 指出：**4 个变异全部打错了文件**。
+
+| 我改的 | 实际是什么 | 为什么无效 |
+|---|---|---|
+| `tls_schannel.cpp` M7 | Windows 后端 | Linux gate 根本不编译 |
+| `tls_openssl.cpp` 的 `max_out` 分支 | 后端通用 | 本用例 `max_out=0`，走不到该分支 |
+| `security_layer.cpp:244` / `:321` | **客户端 mirror** | 该行注释自己写着 "The server half is the critical path; this client mirror keeps the two symmetric." |
+| 同文件 `pending_cipher_` 不 Receive | 同上 | 同上 |
+
+P0 用的是 `ServerSecurityLayer`，其 drain 在 **`src/security/server_security_layer.cpp:194`**。
+**更讽刺的是：`tests/test_server_security.cpp:35` 的注释本身就写着** "which lives in
+ServerSecurityLayer::DriveCredssp"。我读过那个文件，却没把这句话用在选变异位置上。
+
+### 证据（我独立复现 X 的结论）
+- 改 `server_security_layer.cpp:194` → `while (false)` ⇒
+  `FAIL test_server_security.cpp:611 got_challenge`，**唯一失败用例就是 P0**
+  ⇒ P0 是 `:194` 的唯一守卫，批 34 的结论成立，无需下调。
+- 改 `server_security_layer.cpp:292`（`ReceivePdu` 的数据面 drain）⇒
+  整棵 ctest **67/67 全绿** ⇒ `:292` 确实无人守护（新登记）。
+
+### 根因
+**我用"我觉得应该在哪"代替"代码实际在哪"。** 我把"drain 义务"当成一个统一概念，
+在名字最像的文件（`security_layer.cpp`）里找，而没先确认**被测类的实现文件**。
+这与例 53（注释因果链凭印象写）是同一类：**用印象替代查证**。
+
+### 教训（例 56）
+1. **变异必须先定位"被测对象的实现文件"**：从测试文件里的类名出发，grep 它的
+   定义在哪个 .cpp，再在那里下手。测试文件的注释往往直接写着答案。
+2. **"变异全绿"的第二种解释**：除了"无人守护"，还有"**打错了位置**"。
+   我现在会先问：这个文件真的在测试路径上吗？（例 50 是"变异打中了下游规则"，
+   本例是"变异打中了完全不在路径上的文件"。）
+3. **镜像/对称实现是最危险的误伤点**：客户端/服务端两份对称代码的存在，
+   让"看起来在做同一件事"的位置有两处。选变异点前必须确认**哪一份被测试执行**。

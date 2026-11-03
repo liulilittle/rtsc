@@ -905,3 +905,28 @@ Linux `LINUX GATE PASS` + P0/VIEW/UI 三标记均 executed；Windows Release 六
 ### 教训（discover 例 55）
 变异必须唯一且先跑后写；"修复生效"的证据必须由脚本输出产生，不能口述；
 产出物断言的覆盖上限是"路径"，不是"断言存在"。
+## 第884轮：批45 —— 更正 P0 守护点（`261582c`）
+### 我批44 第3节错了：4 个变异全部打错文件
+X 指出并复现，我独立确认：
+- `tls_schannel.cpp`（Windows 后端，Linux 不编译）
+- `tls_openssl.cpp` 的 `max_out` 分支（`max_out=0` 走不到）
+- `security_layer.cpp:244/:321`（**客户端 mirror**，注释自述服务端才是关键路径）
+- P0 实际用 `ServerSecurityLayer`，drain 在 `src/security/server_security_layer.cpp:194`
+- `tests/test_server_security.cpp:35` 注释**本身就写着** "which lives in ServerSecurityLayer::DriveCredssp"
+### 更正后的结论
+- 改 `:194` → P0 **红**（`test_server_security.cpp:611 got_challenge`，唯一失败用例）
+  ⇒ P0 是 `:194` 的唯一守卫，批34 结论成立，**UNVERIFIED → VERIFIED**
+- 改 `:292`（`ReceivePdu` 数据面 drain）→ 整棵 ctest **67/67 全绿**
+  ⇒ **新登记（中）**：`:292` 无任何用例守护
+### 处置
+- `server_security_layer.cpp:292` 加 COVERAGE 注记（无覆盖 / 关掉全绿 / `:194` 在另一阶段不能替代 / 触达条件）
+- `test_server_security.cpp:600-603` 补"守护点是 `:194`，本用例是它唯一守卫"
+- gate COVERAGE BOUNDARY 同步；`LIB_BYTES` 标注 `output only, not asserted`（采纳 X 第4节）
+### 本轮自身失误（例47 复发）
+用 `WriteAllLines` 改 gate 时**又**写 CRLF → `bash -n` 报语法错。已改回显式 LF。**例47 记过一次，这次是复发。**
+### 验证
+Linux `LINUX GATE PASS` 67/67 + P0/VIEW/UI 三标记 + `FAILED_COUNT=0`；Windows Release 六类全 0 + **69/69**(87.04s)；`bash -n` SYNTAX_OK；全仓 `MUT-` 0。
+### 教训（discover 例 56）
+变异必须先定位"被测对象的实现文件"（从测试里的类名 grep 定义）；
+"变异全绿"除了"无人守护"还有"打错位置"这一解释；
+镜像/对称实现是最危险的误伤点，选点前必须确认哪一份被测试执行。

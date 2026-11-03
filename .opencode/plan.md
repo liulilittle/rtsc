@@ -1179,3 +1179,35 @@ X 验证了互斥成功/失败双标记设计，同样关不掉"删断言"。
 
 **教训（discover 例 55）**：变异必须唯一且**先跑后写**——我这次先写结论后跑变异，结果两者不对应；
 "修复生效"的证据必须由脚本原始输出产生；产出物断言的覆盖上限是"路径"而非"断言存在"。
+### 批 45（`261582c`）—— 更正 P0 守护点：是 `server_security_layer.cpp:194`，不是客户端 mirror
+
+**我批 44 第 3 节错了**：4 个变异全部打错文件，因此"P0 没守住 drain"是错误结论。
+审计 X 指出并复现，我独立确认。
+
+| 我改的 | 实际是什么 | 为何无效 |
+|---|---|---|
+| `tls_schannel.cpp` M7 | Windows 后端 | Linux gate 不编译 |
+| `tls_openssl.cpp` 的 `max_out` 分支 | 后端通用 | 本用例 `max_out=0`，走不到 |
+| `security_layer.cpp:244/:321` | **客户端 mirror** | 注释自述 "The server half is the critical path; this client mirror…" |
+| 同文件 `pending_cipher_` 不 Receive | 同上 | 同上 |
+
+P0 用 `ServerSecurityLayer`，drain 在 `src/security/server_security_layer.cpp:194`；
+`tests/test_server_security.cpp:35` 注释**本身就写着** "which lives in ServerSecurityLayer::DriveCredssp"。
+
+**更正后的结论**
+- 改 `:194` → P0 **红**（`test_server_security.cpp:611 got_challenge`，**唯一失败用例**）
+  ⇒ P0 是 `:194` 的唯一守卫，**批 34 结论成立，UNVERIFIED → VERIFIED**
+- 改 `:292`（`ReceivePdu` 数据面 drain）→ 整棵 ctest **67/67 全绿**
+  ⇒ **新登记（中）**：`:292` 无任何用例守护
+
+**处置**
+- `server_security_layer.cpp:292` 加 COVERAGE 注记（无覆盖 / 关掉全绿 / `:194` 在另一阶段不能替代 / 触达条件）
+- `test_server_security.cpp:600-603` 补"守护点是 `:194`，本用例是它唯一守卫"
+- gate COVERAGE BOUNDARY 同步；`LIB_BYTES` 标注 `output only, not asserted`
+
+**本轮自身失误**：`WriteAllLines` 改 gate 时**又**写 CRLF 导致 `bash -n` 失败（例 47 复发，已记过一次）。
+
+**验证**：Linux `LINUX GATE PASS` 67/67 + 三标记 + `FAILED_COUNT=0`；Windows Release 六类诊断全 0 + **69/69**(87.04s)；`bash -n` SYNTAX_OK；全仓 `MUT-` 0。
+
+**教训（discover 例 56）**：变异必须先从测试里的类名 grep 出**被测对象的实现文件**再下手；
+"变异全绿"除了"无人守护"还有"打错位置"这一解释；镜像/对称实现是最危险的误伤点。
