@@ -37,8 +37,13 @@ class MockTransport : public Transport {
     std::vector<uint8_t> written;
     std::vector<uint8_t> to_read;
     size_t read_offset = 0;
+    // Counted, not inferred: read_offset stays 0 when to_read is empty, so an
+    // assertion on it cannot tell "the socket was read" from "it never was"
+    // (.opencode/discover.md example 63).
+    int read_calls = 0;
 
     int Read(uint8_t* buf, size_t size) override {
+        ++read_calls;
         if (read_offset >= to_read.size()) return kReadTimeout;
         const size_t n = (std::min)(size, to_read.size() - read_offset);
         std::memcpy(buf, to_read.data() + read_offset, n);
@@ -136,14 +141,19 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
     rtsc::tls::Error ok_{};
 };
 
-// A backend holding only a PARTIAL record. `buffered_input()` stays > 0 while
-// Receive can never produce plaintext (it needs more ciphertext first). A
-// transport adaptor that loops on "buffered_input() > 0" alone spins forever;
-// it must fall through and read the socket instead.
+// A backend holding only a PARTIAL record: three of the five header bytes are in
+// hand, so `buffered_input()` stays > 0 while Receive can only answer
+// kNeedMoreInput. A transport adaptor that loops on "buffered_input() > 0"
+// alone spins forever without reading the socket. Feeding ciphertext completes
+// the record and yields plaintext, so a correct adaptor both stops spinning
+// AND recovers the data.
 class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
  public:
     int receive_calls = 0;
-    size_t buffered = 3;  // one record header is 5 bytes, so 3 is incomplete
+    // Header bytes already buffered. A record is complete at record_bytes;
+    // anything shorter cannot be decrypted yet.
+    size_t buffered = 3;
+    static constexpr size_t record_bytes = 5;
 
     rtsc::tls::Error Handshake(const uint8_t*, size_t in_size, size_t& consumed,
                                std::vector<uint8_t>& out) override {
@@ -158,7 +168,7 @@ class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
         out.assign(size, 0x5A);
         return rtsc::tls::Error{};
     }
-    rtsc::tls::Error Receive(const uint8_t*, size_t,
+    rtsc::tls::Error Receive(const uint8_t* ciphertext, size_t size,
                              std::vector<uint8_t>& plaintext,
                              size_t) override {
         ++receive_calls;
@@ -170,6 +180,12 @@ class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
             e.status = rtsc::tls::Status::kProtocolError;
             e.message = "adaptor spun on a partial record";
             return e;
+        }
+        if (ciphertext != nullptr && size > 0) { buffered += size; }
+        if (buffered >= record_bytes) {
+            buffered = 0;
+            plaintext.push_back(0x41);
+            return e;  // kOk with plaintext: the record finally decrypted
         }
         e.status = rtsc::tls::Status::kNeedMoreInput;
         return e;
@@ -3654,10 +3670,39 @@ RTSC_TEST(tls_byte_transport_partial_record_does_not_spin) {
 
     uint8_t buf[16];
     const int n = t.Read(buf, sizeof(buf));
-    // MockTransport has no queued bytes, so a correct adaptor reaches the socket
-    // and reports a read timeout instead of spinning on the staged record.
+    // No byte is queued on the socket, so a correct adaptor reads it once and
+    // reports a read timeout instead of spinning on the staged record.
     CHECK_EQ(n, kReadTimeout);
     CHECK_EQ(tlsp->receive_calls, 1);
-    CHECK_EQ(rawp->read_offset, static_cast<size_t>(0));
+    // read_calls, not read_offset: read_offset stays 0 whether the socket was
+    // read once and timed out or never read at all, so it cannot tell a real fix
+    // from "return a timeout and drop the stream". Measured: a repair that
+    // replaced raw_->Read with a constant passed every other assertion here.
+    CHECK_EQ(rawp->read_calls, 1);
+}
+
+RTSC_TEST(tls_byte_transport_partial_record_recovers_the_data) {
+    // The complement of the case above: the adaptor must not only stop spinning,
+    // it must reach the socket and feed the missing bytes back. Only then does
+    // the incomplete record decrypt and the queued payload come out. A "fix"
+    // that returns a timeout without reading passes the no-spin case and still
+    // loses every byte (measured).
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    // The two bytes the record was still missing; feeding them completes it.
+    rawp->to_read = {0x03, 0x00};
+    auto tls = std::make_unique<ScriptedPartialRecordTls>();
+    ScriptedPartialRecordTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(rawp->read_calls, 1);                        // the socket was read
+    CHECK_EQ(rawp->read_offset, static_cast<size_t>(2));  // and fully consumed
+    CHECK_EQ(tlsp->receive_calls, 2);                     // drain, then ciphertext
+    CHECK_EQ(n, 1);                                       // payload came out
+    CHECK_EQ(buf[0], static_cast<uint8_t>(0x41));
 }
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }
