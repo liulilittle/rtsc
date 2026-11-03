@@ -1211,3 +1211,35 @@ P0 用 `ServerSecurityLayer`，drain 在 `src/security/server_security_layer.cpp
 
 **教训（discover 例 56）**：变异必须先从测试里的类名 grep 出**被测对象的实现文件**再下手；
 "变异全绿"除了"无人守护"还有"打错位置"这一解释；镜像/对称实现是最危险的误伤点。
+### 批 46（`8739643`）—— 给 `:292` 数据面 drain 补用例（采纳审计 X 的 59+8 行方案）
+
+**我批 45 的判断错了**：我写 `:292` "no current test constructs"，只留边界注释。
+审计 X 反对并**自己写出用例跑通红→绿**。我采纳。
+
+**我的推理缺陷**：只搜了 `ReceivePdu`（测试里无调用）就断定"无法构造"。
+**到达该循环的配方就在同一测试文件里**——`server_security_layer_hybrid_without_ex_omits_euar`
+（`:231-291`）用 `ScriptedTls` + 3 次 `Step()` + 5 步 CredSSP 到 `Want::kDone`，
+唯一缺的是 `ScriptedTls::buffered_input()` 硬编码 `return 0`。
+
+**实现**
+- `tests/test_tls_scripted.h`（+24 行）：`buffered_input()` 返回 `buffered_`（默认 0）；
+  `stage_for_test(bytes)`；`Receive(nullptr,0)` 吐出暂存并清零
+- `tests/test_server_security.cpp`（+72 行）：`server_security_layer_data_plane_drain_lifts_coalesced_record`
+  —— 驱动到 `kDone` → stage 一条完整 TPKT → `ReceivePdu(nullptr,0)` → 要求 1 个 frame 且内容相同
+
+**可证伪性（Linux RelWithDebInfo 真跑）**
+| 状态 | 结果 |
+|---|---|
+| 正常 | 9 tests / 79 checks, 0 failing |
+| `:292` → `while(false)` | **9 tests / 78 checks, 1 failing**，`:361 frames.size()==1u (got 0, want 1)`，**唯一失败者** |
+| 恢复 | 全绿，`MUT-` 0 |
+
+**顺带**：`:292` 注释由 "no test exercises this branch" 改为 "Guarded by <用例名>"
+（消除会过期的断言与悬空 plan.md 批号引用）；gate 的 COVERAGE BOUNDARY 保留（描述 P0 marker 的能力边界）。
+
+**验证**：Linux `LINUX GATE PASS` 67/67 + 三标记 + `FAILED_COUNT=0`；
+Windows Release 六类诊断全 0 + 直接跑 8/72（含新用例）+ ctest **69/69**(85.94s)；全仓 `MUT-` 0。
+
+**教训（discover 例 57）**："没有现成用法" ≠ "无法构造"——宣布不可测前必须问
+"进入该状态的最短路径是什么、哪个已有测试到达了相邻状态"；
+边界注释是会过期的断言，**可验证的就不该只写边界**（W5 的"写明"仅适用于原理上不可验证的情形）。

@@ -1100,3 +1100,36 @@ ServerSecurityLayer::DriveCredssp"。我读过那个文件，却没把这句话�
    本例是"变异打中了完全不在路径上的文件"。）
 3. **镜像/对称实现是最危险的误伤点**：客户端/服务端两份对称代码的存在，
    让"看起来在做同一件事"的位置有两处。选变异点前必须确认**哪一份被测试执行**。
+## 第885轮：我把"我没找到配方"当成了"不可能"（例 57）
+
+### 症状
+批 45 我判定 `server_security_layer.cpp:292`（`ReceivePdu` 的数据面 drain）无测试覆盖，
+处置是**只写边界注释**，理由写的是："Reaching this loop needs a completed handshake
+plus a coalesced data segment, which no current test constructs"。
+
+审计 X 直接写出了那个用例（59 + 8 行，零新脚手架），红→绿验证通过。我采纳并落地。
+
+### 我的推理错在哪
+我只搜了 `ReceivePdu`（发现测试文件里没有调用），就断定"无法构造"。
+但**到达该循环的配方就在同一个测试文件里**：
+`server_security_layer_hybrid_without_ex_omits_euar`（`:231-291`）用
+`ScriptedTls` + 3 次 `Step()` + 5 步 CredSSP 就到 `Want::kDone`。
+唯一缺的是 `ScriptedTls::buffered_input()` 硬编码 `return 0`。
+
+**我搜的是"这个 API 被谁调用"，而不是"这个状态怎么到达"。** 前者只能证明"没有现成用法"，
+不能证明"无法构造"。
+
+### 证据
+- 新用例正常：9 tests / 79 checks，0 failing
+- `:292` 改 `while(false)`：**9 tests / 78 checks，1 failing**，
+  `FAIL test_server_security.cpp:361 frames.size() == 1u (got 0, want 1)`，**唯一失败者就是新用例**
+- 恢复后全绿、`MUT-` 0
+
+### 教训（例 57）
+1. **"没有现成用法" ≠ "无法构造"**。宣布某事不可测之前，必须先问：
+   进入该状态的最短路径是什么？已有哪个测试已经到达相邻状态？
+2. **边界注释是会过期的断言**。写 "no test constructs this" 时，它当场可能是真的，
+   但下一批就可能被推翻 —— 而代码注释不会自动失效。**可验证的就不该只写边界**；
+   W5 的"写明不能证明的"仅适用于**原理上**不可验证的情形（如"删断言"）。
+3. **采纳外部方案时要照跑红证**：我照抄 X 的骨架后，仍自己重跑了 `:292` 变异，
+   确认唯一失败者是新用例，而不是"看起来对了"。

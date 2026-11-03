@@ -930,3 +930,27 @@ Linux `LINUX GATE PASS` 67/67 + P0/VIEW/UI 三标记 + `FAILED_COUNT=0`；Window
 变异必须先定位"被测对象的实现文件"（从测试里的类名 grep 定义）；
 "变异全绿"除了"无人守护"还有"打错位置"这一解释；
 镜像/对称实现是最危险的误伤点，选点前必须确认哪一份被测试执行。
+## 第885轮：批46 —— 给 :292 数据面 drain 补用例（`8739643`）
+### 我的错误判断（审计X 反对并给出可行方案）
+批45 我写 ":292 无法构造测试" 并只留边界注释。X 指出配方**就在同一测试文件**：
+`server_security_layer_hybrid_without_ex_omits_euar`（:231-291）驱动到 `kDone`，
+唯一缺的是 `ScriptedTls::buffered_input()` 硬编码 `return 0`。
+**我把"我没找到配方"当成"不可能"。**
+### 实现（照抄 X 的骨架，+24 / +72 行）
+- `test_tls_scripted.h`：`buffered_input()` 返回 `buffered_`（默认 0）、`stage_for_test()`、`Receive(nullptr,0)` 吐出并清零
+- `test_server_security.cpp` 新增 `server_security_layer_data_plane_drain_lifts_coalesced_record`
+### 可证伪性（Linux RelWithDebInfo 真跑）
+| 状态 | 结果 |
+|---|---|
+| 正常 | 9 tests / 79 checks, 0 failing |
+| `:292` → `while(false)` | **9 tests / 78 checks, 1 failing**，`:361 frames.size()==1u (got 0, want 1)`，唯一失败者 |
+| 恢复 | 全绿，`MUT-` 0 |
+### 顺带
+- `:292` 注释由 "no test exercises this branch" 改为 "Guarded by <用例名>"（消除会过期的断言与悬空的 plan.md 批号引用）
+- gate 的 COVERAGE BOUNDARY 保留（它描述 P0 marker 的能力边界，与 `:292` 无关）
+### 验证
+Linux `LINUX GATE PASS` 67/67 + 三标记 + `FAILED_COUNT=0`；
+Windows Release 六类诊断全 0 + 直接跑 8/72（含新用例）+ ctest **69/69**(85.94s)；全仓 `MUT-` 0。
+### 教训（discover 例 57）
+"没有现成用法" ≠ "无法构造"；宣布不可测前先问"进入该状态的最短路径"；
+边界注释是会过期的断言，可验证的就不该只写边界。
