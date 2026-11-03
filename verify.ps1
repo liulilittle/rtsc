@@ -456,8 +456,12 @@ if ($LinuxBuild) {
     $gateOut = (& wsl -e timeout --signal=TERM --kill-after=30 $gateTimeoutSec bash $gateWsl 2>&1 | Out-String)
     $gateExit = $LASTEXITCODE
     Write-Host $gateOut
-    if ($gateExit -eq 124 -or $gateExit -eq 137) {
-        Write-Error "linux build gate exceeded ${gateTimeoutSec}s and was killed (treated as FAIL; a hung WSL is not a pass)"
+    if ($gateExit -eq 124) {
+        Write-Error "linux build gate exceeded ${gateTimeoutSec}s (treated as FAIL; a hung WSL is not a pass)"
+        exit 1
+    }
+    if ($gateExit -eq 137) {
+        Write-Error "linux build gate had to be SIGKILLed after it outlived ${gateTimeoutSec}s + the 30s grace (treated as FAIL)"
         exit 1
     }
     if ($gateExit -ne 0) { Write-Error "linux build gate failed"; exit 1 }
@@ -468,7 +472,7 @@ if ($LinuxBuild) {
     # Line-anchored, not substring (audit A20-6). A substring test would accept
     # "FAILED_COUNT=01" or a future "FAILED_COUNT=0 (tolerated 1 warning)", i.e.
     # exactly the class of weak-signal bug B0-07 was about.
-    foreach ($needle in @('FAILED_COUNT=0', 'WINDOWS_H_COUNT=0', 'FACTORY_SYMBOL=present', 'REQUIRED_TESTS=present', 'P0_REGRESSION=executed', 'VIEW_BUDGETS=executed')) {
+    foreach ($needle in @('FAILED_COUNT=0', 'WINDOWS_H_COUNT=0', 'FACTORY_SYMBOL=present', 'REQUIRED_TESTS=present', 'P0_REGRESSION=executed', 'VIEW_BUDGETS=executed', 'UI_RATIO=executed')) {
         $anchored = '(?m)^' + [regex]::Escape($needle) + '\r?$'
         if ($gateOut -notmatch $anchored) {
             Write-Error "linux build gate output missing an exact '$needle' line"

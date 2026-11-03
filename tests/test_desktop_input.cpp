@@ -864,24 +864,25 @@ RTSC_TEST(desktop_input_absolute_move_degenerate_geometry) {
     }
 }
 
-// The PartialGeometry helper encodes "span set, geometry untrusted" and is used
-// by cases that only care about the frame span. Its contract had no assertion of
-// its own: mutating the helper (mapped=true, or giving it a capture rectangle)
-// left every existing case green, because those callers all pass width/height of
-// 0 or 1 and are therefore rejected by the SPAN rule at desktop_input_map.h:81
-// before the trust bits are ever read (audit Y, P1). The helper's own output is
-// the thing that was unguarded, so assert that directly.
-//
-// Distinguish which rule rejects the helper's output from which rule rejects a
-// caller's output: PartialGeometry(1920,1080) has a usable span, so :81 does NOT
-// reject it -- the trust check at :80 does, then the empty capture rectangle at
-// :82. The span rejection only applies to the low-width callers above.
+// The PartialGeometry helper encodes "framebuffer span set, geometry untrusted"
+// and is used by cases that only care about the frame span. Its output had no
+// assertion of its own: mutating the helper (mapped=true, or giving it a capture
+// rectangle) left every existing caller green. The reason is evaluation order:
+// AbsoluteMoveMappable returns false at the trust check first
+// (desktop_input_map.h:80), so the guards behind it never decide these cases --
+// :81 (span) for the w/h 0-or-1 callers, :82 (empty capture) for a full-size
+// one. Removing either of those changes nothing while trust is still false
+// (audit X measured this for all 16 helper outputs). What was unguarded is the
+// helper's own output, so assert that here rather than relying on a caller's
+// rejection path, which a future caller could stop exercising.
 RTSC_TEST(desktop_input_partial_geometry_helper_contract) {
     const InjectGeometry g = PartialGeometry(1920, 1080);
     CHECK_EQ(g.width, 1920);
     CHECK_EQ(g.height, 1080);
-    // Untrusted: the two halves of the trust gate must both stay false, or
-    // callers silently switch from the span rule to the mapping path.
+    // Untrusted: both halves of the trust gate must stay false. If either flips,
+    // a caller stops being rejected at :80 and reaches the later guards instead
+    // (or, for a full-size geometry, starts mapping) -- a silent change in what
+    // every PartialGeometry caller means.
     CHECK(!g.mapped);
     CHECK(!g.pixels_are_physical);
     // No rectangles: leaving capture/desktop at their defaults is what makes

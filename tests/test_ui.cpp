@@ -214,6 +214,7 @@ RTSC_TEST(rgba_to_bgra_present_faster_than_the_old_per_pixel_loop) {
         src[i] = static_cast<uint8_t>(i * 3);
     }
 
+#if defined(NDEBUG)
     // Median of kIters runs after a short warm-up.
     const auto median_us = [](auto&& fn) {
         for (int i = 0; i < 3; ++i) fn();
@@ -251,6 +252,15 @@ RTSC_TEST(rgba_to_bgra_present_faster_than_the_old_per_pixel_loop) {
         ref_us, new_us, new_us / ref_us);
     CHECK(new_us <= 0.6 * ref_us);
     CHECK(new_us < 5000.0);
+#else
+    // Unoptimized build: -Od makes the scalar reference loop comparatively fast
+    // (measured ratio ~0.78 against the 0.60 limit, three runs, deterministic),
+    // so the RELATIVE claim this case exists to make is not observable here. It
+    // is a build-type property, not a defect: say so instead of reporting a
+    // pass, and keep the coverage in the optimized runs (ctest -C Release and
+    // the gate's RelWithDebInfo phase, which runs this binary).
+    std::printf("  skipped: relative timing requires an optimized build (NDEBUG)\n");
+#endif  // NDEBUG
 }
 
 RTSC_TEST(rgba_to_bgra_mixes_64bit_block_and_32bit_tail) {

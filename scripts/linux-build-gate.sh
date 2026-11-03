@@ -232,7 +232,7 @@ if ! cmake -S . -B "$REL_BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     echo "LINUX GATE FAIL: release configure"
     exit 1
 fi
-if ! cmake --build "$REL_BUILD_DIR" --target rtsc_view_tests >"$REL_BUILD_LOG" 2>&1; then
+if ! cmake --build "$REL_BUILD_DIR" --target rtsc_view_tests rtsc_ui_tests >"$REL_BUILD_LOG" 2>&1; then
     echo "--- release build log tail ---"
     tail -60 "$REL_BUILD_LOG"
     echo "LINUX GATE FAIL: release build"
@@ -274,6 +274,43 @@ if [ "${VIEW_CHECKS:-0}" -lt "$VIEW_MIN_CHECKS" ]; then
 fi
 printf '%s\n' "$VIEW_SUMMARY"
 echo "VIEW_BUDGETS=executed"
+
+# Second optimized-only assertion: tests/test_ui.cpp compares the vectorised
+# RgbaToBgra against a scalar reference loop by RATIO (0.60). In a -Od build that
+# ratio is ~0.78 deterministically (three runs measured), so the case cannot pass
+# unoptimized -- it was failing the whole Debug build that verify.ps1 uses as its
+# default. Same treatment as the view budgets: assert it where it is meaningful,
+# and prove the body ran (2 more checks than the Debug run) instead of trusting
+# an exit code.
+UI_LOG="$LOG_DIR/ui-release.log"
+# Linux values measured on this tree: RelWithDebInfo 20 tests / 86 checks,
+# Debug 20 tests / 84 checks -- the delta of 2 is exactly the two timing CHECKs
+# in rgba_to_bgra_present_faster_than_the_old_per_pixel_loop. (Windows reports
+# 50 tests / 265 checks because the Win32-only cases in this file are compiled
+# in there; do not reuse that number here.) Lower bound, so adding assertions to
+# test_ui.cpp does not break the gate.
+UI_MIN_CHECKS=86
+"$REL_BUILD_DIR/rtsc_ui_tests" >"$UI_LOG" 2>&1
+UI_EXIT=$?
+echo "UI_RELEASE_EXIT=$UI_EXIT"
+if [ "$UI_EXIT" -ne 0 ]; then
+    tail -40 "$UI_LOG"
+    echo "LINUX GATE FAIL: ui present-path ratio under optimization"
+    exit 1
+fi
+if grep -q "skipped: relative timing" "$UI_LOG"; then
+    echo "LINUX GATE FAIL: ui ratio still skipped in an optimized build"
+    exit 1
+fi
+UI_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$UI_LOG" | tail -1)
+UI_CHECKS=$(printf '%s' "$UI_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
+if [ "${UI_CHECKS:-0}" -lt "$UI_MIN_CHECKS" ]; then
+    echo "LINUX GATE FAIL: ui ratio body did not run (checks=${UI_CHECKS:-?}, want >=${UI_MIN_CHECKS})"
+    printf '%s\n' "$UI_SUMMARY"
+    exit 1
+fi
+printf '%s\n' "$UI_SUMMARY"
+echo "UI_RATIO=executed"
 rm -rf -- "$REL_BUILD_DIR"
 
 echo "LINUX GATE PASS"

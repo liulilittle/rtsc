@@ -138,7 +138,13 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 // 这样空闲宿主也能在启动后看到一次计数（否则永远没有任何 periodic 行）。
 std::string PeriodicInputStatsLine(const InputStats* printed,
                                    const InputStats& current);
-
+// The stable log token for one InputEvent::Kind (for example: relative-move).
+// Hoisted out of the host's inline switch, where the text could not be asserted
+// (a test could only grep the source) and where MSVC -Wswitch does not flag a
+// missing enum case (only /w44062 reports C4062). As a pure function it is
+// unit-tested, and it becomes the single place a new Kind must be added.
+// Returns "input" for a value outside the enumerators.
+const char* InputEventKindToken(InputEvent::Kind kind);
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSink();
 
 }  // namespace rtsc::server
