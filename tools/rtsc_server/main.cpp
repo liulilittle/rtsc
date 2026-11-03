@@ -588,19 +588,13 @@ int main(int argc, char** argv) {
     // Input events are only forwarded by the session's active loop, so a key or
     // pointer callback is a server-side proof that a session reached the active
     // phase. It is deliberately cheap and logs nothing sensitive.
+    // The kind token lives in desktop_input_stats.cpp so it is unit-tested and
+    // so this call site has no enum switch to fall out of sync (audit Y, P1-c;
+    // MSVC -Wswitch does not flag a missing case).
     server.SetInputCallback([&log](const rtsc::server::InputEvent& ev) {
-        const char* kind = "input";
-        switch (ev.kind) {
-            case rtsc::server::InputEvent::Kind::kKey: kind = "key"; break;
-            case rtsc::server::InputEvent::Kind::kMouse: kind = "mouse"; break;
-            case rtsc::server::InputEvent::Kind::kWheel: kind = "wheel"; break;
-            case rtsc::server::InputEvent::Kind::kSync: kind = "sync"; break;
-            case rtsc::server::InputEvent::Kind::kUnicode: kind = "unicode"; break;
-            case rtsc::server::InputEvent::Kind::kMouseRel:
-                kind = "relative-move";
-                break;
-        }
-        log.line(std::string("session active: ") + kind + " event forwarded");
+        log.line(std::string("session active: ") +
+                 rtsc::server::InputEventKindToken(ev.kind) +
+                 " event forwarded");
     });
 
     // Cumulative injection counters are only useful if the shipped host prints

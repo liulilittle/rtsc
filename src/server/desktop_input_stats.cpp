@@ -45,4 +45,16 @@ std::string PeriodicInputStatsLine(const InputStats* printed,
     return FormatInputStats("periodic", current);
 }
 
+const char* InputEventKindToken(InputEvent::Kind kind) {
+    switch (kind) {
+        case InputEvent::Kind::kKey: return "key";
+        case InputEvent::Kind::kMouse: return "mouse";
+        case InputEvent::Kind::kWheel: return "wheel";
+        case InputEvent::Kind::kSync: return "sync";
+        case InputEvent::Kind::kUnicode: return "unicode";
+        case InputEvent::Kind::kMouseRel: return "relative-move";
+    }
+    return "input";
+}
+
 }  // namespace rtsc::server

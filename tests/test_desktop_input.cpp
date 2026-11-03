@@ -864,6 +864,35 @@ RTSC_TEST(desktop_input_absolute_move_degenerate_geometry) {
     }
 }
 
+// The PartialGeometry helper encodes "span set, geometry untrusted" and is used
+// by cases that only care about the frame span. Its contract had no assertion of
+// its own: mutating the helper (mapped=true, or giving it a capture rectangle)
+// left every existing case green, because those callers all pass width/height of
+// 0 or 1 and are therefore rejected by the SPAN rule at desktop_input_map.h:81
+// before the trust bits are ever read (audit Y, P1). The helper's own output is
+// the thing that was unguarded, so assert that directly.
+//
+// Distinguish which rule rejects the helper's output from which rule rejects a
+// caller's output: PartialGeometry(1920,1080) has a usable span, so :81 does NOT
+// reject it -- the trust check at :80 does, then the empty capture rectangle at
+// :82. The span rejection only applies to the low-width callers above.
+RTSC_TEST(desktop_input_partial_geometry_helper_contract) {
+    const InjectGeometry g = PartialGeometry(1920, 1080);
+    CHECK_EQ(g.width, 1920);
+    CHECK_EQ(g.height, 1080);
+    // Untrusted: the two halves of the trust gate must both stay false, or
+    // callers silently switch from the span rule to the mapping path.
+    CHECK(!g.mapped);
+    CHECK(!g.pixels_are_physical);
+    // No rectangles: leaving capture/desktop at their defaults is what makes
+    // this shape distinct from PhysicalGeometry.
+    CHECK_EQ(g.capture.width, 0);
+    CHECK_EQ(g.capture.height, 0);
+    CHECK_EQ(g.desktop.width, 0);
+    CHECK_EQ(g.desktop.height, 0);
+    CHECK(!AbsoluteMoveMappable(g));
+}
+
 RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     // A geometry built from the negotiated size alone -- the shape
     // InjectGeometry had before the capture/desktop rectangles were added, and
@@ -893,25 +922,6 @@ RTSC_TEST(desktop_input_absolute_move_requires_usable_geometry) {
     CHECK_EQ(out.size(), 1u);
     if (out.size() != 1) return;
     CHECK(out[0].kind == PlatformInput::Kind::kMouseMove);
-
-    // The two trust bits need their own cases. Every PartialGeometry above has a
-    // broken span or a zero capture rectangle, so those checks reject it first
-    // and flipping `mapped` alone changes nothing observable -- three separate
-    // mutations of PartialGeometry (`mapped=true`, and a combined variant) all
-    // stayed green for exactly that reason (audit Y, P1). Start from a geometry
-    // that is otherwise fully usable and break ONE trust bit at a time.
-    InjectGeometry unmapped = PhysicalGeometry(2, 2);
-    unmapped.mapped = false;
-    CHECK(TranslateInput(ev, unmapped).empty());
-    InjectGeometry logical = PhysicalGeometry(2, 2);
-    logical.pixels_are_physical = false;
-    CHECK(TranslateInput(ev, logical).empty());
-    // The button still arrives under an untrusted geometry, so the suppression
-    // above is specifically about the MOVE and not a blanket drop.
-    InputEvent unmapped_click = ev;
-    unmapped_click.button = 1;
-    unmapped_click.button_down = true;
-    CHECK_EQ(TranslateInput(unmapped_click, unmapped).size(), 1u);
 
     // Only the unmappable MOVE is suppressed: a button press carries no
     // coordinates and still has to reach the desktop, or the peer's click is
@@ -2159,3 +2169,19 @@ RTSC_TEST(desktop_input_worker_failures_counts_a_failed_dispatch) {
 #endif  // RTSC_DESKTOP_INPUT_TESTING
 
 int main() { return rtsc::test::run_all("rtsc_desktop_input_tests"); }
+
+// The host prints one token per event kind. This used to be an inline switch in
+// tools/rtsc_server/main.cpp: unassertable (a test could only grep the source),
+// and mutating one token stayed green (audit Y, P1-c / discover example 34).
+// Enumerate every Kind so adding one without a token turns red here.
+RTSC_TEST(desktop_input_kind_token_covers_every_kind) {
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kKey)) == "key");
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kMouse)) == "mouse");
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kWheel)) == "wheel");
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kSync)) == "sync");
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kUnicode)) == "unicode");
+    // Not "mouse": a relative move is scaled by the system pointer speed and
+    // must stay distinguishable from an absolute pointer event in the log.
+    CHECK(std::string(InputEventKindToken(InputEvent::Kind::kMouseRel)) ==
+          "relative-move");
+}

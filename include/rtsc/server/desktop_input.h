@@ -126,6 +126,19 @@ bool InputStatsChanged(const InputStats& prev, const InputStats& cur);
 std::string PeriodicInputStatsLine(const InputStats* printed,
                                    const InputStats& current);
 
+// The stable log token for one InputEvent::Kind (e.g. "relative-move").
+//
+// The host used to format this inline in a switch inside its input callback,
+// which made the text unassertable (a test could only grep the source) and left
+// the switch outside any -Wswitch coverage on MSVC (`cl /W4 /WX` does not flag a
+// missing enum case; only /w44062 does). Hoisting it here makes each token
+// unit-testable and removes that switch entirely (audit Y, P1-c).
+//
+// Returns "input" for a value outside the enumerators, so a future Kind added
+// without updating this function does not print garbage; the unit test
+// enumerates every current value and the switch keeps the compiler warning.
+const char* InputEventKindToken(InputEvent::Kind kind);
+
 // Receives decoded input for injection. Every method runs on the session thread
 // and must return quickly: implementations queue the work and perform the
 // platform call on their own worker thread, because a blocked session thread
