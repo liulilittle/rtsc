@@ -1081,3 +1081,42 @@ Debug ratio 0.77 / 0.79 / 0.77 (三次稳定)   Release ratio 0.39 / 0.41
 **验证**：Windows Release 六类诊断全 0 + ctest **69/69**；Windows Debug ctest **69/69**（修前 68/69）；Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)。
 
 **教训（discover 例 51）**："全绿"必须指明构建类型与目录；默认配置才是主路径；UNVERIFIED 会累积成盲区；修一类缺陷必须全仓扫描同型（本例 7 处计时断言中仅 2 处是相对倍率）。
+### 批 42（`1b38b8c`）—— checks 下限可被补足（审计 X）：改用体内部标记行
+
+**缺陷**（同族第三次复发）：批 41 的 `UI_MIN_CHECKS=86` / `VIEW_MIN_CHECKS=7348` 是"产出量下限"，
+而 checks 统计的是"执行了多少次 CHECK" ⇒ **任何无关恒真 CHECK 都能补足**。
+
+| 攻击（真 gate 端到端） | 旧代码结果 |
+|---|---|
+| ratio 体 `#if 0` + 改文案 + 补 2 个恒真 CHECK | `86 checks` / `UI_RATIO=executed` / `LINUX GATE PASS` |
+| bench 体 `#if 0` + 补 7 个恒真 CHECK | `7348` / `7348 >= 7348` / gate PASSES |
+
+**非对抗也会打开**：X 的 GROW 实验——正常给 `test_ui.cpp` 加 2 个 CHECK 后基线变 88，
+此后 body 失效正好落在 86 下限上（GROW=2 → PASSES）。测试自然增长会自己打开这个洞。
+
+**修复**：断言**只有该体才产生**的副作用（体内部 `printf` 输出行）
+- view：`grep -c "\[bench\]" >= 7`
+- ui：`grep -q "rgba->bgra 1280x1024:"`
+- checks 下限**降级**为"套件规模异常"的辅助检查，不再承担举证责任
+
+**可证伪性**
+| 攻击 | 结果 |
+|---|---|
+| view `#if 0`+补7 CHECK+改文案 | `EXIT=1`，`bench lines=0, want 7` |
+| ui `#if 0`+改文案+补2 CHECK | `EXIT=1`，`measurement line missing` |
+| ui `#if 0`+改文案+补3 CHECK（GROW） | 同上 `EXIT=1` |
+| 未改代码 | `VIEW_BUDGETS=executed` / `UI_RATIO=executed` / `LINUX GATE PASS` |
+
+**顺带修注释第 4 版**（例 53）：`:80` 是 `!mapped || !pixels_are_physical`（OR），
+任一半翻转仍被拒、两半全 true 才通过；且 `PartialGeometry` 即使两半全 true 仍被 `:82`
+空 capture 拒（`InjectRect` 默认 width/height=0），**永远不会 mapping**。
+（v1 错"span 先拒"、v2 自相矛盾、v3 把 OR 当 AND 且错说会 mapping。）
+
+**验证**：Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)；
+Windows Release 六类诊断全 0 + **69/69**(74.33s)；Windows Debug **69/69**(75.82s)；全仓 `MUT-` 0。
+
+**结论更正**：接受审计 X 对批 38 的更正（PASS → PASS-with-caveat，当时未验"补 CHECK"路径）。
+本批 view/ui 一并收口，批 33/35/38/41/42 这一族（"用可被补足的聚合量举证执行"）结束。
+
+**教训（discover 例 52/53）**：判断"某段代码执行了吗"的唯一可靠证据是该段代码**自己产生的副作用**；
+写注释前必须逐行核对判定顺序、`&&`/`||` 方向与默认值，改三次仍错就改为先做实验。

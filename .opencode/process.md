@@ -828,3 +828,32 @@ Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=execut
 ### 教训
 "记成 UNVERIFIED" 不是中性状态，它会累积成盲区（例 44/51 连续两例都由此暴露）。
 每轮应至少收敛一个 UNVERIFIED 项；能跑的必须跑，不能跑的必须写清阻塞条件。
+## 第881轮：批42 —— checks 下限可被补足（审计X），改断言体内部标记行（`1b38b8c`）
+### 缺陷（同族第三次复发）
+批41 的 `UI_MIN_CHECKS=86` / `VIEW_MIN_CHECKS=7348` 是"产出量下限"，而 checks 计的是
+"执行了多少次 CHECK" ⇒ **任何无关恒真 CHECK 都能补足**。
+真 gate 实测：ratio 体 `#if 0` + 改文案 + 补 2 个 CHECK → `86 checks`、`UI_RATIO=executed`、
+`LINUX GATE PASS`；view 侧 `#if 0` + 补 7 CHECK → `7348`、gate PASSES。
+**非对抗路径也会打开**：X 的 GROW=2（正常加 2 个 CHECK）后 body 失效正好卡在下限。
+### 修复
+- view：`grep -c "\[bench\]" >= 7`（循环体内 printf 产出行）
+- ui：`grep -q "rgba->bgra 1280x1024:"`（体内测量行）
+- checks 下限降级为"套件规模异常"辅助检查
+### 可证伪性（真 gate）
+| 攻击 | 结果 |
+|---|---|
+| view `#if 0`+补7 CHECK+改文案 | `EXIT=1`，`bench lines=0, want 7` |
+| ui `#if 0`+改文案+补2 CHECK | `EXIT=1`，`measurement line missing` |
+| ui `#if 0`+改文案+补3 CHECK（GROW） | 同上 `EXIT=1` |
+| 未改代码 | 全绿 |
+### 顺带：注释第 3 版仍错，第 4 版修正（例 53）
+- `:80` 是 `!mapped || !pixels_are_physical`（OR）：任一半翻转仍被拒，两半全 true 才通过
+- `PartialGeometry` 即使两半全 true 仍被 `:82` 空 capture 拒（`InjectRect` 默认 0），**永远不会 mapping**
+### 验证
+Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=executed`(86)；
+Windows Release 六类全 0 + **69/69**(74.33s)；Windows Debug **69/69**(75.82s)；全仓 `MUT-` 0。
+### 接受审计 X 的结论更正
+批 38 PASS → PASS-with-caveat（当时未验"补 CHECK"路径）。本批 view/ui 一并收口，该族结束。
+### 教训（discover 例 52/53）
+判断"某段代码执行了吗"的唯一可靠证据是该段代码**自己产生的副作用**；
+写注释前必须逐行核对判定顺序、`&&`/`||` 方向与默认值，改三次仍错就改为做实验。
