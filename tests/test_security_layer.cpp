@@ -334,6 +334,122 @@ RTSC_TEST(security_layer_receivepdu_waits_for_full_frame) {
     CHECK(frames[0][4] == 0xAA);
 }
 
+RTSC_TEST(security_layer_credssp_drain_lifts_coalesced_record) {
+    // DriveCredssp's drain (src/security/security_layer.cpp:244) is the client
+    // mirror of the server-side CredSSP drain. A peer that coalesces its final
+    // handshake flight with the CHALLENGE leaves that message staged in the
+    // backend; only this drain can lift it out. Disabling the loop left every
+    // suite green (measured on Linux, whole ctest tree), so this case is its
+    // only guard.
+    std::string why;
+    auto layer = rtsc::security::SecurityLayer::Create(MakeConfig(), why);
+    CHECK(layer != nullptr);
+    if (!layer) return;
+    auto scripted = std::make_unique<ScriptedTls>();
+    ScriptedTls* tls_raw = scripted.get();
+    layer->SetTlsTransportForTest(std::move(scripted));
+
+    auto r = layer->Step(nullptr, 0);
+    CHECK(r.want == rtsc::security::Want::kWrite);
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    r = layer->Step(server_hello, sizeof(server_hello));
+    CHECK(r.want == rtsc::security::Want::kWrite);  // CredSSP step 1
+
+    // The CHALLENGE is staged behind the handshake; the caller passes nothing,
+    // so the drain is the only way it can reach the state machine.
+    TsRequest challenge;
+    challenge.version = 6;
+    challenge.nego_token = ServerChallengeMessage();
+    Bytes ch_der;
+    CHECK(challenge.Encode(ch_der).ok());
+    tls_raw->stage_for_test(ch_der);
+
+    r = layer->Step(nullptr, 0);
+    CHECK(r.want == rtsc::security::Want::kWrite);  // CredSSP step 3
+    CHECK(!layer->failed());
+}
+
+RTSC_TEST(security_layer_euar_drain_lifts_coalesced_record) {
+    // DriveEuar's drain (src/security/security_layer.cpp:321) supplies the tail
+    // of the EUAR when the peer coalesced it with the last CredSSP message.
+    // Only the first byte arrives as ciphertext here; the remaining three are
+    // staged in the backend. With the loop disabled the layer stalls at kRead
+    // instead of reaching kDone (measured), so this case is its guard.
+    std::string why;
+    auto layer = rtsc::security::SecurityLayer::Create(MakeConfig(), why);
+    CHECK(layer != nullptr);
+    if (!layer) return;
+    auto scripted = std::make_unique<ScriptedTls>();
+    ScriptedTls* tls_raw = scripted.get();
+    layer->SetTlsTransportForTest(std::move(scripted));
+
+    layer->Step(nullptr, 0);
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    layer->Step(server_hello, sizeof(server_hello));
+    TsRequest challenge;
+    challenge.version = 6;
+    challenge.nego_token = ServerChallengeMessage();
+    Bytes ch_der;
+    CHECK(challenge.Encode(ch_der).ok());
+    layer->Step(ch_der.data(), ch_der.size());
+    Bytes echo = layer->credssp_for_test().MakeServerEchoForTest();
+    TsRequest step4;
+    step4.version = 6;
+    step4.pub_key_auth = echo;
+    Bytes step4_der;
+    CHECK(step4.Encode(step4_der).ok());
+    layer->Step(step4_der.data(), step4_der.size());
+
+    const uint8_t first_euar_byte = 0x00;
+    tls_raw->stage_for_test({0x00, 0x00, 0x00});
+    const auto r = layer->Step(&first_euar_byte, 1);
+    CHECK(r.want == rtsc::security::Want::kDone);
+    CHECK(layer->handshake_complete());
+}
+
+RTSC_TEST(security_layer_receivepdu_drain_lifts_coalesced_record) {
+    // ReceivePdu's drain (src/security/security_layer.cpp:409) is the client
+    // data-plane twin of the loop guarded in test_server_security.cpp. A real
+    // server coalesces its last handshake flight with the first frame, leaving
+    // it staged; with the loop disabled ReceivePdu returns no frames and every
+    // suite stayed green (measured). This case is its only guard.
+    std::string why;
+    auto layer = rtsc::security::SecurityLayer::Create(MakeConfig(), why);
+    CHECK(layer != nullptr);
+    if (!layer) return;
+    auto scripted = std::make_unique<ScriptedTls>();
+    ScriptedTls* tls_raw = scripted.get();
+    layer->SetTlsTransportForTest(std::move(scripted));
+
+    layer->Step(nullptr, 0);
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    layer->Step(server_hello, sizeof(server_hello));
+    TsRequest challenge;
+    challenge.version = 6;
+    challenge.nego_token = ServerChallengeMessage();
+    Bytes ch_der;
+    CHECK(challenge.Encode(ch_der).ok());
+    layer->Step(ch_der.data(), ch_der.size());
+    Bytes echo = layer->credssp_for_test().MakeServerEchoForTest();
+    TsRequest step4;
+    step4.version = 6;
+    step4.pub_key_auth = echo;
+    Bytes step4_der;
+    CHECK(step4.Encode(step4_der).ok());
+    layer->Step(step4_der.data(), step4_der.size());
+    const uint8_t euar[] = {0x00, 0x00, 0x00, 0x00};
+    layer->Step(euar, sizeof(euar));
+    CHECK(layer->handshake_complete());
+
+    const std::vector<uint8_t> pdu = {0x03, 0x00, 0x00, 0x08,
+                                      0xAA, 0xBB, 0xCC, 0xDD};
+    tls_raw->stage_for_test(pdu);
+
+    const auto frames = layer->ReceivePdu(nullptr, 0);
+    CHECK(frames.size() == 1);
+    if (frames.size() != 1) return;
+    CHECK(frames[0] == pdu);
+}
 // ---- ConnectionDriver -----------------------------------------------------
 
 namespace {

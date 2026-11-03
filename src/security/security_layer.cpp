@@ -239,8 +239,8 @@ StepResult SecurityLayer::DriveCredssp() {
     // consumed (consumed == in_size), so the record never reaches
     // pending_cipher_. Skipping the drain strands it and both ends wait
     // forever. (tls.h: the caller must keep receiving until buffered_input()
-    // == 0.) The server half is the critical path; this client mirror keeps the
-    // two symmetric.
+    // == 0.) Guarded by security_layer_credssp_drain_lifts_coalesced_record;
+    // with the loop disabled that case stalls at kRead and is the only failure.
     while (tls_->buffered_input() > 0) {
         const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
         if (!d.ok() && d.status != tls::Status::kClosed &&
@@ -318,6 +318,8 @@ StepResult SecurityLayer::DriveEuar() {
             err.status != tls::Status::kNeedMoreInput) {
             return Fail("TLS receive failed: " + err.message);
         }
+        // Guarded by security_layer_euar_drain_lifts_coalesced_record; with the
+        // loop disabled the layer stays at kRead instead of reaching kDone.
         while (tls_->buffered_input() > 0) {
             const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
             if (!d.ok() && d.status != tls::Status::kClosed &&
@@ -406,6 +408,8 @@ std::vector<std::vector<uint8_t>> SecurityLayer::ReceivePdu(const uint8_t* in,
             return frames;
         }
     }
+    // Guarded by security_layer_receivepdu_drain_lifts_coalesced_record; with
+    // the loop disabled ReceivePdu returns no frames for a coalesced record.
     while (tls_->buffered_input() > 0) {
         const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
         if (!d.ok() && d.status != tls::Status::kClosed &&
