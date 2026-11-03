@@ -597,8 +597,11 @@ RTSC_TEST(tls_server_regression_coalesced_first_record_no_stall) {
     // ran (checks are counted per CHECK, so real ones can be swapped for
     // `CHECK(true)` with the total unchanged).
     //
-    // What the marker proves: this success path was reached.
-    // What it does NOT prove: that `CHECK(got_challenge)` below still exists.
+    // What the marker proves: this success path was reached. The drain that
+    // makes it reachable is ServerSecurityLayer's CredSSP-phase loop
+    // (src/security/server_security_layer.cpp:194); disabling THAT loop is what
+    // turns this case red (measured), so this case is that loop's only guard.
+    // What the marker does NOT prove: that `CHECK(got_challenge)` below still exists.
     // Deleting just that statement keeps the marker and the exit code at 0 --
     // CHECK reports failures without altering control flow
     // (tests/test_framework.h:47-53), so "produced output" cannot witness a

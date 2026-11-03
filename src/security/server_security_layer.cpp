@@ -289,6 +289,17 @@ std::vector<std::vector<uint8_t>> ServerSecurityLayer::ReceivePdu(const uint8_t*
             return frames;
         }
     }
+    // Drain obligation, data plane. Same rationale as the CredSSP-phase drain
+    // above, one phase later: a coalesced segment can leave application records
+    // staged in the backend after Receive() reports the input consumed.
+    //
+    // COVERAGE: no test exercises this branch. Disabling this loop leaves all 67
+    // tests green (measured on Linux, whole ctest tree). The equivalent logic in
+    // this file at the CredSSP-phase drain IS covered (that one is the only
+    // guard for tls_server_regression_coalesced_first_record_no_stall), but it
+    // runs in a different phase, so it does not stand in for this one. Reaching
+    // this loop needs a completed handshake plus a coalesced data segment, which
+    // no current test constructs -- see .opencode/plan.md batch 45.
     while (tls_->buffered_input() > 0) {
         const tls::Error d = tls_->Receive(nullptr, 0, plaintext, 0);
         if (!d.ok() && d.status != tls::Status::kClosed &&

@@ -130,7 +130,7 @@ if [ -z "$LIB" ]; then
     echo "LINUX GATE FAIL: librtsc_tls.a not produced"
     exit 1
 fi
-echo "LIB_BYTES=$(stat -c %s "$LIB")"
+echo "LIB_BYTES=$(stat -c %s "$LIB")"  # output only, not asserted
 
 # The platform-neutral factory must exist even when no backend does.
 if ! nm -C "$LIB" 2>/dev/null | grep -q 'rtsc::tls::CreateTlsTransport'; then
@@ -196,7 +196,9 @@ fi
 # measured). Require the marker the success path prints.
 #
 # COVERAGE BOUNDARY (audit X, measured twice): this marker proves the success
-# PATH was reached; it does NOT prove the CHECK statement is still there.
+# PATH was reached; the drain that makes the path reachable is the CredSSP-phase
+# loop in src/security/server_security_layer.cpp:194, and disabling it is what
+# turns this case red. It does NOT prove the CHECK statement is still there.
 # Deleting `CHECK(got_challenge)` while leaving the printf keeps the marker and
 # the exit code at 0. Any "produced output" assertion has this limit, because
 # CHECK only calls report_failure and does not change control flow
