@@ -809,3 +809,22 @@ Linux `LINUX GATE PASS` 67/67 + `VIEW_BUDGETS=executed`(7348) + `UI_RATIO=execut
 ### 教训（discover 例 51）
 "全绿"必须指明构建类型与目录；默认配置才是主路径；UNVERIFIED 会累积成盲区；
 修一类缺陷必须全仓扫描同型（本例 7 处计时断言中仅 2 处是相对倍率）。
+## 第880轮：verify.ps1 -LinuxBuild 端到端首次真跑通过（关闭长期 UNVERIFIED）
+### 背景
+此前多轮把 `verify.ps1 -LinuxBuild` 记为 UNVERIFIED 而未实际运行（discover 例 44/51 形态）。
+### 三次连跑
+| 运行 | 结果 |
+|---|---|
+| 修前（后台启动） | Windows ctest **68/69**，`ui` Failed（`test_ui.cpp:252` ratio 0.77） |
+| 修后（verify2.log） | Windows Debug **69/69** + `LINUX GATE PASS` + `linux build gate passed` |
+| 修后（verify5） | `wrapper_exit=0`，**`verify_exit=0`** |
+### 证据
+- Windows Debug（`build\verify`）：`100% tests passed, 0 tests failed out of 69`
+- Linux：`CTEST_EXIT=0` 67/67、`VIEW_BUDGETS=executed`(7348)、`UI_RATIO=executed`(86)
+- 变异残留门 passed
+- 该项自 2026-11-03 起 **UNVERIFIED → VERIFIED(exit 0)**
+### 剩余 UNVERIFIED
+真机 U1/U2/U4–U9、`--monitor N` 落点（需真实多显示器桌面）。
+### 教训
+"记成 UNVERIFIED" 不是中性状态，它会累积成盲区（例 44/51 连续两例都由此暴露）。
+每轮应至少收敛一个 UNVERIFIED 项；能跑的必须跑，不能跑的必须写清阻塞条件。
