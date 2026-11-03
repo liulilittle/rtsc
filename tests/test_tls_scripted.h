@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "rtsc/net/tls.h"
@@ -58,6 +59,13 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
         (void)max_out;
         if (ciphertext != nullptr && size > 0) {
             plaintext.insert(plaintext.end(), ciphertext, ciphertext + size);
+            return Ok();
+        }
+        // Drain call: hand back whatever was staged, once.
+        if (buffered_ > 0) {
+            plaintext.insert(plaintext.end(), staged_.begin(), staged_.end());
+            staged_.clear();
+            buffered_ = 0;
         }
         return Ok();
     }
@@ -106,7 +114,19 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
         return handshake_complete_;
     }
     bool closed() const noexcept override { return false; }
-    size_t buffered_input() const noexcept override { return 0; }
+    // Mirrors a real stream backend: application records can sit staged behind
+    // the handshake. A coalesced segment (Finished + first app record in one
+    // TCP write) leaves the record here, invisible to the caller's input path,
+    // so only the data-plane drain in ServerSecurityLayer::ReceivePdu can lift
+    // it out. Default 0 = nothing staged, which is what every other test wants.
+    size_t buffered_input() const noexcept override { return buffered_; }
+
+    // Stage bytes as if the backend still held them after the handshake. The
+    // drain calls Receive(nullptr, 0, ...) and gets them back once.
+    void stage_for_test(std::vector<uint8_t> bytes) {
+        staged_ = std::move(bytes);
+        buffered_ = staged_.size();
+    }
     const rtsc::tls::Error& last_error() const noexcept override {
         return last_error_;
     }
@@ -115,6 +135,8 @@ class ScriptedTls : public rtsc::tls::TlsTransport {
  private:
     bool hello_sent_ = false;
     bool handshake_complete_ = false;
+    std::vector<uint8_t> staged_;
+    size_t buffered_ = 0;
     rtsc::tls::Error last_error_{};
 };
 

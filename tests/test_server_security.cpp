@@ -290,6 +290,78 @@ RTSC_TEST(server_security_layer_hybrid_without_ex_omits_euar) {
             sr.to_wire[3] == 0x00));
 }
 
+RTSC_TEST(server_security_layer_data_plane_drain_lifts_coalesced_record) {
+    // ReceivePdu's drain loop (src/security/server_security_layer.cpp:292) is
+    // the data-plane twin of the CredSSP-phase drain guarded by
+    // tls_server_regression_coalesced_first_record_no_stall. It had no test:
+    // disabling that loop left every suite green (measured on Linux, whole
+    // ctest tree, before this case existed).
+    //
+    // A real peer can coalesce the last handshake flight with an application
+    // record, and the stream backends then report the input fully consumed, so
+    // the record stays staged in the backend instead of reaching the caller's
+    // buffer. Only this drain lifts it out. The scripted transport is the same
+    // one the EUAR case uses, plus stage_for_test() to leave bytes behind after
+    // the handshake exactly as a coalesced segment would.
+    ServerConfig scfg;
+    scfg.tls_config.role = rtsc::tls::Role::kServer;
+    scfg.tls_config.cert_policy = rtsc::tls::CertPolicy::kInsecure;
+    scfg.credssp_version = 6;
+    scfg.credential_lookup = Lookup;
+    scfg.euar_required = false;
+
+    std::string swhy;
+    auto server = ServerSecurityLayer::Create(scfg, swhy);
+    CHECK(server != nullptr);
+    if (!server) return;
+
+    // Keep a raw pointer so the staged bytes can be arranged after the handshake
+    // completes; SetTlsTransportForTest takes ownership.
+    auto scripted = std::make_unique<ScriptedTls>();
+    ScriptedTls* tls_raw = scripted.get();
+    server->SetTlsTransportForTest(std::move(scripted));
+
+    auto sr = server->Step(nullptr, 0);
+    CHECK(sr.want == Want::kRead);
+    const uint8_t hello[] = {0x16, 0x03, 0x01, 0x00, 0x05, 0x01};
+    sr = server->Step(hello, sizeof(hello));
+    CHECK(sr.want == Want::kWrite);
+    const uint8_t finished[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    sr = server->Step(finished, sizeof(finished));
+    CHECK(sr.want == Want::kRead);
+
+    Credentials creds;
+    creds.domain = "NTDEV";
+    creds.user = "rtsc";
+    creds.password = "password";
+    CredsspClient client(creds, 6);
+    client.SetServerPublicKey(
+        {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01});
+
+    Bytes m1, m2, m3, m4, m5;
+    CHECK(client.Start(m1).ok());
+    sr = server->Step(m1.data(), m1.size());
+    CHECK(sr.want == Want::kWrite);
+    m2 = sr.to_wire;
+    CHECK(client.OnServerResponse(m2.data(), m2.size(), m3).ok());
+    sr = server->Step(m3.data(), m3.size());
+    CHECK(sr.want == Want::kWrite);
+    m4 = sr.to_wire;
+    CHECK(client.OnServerResponse(m4.data(), m4.size(), m5).ok());
+    sr = server->Step(m5.data(), m5.size());
+    CHECK(sr.want == Want::kDone);
+
+    // One complete TPKT PDU staged behind the handshake. Give the caller no
+    // ciphertext at all: without the drain these bytes never surface.
+    const Bytes pdu = {0x03, 0x00, 0x00, 0x08, 0xAA, 0xBB, 0xCC, 0xDD};
+    tls_raw->stage_for_test(pdu);
+
+    const std::vector<std::vector<uint8_t>> frames =
+        server->ReceivePdu(nullptr, 0);
+    CHECK_EQ(frames.size(), 1u);
+    if (frames.size() != 1) return;
+    CHECK(frames[0] == pdu);
+}
 RTSC_TEST(server_enhanced_security_loopback_to_active) {
     // The full loopback: the project's own client (ConnectionDriver + graphics)
     // connects to the in-tree server over PROTOCOL_HYBRID (TLS + CredSSP) and
