@@ -1285,3 +1285,22 @@ Windows Release 六类诊断全 0 + ctest **69/69**（78.95s）；`bash -n` SYNT
 验证：Linux gate `LINUX GATE PASS` 67/67 + 五标记；Windows 六类诊断全 0 + ctest **69/69**(74.55s)；
 `MUT-` 0。首次 gate 因 view bench 偶发红（0.89 vs 0.60），同二进制连跑 5 次 0.11-0.12 全绿，
 判定环境噪声（discover 例 60），未调 budget。
+### 批 49（`5300160`）—— 修行号引用漂移 + 更正例58 编造出处
+
+审计 X 复核批46/47 全 PASS，提 2 条文档缺陷，我自验两条都成立。
+
+**缺陷 1（中）**：批47 插注释导致行号下移，注释里的 3 处引用没同步
+（`test_security_layer.cpp:373` 应 `:323`、`:411` 应 `:413`、
+`test_server_security.cpp:294` 应 `:300`）。**修法：5 处全改符号引用**
+（`SecurityLayer::DriveEuar` 等），`git grep` 行号引用归 0。
+
+**缺陷 2（低但性质严重）**：例58 我写"例47 记的是改 .sh 禁止 WriteAllLines"——
+**编造出处**。例47（`:724`）实际讲 `ReadAllText`+`WriteAllText` 加 BOM、CRLF→LF，
+方向相反。已用实测替换：`ReadAllText`+`WriteAllText(UTF8 no BOM)` 忠实保留行尾；
+`WriteAllLines` 恒用环境换行且非幂等（每次 +1 尾部换行）。
+唯一规则：只用 ReadAllText→Replace→WriteAllText，禁用 WriteAllLines，写完必查 CR/LF。
+
+采纳 X 第三条：多处按索引插入必须从后往前。
+
+验证：C0 六类诊断全 0；Linux ctest 67/67；Windows ctest 69/69（73.79s）；
+Linux gate `LINUX GATE PASS` + `FAILED_COUNT=0`；`MUT-` 0。

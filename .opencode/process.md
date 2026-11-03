@@ -1012,3 +1012,26 @@ Windows Release 六类诊断全 0 + `rtsc_gateway_tests` 120/1210 + ctest **69/6
 ### 教训（discover 例 59/60）
 `X > 0` 用作"继续循环"条件时必须证明每轮有进展；"缓冲非空"≠"能产出"；
 循环排查先问"每轮是否有状态单调推进"。gate 的 bench 偶发红要先看分布再判回归，禁止抬 budget 掩盖。
+## 第888轮：批49 —— 修行号引用漂移 + 更正例58 的编造出处（`5300160`）
+审计 X 复核批46/47 全部 PASS，提 2 条文档缺陷。我逐条自验，**两条都成立**。
+### 缺陷 1：注释行号引用漂移（3/5 处已错）
+批47 我在三处 drain 上方插注释 → 行号下移 → 注释里的引用没同步。
+`test_security_layer.cpp:373` 写 `:321`（实际 `:323`）、`:411` 写 `:409`（实际 `:413`）、
+`test_server_security.cpp:294` 写 `:292`（实际 `:300`）。
+**修法（采纳 X 建议）：5 处全改符号引用** → `git grep` 行号引用归 0。
+### 缺陷 2：例58 编造出处（W5 违规）
+我写"例47 记的是改 .sh 禁止 WriteAllLines"——**编造**。全文 4 处 WriteAllLines
+全在例58 自身；例47（`:724`）说的是 `ReadAllText`+`WriteAllText` 会加 BOM、CRLF→LF，
+**方向相反**。
+### 实测四种写法（PowerShell 5.1，`a\nb\nc\n`）
+| 写法 | LF 源 | CRLF 源 |
+|---|---|---|
+| ReadAllText+WriteAllText(UTF8 no BOM) | LF 保持 | CRLF 保持 |
+| ReadAllLines+WriteAllLines | **LF→CRLF**，多一尾部换行 6B→9B | CRLF 保持，多一尾部换行 |
+| 连写两次 WriteAllLines | LF=4 CRLF=4（**非幂等**） | — |
+**唯一规则**：只用 ReadAllText→Replace→WriteAllText（显式 UTF8 无 BOM），禁用 WriteAllLines，写完必查 CR/LF。
+### 采纳 X 第三条
+多处按索引插入必须**从后往前**（X 正向插 3 个插桩标记导致索引失效）。
+### 验证
+C0 六类诊断全 0；Linux ctest 67/67；Windows ctest 69/69（73.79s）；
+Linux gate `LINUX GATE PASS` + `FAILED_COUNT=0`；行尾无混合；`MUT-` 0。
