@@ -1243,3 +1243,28 @@ Windows Release 六类诊断全 0 + 直接跑 8/72（含新用例）+ ctest **69
 **教训（discover 例 57）**："没有现成用法" ≠ "无法构造"——宣布不可测前必须问
 "进入该状态的最短路径是什么、哪个已有测试到达了相邻状态"；
 边界注释是会过期的断言，**可验证的就不该只写边界**（W5 的"写明"仅适用于原理上不可验证的情形）。
+### 批 47（`abd1f3e`）—— C9 同型排查：客户端 3 处 drain 全部无守护
+
+批46 修 `:292` 时我只看了记忆里的同型点。`git grep -n buffered_input` 真扫全仓
+（6 实现 + 5 调用点）发现 `src/security/security_layer.cpp` 还有 3 处 drain：
+`:244`（DriveCredssp）、`:321`（DriveEuar）、`:409`（ReceivePdu）。
+**逐个 `while(false)` 后整棵 ctest 67/67 全绿 —— 三处都无守护。**
+
+新增 3 个用例（tests/test_security_layer.cpp，+120 行），复用已有配方 +
+`ScriptedTls*` 裸指针 + `stage_for_test`。红证：
+
+| 变异 | 结果 |
+|---|---|
+| `:244` → `while(false)` | 22/162，**1 failing**；`:368 r.want == kWrite` |
+| `:321` → `while(false)` | **1 failing**；`:406 r.want == kDone` + `:407` |
+| `:409` → `while(false)` | **1 failing**；`:449 frames.size() == 1` |
+| 恢复 | 22/162，**0 failing**；`MUT-` 0 |
+
+三处注释改为 "Guarded by <用例名>"；原 :242 "The server half is the critical path;
+this client mirror keeps the two symmetric." 已不成立，一并替换。
+
+验证：Linux gate `LINUX GATE PASS` 67/67 + 五标记 + `FAILED_COUNT=0`；
+Windows Release 六类诊断全 0 + ctest **69/69**（78.95s）；`bash -n` SYNTAX_OK；`MUT-` 0。
+
+教训（discover 例 58）：WriteAllLines 恒用环境换行（与扩展名无关，例 47 的根因）；
+按行号改文件前必须核对目标行内容，能按文本锚点替换就不要按索引，改完必须 `git diff` 逐行确认。

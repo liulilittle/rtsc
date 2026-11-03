@@ -1133,3 +1133,26 @@ plus a coalesced data segment, which no current test constructs"。
    W5 的"写明不能证明的"仅适用于**原理上**不可验证的情形（如"删断言"）。
 3. **采纳外部方案时要照跑红证**：我照抄 X 的骨架后，仍自己重跑了 `:292` 变异，
    确认唯一失败者是新用例，而不是"看起来对了"。
+## 第886轮：两个文件写入错误（例 58）
+
+### 错误 A：WriteAllLines 又把 LF 写成 CRLF（例 47 复发）
+`src/security/security_layer.cpp` 仓库行尾是 LF。我用
+`[IO.File]::WriteAllLines($p,$n,(New-Object Text.UTF8Encoding($false)))` 插注释，
+写出来 LF=454 / CRLF=454（全变 CRLF）。
+**例 47 记的是"改 .sh 禁止 WriteAllLines"，但根因是 WriteAllLines 恒用环境换行，
+与扩展名无关。** 修法：ReadAllText → Replace("`r`n","`n") → WriteAllText。
+**规则：任何文件写入后必须立即统计 LF/CRLF，与本文件既有行尾比对。**
+
+### 错误 B：行索引覆盖了 while 行本身（新）
+我想在 `:244` 上方插两行注释，用了 `$n[242]` / `$n[243]` 直接赋值。
+但 `:244` 的 `while (tls_->buffered_input() > 0) {` 正是索引 243，
+**被我的注释覆盖掉了**。`git diff` 立刻显示 `-    while (...)`，少一行 while。
+若没看 diff 直接编译，要么编译失败（`const tls::Error d = ...` 无循环体），
+要么更糟——语义变了但恰好能编过。
+**规则：按行号改文件前必须打印并核对目标行内容；能按文本锚点替换就不要按索引。**
+改完后必须 `git diff` 逐行确认"只加了该加的、没删不该删的"。
+
+### 证据
+- 错误 A：`LF=454 CRLF=454`（WriteAllLines 后）→ `LF=454 CRLF=0`（修正后）
+- 错误 B：`git diff` 出现 `-    while (tls_->buffered_input() > 0) {`
+- 回滚后 hash 与 `.tmp\sl.bak` 一致（`161EF9B1...`），重做后 diff 只有 +6/-2 注释行

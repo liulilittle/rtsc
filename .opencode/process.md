@@ -954,3 +954,35 @@ Windows Release 六类诊断全 0 + 直接跑 8/72（含新用例）+ ctest **69
 ### 教训（discover 例 57）
 "没有现成用法" ≠ "无法构造"；宣布不可测前先问"进入该状态的最短路径"；
 边界注释是会过期的断言，可验证的就不该只写边界。
+## 第886轮：批47 —— C9 同型排查，客户端 3 处 drain 全部无守护（`abd1f3e`）
+### 发现
+批46 修 `:292` 时我按 C9 只看了记忆里记得的同型点。这次 `git grep -n buffered_input`
+真扫全仓（6 实现 + 5 调用点）才发现 `src/security/security_layer.cpp` 还有 3 处 drain：
+`:244`（DriveCredssp）、`:321`（DriveEuar）、`:409`（ReceivePdu）。
+**逐个改 `while(false)` 后整棵 ctest 67/67 全绿 —— 三处都无任何用例守护。**
+### 新增 3 个用例（tests/test_security_layer.cpp，+120 行）
+复用已有配方（MakeConfig / ServerChallengeMessage / MakeServerEchoForTest）+
+`ScriptedTls*` 裸指针 + `stage_for_test`：
+- `security_layer_credssp_drain_lifts_coalesced_record`（:244）
+- `security_layer_euar_drain_lifts_coalesced_record`（:321）
+- `security_layer_receivepdu_drain_lifts_coalesced_record`（:409）
+### 红证（Linux，逐个变异，各自唯一失败者）
+| 变异 | 结果 |
+|---|---|
+| :244 → while(false) | 22/162, **1 failing**；`:368 r.want == kWrite`，`[ FAIL ] ...credssp_drain...` |
+| :321 → while(false) | **1 failing**；`:406 r.want == kDone` + `:407 handshake_complete()` |
+| :409 → while(false) | **1 failing**；`:449 frames.size() == 1` |
+| 恢复 | 22/162, **0 failing**；`MUT-` 0 |
+### 注释
+三处改为 "Guarded by <用例名>"；原 :242 "The server half is the critical path;
+this client mirror keeps the two symmetric." 已不成立（客户端也都有守护了），一并替换。
+### 我这轮犯的两个错（discover 例 58）
+1. **WriteAllLines 又把 LF 写成 CRLF**（例 47 复发）→ ReadAllText/Replace/WriteAllText 修正，校验 CRLF=0。
+2. **行索引覆盖了 `while` 行本身**：想插注释却把 `while (tls_->buffered_input() > 0) {`
+   覆盖掉，git diff 立刻暴露（少一行 while）。回滚重做，改用文本锚点替换。
+   **教训：按行号写文件前必须校验目标行内容，不能只按索引。**
+### 验证
+Linux gate `LINUX GATE PASS` 67/67 + 五标记 + `FAILED_COUNT=0`；
+Windows Release 六类诊断全 0 + `rtsc_security_tests` 22/162 + ctest **69/69**（78.95s）；
+行尾：security_layer.cpp LF 454/CRLF 0、test_security_layer.cpp CRLF 1051/1051、无混合；
+`bash -n` SYNTAX_OK；全仓 `MUT-` 0。
