@@ -1135,27 +1135,47 @@ plus a coalesced data segment, which no current test constructs"。
    确认唯一失败者是新用例，而不是"看起来对了"。
 ## 第886轮：两个文件写入错误（例 58）
 
-### 错误 A：WriteAllLines 又把 LF 写成 CRLF（例 47 复发）
+### 错误 A：WriteAllLines 恒把 LF 写成 CRLF（我的归因错了，已由审计 X 更正）
 `src/security/security_layer.cpp` 仓库行尾是 LF。我用
-`[IO.File]::WriteAllLines($p,$n,(New-Object Text.UTF8Encoding($false)))` 插注释，
-写出来 LF=454 / CRLF=454（全变 CRLF）。
-**例 47 记的是"改 .sh 禁止 WriteAllLines"，但根因是 WriteAllLines 恒用环境换行，
-与扩展名无关。** 修法：ReadAllText → Replace("`r`n","`n") → WriteAllText。
-**规则：任何文件写入后必须立即统计 LF/CRLF，与本文件既有行尾比对。**
+`[IO.File]::WriteAllLines(...)` 插注释，写出来 LF=454 / CRLF=454（全变 CRLF）。
 
-### 错误 B：行索引覆盖了 while 行本身（新）
+**我最初写「例 47 记的是改 .sh 禁止 WriteAllLines」——这是编造的出处。** 审计 X 实测
+发现例 47（`:719-725`）从未提过 WriteAllLines；它讲的是 `ReadAllText`+`WriteAllText`
+会加 BOM、把 CRLF 换成 LF。**我把没核实过的记忆当成证据写了进去（W5 违规）。**
+
+**实测四种写法（2026-11-04，PowerShell 5.1，源文件 `a\nb\nc\n`，逐字节统计）：**
+| 写法 | LF 源 | CRLF 源 |
+|---|---|---|
+| `ReadAllText` + `WriteAllText(UTF8Encoding($false))` | **LF 保持**（LF=3 CRLF=0） | **CRLF 保持**（LF=3 CRLF=3） |
+| `ReadAllLines` + `WriteAllLines` | **LF→CRLF**（LF=3 CRLF=3），且尾部多一个换行（6B→9B） | CRLF 保持，但尾部多一个换行 |
+| 连续两次 `WriteAllLines` | LF=4 CRLF=4（**每写一次 +1 换行，非幂等**） | — |
+
+注：例 47 说 `WriteAllText` 会加 BOM——那是**没传 encoding** 时的默认行为；
+显式传 `(New-Object Text.UTF8Encoding($false))` 就不加 BOM（上表已验）。
+
+**规则（唯一正确写法）：改文件只用 `ReadAllText` → 按需 `Replace` → `WriteAllText`
+（显式 UTF8 无 BOM）；禁用 `WriteAllLines`。写完立刻统计 CR/LF 与该文件原行尾比对。**
+
+### 错误 B：行索引覆盖了 while 行本身
 我想在 `:244` 上方插两行注释，用了 `$n[242]` / `$n[243]` 直接赋值。
-但 `:244` 的 `while (tls_->buffered_input() > 0) {` 正是索引 243，
+而 `:244` 的 `while (tls_->buffered_input() > 0) {` 正是索引 243，
 **被我的注释覆盖掉了**。`git diff` 立刻显示 `-    while (...)`，少一行 while。
 若没看 diff 直接编译，要么编译失败（`const tls::Error d = ...` 无循环体），
 要么更糟——语义变了但恰好能编过。
+
 **规则：按行号改文件前必须打印并核对目标行内容；能按文本锚点替换就不要按索引。**
 改完后必须 `git diff` 逐行确认"只加了该加的、没删不该删的"。
+
+**补充（审计 X 本轮自己踩到，例 58 原文未覆盖）：多处按索引插入时必须从后往前。**
+X 先按正向索引插了 3 个插桩标记，前一次插入使后一次索引失效，得到了错误的
+`HIT_1+HIT_2` 结果；改为从后往前插入后重做才得到正确数据。
+同理：一次性插入多处时，索引必须从大到小排序处理。
 
 ### 证据
 - 错误 A：`LF=454 CRLF=454`（WriteAllLines 后）→ `LF=454 CRLF=0`（修正后）
 - 错误 B：`git diff` 出现 `-    while (tls_->buffered_input() > 0) {`
 - 回滚后 hash 与 `.tmp\sl.bak` 一致（`161EF9B1...`），重做后 diff 只有 +6/-2 注释行
+
 ## 第887轮：buffered_input()>0 不等于"有进展"（例 59）+ gate 时间预算偶发（例 60）
 
 ### 例 59：`if (buffered_input() > 0) continue;` 在 `for(;;)` 里会死循环

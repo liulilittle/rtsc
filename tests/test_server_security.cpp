@@ -291,7 +291,7 @@ RTSC_TEST(server_security_layer_hybrid_without_ex_omits_euar) {
 }
 
 RTSC_TEST(server_security_layer_data_plane_drain_lifts_coalesced_record) {
-    // ReceivePdu's drain loop (src/security/server_security_layer.cpp:292) is
+    // ReceivePdu's drain loop (ServerSecurityLayer::ReceivePdu) is
     // the data-plane twin of the CredSSP-phase drain guarded by
     // tls_server_regression_coalesced_first_record_no_stall. It had no test:
     // disabling that loop left every suite green (measured on Linux, whole
@@ -671,7 +671,7 @@ RTSC_TEST(tls_server_regression_coalesced_first_record_no_stall) {
     //
     // What the marker proves: this success path was reached. The drain that
     // makes it reachable is ServerSecurityLayer's CredSSP-phase loop
-    // (src/security/server_security_layer.cpp:194); disabling THAT loop is what
+    // (ServerSecurityLayer::DriveCredssp); disabling THAT loop is what
     // turns this case red (measured), so this case is that loop's only guard.
     // What the marker does NOT prove: that `CHECK(got_challenge)` below still exists.
     // Deleting just that statement keeps the marker and the exit code at 0 --

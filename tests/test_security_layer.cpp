@@ -335,7 +335,7 @@ RTSC_TEST(security_layer_receivepdu_waits_for_full_frame) {
 }
 
 RTSC_TEST(security_layer_credssp_drain_lifts_coalesced_record) {
-    // DriveCredssp's drain (src/security/security_layer.cpp:244) is the client
+    // DriveCredssp's drain (SecurityLayer::DriveCredssp) is the client
     // mirror of the server-side CredSSP drain. A peer that coalesces its final
     // handshake flight with the CHALLENGE leaves that message staged in the
     // backend; only this drain can lift it out. Disabling the loop left every
@@ -370,7 +370,7 @@ RTSC_TEST(security_layer_credssp_drain_lifts_coalesced_record) {
 }
 
 RTSC_TEST(security_layer_euar_drain_lifts_coalesced_record) {
-    // DriveEuar's drain (src/security/security_layer.cpp:321) supplies the tail
+    // DriveEuar's drain (SecurityLayer::DriveEuar) supplies the tail
     // of the EUAR when the peer coalesced it with the last CredSSP message.
     // Only the first byte arrives as ciphertext here; the remaining three are
     // staged in the backend. With the loop disabled the layer stalls at kRead
@@ -408,7 +408,7 @@ RTSC_TEST(security_layer_euar_drain_lifts_coalesced_record) {
 }
 
 RTSC_TEST(security_layer_receivepdu_drain_lifts_coalesced_record) {
-    // ReceivePdu's drain (src/security/security_layer.cpp:409) is the client
+    // ReceivePdu's drain (SecurityLayer::ReceivePdu) is the client
     // data-plane twin of the loop guarded in test_server_security.cpp. A real
     // server coalesces its last handshake flight with the first frame, leaving
     // it staged; with the loop disabled ReceivePdu returns no frames and every
