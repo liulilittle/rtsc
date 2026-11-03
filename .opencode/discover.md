@@ -1258,3 +1258,43 @@ kUnsupported rather than drawing something wrong."
 2. 判断一条注释是否过期，不能只读注释——必须 grep 实现符号。
 3. 边界声明（"这里刻意不支持 X，因为 Y"）与状态断言（"X 还没实现"）要分开写；
    前者稳定，后者必然腐化。
+## 第890轮：三类缺陷（例 62/63/64）
+
+### 例 62：陈旧目标文件让"测试结果"与"工作树"脱钩
+**症状**：`verify.ps1` 报 Windows Debug `tls` 3 处失败，Release 同代码全绿。
+**直接原因**：`Copy-Item` 恢复源文件时保留旧 mtime → Ninja 认为 object 最新 →
+不重编 → 跑的是**上一个版本的代码**。强制重编后 3 个失败全部消失。
+**排除过程**（重要）：我加诊断打印后"3 个失败消失"，一度以为是 UB；
+恢复原文件重建后仍然全绿，才定位到是陈旧产物。**不要因为现象消失就下结论。**
+**修法（verify.ps1）**：tree 指纹（HEAD + status + numstat + 每个源文件的
+size/mtime）写入 build 目录；下次跑时不一致就删目录重建；只有 build+ctest
+全成功才写指纹。
+**教训**：
+1. 变异测试的"恢复"步骤必须 `Set LastWriteTime = Get-Date`，否则红证/绿证都可能是假的（例36 同族，本次在真实构建里再次踩到）。
+2. 我第一版守卫（"build 后 dry-run 必须无事可做"）**抓不到**这个失败模式——mtime 回退时 Ninja 也认为无事可做。判据必须对准**根因**（内容/mtime 指纹），不能对准**症状**（有无编译输出）。
+
+### 例 63：`read_offset == 0` 恒真，假修复能蒙混
+**症状**：`tls_byte_transport_partial_record_does_not_spin` 断言
+`read_offset == 0`，而 `MockTransport::Read` 在无数据时**第一行** return，
+不触碰 read_offset ⇒ 无论 Read 被调用 1 次还是 0 次都是 0。
+**后果**：把 `raw_->Read(...)` 换成常量 `kReadTimeout`（永不读 socket，所有数据丢失）
+的假修复**全部断言通过**（审计 X 实测）。
+**修法**：加显式计数器 `read_calls`；再加一个用例断言"缺失的密文被喂回去、
+明文真的出来了"（`receive_calls == 2` / `n == 1` / `buf[0] == 0x41`）。
+**教训**：
+1. **断言必须能区分两个世界**。写断言前先问"什么样的错误实现也能让它通过"。
+2. "某量等于 0"往往零信息量（未初始化的默认值也是 0）。要断言**发生了多少次**，不是"是否仍为 0"。
+3. 一个测试只证明"没有 A"不等于证明"有 B"。补一个互补用例，让两者正交。
+
+### 例 64：注释里的数量词必须数一遍
+`orders_apply.h` 我写 "the **eight** built-in GDI hatch patterns"，
+实现是 `kHatch[6][8]` + `hatch > 0x05` ⇒ **6** 个。同一条注释前后 5 次迭代，
+两次数量词都写错（eight / six）。**数量词一律用 grep + 数数组维度确认。**
+另一处措辞也不准："Only an unhandled style reports kUnsupported" ——
+已处理的 BS_HATCHED 在 BrushHatch 越界时也返回 kUnsupported。
+
+### 附：我自己造的假缺陷
+我曾认定 `gateway_transport.cpp:655` 写成 `e.status`（应为 `r.status`）是缺陷。
+实际那是我**自己的变异残留**被当成原有代码读。HEAD 里本就是 `if (!plaintext.empty())`。
+**教训：判断"原有代码有缺陷"前，先 `git show HEAD:<file>` 或 `git diff` 确认工作树状态，
+不要在变异过程中读代码。**

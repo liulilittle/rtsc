@@ -1316,3 +1316,22 @@ C9 同型复查：`capabilities.cpp:722`、`orders_apply.cpp:347`、`gateway_tra
 `cliprdr_client.h:94`/`file_list.h:5` 属 feature-gap（UNVERIFIED）。
 
 验证：C0 六类诊断全 0；Linux 重建 0 错误 + 103/5793；Windows ctest **69/69**（78.35s）；`MUT-` 0。
+### 批 52（`5349d77`）—— kClosed 明文丢失 + 陈旧构建守卫
+
+**B（审计 X 报，低-中）**：`gateway_transport.cpp` 两处 `&& status != kClosed`
+把"明文非空 + 同时报关闭"的数据丢弃。两后端均可达（OpenSSL `:390-398`、
+SChannel `:654-658`）。新增 `ScriptedClosingTls` + 2 用例，红→绿，各自变异唯一守护。
+drain 分支加 hardened EOF。
+
+**C**：`orders_apply.h` 的 kUnsupported 说明补上"已处理但参数越界"。
+
+**顺带**：`Write` 期间明文入队（`pending_.insert`）此前零覆盖，新增
+`ScriptedReadDuringWriteTls` + 用例，变异验证。
+
+**更正**：`:655` 的 `e.status` 是我自己的变异残留，HEAD 无此缺陷。
+
+**verify.ps1 陈旧构建守卫**：批51 的 dry-run 判据抓不到 mtime 回退；
+改为内容+size+mtime 指纹，不一致即删目录重建。红证：mtime 回退 30 天触发重建。
+
+验证：C0 全 0；gateway 124/1234；Linux ctest 67/67；Windows ctest 69/69；
+`verify.ps1` 与 `-LinuxBuild` 均 EXIT=0（后者 LINUX GATE PASS）。

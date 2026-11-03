@@ -1053,3 +1053,32 @@ C9 扫描 `continue` 与"未实现"类注释时命中 `include/rtsc/render/order
 ### 验证
 C0 六类诊断全 0；Linux 重建 0 错误 + `rtsc_orders_tests` 103/5793；
 Windows ctest **69/69**（78.35s）；行尾一致；`MUT-` 0。
+## 第890轮：批52 —— kClosed 明文丢失 + 陈旧构建守卫（`5349d77`）
+### B. kClosed 携带明文被丢弃（真数据丢失，审计 X 报）
+`gateway_transport.cpp` 两处 `&& status != kClosed` 过滤器把
+"明文非空且同时报关闭"的情况丢弃。可达性：OpenSSL `:390-398` 先插明文再
+ZERO_RETURN 且不清空；SChannel `:654-658` 注释明写 "keep the plaintext decoded so far"。
+新增 `ScriptedClosingTls` + 2 个用例（drain 分支 / feed 分支），
+红证 `n == 1 (got -2)` 与 `(got 0)`，修复后 123/1226 绿。
+drain 分支再加 hardened EOF（交付两明文后 `kClosed` → 立即 `return 0`）。
+变异（各自恢复 `&& kClosed`）→ 各只杀对应用例。
+### C. 注释 nit
+`orders_apply.h` "Only an unhandled style reports kUnsupported" → 补上
+"handled style with out-of-range parameters (BS_HATCHED with BrushHatch > 0x05)"。
+### 顺带：Write 期间明文入队无覆盖
+`pending_.insert` 此前全仓 0 用例。新增 `ScriptedReadDuringWriteTls` +
+`tls_byte_transport_keeps_plaintext_that_arrives_during_write`；
+变异（抑制 insert）→ `:3958 n == 1 (got -2)` 唯一失败。
+### 更正自己的误判
+`:655` 的 `e.status` 是我自己的变异残留，HEAD 本就是 `if (!plaintext.empty())`，无此缺陷。
+### verify.ps1 陈旧构建守卫（批51 版抓不到真正失败模式，本批重做）
+dry-run 判据在 mtime 回退时也是空的。改为内容+size+mtime 指纹：
+不一致就删 build 目录; build+ctest 全成功才写指纹。
+红证：mtime 回退 30 天 → 打印 "stale build directory ... rebuilding from scratch"。
+还修了自身缺陷：`$ErrorActionPreference="Stop"` 下 git stderr 警告会变成终止错误。
+### 验证
+C0 六类诊断全 0；rtsc_gateway_tests **124/1234**；Linux ctest 67/67；
+Windows ctest **69/69**(83.61s)；`verify.ps1` EXIT=0；`verify.ps1 -LinuxBuild` EXIT=0 + LINUX GATE PASS；`MUT-` 0。
+### 教训（discover 例 62/63/64）
+陈旧产物会让测试结果与工作树脱钩（守卫要抓根因不抓症状）；
+"某量==0"零信息量，断言要能区分两个世界；注释数量词必须数一遍。
