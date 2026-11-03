@@ -191,10 +191,17 @@ if grep -q "skipped:" "$SEC_LOG"; then
     grep -n "skipped:" "$SEC_LOG" | tail -5
     exit 1
 fi
-# Same rule as the view/ui blocks below: a check count cannot prove this body
-# ran (swapping the two real CHECKs for `CHECK(true)` keeps the total at 67 while
-# the drain regression goes untested -- measured). Require the marker the success
-# path prints; nothing else in the tree emits this string.
+# A check count cannot prove this body ran (swapping the real CHECKs for
+# `CHECK(true)` keeps the total at 67 while the drain regression goes untested --
+# measured). Require the marker the success path prints.
+#
+# COVERAGE BOUNDARY (audit X, measured twice): this marker proves the success
+# PATH was reached; it does NOT prove the CHECK statement is still there.
+# Deleting `CHECK(got_challenge)` while leaving the printf keeps the marker and
+# the exit code at 0. Any "produced output" assertion has this limit, because
+# CHECK only calls report_failure and does not change control flow
+# (tests/test_framework.h:47-53). Detecting a deleted assertion needs review, not
+# a gate. Do not claim otherwise here or in the commit message.
 if ! grep -q "drain: challenge surfaced after coalesced record" "$SEC_LOG"; then
     echo "LINUX GATE FAIL: ${P0_CASE} body did not reach its success path (drain marker missing)"
     grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
