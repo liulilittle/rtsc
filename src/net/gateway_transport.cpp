@@ -550,9 +550,19 @@ int TlsByteTransport::Read(uint8_t* buf, size_t size) {
             error_ = "gateway TLS receive failed (drain): " + e.message;
             return -1;
         }
-        if (!plaintext.empty() && e.status != tls::Status::kClosed) {
+        // Deliver before reporting the close: both backends hand back the
+        // plaintext decoded so far together with kClosed when the last
+        // application record and close_notify arrive together
+        // (src/net/tls_openssl.cpp:390-398 keeps the plaintext and returns
+        // kClosed; src/net/tls_schannel.cpp:654-658 says "keep the plaintext
+        // decoded so far" in its own comment). Filtering on kClosed here used to
+        // drop those final bytes and truncate the stream.
+        if (!plaintext.empty()) {
             return ServePlaintext(buf, size, plaintext);
         }
+        // Nothing left to deliver: report a clean EOF now instead of going back
+        // to the socket and turning a closed peer into a read timeout.
+        if (e.status == tls::Status::kClosed) return 0;
         // Only loop back when this drain actually consumed buffered input.
         // buffered_input() > 0 alone is NOT progress: a partially received
         // record keeps the backend non-empty while Receive can only answer
@@ -574,7 +584,10 @@ int TlsByteTransport::Read(uint8_t* buf, size_t size) {
             error_ = "gateway TLS receive failed: " + r.message;
             return -1;
         }
-        if (!out.empty() && r.status != tls::Status::kClosed) {
+        // Same rule on the feed branch: a ciphertext that decodes to data and
+        // completes the close must yield the data first, then EOF on the next
+        // read. `out` used to be discarded whenever r.status was kClosed.
+        if (!out.empty()) {
             return ServePlaintext(buf, size, out);
         }
         if (r.status == tls::Status::kClosed) return 0;

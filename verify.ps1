@@ -43,6 +43,56 @@ $root = $PSScriptRoot
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $buildDir = if ($Clean) { Join-Path $root "build\verify-$stamp" } else { Join-Path $root "build\verify" }
 
+# Ninja decides what to recompile by mtime. Any tool that restores a file with
+# its old timestamp (Copy-Item, git checkout of an older blob) makes a source
+# travel backwards in time, so Ninja keeps the object built from the OLD bytes
+# and never recompiles it (.opencode/discover.md examples 36/62). The run then
+# measures code that is not in the working tree: it reported three tls failures
+# that vanished after one forced rebuild. Fingerprint the tree instead of the
+# clock: when the tree changed since the build directory was last completed,
+# throw the build directory away so the result cannot be stale.
+# git writes advice to stderr (e.g. "LF will be replaced by CRLF"), and this
+# script runs with $ErrorActionPreference = "Stop", which turns native stderr
+# into a terminating error. Relax it for the queries only.
+$eapBefore = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$fpParts = @()
+$fpParts += (& git -C $root rev-parse HEAD 2>&1 | Out-String)
+$fpParts += (& git -C $root status --porcelain 2>&1 | Out-String)
+$fpParts += (& git -C $root diff --numstat HEAD 2>&1 | Out-String)
+$files = @(& git -C $root ls-files -- src include tests tools CMakeLists.txt 2>&1)
+$ErrorActionPreference = $eapBefore
+# Content alone is not enough: a mutation that is built and then reverted leaves
+# the tree byte-identical while the build directory still holds the mutant's
+# objects. Timestamps catch that, because reverting a file always changes its
+# mtime (Copy-Item keeps the OLD one, an editor writes a NEW one -- either way it
+# differs from the state that was stamped). Size is included so a same-mtime
+# rewrite is still noticed.
+foreach ($f in $files) {
+    $full = Join-Path $root $f
+    if (Test-Path -LiteralPath $full) {
+        $it = Get-Item -LiteralPath $full
+        $fpParts += "$f|$($it.Length)|$($it.LastWriteTimeUtc.Ticks)"
+    }
+}
+$fpText = ($fpParts -join "`n")
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$fp = [System.BitConverter]::ToString(
+    $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpText))).Replace("-", "")
+$fpFile = Join-Path $buildDir ".verify-tree-fingerprint"
+if (-not $Clean -and (Test-Path $buildDir) -and (Test-Path $fpFile)) {
+    $recorded = (Get-Content -LiteralPath $fpFile -Raw).Trim()
+    if ($recorded -ne $fp) {
+        Write-Host "== stale build directory =="
+        Write-Host "  the tree changed since $buildDir was last completed; rebuilding from scratch"
+        Remove-Item -LiteralPath $buildDir -Recurse -Force
+    }
+} elseif (-not $Clean -and (Test-Path $buildDir) -and -not (Test-Path $fpFile)) {
+    Write-Host "== stale build directory =="
+    Write-Host "  $buildDir has no fingerprint (built before this gate existed); rebuilding from scratch"
+    Remove-Item -LiteralPath $buildDir -Recurse -Force
+}
+
 $env:TEMP = Join-Path $root ".tmp"
 $env:TMP = $env:TEMP
 New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
@@ -105,6 +155,11 @@ Write-Host "== ctest =="
 & $ctest --test-dir $buildDir --output-on-failure
 $ctestExit = $LASTEXITCODE
 if ($ctestExit -ne 0) { exit $ctestExit }
+
+# Only a completed run (build + tests) may stamp the tree, so a directory that
+# still holds objects from an older tree can never be trusted on the next run.
+Set-Content -LiteralPath $fpFile -Value $fp -NoNewline -Encoding ASCII
+Write-Host "  tree fingerprint recorded"
 
 if ($CrashCheck) {
     Write-Host "== crash guard =="

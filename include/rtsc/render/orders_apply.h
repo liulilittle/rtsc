@@ -49,8 +49,9 @@ class BrushCacheView {
 // brush is always kUnsupported (there is no cache to resolve it against).
 // BS_SOLID uses P = ForeColor and S = 0; BS_NULL draws nothing; BS_HATCHED
 // uses the six built-in GDI hatch patterns (HS_HORIZONTAL..HS_DIAGCROSS);
-// BS_PATTERN uses the inline 8x8 BrushExtra pattern. Only an unhandled style
-// reports kUnsupported.
+// BS_PATTERN uses the inline 8x8 BrushExtra pattern. kUnsupported means either a
+// style with no handler, or a handled style with out-of-range parameters (a
+// BS_HATCHED with BrushHatch above 0x05, for example).
 PatBltResult ApplyPatBlt(rtsc::ui::Surface& surface,
                          const rtsc::proto::PatBltOrder& order);
 

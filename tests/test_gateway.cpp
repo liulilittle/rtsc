@@ -232,6 +232,188 @@ class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
     bool handshaken_ = false;
     rtsc::tls::Error ok_{};
 };
+// A backend that reports the peer's close_notify together with the last chunk of
+// application data. Both real backends do this: OpenSSL appends the plaintext
+// and then returns kClosed on SSL_ERROR_ZERO_RETURN without clearing it
+// (src/net/tls_openssl.cpp:390-398), and SChannel keeps whatever earlier
+// iterations already decoded (src/net/tls_schannel.cpp:654-658 says so in its
+// own comment). The transport must deliver that plaintext instead of dropping it
+// on the floor just because the same call also reported the close.
+class ScriptedClosingTls : public rtsc::tls::TlsTransport {
+ public:
+    // "payload" is delivered once, together with kClosed. `deliver_on_drain`
+    // selects which call carries it: the drain call (buffered_input() > 0) or
+    // the call that feeds fresh ciphertext off the socket.
+    explicit ScriptedClosingTls(bool deliver_on_drain)
+        : deliver_on_drain_(deliver_on_drain) {}
+
+    static constexpr uint8_t kPayload = 0x5A;
+    int close_calls = 0;
+
+    rtsc::tls::Error Handshake(const uint8_t*, size_t in_size, size_t& consumed,
+                               std::vector<uint8_t>& out) override {
+        consumed = in_size;
+        out.clear();
+        handshaken_ = true;
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Send(const uint8_t*, size_t size, size_t& consumed,
+                          std::vector<uint8_t>& out) override {
+        consumed = size;
+        out.assign(size, 0x5A);
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Receive(const uint8_t* ciphertext, size_t size,
+                             std::vector<uint8_t>& plaintext,
+                             size_t) override {
+        plaintext.clear();
+        rtsc::tls::Error e;
+        e.status = rtsc::tls::Status::kClosed;
+        e.message = "peer close_notify";
+        const bool is_feed = ciphertext != nullptr && size > 0;
+        if (!delivered_ && is_feed == !deliver_on_drain_) {
+            delivered_ = true;
+            ++close_calls;
+            plaintext.push_back(kPayload);
+            return e;
+        }
+        if (!is_feed && !deliver_on_drain_ && !delivered_) {
+            // Nothing buffered yet: a real backend answers kNeedMoreInput until
+            // it has seen a record, not kClosed.
+            e.status = rtsc::tls::Status::kNeedMoreInput;
+            e.message.clear();
+            return e;
+        }
+        return e;  // plain kClosed, nothing left to deliver
+    }
+    rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKeyInfo(
+        std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error negotiated(rtsc::tls::NegotiatedInfo& out) const override {
+        out = rtsc::tls::NegotiatedInfo{};
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::RecordSizes record_sizes() const override {
+        return rtsc::tls::RecordSizes{};
+    }
+    rtsc::tls::Error Shutdown(std::vector<uint8_t>& out) override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    bool handshake_complete() const noexcept override { return handshaken_; }
+    bool closed() const noexcept override { return true; }
+    // Non-zero so Read() enters the drain branch first.
+    size_t buffered_input() const noexcept override {
+        return deliver_on_drain_ && !delivered_ ? 1 : 0;
+    }
+    const rtsc::tls::Error& last_error() const noexcept override { return ok_; }
+    const char* backend_name() const noexcept override { return "closing"; }
+
+ private:
+    bool deliver_on_drain_ = false;
+    bool delivered_ = false;
+    bool handshaken_ = false;
+    rtsc::tls::Error ok_{};
+};
+// A backend that cannot send until it has read: the first Send consumes nothing
+// (OpenSSL answers WANT_READ that way), so the adaptor must read one raw chunk
+// and hand it to Receive, which surfaces application data. That data arrived
+// during Write() and belongs to the next Read().
+class ScriptedReadDuringWriteTls : public rtsc::tls::TlsTransport {
+ public:
+    static constexpr uint8_t kQueued = 0x77;
+    int send_calls = 0;
+    int receive_calls = 0;
+
+    rtsc::tls::Error Handshake(const uint8_t*, size_t in_size, size_t& consumed,
+                               std::vector<uint8_t>& out) override {
+        consumed = in_size;
+        out.clear();
+        handshaken_ = true;
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Send(const uint8_t*, size_t size, size_t& consumed,
+                          std::vector<uint8_t>& out) override {
+        ++send_calls;
+        out.clear();
+        if (send_calls == 1) {
+            consumed = 0;  // needs peer bytes first
+            return rtsc::tls::Error{};
+        }
+        consumed = size;
+        out.assign(size, 0x99);
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error Receive(const uint8_t* ciphertext, size_t size,
+                             std::vector<uint8_t>& plaintext,
+                             size_t) override {
+        ++receive_calls;
+        plaintext.clear();
+        if (ciphertext != nullptr && size > 0) {
+            plaintext.push_back(kQueued);
+        }
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error LocalSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKeyInfo(
+        std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerSubjectPublicKey(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error PeerCertificateDer(std::vector<uint8_t>& out) const override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::Error negotiated(rtsc::tls::NegotiatedInfo& out) const override {
+        out = rtsc::tls::NegotiatedInfo{};
+        return rtsc::tls::Error{};
+    }
+    rtsc::tls::RecordSizes record_sizes() const override {
+        return rtsc::tls::RecordSizes{};
+    }
+    rtsc::tls::Error Shutdown(std::vector<uint8_t>& out) override {
+        out.clear();
+        return rtsc::tls::Error{};
+    }
+    bool handshake_complete() const noexcept override { return handshaken_; }
+    bool closed() const noexcept override { return false; }
+    size_t buffered_input() const noexcept override { return 0; }
+    const rtsc::tls::Error& last_error() const noexcept override { return ok_; }
+    const char* backend_name() const noexcept override { return "read-on-write"; }
+
+ private:
+    bool handshaken_ = false;
+    rtsc::tls::Error ok_{};
+};
 // A loopback datagram socket pair: Send() delivers to the peer's queue.
 // Thread safe: the mutual-write concurrency test sends and receives from
 // different threads on the same socket object.
@@ -3704,5 +3886,78 @@ RTSC_TEST(tls_byte_transport_partial_record_recovers_the_data) {
     CHECK_EQ(tlsp->receive_calls, 2);                     // drain, then ciphertext
     CHECK_EQ(n, 1);                                       // payload came out
     CHECK_EQ(buf[0], static_cast<uint8_t>(0x41));
+}
+RTSC_TEST(tls_byte_transport_delivers_plaintext_before_a_close) {
+    // The peer's close_notify can share a TLS record sequence with its last
+    // application data, and both backends then report kClosed with the decoded
+    // plaintext in hand (src/net/tls_openssl.cpp:390-398,
+    // src/net/tls_schannel.cpp:654-658). Dropping that plaintext silently
+    // truncates the stream at exactly the moment the peer stopped talking.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    auto tls = std::make_unique<ScriptedClosingTls>(true);
+    ScriptedClosingTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 1);  // the payload the peer sent right before closing
+    if (n != 1) return;
+    CHECK_EQ(buf[0], ScriptedClosingTls::kPayload);
+    CHECK_EQ(tlsp->close_calls, 1);
+    CHECK_EQ(rawp->read_calls, 0);  // served from the backend, no socket read needed
+}
+
+RTSC_TEST(tls_byte_transport_delivers_plaintext_when_the_feed_reports_a_close) {
+    // Same defect on the other branch: the ciphertext just read off the socket
+    // decodes to application data AND completes the close. The adaptor used to
+    // `return 0` here, so the final payload was lost and the caller saw a clean
+    // EOF one record early.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    rawp->to_read = {0x17, 0x03, 0x03, 0x00, 0x01};
+    auto tls = std::make_unique<ScriptedClosingTls>(false);
+    ScriptedClosingTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 1);
+    if (n != 1) return;
+    CHECK_EQ(buf[0], ScriptedClosingTls::kPayload);
+    CHECK_EQ(tlsp->close_calls, 1);
+    CHECK_EQ(rawp->read_calls, 1);
+}
+RTSC_TEST(tls_byte_transport_keeps_plaintext_that_arrives_during_write) {
+    // A send can need peer bytes first. Whatever Receive decodes while Write is
+    // waiting belongs to the next Read(): dropping it loses application data
+    // that the peer already delivered. The guard that decides this used to test
+    // the Send error (already known to be kOk) instead of the Receive result,
+    // which made it a constant-true condition that read like a real filter.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    rawp->to_read = {0x17, 0x03};
+    auto tls = std::make_unique<ScriptedReadDuringWriteTls>();
+    ScriptedReadDuringWriteTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    const uint8_t payload[4] = {0x01, 0x02, 0x03, 0x04};
+    CHECK(t.Write(payload, sizeof(payload)));
+    CHECK_EQ(tlsp->send_calls, 2);      // first stalled, second sent
+    CHECK_EQ(tlsp->receive_calls, 1);   // one feed during the stall
+    CHECK_EQ(rawp->read_calls, 1);
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 1);
+    if (n != 1) return;
+    CHECK_EQ(buf[0], ScriptedReadDuringWriteTls::kQueued);
+    CHECK_EQ(rawp->read_calls, 1);  // served from the queue, no second read
 }
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }
