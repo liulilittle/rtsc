@@ -46,9 +46,10 @@ class BrushCacheView {
 };
 
 // Applies a parsed PatBlt to a surface with no brush cache: a TS_CACHED_BRUSH
-// brush is always kUnsupported. BS_SOLID uses P = ForeColor and S = 0; BS_NULL
-// draws nothing. BS_HATCHED and BS_PATTERN are not implemented yet (TODO 3b3)
-// and report kUnsupported rather than drawing something wrong.
+// brush is always kUnsupported (there is no cache to resolve it against).
+// BS_SOLID uses P = ForeColor and S = 0; BS_NULL draws nothing; BS_HATCHED
+// uses the eight built-in GDI hatch patterns and BS_PATTERN the inline 8x8
+// BrushExtra pattern. Only an unhandled style reports kUnsupported.
 PatBltResult ApplyPatBlt(rtsc::ui::Surface& surface,
                          const rtsc::proto::PatBltOrder& order);
 
