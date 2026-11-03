@@ -986,3 +986,29 @@ Linux gate `LINUX GATE PASS` 67/67 + 五标记 + `FAILED_COUNT=0`；
 Windows Release 六类诊断全 0 + `rtsc_security_tests` 22/162 + ctest **69/69**（78.95s）；
 行尾：security_layer.cpp LF 454/CRLF 0、test_security_layer.cpp CRLF 1051/1051、无混合；
 `bash -n` SYNTAX_OK；全仓 `MUT-` 0。
+## 第887轮：批48 —— 修 TlsByteTransport::Read 死循环（`7bfb413`）
+### 因果链（G2）
+1. 定位：`src/net/gateway_transport.cpp:555`
+2. 原因：后端持不完整 TLS 记录时 `Receive(nullptr,0)` 返回 `kNeedMoreInput` 且不消耗，
+   `buffered_input()` 永远 > 0 → `continue` 永不退出
+3. 原意图：优先取已缓冲的完整记录，避免先去读 socket
+4. 错误假设：`buffered_input() > 0` ⇒ 本次 drain 有进展
+5. 防再犯：以 `buffered_input()` 前后是否减少为进展判据；不减少就落到读 socket
+### 测试先行
+`ScriptedPartialRecordTls`（buffered 恒 3、Receive 恒 kNeedMoreInput、
+`receive_calls > 100` 时返回 kProtocolError 防挂死）+ 新用例：
+| 状态 | 结果 |
+|---|---|
+| 修复前 | `:3659 n == kReadTimeout (got -1, want -2)`；`:3660 receive_calls == 1 (got **101**, want 1)` |
+| 修复后 | 120 tests / 1210 checks, 0 failing |
+### C9 复扫
+全仓 5 个 `buffered_input()` 循环，只有 `gateway_transport.cpp:555` 是 `continue` 无逃逸；
+`security_layer.cpp:244/:321/:409`、`server_security_layer.cpp:194/:300` 都有
+`if (status == kNeedMoreInput) break;`，安全。
+### 验证
+Linux gate `LINUX GATE PASS` 67/67 + 五标记 + `FAILED_COUNT=0`（首次跑因 bench 偶发红，重跑绿）；
+Windows Release 六类诊断全 0 + `rtsc_gateway_tests` 120/1210 + ctest **69/69**(74.55s)；
+行尾 CRLF 一致；全仓 `MUT-` 0。
+### 教训（discover 例 59/60）
+`X > 0` 用作"继续循环"条件时必须证明每轮有进展；"缓冲非空"≠"能产出"；
+循环排查先问"每轮是否有状态单调推进"。gate 的 bench 偶发红要先看分布再判回归，禁止抬 budget 掩盖。

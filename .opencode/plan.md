@@ -1268,3 +1268,20 @@ Windows Release 六类诊断全 0 + ctest **69/69**（78.95s）；`bash -n` SYNT
 
 教训（discover 例 58）：WriteAllLines 恒用环境换行（与扩展名无关，例 47 的根因）；
 按行号改文件前必须核对目标行内容，能按文本锚点替换就不要按索引，改完必须 `git diff` 逐行确认。
+### 批 48（`7bfb413`）—— 修 `TlsByteTransport::Read` 死循环
+
+`src/net/gateway_transport.cpp:555` 的 `if (tls_->buffered_input() > 0) continue;` 在
+`for(;;)` 里：后端持**不完整** TLS 记录时 `Receive(nullptr,0)` 返回 `kNeedMoreInput`
+且不消耗，`buffered_input()` 永远 > 0 → 死循环。
+
+**红证**：`ScriptedPartialRecordTls` + 新用例，修复前 `receive_calls == 1 (got 101)`、
+`n == kReadTimeout (got -1)`；修复后 120/1210 全绿。
+
+**修法**：`buffered_before` 前后对比，只有缓冲**减少**才 `continue`；否则落到 `raw_->Read`。
+
+**C9 复扫**：全仓 5 个 `buffered_input()` 循环，仅此一处缺逃逸；其余四处都是
+`while` + `if (status == kNeedMoreInput) break;`。
+
+验证：Linux gate `LINUX GATE PASS` 67/67 + 五标记；Windows 六类诊断全 0 + ctest **69/69**(74.55s)；
+`MUT-` 0。首次 gate 因 view bench 偶发红（0.89 vs 0.60），同二进制连跑 5 次 0.11-0.12 全绿，
+判定环境噪声（discover 例 60），未调 budget。

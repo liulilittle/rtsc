@@ -1156,3 +1156,49 @@ plus a coalesced data segment, which no current test constructs"。
 - 错误 A：`LF=454 CRLF=454`（WriteAllLines 后）→ `LF=454 CRLF=0`（修正后）
 - 错误 B：`git diff` 出现 `-    while (tls_->buffered_input() > 0) {`
 - 回滚后 hash 与 `.tmp\sl.bak` 一致（`161EF9B1...`），重做后 diff 只有 +6/-2 注释行
+## 第887轮：buffered_input()>0 不等于"有进展"（例 59）+ gate 时间预算偶发（例 60）
+
+### 例 59：`if (buffered_input() > 0) continue;` 在 `for(;;)` 里会死循环
+`src/net/gateway_transport.cpp:555`（批48 修复）。
+
+**错误假设**：`buffered_input() > 0` ⇒ 这次 drain 有进展。
+**实际**：它只表示后端还有未消费的**密文**。当缓冲里只有一条**不完整**的 TLS
+记录时（Schannel `rx_buffer_.size() < 5`、OpenSSL `BIO_ctrl_pending > 0`），
+`Receive(nullptr, 0, ...)` 返回 `kNeedMoreInput` 且**不消耗**缓冲，于是
+`buffered_input()` 永远 > 0，`continue` 永不退出。
+
+**红证**：`ScriptedPartialRecordTls`（buffered 恒 3、Receive 恒 kNeedMoreInput）
++ `receive_calls > 100` 时返回 kProtocolError（防挂死）：
+`FAIL :3660 receive_calls == 1 (got **101**, want 1)`、`n == kReadTimeout (got -1, want -2)`。
+101 次调用就是死循环的直接证据。
+
+**修法**：以 `buffered_input()` 前后是否**减少**作为进展判据；不减少就落到读 socket。
+这是让记录剩余部分到达的唯一途径。
+
+**C9 复扫结论**：全仓 5 个 `buffered_input()` 循环，只有这一处是 `continue` 无逃逸；
+`security_layer.cpp:244/:321/:409` 与 `server_security_layer.cpp:194/:300` 都是
+`while` + `if (status == kNeedMoreInput) break;`，安全。
+
+**通用教训**：
+1. `X > 0` 类判据若被用作"继续循环"的条件，必须同时证明**每轮都有进展**；
+   否则要用"前后对比"或显式逃逸（break/返回）。
+2. 检查"缓冲是否非空"和"缓冲能否产出"是**两个不同问题**。前者只说明有数据，
+   后者才说明可以前进。
+3. 排查循环时先问：**每轮循环是否有状态单调推进？** 没有就是潜在死循环。
+
+### 例 60：gate 的 view bench 时间预算会偶发红（环境噪声，非回归）
+首次跑 gate：`FAIL test_view.cpp:1473 best < c.budget_ms`，
+`[bench] 1:1 letterbox 1280x1024 -> 1280x1200 0.89 ms (budget 0.60)`。
+
+**同二进制连跑 5 次**：`0.12 / 0.11 / 0.11 / 0.11 / 0.11 ms`，60/7348 全绿；
+重跑 gate：`LINUX GATE PASS`。
+
+**结论**：8 倍瞬时噪声（WSL 负载/CPU 频率），不是代码回归。bench 本身已取
+3 次 × 5 迭代的最小值（`test_view.cpp:1460-1470`），仍被击穿说明是短时争用。
+**不做 budget 调整**（0.6 已是实测 0.11 的 5.4 倍，再抬会削弱 10x 回归检测）。
+
+**教训**：
+1. 时间预算类断言天然 flaky。gate 红时先看**是否只有 bench 项红**、
+   再连跑同一二进制 3-5 次取分布，再决定是否真是回归。
+2. 禁止用"提高 budget"掩盖一次偶发；必须先证明分布。
+3. 性能断言只能证明"没有数量级回归"，不能证明"实现最优"——这一条要写进测试注释。
