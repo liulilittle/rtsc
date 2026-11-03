@@ -1335,3 +1335,17 @@ drain 分支加 hardened EOF。
 
 验证：C0 全 0；gateway 124/1234；Linux ctest 67/67；Windows ctest 69/69；
 `verify.ps1` 与 `-LinuxBuild` 均 EXIT=0（后者 LINUX GATE PASS）。
+### 批 53（`9389bd8`）—— verify.ps1 指纹改内容哈希 + M3/M5 覆盖
+
+**4 个指纹洞（审计 X 攻击，实测确认）**：A `assume-unchanged`、B 未跟踪文件、
+C `showUntrackedFiles=no` 三种都能让旧指纹"不变"；D git 失败时 fp 退化为 `SHA256("")`（fail-open）。
+**修法**：改为 `Get-ChildItem -Recurse -File -Force` + 逐文件 SHA-256，不依赖 git；枚举为空即 `exit 1`。
+顺带解决"改 docs 就全量重建"的成本问题（实测不再触发）。
+
+**M3**：hardened EOF（`:565`）零覆盖 → 补二次 Read 断言，红证 `:3931`/`:3932`。
+**M5**：`ScriptedReadDuringWriteTls` 加 `close_with_data`，新增 kClosed-during-Write 用例，
+红证 `:4007`。注：X 的 `&& e.status` 变异是等价变异（e 恒 kOk），不可杀也不说明测试弱。
+
+**注释更正**：`ScriptedClosingTls` 的 "real backend answers kNeedMoreInput" 只对 SChannel 成立。
+
+验证：C0 全 0；gateway 125/1243；Linux 67/67；Windows 69/69；Linux gate PASS；`MUT-` 0。

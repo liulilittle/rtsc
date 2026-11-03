@@ -1082,3 +1082,29 @@ Windows ctest **69/69**(83.61s)；`verify.ps1` EXIT=0；`verify.ps1 -LinuxBuild`
 ### 教训（discover 例 62/63/64）
 陈旧产物会让测试结果与工作树脱钩（守卫要抓根因不抓症状）；
 "某量==0"零信息量，断言要能区分两个世界；注释数量词必须数一遍。
+## 第891轮：批53 —— 指纹改内容哈希 + M3/M5 覆盖（`9389bd8`）
+### verify.ps1 指纹的 4 个洞（审计 X 攻击，我逐条实测确认）
+| 攻击 | 旧指纹 | 新指纹 |
+|---|---|---|
+| A assume-unchanged + 等长改写 + mtime 回填 | fp 相同 | 抓到 |
+| B 未跟踪头文件改写 + mtime 回填 | fp 相同 | 抓到 |
+| C showUntrackedFiles=no + 新增源文件 | fp 相同 | 抓到 |
+| D git 不可用 | fp = SHA256("") fail-open | 非空且随内容变 |
+| E 对照：普通改写 | 抓到 | 抓到 |
+**修法**：`Get-ChildItem -Recurse -File -Force` 枚举 src/include/tests/tools + CMakeLists.txt，
+逐文件 SHA-256；枚举为空 `exit 1`。顺带解决成本问题：改 `.opencode/`、`docs/` 不再触发重建（实测）。
+### M3 hardened EOF 零覆盖
+删 `gateway_transport.cpp:565` 全套绿。补二次 Read 断言（`n2==0`、`read_calls==0`）；
+红证 `:3931 n2 == 0 (got -2)` + `:3932 read_calls == 0 (got 1)`，唯一失败。
+### M5 Write 侧 kClosed
+X 的 `&& e.status` 变异是**等价变异**（e 恒 kOk，不可杀）；真正风险是 `&& r.status`。
+给 `ScriptedReadDuringWriteTls` 加 `close_with_data`，新增用例；红证 `:4007 n == 1 (got -2)`。
+### 注释更正
+`ScriptedClosingTls` 的 "real backend answers kNeedMoreInput" 只对 SChannel 成立；
+OpenSSL 返回 kOk + 空明文（`:404`）。已分别注明。
+### 验证
+C0 六类诊断全 0；gateway **125/1243**；Linux ctest 67/67；Windows ctest **69/69**(72.12s)；
+Linux gate **LINUX GATE PASS** + 五标记；verify.ps1 EXIT=0 且改 docs 不触发重建；`MUT-` 0。
+### 教训（discover 例 65/66）
+守卫判据要直接观测被测事实，不能依赖 git 状态等间接元信息；"查不到"≠"没变化"；
+变异报绿时先问该变异是否真改变了行为（等价变异不可杀）。

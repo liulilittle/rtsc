@@ -1298,3 +1298,46 @@ size/mtime）写入 build 目录；下次跑时不一致就删目录重建；只
 实际那是我**自己的变异残留**被当成原有代码读。HEAD 里本就是 `if (!plaintext.empty())`。
 **教训：判断"原有代码有缺陷"前，先 `git show HEAD:<file>` 或 `git diff` 确认工作树状态，
 不要在变异过程中读代码。**
+## 第891轮：守卫自身的 fail-open（例 65）+ 等价变异不可杀（例 66）
+
+### 例 65：用 git 状态做"是否变了"的判据必然 fail-open
+我批52 的 verify.ps1 指纹 = HEAD + `status --porcelain` + `diff --numstat` +
+每个文件的 size/mtime。审计 X 用 4 个攻击全部击穿（我复刻判据后逐条重跑确认）：
+
+| 攻击 | 旧指纹 | 根因 |
+|---|---|---|
+| A `update-index --assume-unchanged` + 等长改写 + mtime 回填 | **fp 相同** | git 被告知"别检查这个文件" |
+| B `src/` 下未跟踪头文件改写 + mtime 回填 | **fp 相同** | status 只报 `?? src/gen.h`（路径不变），内容不进 fp |
+| C `status.showUntrackedFiles=no` + 新增源文件 | **fp 相同** | 配置让 status 沉默 |
+| D git 不可用 | **fp = SHA256("")** | `2>&1 \| Out-String` 把错误吞成空串 |
+
+**D 最严重**：git 一失败，守卫退化成常量，对任何树都"不变"。
+**修法**：判据必须是**被测对象本身**（文件字节），不是"关于被测对象的元信息"（git 状态）。
+改用 `Get-ChildItem -Recurse -File -Force` + 逐文件 SHA-256，不依赖 git；
+枚举为空则 `exit 1` 而不是盖章。
+
+**通用教训**：
+1. 守卫/校验器的判据要尽量**直接观测被测事实**。间接判据（git 状态、缓存、索引）
+   在被测对象之外，就有被绕过和失效的空间。
+2. **"查不到"必须与"没变化"区分**。任何 `2>&1` 吞错误的查询都要显式检查
+   `$LASTEXITCODE`，否则失败会静默变成"通过"。
+3. 反过来，"任何查询失败就 fail-closed" 也会让守卫在无关噪声（git 的 EOL 警告）下
+   误停 —— 正确做法是让判据本身不依赖那个会失败的东西。
+
+### 例 66：等价变异不可杀，不是测试缺陷
+X 的 M5 变异把 Write 里的过滤改成 `&& e.status != kClosed`。但 `e` 是 Send 的结果，
+且上方 `if (!e.ok()) return false;` 已保证它是 kOk ⇒ 该条件恒真 ⇒ **语义等价于无条件**，
+任何测试都杀不掉。
+
+**真正的风险**是用**正确变量**加过滤：`&& r.status != kClosed` —— 那才会丢数据。
+我据此补了 `tls_byte_transport_queues_plaintext_when_write_sees_a_close`，
+变异后 `:4007 n == 1 (got -2)` 唯一失败。
+
+**教训**：变异测试报告"绿"时，先问**这个变异是否真的改变了行为**。
+等价变异（dead condition、恒真条件、被上游已保证的约束）不产生可观测差异，
+其"绿"不说明测试弱。要构造**语义上真的不同**的变异。
+
+### 顺带：注释把"某后端"写成"后端普遍"
+`ScriptedClosingTls` 注释说 "a real backend answers kNeedMoreInput"，
+但只有 SChannel 这样（`:597-600`）；OpenSSL 返回 **kOk + 空明文**（`:404`）。
+**教训**：涉及多个实现的共性描述，必须逐个实现核对，不能从一个实现外推。
