@@ -48,37 +48,53 @@ $buildDir = if ($Clean) { Join-Path $root "build\verify-$stamp" } else { Join-Pa
 # travel backwards in time, so Ninja keeps the object built from the OLD bytes
 # and never recompiles it (.opencode/discover.md examples 36/62). The run then
 # measures code that is not in the working tree: it reported three tls failures
-# that vanished after one forced rebuild. Fingerprint the tree instead of the
-# clock: when the tree changed since the build directory was last completed,
-# throw the build directory away so the result cannot be stale.
-# git writes advice to stderr (e.g. "LF will be replaced by CRLF"), and this
-# script runs with $ErrorActionPreference = "Stop", which turns native stderr
-# into a terminating error. Relax it for the queries only.
-$eapBefore = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$fpParts = @()
-$fpParts += (& git -C $root rev-parse HEAD 2>&1 | Out-String)
-$fpParts += (& git -C $root status --porcelain 2>&1 | Out-String)
-$fpParts += (& git -C $root diff --numstat HEAD 2>&1 | Out-String)
-$files = @(& git -C $root ls-files -- src include tests tools CMakeLists.txt 2>&1)
-$ErrorActionPreference = $eapBefore
-# Content alone is not enough: a mutation that is built and then reverted leaves
-# the tree byte-identical while the build directory still holds the mutant's
-# objects. Timestamps catch that, because reverting a file always changes its
-# mtime (Copy-Item keeps the OLD one, an editor writes a NEW one -- either way it
-# differs from the state that was stamped). Size is included so a same-mtime
-# rewrite is still noticed.
-foreach ($f in $files) {
-    $full = Join-Path $root $f
-    if (Test-Path -LiteralPath $full) {
-        $it = Get-Item -LiteralPath $full
-        $fpParts += "$f|$($it.Length)|$($it.LastWriteTimeUtc.Ticks)"
+# that vanished after one forced rebuild.
+#
+# The fingerprint is a CONTENT hash of every build input, not a git query and not
+# a timestamp:
+#   * git-derived fingerprints fail open. With `git update-index
+#     --assume-unchanged`, `status.showUntrackedFiles=no`, or a brand-new
+#     untracked header, `status`/`diff` report nothing while the bytes changed;
+#     if git itself fails, the query returns an empty string and every tree
+#     hashes to SHA256("") -- the guard silently becomes a constant (audit X
+#     measured all four).
+#   * mtime alone can be forged (a restore keeps the old stamp; NTFS tunneling
+#     can resurrect it within ~15 s).
+# Hashing the bytes is immune to all of the above, and works when git is broken.
+# Only the four source trees and the top-level CMakeLists.txt are hashed: build
+# outputs, .tmp and .git must not feed the value.
+$buildInputs = @('src', 'include', 'tests', 'tools')
+$fpLines = New-Object System.Collections.Generic.List[string]
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+foreach ($dir in $buildInputs) {
+    $fullDir = Join-Path $root $dir
+    if (-not (Test-Path -LiteralPath $fullDir)) { continue }
+    $items = Get-ChildItem -LiteralPath $fullDir -Recurse -File -Force |
+        Sort-Object -Property FullName
+    foreach ($it in $items) {
+        # Path relative to the repository root, always with forward slashes so
+        # the value does not depend on the separator Windows happens to use.
+        $rel = $it.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+        $bytes = [IO.File]::ReadAllBytes($it.FullName)
+        $digest = [System.BitConverter]::ToString($sha256.ComputeHash($bytes)).Replace("-", "")
+        $fpLines.Add("$rel|$($bytes.Length)|$digest")
     }
 }
-$fpText = ($fpParts -join "`n")
-$sha = [System.Security.Cryptography.SHA256]::Create()
+$topCmake = Join-Path $root 'CMakeLists.txt'
+if (Test-Path -LiteralPath $topCmake) {
+    $bytes = [IO.File]::ReadAllBytes($topCmake)
+    $digest = [System.BitConverter]::ToString($sha256.ComputeHash($bytes)).Replace("-", "")
+    $fpLines.Add("CMakeLists.txt|$($bytes.Length)|$digest")
+}
+# A query that produced nothing is a broken guard, not a clean tree: refuse to
+# run rather than stamp a constant that matches every future tree.
+if ($fpLines.Count -eq 0) {
+    Write-Error "fingerprint found no build inputs under $root (refusing to run with a blind guard)"
+    exit 1
+}
+$fpText = ($fpLines -join "`n")
 $fp = [System.BitConverter]::ToString(
-    $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpText))).Replace("-", "")
+    $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpText))).Replace("-", "")
 $fpFile = Join-Path $buildDir ".verify-tree-fingerprint"
 if (-not $Clean -and (Test-Path $buildDir) -and (Test-Path $fpFile)) {
     $recorded = (Get-Content -LiteralPath $fpFile -Raw).Trim()

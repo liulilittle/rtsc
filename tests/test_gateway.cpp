@@ -229,6 +229,7 @@ class ScriptedPartialRecordTls : public rtsc::tls::TlsTransport {
     const char* backend_name() const noexcept override { return "partial"; }
 
  private:
+    bool close_with_data_ = false;
     bool handshaken_ = false;
     rtsc::tls::Error ok_{};
 };
@@ -278,8 +279,11 @@ class ScriptedClosingTls : public rtsc::tls::TlsTransport {
             return e;
         }
         if (!is_feed && !deliver_on_drain_ && !delivered_) {
-            // Nothing buffered yet: a real backend answers kNeedMoreInput until
-            // it has seen a record, not kClosed.
+            // Nothing buffered yet, so this is not a close: SChannel answers
+            // kNeedMoreInput while its rx_buffer_ is empty
+            // (src/net/tls_schannel.cpp:597-600); OpenSSL answers kOk with empty
+            // plaintext (src/net/tls_openssl.cpp:404). Either way Read() falls
+            // through to the socket, which is the behaviour under test.
             e.status = rtsc::tls::Status::kNeedMoreInput;
             e.message.clear();
             return e;
@@ -339,6 +343,13 @@ class ScriptedClosingTls : public rtsc::tls::TlsTransport {
 // during Write() and belongs to the next Read().
 class ScriptedReadDuringWriteTls : public rtsc::tls::TlsTransport {
  public:
+    // `close_with_data` makes the read that unblocks the send report kClosed
+    // together with the payload, which is what a real backend does when the
+    // peer's last application record and its close_notify arrive together
+    // (src/net/tls_openssl.cpp:386-398, src/net/tls_schannel.cpp:624-658).
+    explicit ScriptedReadDuringWriteTls(bool close_with_data = false)
+        : close_with_data_(close_with_data) {}
+
     static constexpr uint8_t kQueued = 0x77;
     int send_calls = 0;
     int receive_calls = 0;
@@ -367,10 +378,15 @@ class ScriptedReadDuringWriteTls : public rtsc::tls::TlsTransport {
                              size_t) override {
         ++receive_calls;
         plaintext.clear();
+        rtsc::tls::Error e;
         if (ciphertext != nullptr && size > 0) {
             plaintext.push_back(kQueued);
+            if (close_with_data_) {
+                e.status = rtsc::tls::Status::kClosed;
+                e.message = "peer close_notify";
+            }
         }
-        return rtsc::tls::Error{};
+        return e;
     }
     rtsc::tls::Error LocalCertificateDer(std::vector<uint8_t>& out) const override {
         out.clear();
@@ -411,6 +427,7 @@ class ScriptedReadDuringWriteTls : public rtsc::tls::TlsTransport {
     const char* backend_name() const noexcept override { return "read-on-write"; }
 
  private:
+    bool close_with_data_ = false;
     bool handshaken_ = false;
     rtsc::tls::Error ok_{};
 };
@@ -3908,6 +3925,14 @@ RTSC_TEST(tls_byte_transport_delivers_plaintext_before_a_close) {
     CHECK_EQ(buf[0], ScriptedClosingTls::kPayload);
     CHECK_EQ(tlsp->close_calls, 1);
     CHECK_EQ(rawp->read_calls, 0);  // served from the backend, no socket read needed
+
+    // The next read must report a clean EOF. Without the explicit close check
+    // the adaptor goes back to the socket instead, which on a half-closed peer
+    // turns a finished stream into an endless sequence of read timeouts
+    // (measured: n2 == kReadTimeout and one extra socket read).
+    const int n2 = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n2, 0);
+    CHECK_EQ(rawp->read_calls, 0);
 }
 
 RTSC_TEST(tls_byte_transport_delivers_plaintext_when_the_feed_reports_a_close) {
@@ -3959,5 +3984,32 @@ RTSC_TEST(tls_byte_transport_keeps_plaintext_that_arrives_during_write) {
     if (n != 1) return;
     CHECK_EQ(buf[0], ScriptedReadDuringWriteTls::kQueued);
     CHECK_EQ(rawp->read_calls, 1);  // served from the queue, no second read
+}
+RTSC_TEST(tls_byte_transport_queues_plaintext_when_write_sees_a_close) {
+    // The read that unblocks a stalled send can report kClosed together with
+    // application data (the peer's final record and close_notify arriving in the
+    // same flight). That data still belongs to the caller. Filtering it on the
+    // status -- which is easy to write by accident, since the send error `e` in
+    // the same scope is already known to be kOk -- silently drops it.
+    auto raw = std::make_unique<MockTransport>();
+    MockTransport* rawp = raw.get();
+    rawp->to_read = {0x17, 0x03};
+    auto tls = std::make_unique<ScriptedReadDuringWriteTls>(true);
+    ScriptedReadDuringWriteTls* tlsp = tls.get();
+    std::string error;
+    TlsByteTransport t(std::move(raw), std::move(tls), error, 1000);
+    CHECK(error.empty());
+
+    const uint8_t payload[4] = {0x01, 0x02, 0x03, 0x04};
+    CHECK(t.Write(payload, sizeof(payload)));
+    CHECK_EQ(tlsp->send_calls, 2);
+    CHECK_EQ(tlsp->receive_calls, 1);
+
+    uint8_t buf[16];
+    const int n = t.Read(buf, sizeof(buf));
+    CHECK_EQ(n, 1);  // the payload that shared the flight with the close
+    if (n != 1) return;
+    CHECK_EQ(buf[0], ScriptedReadDuringWriteTls::kQueued);
+    CHECK_EQ(rawp->read_calls, 1);
 }
 int main() { return ::rtsc::test::run_all("rtsc_gateway_tests"); }
