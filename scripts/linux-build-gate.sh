@@ -265,10 +265,20 @@ if grep -q "skipped: timing budgets" "$VIEW_LOG"; then
     echo "LINUX GATE FAIL: view budgets still skipped in an optimized build"
     exit 1
 fi
+# A checks count is NOT proof the bodies ran: it counts CHECK executions, so an
+# unrelated CHECK added elsewhere in the file keeps the total at or above the
+# bound while the budget bodies are compiled out (audit X measured this: `#if 0`
+# on the bench loop plus 7 padded CHECKs still reported 7348 and passed). Assert
+# the line each bench iteration prints instead -- it exists only if the body ran.
+VIEW_BENCH_LINES=$(grep -c "\[bench\]" "$VIEW_LOG")
+if [ "${VIEW_BENCH_LINES:-0}" -lt 7 ]; then
+    echo "LINUX GATE FAIL: view budget bodies did not run (bench lines=${VIEW_BENCH_LINES:-0}, want 7; the count comes from the printf inside the loop)"
+    exit 1
+fi
 VIEW_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1)
 VIEW_CHECKS=$(printf '%s' "$VIEW_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
 if [ "${VIEW_CHECKS:-0}" -lt "$VIEW_MIN_CHECKS" ]; then
-    echo "LINUX GATE FAIL: view budget bodies did not run (checks=${VIEW_CHECKS:-?}, want >=${VIEW_MIN_CHECKS}; Debug is ${VIEW_MIN_CHECKS}-7 because the seven bench CHECKs are compiled out there)"
+    echo "LINUX GATE FAIL: view suite ran fewer checks than expected (checks=${VIEW_CHECKS:-?}, want >=${VIEW_MIN_CHECKS})"
     printf '%s\n' "$VIEW_SUMMARY"
     exit 1
 fi
@@ -302,10 +312,16 @@ if grep -q "skipped: relative timing" "$UI_LOG"; then
     echo "LINUX GATE FAIL: ui ratio still skipped in an optimized build"
     exit 1
 fi
+# Same reasoning as the view block above: assert the measurement line the ratio
+# body prints, not a checks total that unrelated CHECKs can top up.
+if ! grep -q "rgba->bgra 1280x1024:" "$UI_LOG"; then
+    echo "LINUX GATE FAIL: ui ratio body did not run (its 'rgba->bgra 1280x1024:' measurement line is missing)"
+    exit 1
+fi
 UI_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$UI_LOG" | tail -1)
 UI_CHECKS=$(printf '%s' "$UI_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
 if [ "${UI_CHECKS:-0}" -lt "$UI_MIN_CHECKS" ]; then
-    echo "LINUX GATE FAIL: ui ratio body did not run (checks=${UI_CHECKS:-?}, want >=${UI_MIN_CHECKS})"
+    echo "LINUX GATE FAIL: ui suite ran fewer checks than expected (checks=${UI_CHECKS:-?}, want >=${UI_MIN_CHECKS})"
     printf '%s\n' "$UI_SUMMARY"
     exit 1
 fi

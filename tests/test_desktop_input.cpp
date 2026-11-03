@@ -879,10 +879,13 @@ RTSC_TEST(desktop_input_partial_geometry_helper_contract) {
     const InjectGeometry g = PartialGeometry(1920, 1080);
     CHECK_EQ(g.width, 1920);
     CHECK_EQ(g.height, 1080);
-    // Untrusted: both halves of the trust gate must stay false. If either flips,
-    // a caller stops being rejected at :80 and reaches the later guards instead
-    // (or, for a full-size geometry, starts mapping) -- a silent change in what
-    // every PartialGeometry caller means.
+    // Untrusted: both halves of the trust gate must stay false. The guard is
+    // `!mapped || !pixels_are_physical`, so flipping ONE of them still returns
+    // false at :80 -- only flipping BOTH gets past it, and even then this shape
+    // is rejected at the next guard: :81 for the small-span callers, :82 here
+    // (InjectRect defaults width/height to 0, so capture is empty). It never
+    // starts mapping; what changes is which guard says no, which is exactly the
+    // kind of silent drift asserting the helper's output here prevents.
     CHECK(!g.mapped);
     CHECK(!g.pixels_are_physical);
     // No rectangles: leaving capture/desktop at their defaults is what makes
