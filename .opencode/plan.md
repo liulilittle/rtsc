@@ -1304,3 +1304,15 @@ Windows Release 六类诊断全 0 + ctest **69/69**（78.95s）；`bash -n` SYNT
 
 验证：C0 六类诊断全 0；Linux ctest 67/67；Windows ctest 69/69（73.79s）；
 Linux gate `LINUX GATE PASS` + `FAILED_COUNT=0`；`MUT-` 0。
+### 批 50（`2d07aee`）—— 修 `orders_apply.h` 的过期断言
+
+`include/rtsc/render/orders_apply.h:50` 称 "BS_HATCHED and BS_PATTERN are not implemented yet
+(TODO 3b3)"，实际 `src/render/orders_apply.cpp:337-342` 早已分发。与例57 同族：会过期的断言。
+
+变异证明新注释为真：`BS_PATTERN` → `false &&` = 5 failing/224 failed checks；
+`BS_HATCHED` → `false &&` = 5 failing/1870 failed checks；恢复 103/5793 全绿。
+
+C9 同型复查：`capabilities.cpp:722`、`orders_apply.cpp:347`、`gateway_transport.h:299` 均准确；
+`cliprdr_client.h:94`/`file_list.h:5` 属 feature-gap（UNVERIFIED）。
+
+验证：C0 六类诊断全 0；Linux 重建 0 错误 + 103/5793；Windows ctest **69/69**（78.35s）；`MUT-` 0。

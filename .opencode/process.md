@@ -1035,3 +1035,21 @@ Windows Release 六类诊断全 0 + `rtsc_gateway_tests` 120/1210 + ctest **69/6
 ### 验证
 C0 六类诊断全 0；Linux ctest 67/67；Windows ctest 69/69（73.79s）；
 Linux gate `LINUX GATE PASS` + `FAILED_COUNT=0`；行尾无混合；`MUT-` 0。
+## 第889轮：批50 —— 修 orders_apply.h 的过期断言（`2d07aee`）
+C9 扫描 `continue` 与"未实现"类注释时命中 `include/rtsc/render/orders_apply.h:50`：
+原文称 "BS_HATCHED and BS_PATTERN are not implemented yet (TODO 3b3)"，
+但 `src/render/orders_apply.cpp:337-342` 早已分发到 `ApplyPatternPatBlt`/`ApplyHatchedPatBlt`，
+且 test_orders.cpp 有 9 个 pattern/hatch 用例。
+**这是与例57 同族的"会过期的断言"**：描述旧状态，代码前进了注释没跟。
+### 变异测试（第16条）
+| 变异 | 结果 |
+|---|---|
+| `BS_PATTERN` 分发 → `false &&` | **5 failing / 224 failed checks**；`:1065`、`patblt_apply_pattern_and_hatch_supported` |
+| `BS_HATCHED` 分发 → `false &&` | **5 failing / 1870 failed checks**；`:1088` 等 |
+| 恢复 | 103/5793，**0 failing**；hash 一致；`MUT-` 0 |
+### C9 同型复查
+`capabilities.cpp:722`（MemBlt/Mem3Blt/SaveBitmap）准确；`orders_apply.cpp:347` 准确；
+`gateway_transport.h:299` 明确写了 follow-up，准确；`cliprdr_client.h:94`/`file_list.h:5` 属 feature-gap（UNVERIFIED）。
+### 验证
+C0 六类诊断全 0；Linux 重建 0 错误 + `rtsc_orders_tests` 103/5793；
+Windows ctest **69/69**（78.35s）；行尾一致；`MUT-` 0。

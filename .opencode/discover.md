@@ -1222,3 +1222,39 @@ X 先按正向索引插了 3 个插桩标记，前一次插入使后一次索引
    再连跑同一二进制 3-5 次取分布，再决定是否真是回归。
 2. 禁止用"提高 budget"掩盖一次偶发；必须先证明分布。
 3. 性能断言只能证明"没有数量级回归"，不能证明"实现最优"——这一条要写进测试注释。
+
+## 第889轮：过期注释断言（例 61）
+
+### 症状
+`include/rtsc/render/orders_apply.h:50` 原写：
+"BS_HATCHED and BS_PATTERN are not implemented yet (TODO 3b3) and report
+kUnsupported rather than drawing something wrong."
+
+实际 `src/render/orders_apply.cpp:337-342` 早已分发到 `ApplyPatternPatBlt` /
+`ApplyHatchedPatBlt`，且 `tests/test_orders.cpp` 有 9 个 pattern/hatch 用例。
+
+### 类别
+与例57 同族，但更弱也更常见：**"未实现"类注释一旦实现落地就变成错误陈述**。
+它不属于 W5 允许的"边界声明"（边界声明描述的是**能力上限**，不随代码前进失效），
+而是**可被直接推翻的事实断言**。
+
+### 检验方法（可复用）
+看到任何"X 未实现 / TODO"注释，必须做两件事：
+1. `git grep` 该功能的实现符号（如 `BS_HATCHED` → `ApplyHatchedPatBlt`），确认没有实现；
+2. 若已有实现，用**变异测试**证明注释里的新陈述为真：
+   把该分发置为 `false &&` → 对应用例必须全红；恢复 → 全绿。
+本次：`BS_PATTERN` → 5 failing/224 failed checks；`BS_HATCHED` → 5 failing/1870 failed checks。
+
+### 同一轮的 C9 复查结果
+| 位置 | 判定 |
+|---|---|
+| `capabilities.cpp:722` MemBlt/Mem3Blt/SaveBitmap | 准确（渲染侧确无实现） |
+| `orders_apply.cpp:347` "Any other style" | 准确（确实返回 kUnsupported） |
+| `gateway_transport.h:299` 独立读线程 | 准确（明确写 follow-up） |
+| `cliprdr_client.h:94` / `file_list.h:5` 缓存文件存储 | **UNVERIFIED**（无双向确认） |
+
+### 教训
+1. 注释里的"未实现/TODO"是**有保质期的断言**，实现落地时必须同步删除或改写。
+2. 判断一条注释是否过期，不能只读注释——必须 grep 实现符号。
+3. 边界声明（"这里刻意不支持 X，因为 Y"）与状态断言（"X 还没实现"）要分开写；
+   前者稳定，后者必然腐化。
