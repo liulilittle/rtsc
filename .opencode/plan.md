@@ -1437,3 +1437,15 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 反驳：Y2 的"1:1 预算收到 4x"会低于 0.89ms 噪声峰值，不采纳，改为限定"≥5x 结构回归"。
 顺带闭合批50 两处 UNVERIFIED（DropFileList 已实现，变异红在 test_drop_files.cpp:419）。
 验证：gate PASS；RelWithDebInfo 60/7355；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。
+### 批 63（`4d50ae2`）—— marker 限定 case 区块 + 大用例预算按负载重标定
+
+1. P0/UI marker 改 case 区块限定（真实二进制红证：借用 marker 后 suite 9/79 全绿、旧 PASS、新 FAIL）
+2. 我第一版 awk 正则多一空格 ⇒ 全形状 NO MATCH（honest 日志被拒），`bash -n` 无法发现
+3. `awk -v case=` 撞 gawk 内置名 ⇒ fatal 不工作，改名 `want`
+4. C/D 空白边界（尾随空格/CRLF）⇒ 按用例名 + 剥空白
+5. `:180` OK 行锚定 `^\[  OK  \] <case>$`
+6. 预算按负载实测重标定：2x 30 / 0.8x 150 / 0.5x4K 115 / 1.33x 18 / 0.4x4K 280
+   （4 轮负载绿零重试、最坏余量 61%）
+7. 诚实登记：0.4x 4K 倍率 2.5 走 generic 路径，三种变异仅 1.02-1.05x ⇒ 该用例 ms 预算
+   无法表达 2x 算法回归，只能抓 ≥8x；已在注释写明，精细守护交给 0.5x 4K。
+验证：gate PASS；Linux 67/67；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。
