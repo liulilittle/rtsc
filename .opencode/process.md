@@ -1268,3 +1268,7 @@ Linux gate PASS 67/67；Windows Release 六类诊断全 0 + 55/642 + ctest 69/69
 ### 教训（discover 例 75/76）
 "迭代 N 次"不是时间上界（Windows sleep_for(1ms)=15.5ms）；跨机器测量值不能写进注释
 （同一注释数字本轮连错三次）。
+### 任务收尾：
+补充发现（C9 同型排查，见 discover 例 77）：全仓 18 处 `sleep_for(1ms)` 已分类——
+2 处 deadline（正确）、1 处批61 已改、2 处是原子信号同步点（非上界）、其余为带 CHECK 的短轮询。
+`sleep_for(10ms)xN` 的 80 余处在 Windows 上会拉长失败等待但不动判定，**登记不改**（风险大于收益）。
