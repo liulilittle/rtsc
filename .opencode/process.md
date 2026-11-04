@@ -1623,3 +1623,37 @@ WSL load 146（他项目占满），fs_probe 脚本超时 300s，已清理。
 Linux gate PASS 67/67（日志目录 5 个）；Win Release 69/69(80.55s)；Win Debug 69/69(82s)；MUT- 0。
 ### 教训（例104/105）
 "拒绝含 X 的输入"漏掉空串，安全过滤器要用白名单；回归判据必须精确认准被修的那个不变量。
+
+## 第913轮：批75 —— 关闭 plan 判据3c（`4e662d5`）
+### plan 判据3c 标 [~] "修复中（D1）" —— 复核确认 D1–D4 全部已修
+- **D1**：`order_engine.cpp:189-195` kNoOp 单独计 `noop`（不再计入 unsupported）；
+  `:253` 中止条件 `truncated || failed>0 || unknown_order_type`（不含 unsupported）。
+  集成测试早已存在：`test_order_engine.cpp:199 order_engine_patblt_bsnull_does_not_stop`
+  断言 `noop==1 && applied==1 && unsupported==0` 且后续 BS_SOLID 订单仍绘制；
+  `:239 order_engine_patblt_zero_size_noop` 覆盖零尺寸。
+- **D2**：`order_engine.h:48-53` 计数语义注释准确。
+- **D3**：`:242-251` default 注释与计数一致（unknown 不 reach，known 的变体计 unsupported）。
+- **D4**：拼写 greps 在 render 与 test_order_engine 中 0 命中。
+- plan 标记 `[~]` → `[x]`，追加关闭证据行。文件为混合编码，
+  用字节级替换只改 `~`→`x` 一个字节（长度 121311 不变）。
+### Rule 16：注入 D1 回归必须被抓
+`++result.noop` → `++result.unsupported`：
+```
+FAIL test_order_engine.cpp:228  r.noop == 1 (got 0, want 1)
+FAIL test_order_engine.cpp:230  r.unsupported == 0 (got 1, want 0)
+[ FAIL ] order_engine_patblt_bsnull_does_not_stop
+FAIL test_order_engine.cpp:269  r.noop == 1 (got 0, want 1)
+[ FAIL ] order_engine_patblt_zero_size_noop
+```
+恢复后 `MUT-D1` 0、git diff 空、md5 `bbb9129d...` 一致、orders 100% passed。
+### 过程中踩的坑（例106）：Copy-Item 恢复后必须 touch
+md5 与 git diff 都确认源码已回基线，但测试仍红 —— `Copy-Item` 把 mtime 退回原值，
+MSBuild 判定源文件未变而跳过重编，跑的还是变异版二进制。
+**"源码对了"≠"被测二进制对了"**；恢复后必须 touch 并通过重编日志确认目标确实重编。
+### 其他教训
+- 例107：plan 的 `[~]`/`[x]` 标记不是事实而是线索（同 memory 顶部规则）；
+  关闭 item 必须逐条复核文件:行证据，不能凭标记判断。
+- 例108：混合编码文件用字节级最小差分（定位→校验上下文→单字节替换→长度校验），
+  不要整体解码-重编码。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(83.54s)；Win Debug 69/69(92s)；MUT- 0。
