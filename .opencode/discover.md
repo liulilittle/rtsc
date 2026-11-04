@@ -2163,3 +2163,48 @@ EmitHooksForTest() { ++g_live_emit_hook_guards; CHECK_EQ(g_live_emit_hook_guards
 变异验证：把 `1` 改成 `99` → 5 个用例各红 1 次。
 **规则**：凡是"约定俗成"的不变量，只要违反会导致难以诊断的错误结果，
 就必须写成断言。注释只对遵守注释的人有效。
+### 例 118：修对了不等于有回归网（MoveDue 二次采样 = known gap）
+批77 把 `MoveDue` 里第二次 `Clock::now()` 改成使用调用方传入的 `now`（`desktop_input_win32.cpp:507`）。
+修复本身正确，但批78 审计 A 独立复核发现：**把实现改回 `Clock::now()` 后，77 tests / 14022 checks 全绿**。
+
+原因：二次采样只让 worker 多自旋一次（`EmitDueMoves` 调用次数 avg 3.27 → 2.15），
+**输出内容完全不变**。批77 新增的 5 个用例全部基于"发出了什么"（Emit 钩子记录的动作序列），
+而自旋次数不是动作序列的一部分，所以任何内容断言都抓不到它。
+
+要钉住它只有一条路：加"调用次数预算"钩子并断言 `EmitDueMoves` 被调用了 N 次以内。
+但自旋次数随负载浮动（实测 3.27/13 → 2.15/3 两台机器量级都不同），这种断言**跨负载不稳定**，
+审计 A 明确不建议。故接受为 **known gap**，不做假测试。
+
+**规则**：修复的正确性和修复的"可回归性"是两回事。当被修的东西只影响**延迟/资源**而不影响
+**输出内容**时，内容断言体系天然覆盖不到它。此时必须：
+1. 明确登记 known gap（不要声称"已覆盖"）；
+2. 说明为什么不能加断言（跨负载不稳定、需要墙钟、会引入 flaky）；
+3. 不要为了让变异变红而写一个依赖时序的假测试——那是把 flaky 当覆盖。
+
+### 例 119：提交前必须检查暂存区是否混入流程文件
+批78 我执行 `git add -A` 后，`.opencode/process.md`（第 917 轮记录，其中含**尚未经审计盖章**的
+表述）被一并暂存。若直接提交，流程记录会以"已定案"的口吻入库，而实际结论还在复核中。
+
+已 `git restore --staged .opencode/process.md`，只提交代码与文档，process 记录留到 W8 阶段
+按最终结论重写。
+
+**规则**：代码提交与流程记录分离。`git add -A` 之前必须先看 `git status`，
+把 `.opencode/` 下的记忆文件从暂存区剔除；它们的写入时点是"结论已定案之后"，
+不是"提交代码时"。
+
+### 例 120：审计报告的"未跟踪文件"判断可能错，必须自己查 git 对象
+批78 审计 B 报告"仓库根有 1 个未跟踪 0 字节文件"。实际核查：
+```
+$ git status --short
+ D "%dn, X509_check_host(...)..."
+$ git log --diff-filter=A --format="%h %ad %s" --date=short -- "*X509*"
+407d03e 2026-10-31 fix(net,proto): harden hostname matching and verify the WebSocket upgrade
+```
+它是 **已跟踪** 的（`D` 状态，`git diff --numstat` 为 `0 0`），由 10/31 的提交误加入——
+文件名是一段被 shell 误当重定向的 printf 参数。`git ls-files --others --exclude-standard`
+之所以报空，是因为对含 `%`/`(`/`,` 的路径做了转义，不是"没有未跟踪文件"。
+
+审计 A 后来用 `git cat-file -s "HEAD:<path>"` 确认 size=0，与我一致。
+
+**规则**：关于"文件是否被 git 跟踪"，唯一可信的是 `git cat-file`/`git log`/`git status` 的
+状态码，不是任何人的描述（包括审计报告）。`git ls-files --others` 对怪字符路径不可靠。

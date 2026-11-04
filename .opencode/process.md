@@ -1738,3 +1738,110 @@ Release 0 诊断 / ctest 69/69 / Debug 69/69 / 单测 75 tests 13988 checks 0 fa
 3. `was_share_data` 恒 false 仅 1 条回归网；`ParseSlowPathInput` n<4 / 短 body 无测试
 4. `Stop()` 不覆盖 `ServeOne()` 会话
 5. `g_move_interval_ns` 进程级单例：B 建议按 sink 隔离（当前靠 guard 强制唯一）
+批78 进行中：ReleaseSession 后仍可发出一帧移动（窗口缩小 + 诚实登记）；SlowPath 两计数分支补网
+
+## 背景（批77 审计 B 发现，本批处理）
+worker 主循环：
+```
+:412 ForgetReleasedSessionsLocked();   // 只清 queue_ 里剩下的项
+:415 item = pop_front();               // item 脱离 queue_
+:419 }                                 // 释放 mu_
+:441 EmitDueMoves();                   // 解锁后
+:443 Dispatch(std::move(*item));       // 解锁后
+```
+`Dispatch` 的 move 分支（`:573`）与非 move 分支（`:580 FlushSessionMove`）都不查
+`forget_sessions_`，而 `Inject:159-163` 有检查 —— 缺口只在 Dispatch/EmitDueMoves 一侧。
+已弹出的 item 和 drain 之后产生的 pending move 都逃过 purge。
+
+## 改动
+1. `Dispatch` 入口在 `mu_` 下复查 `forget_sessions_`，`session_released && !item.synthetic` 时
+   计入 `dropped_queue_full_` 并丢弃（合成 up 必须保留，否则本机卡键）。
+2. **不**在 Dispatch 里 re-drain：审计 A 的 M3 证明该行是等价变异（`Inject` 拒绝已遗忘 id，
+   pop 与 drain 在同一临界区紧邻，没有新项可 purge）。已在注释里写明"若将来有路径能在该点
+   populate pending_moves_ 必须加回"。
+3. `ForgetReleasedSessionsLocked` 的注释：原文 `cannot move the pointer after the release`
+   是**假陈述**（审计 B 用 interval=1ms + DispatchFailureHook 在定稿版确定性复现序列 `1 1 2`，
+   释放后多发一帧 move）。已替换为明确承认残余窗口 (a) 的说明：`EmitDueMoves()` 无锁运行且
+   不复核 forget，落在 drain 之后 / 调用之前的一次 ReleaseSession 仍可让**一帧**移动落地；
+   窗口有界（一帧、一次迭代）。**移动**的释放后保证是 best effort，合成 key/button up 仍是硬保证。
+4. 文档同步：`docs/spec/input-injection-seam.md:216` 与
+   `include/rtsc/server/desktop_input.h:67-71` 补上"Dispatch 入口复核丢弃的已弹出项也计入
+   `dropped_queue_full`"。
+5. `tests/desktop_input_win32_test_hooks.h` 补 `#include "rtsc/server/desktop_input_map.h"`
+   （`PlatformInput` 定义在 map 头 `:28`，原头非自包含，审计 A 单独 include 会编译失败）。
+6. `ParseSlowPathInput` 两个无测试的计数分支补网：
+   `:1904`（n<4）与 `:1917`（短 event body）。注意 body=2 才命中 `:1904`；
+   body=4 会跳过 `:1903` 反被 `:1910/:1911` 抓（审计 A 独立验算 `share.h:189-190`
+   HeaderSize=6 / EventSize=12）。
+
+## 新增用例（4 个）
+- `desktop_input_released_session_is_not_dispatched`：DispatchFailureHook 作原子闸门，
+  断言释放后**禁止** move / button_down，只允许合成 up；并断言 `dropped_queue_full` +1
+- `desktop_input_synthetic_up_survives_a_released_dispatch`：去掉 `&& !item.synthetic` 时必须红
+- `server_slowpath_input_short_header_counts_malformed`（n=2）
+- `server_slowpath_input_short_event_body_counts_malformed`
+
+## 变异（独立基线、替换次数==1、全部编译通过）
+| 变异 | 结果 |
+|---|---|
+| M1 删整个 `session_released` 守卫块 | 2 用例红 |
+| M2 去掉 `&& !item.synthetic` | synthetic 用例红 |
+| M7 删 `dropped_queue_full_.fetch_add` | 计数断言红（修正审计 A 指出的假绿） |
+| M3 删 Dispatch 内的 re-drain | 全绿（等价变异，已删该行 + 注释说明） |
+| `:1904` 删 | short_header 红 |
+| `:1917` 删 | short_event_body 红 |
+| `:1911` 删 | 既有 event_count_mismatch 红 |
+
+## 审计结论
+- **事项 2（SlowPath 两分支）：审计 B 盖章**（三个计数点各有且仅有一张网，变异反证成立）
+- **事项 1：审计 B 不盖"已修"章**，只认"窗口缩小到有界、已诚实登记为未修"。
+  按它的选项 (ii) 处置：改 `:461` 措辞 + 登记未修 + 同步文档。
+
+## 验证
+- Release 0 诊断 / ctest 69/69
+- Debug(`build\verify`) 0 诊断 / ctest 69/69
+- `rtsc_desktop_input_tests` 77 tests / 14022 checks / 0 failing
+- Linux gate: LINUX GATE PASS + FAILED_COUNT=0 + 67/67
+
+## 未修（登记）
+- 残余窗口 (a)：`EmitDueMoves()` 在解锁后运行且不复核 forget → 一次 ReleaseSession 落在
+  drain 之后 / 调用之前时，仍可让一帧移动落地。彻底关闭需 per-session 原子代号或把 Emit
+  移入锁内（D13 禁止）。
+- 残余窗口 (b)：ReleaseSession 落在 Dispatch 入口检查与 Emit 之间时，单个已接受 item 可漏过。
+  有界（一次迭代最多一个），已由守卫从"无限"缩小到此。
+
+## 第917轮：批78 提交（`466a4dc`）—— ReleaseSession 窗口 + SlowPath 计数补网
+### 交付
+7 文件（6 改 + 1 删垃圾），+525/-10。
+- `Dispatch` 入口在 `mu_` 下复查 `forget_sessions_`，`session_released && !item.synthetic`
+  时计 `dropped_queue_full_` 并丢弃
+- 删 Dispatch 内 re-drain（审计 A 的 M3 证明等效），注释写明"若将来能 populate pending_moves_ 必须加回"
+- `:461` 假陈述 `cannot move the pointer after the release` → 改为诚实承认窗口 (a)，
+  明确「移动 best effort / 合成 up 硬保证」
+- `docs:216` 虚构符号 `DetectReleasedLocked` → 真实 `forget_sessions_.count(...)`（grep=0）
+- seam 新增 `:223` "Residual window" 一节
+- 钩子头补 `#include desktop_input_map.h`（`PlatformInput` 在 `:28`）
+- `ParseSlowPathInput` 的 `:1904`(n<4) / `:1917`(短 body) 各补用例；body=2 才命中 `:1904`
+- 删 10/31 提交 `407d03e` 误入的 0 字节垃圾文件
+### 变异（独立基线、替换==1、全编译通过）
+M1 删守卫 → 2 红；M2 去 `!synthetic` → 1 红；M7 删计数 → 1 红（修 A 指出的假绿）；
+M3 删 re-drain → 全绿（等效，已删）；`:1904`/`:1917`/`:1911` 各删 → 对应用例红。
+### 验证
+Release 0 诊断 / ctest 69/69（73.6s）；Debug 0 诊断 / ctest 69/69（78.2s）；
+单测 77 tests / 14022 checks / 0 failing；Linux gate PASS + FAILED_COUNT=0 + 67/67。
+### 审计结论
+- 事项2（SlowPath 三计数点）：B 盖章
+- 事项1：B 按条件盖"窗口有界 + 诚实登记"；**A 最终盖章 PASS**
+- A 两条必修（计数断言、头自包含）均已独立复验闭合
+### KNOWN GAP（A 要求必须登记）
+把 `MoveDue` 改回 `Clock::now()` 二次采样 → **77/14022 全绿**。原因：二次采样只多一次 worker
+自旋（EmitDueMoves 调用数 avg 3.27→2.15），输出内容不变，内容断言抓不到。要钉住只能加
+"调用次数预算"钩子，跨负载不稳定，A 不建议。**不得声称"已完全覆盖二次采样"。**
+### 提交卫生事故（已纠正）
+`git add -A` 曾把 `.opencode/process.md`（含未盖章表述）暂存；已 `restore --staged`，
+只提交代码与文档。
+### 批79 候选
+1. 残余窗口 (a) 的 per-session 原子代号方案（彻底关闭需它；D13 禁止把 Emit 移入锁内）
+2. `SetInputSink` 注释误导（Run/ServeOne 期间调用是 data race，注释却说"只是不被采纳"）
+3. `Stop()` 不覆盖 `ServeOne()` 会话（B 指出与 `server.h:357-368` 承诺不符）
+4. `g_move_interval_ns` 是进程级单例，B 建议按 sink 隔离
