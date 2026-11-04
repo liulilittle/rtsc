@@ -1503,9 +1503,11 @@ RTSC_TEST(view_scale_benchmark_budget) {
     //
     // Sensitivity is just budget/base, so it can be read off the idle numbers
     // instead of assumed. On this host the thresholds are 1:1 8.6x, 1:1 lb 7.9x,
-    // 2x 5.5x, 0.8x 7.3x, 0.5x 4K 8.3x, 1.33x 12.1x, 0.4x 4K 6.9x; the audit host
-    // measured 7.1x-12.8x over the same cases. Two consequences follow, and the
-    // earlier "only catches >=8x" note got the first one wrong:
+    // 2x 5.5x, 0.8x 7.3x, 0.5x 4K 8.3x, 1.33x 12.1x, 0.4x 4K 6.9x. Two other
+    // hosts measured 6.4x-11.5x and 7.1x-12.8x on the same cases, so across
+    // three machines the bar is 5.5x-12.8x -- do not quote a single number.
+    // Two consequences follow, and the earlier "only catches >=8x" note got
+    // the first one wrong:
     //   * a 2x structural regression -- e.g. replacing the uniform fast path with
     //     a per-pixel loop, output still correct -- trips NOTHING. Measured twice:
     //     0.5x 4K goes 1.79-2.0x wall clock against an 8.3x threshold.

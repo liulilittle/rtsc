@@ -212,7 +212,15 @@ p0_block_has_marker() {
     # never prints "[  OK  ]", so keying the reset on OK alone would leak the
     # block into whatever follows.
     awk -v want="${P0_CASE}" '
-        /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
+        # The tag whitelist is spelled out in both cases. A lowercase ok would
+        # otherwise fail to close the block, and a marker printed after it was
+        # accepted (measured). Do NOT widen this to any bracketed line: real logs
+        # carry [rtsc-server] WARNING: ... and [GCC] static channels: ... INSIDE a
+        # case block, so that truncates the block and rejects honest logs
+        # (measured: bracket-inside-block accept -> reject).
+        # NOTE: no apostrophes in this comment -- it is inside a single-quoted awk
+        # program, and one would close the quote while bash -n still balanced.
+        /^\[[[:space:]]+(RUN|OK|FAIL|[Oo][Kk]|[Ff][Aa][Ii][Ll]|[Rr][Uu][Nn])[[:space:]]+\]/ {
             name = $0
             tag = name
             sub(/^\[[[:space:]]+/, "", tag)
@@ -241,10 +249,15 @@ p0_block_has_marker() {
 selftest_marker_extractor() {
     local fn="$1" case_name="$2" marker="$3" logvar="$4"
     local probe rc=0 saved
-    saved="$(eval "printf '%s' \"\${$logvar:-}\"")"
-    probe="$(mktemp)"
-    reset() { eval "$logvar=\$probe"; }
-    restore() { eval "$logvar=\$saved"; }
+    # Indirect read/write by NAME, not eval. `eval "$logvar=..."` executes the
+    # name: passing `EVIL; echo INJECTED` ran the echo (measured). printf -v
+    # rejects a non-identifier instead, which is the behaviour we want and
+    # costs the same two lines. The call sites pass literals today, but a
+    # parameterised helper must not carry a live injection surface.
+    printf -v saved '%s' "${!logvar:-}"
+    probe="$(mktemp)" || { echo "  cannot create probe file (TMPDIR unset or full?)" >&2; return 1; }
+    reset() { printf -v "$logvar" '%s' "$probe"; }
+    restore() { printf -v "$logvar" '%s' "$saved"; }
     expect_accept() {
         reset
         "$fn" || { echo "  rejected a healthy log" >&2; rc=1; }
@@ -265,8 +278,18 @@ selftest_marker_extractor() {
     printf '[ RUN  ] %s\n[ FAIL ] %s\n%s\n[ RUN  ] some_other_case\n' \
         "$case_name" "$case_name" "$marker" >"$probe"
     expect_reject "a marker printed after the case's own FAIL line (block never closed)"
+    # A lowercase tag still has to close the block.
+    printf '[ RUN  ] %s\n[ ok ] %s\n%s\n[ RUN  ] some_other_case\n' \
+        "$case_name" "$case_name" "$marker" >"$probe"
+    expect_reject "a marker printed after a lowercase close tag (block never closed)"
+    # Honest logs carry bracketed non-harness lines INSIDE a case block; those must
+    # not be treated as boundaries or the block gets truncated (false reject).
+    printf '[ RUN  ] %s\n[rtsc-server] WARNING: x\n[GCC] static channels: 1\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$marker" "$case_name" >"$probe"
+    expect_accept
     restore
     rm -f "$probe"
+    unset -f reset restore expect_accept expect_reject
     return "$rc"
 }
 if ! selftest_marker_extractor p0_block_has_marker "${P0_CASE}" \
@@ -466,7 +489,7 @@ UI_CASE="rgba_to_bgra_present_faster_than_the_old_per_pixel_loop"
 
 ui_block_has_marker() {
     awk -v want="${UI_CASE}" '
-        /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
+        /^\[[[:space:]]+(RUN|OK|FAIL|[Oo][Kk]|[Ff][Aa][Ii][Ll]|[Rr][Uu][Nn])[[:space:]]+\]/ {
             name = $0
             tag = name
             sub(/^\[[[:space:]]+/, "", tag)
