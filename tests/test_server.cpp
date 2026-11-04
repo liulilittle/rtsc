@@ -3413,11 +3413,27 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     flood.join();
 
     // Wait until all kConnect sessions are registered (live count raised at
-    // registration, before the launcher starts the body). The most recent
-    // launcher is then still inside its sleep window: exactly the state Stop()
-    // must be able to reap.
+    // registration, before the launcher starts the body). The last launcher is
+    // then still parked waiting for `stop_began`: exactly the state Stop() must
+    // be able to reap.
+    //
+    // The budget scales with the launcher pause. Registration is serialised
+    // behind the launcher (it runs inside the accept loop), so a pause of
+    // `delay_ms` also delays every later registration by that much. A fixed 1 s
+    // budget reds out once RTSC_TEST_LAUNCH_DELAY_MS is raised past ~140 ms --
+    // the test then reports `registered=-1 launches=6`, which reads like a
+    // server defect but is only the knob outpacing the wait. Measured:
+    // delay_ms=200 -> all_registered=false, 2 failed checks; delay_ms in
+    // {0,1,5,40} -> green.
+    long long register_budget_ms = 2000 + 4LL * delay_ms * kConnect;
+    if (register_budget_ms > 60000) {
+        register_budget_ms = 60000;
+    }
+    const auto register_deadline = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(register_budget_ms);
     bool all_registered = false;
-    for (int i = 0; i < 100 && !all_registered; ++i) {
+    while (!all_registered &&
+           std::chrono::steady_clock::now() < register_deadline) {
         if (server->session_count() >= kConnect) {
             all_registered = true;
         } else {
