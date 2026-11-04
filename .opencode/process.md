@@ -1376,3 +1376,31 @@ MUT- 0；resample.cpp 未改（18104 bytes BOM 完整）。
 ### 教训（例 84/85/86）
 自检必须钉双向（只钉接受会放行 `return 0`）；区间提取必须定义开启+关闭；
 注释数字必须可推导（公式/区间/多机），不能抄一次测量。
+## 第905轮：批67 —— eval 注入面 + 大小写 tag + 撇号撕引号（`7a6d268`）
+### X 的 1.1 eval 注入（实测可达）
+`eval "$logvar=..."` 传 `EVIL; echo INJECTED` 真的执行了 echo。改用 `printf -v`（写）
++ `${!logvar:-}`（读），修后报 "invalid variable name" 而非执行。两处调用点今天传字面量，
+但参数化 helper 不该留活注入面。
+### X 的 1.2/1.4
+`mktemp` 失败加准确报错；helper 收尾 `unset -f reset restore expect_accept expect_reject`
+（实测 declare -F 计数 0，原泄漏在 set -u 下顶层误调会致命）。
+### Y2 的大小写 tag（真残留）
+`[ ok ] <P0>` 不闭合块 ⇒ 其后 marker accept（应 reject）。改大小写白名单，修后 4/4。
+### Y2 的自我纠正（我也独立证实）
+`^\[[^]]*\]`（任意方括号行当边界）会把块内的 `[rtsc-server] WARNING:` /
+`[GCC] static channels:` 当成边界 ⇒ **假红**。已写进注释禁止该写法。
+### 我自己引入的新错误：撇号撕开 awk 程序（discover 例 87）
+在 awk 单引号程序内写 `'ok'` 使 shell 引号被闭合，awk 程序被切成 shell 词、
+`#` 变 shell 注释。**全文件 `bash -n` 仍 rc=0**（引号总量平衡），但提取器变成永远 accept。
+检测：片段级 `bash -n`（rc=2）+ 场景矩阵（4/6 翻转）。
+### 自检扩到六边界
+新增 `[ ok ]` 小写关闭（须 reject）与「块内含 `[rtsc-server]`/`[GCC]` 行」（须 accept）。
+Rule 16：BASELINE 绿；UPPER-ONLY / ANY-BRACKET 两回归均 caught；撇号变体语法错 fail-closed。
+### Y2 的 Q3 措辞修正（discover 例 88）
+`budget/base` 是**阈值倍数**不是最小可检测回归；改说 "trips at Nx wall-clock"，
+并标 idle 口径（8.3x）与负载口径（≈4.9x）。
+### X 的 3.2
+三机区间 6.4x-11.5x / 7.1x-12.8x / 本机 → 合并写 5.5x-12.8x，"do not quote a single number"。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(85.14s)；Win Debug 69/69(126s)；MUT- 0；
+片段级 bash -n rc=0。

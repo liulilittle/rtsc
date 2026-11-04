@@ -1472,3 +1472,13 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 3. **Y2 UI_CASE 未接线**：`-v want` 硬编码 → 改 `${UI_CASE}`。
 4. **数字可推导化**：敏感度 = budget/base（5.5x-12.1x），写明 2x 结构性回归不可见。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+### 批 67（`7a6d268`）—— eval 注入面 + 大小写 tag + 撇号撕引号
+
+1. **X 1.1**：`eval` 注入实测可达 → 改 `printf -v` + `${!logvar:-}`，注入面消失。
+2. **X 1.2/1.4**：helper 收尾 `unset -f`；`mktemp` 失败给准确报错。
+3. **Y2 大小写 tag**：`[ ok ]` 不闭合块 → 改大小写白名单，4/4 正确。
+4. **Y2 自我纠正**：`^\[[^]]*\]` 会把 `[rtsc-server]`/`[GCC]` 当边界 ⇒ 假红，注释禁止。
+5. **我自己的新错误**：awk 单引号程序内撇号撕开引号，`bash -n` 全文件仍 rc=0
+   （引号总量平衡），提取器变永远 accept。检测靠片段级 `bash -n` + 场景矩阵。
+6. **自检扩到六边界**：+小写关闭须 reject、+块内方括号行须 accept。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
