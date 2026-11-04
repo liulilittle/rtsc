@@ -1443,14 +1443,16 @@ RTSC_TEST(view_scale_benchmark_budget) {
         // which is what makes one budget policy work for all of them.
         int iters;
     };
-    // Every budget is about 4x the idle measurement, and every sample is at
-    // least ~10 ms so that jitter cannot dominate a single sample (see `iters`).
-    // That combination tolerates a machine that is twice as busy while still
-    // catching the regression this test exists for.
+    // Budgets are 3.3x to 11x the idle measurement -- deliberately NOT a single
+    // ratio. The small shapes get the larger multiple because a 0.1 ms call has
+    // an absolute jitter floor of about 1 ms (scheduler granularity): a budget
+    // of "2x idle" would be 0.24 ms, i.e. inside the noise. Every sample is
+    // ~11 ms or more (see `iters`), so jitter cannot dominate a single sample.
     //
     // Idle measurements on this machine (RelWithDebInfo, NDEBUG):
     //   1:1 0.11 ms | letterbox 0.12 ms | 2x 4.8 ms | 0.8x 22.9 ms
     //   0.5x 4K 16.9 ms | 1.33x 1.8 ms | 0.4x 4K 43.0 ms
+    //   => budget/idle 10.9x | 9.2x | 4.2x | 3.5x | 3.6x | 6.7x | 3.3x
     //
     // The regression to catch is structural: replacing a fast path with a
     // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy
@@ -1460,15 +1462,17 @@ RTSC_TEST(view_scale_benchmark_budget) {
     // The floor is real load, not imagination: with a parallel build running the
     // same binary reported 0.89 ms for a 0.12 ms shape (7.4x) before the sample
     // length was raised, and 0.4x 4K reached 92 ms against its 43 ms idle value
-    // (2.1x). Budgets sit above the load-induced values with roughly 1.5x to 2x
-    // headroom.
+    // (2.1x). Re-measured under load AFTER the sample length was raised:
+    //   0.8x 55.78/80 = 1.43x | 0.5x 4K 42.09/60 = 1.43x | 0.4x 4K 97.38/140 = 1.44x
+    // so the real headroom under load is about 1.4x (an earlier draft of this
+    // comment claimed 1.5-2x, which the measurement does not support).
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},
-        {1920, 1080, 3840, 2160, "2x", 20.0, 2},
+        {1920, 1080, 3840, 2160, "2x", 20.0, 3},
         {1920, 1080, 1536, 864, "0.8x", 80.0, 1},
         {3840, 2160, 1920, 1080, "0.5x 4K", 60.0, 1},
-        {1920, 1080, 2560, 1440, "1.33x", 12.0, 4},
+        {1920, 1080, 2560, 1440, "1.33x", 12.0, 6},
         {3840, 2160, 1536, 864, "0.4x 4K", 140.0, 1},
     };
     for (const Case& c : cases) {
