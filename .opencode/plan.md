@@ -168,7 +168,7 @@
 - [x] 判据3b3b：PatBlt `BS_PATTERN` — `pat[i]=brush_extra[6-i]`(顶行→倒数第2行)、`pat[7]=brush_hatch`(底行)、
       `(pat[py]>>(7-px))&1`；官方向量 `{0x02..0x80}`+`0x01` → **完整 8 主对角**；54 tests/4493 checks；变异 4/4；
       甲通过（其手算位映射误读 `>>(7-px)` 为 `>>px` 已更正）；主代理 Python 逐字复算确认 `is_full_diag=True`
-- [~] 判据3c：`OrderEngine` + `graphics` 分派（M1/M2/M4/M5/M6）。已交付 63 tests/4569 checks；甲乙交叉核对：
+- [x] 判据3c：`OrderEngine` + `graphics` 分派（M1/M2/M4/M5/M6）。已交付 63 tests/4569 checks；甲乙交叉核对：
       **D1（高，真缺陷）** PatBlt 的 `kNoOp`(BS_NULL/零负尺寸) 被计入 `unsupported` 且 `unsupported>0` 即 `break`
       → 同 PDU 后续订单全丢（甲乙各自独立红证 `applied=0 unsupported=1`）；修复中（拆 `noop`/`unsupported`/`unknown_order_type`，
       中止条件改 `truncated||failed>0||unknown_order_type`）；D2（applied=订单条数注释）、D3（default 注释与计数一致）、D4（拼写）一并修。
@@ -1566,3 +1566,5 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 4. **plan P1（原生 ext4）**：**UNVERIFIED** —— WSL load 146，探测超时 300s，已清理。
    构建目录已在 ext4，源码在 9p；属性能优化非正确性问题。
 验证：Linux gate PASS 67/67（日志目录 5 个）；Win Release 69/69；Win Debug 69/69；MUT- 0。
+
+      [批74 复核关闭] D1-D4 全部已在源码修复，实测：D1 order_engine.cpp:189-195 kNoOp 单独计 noop 不再计入 unsupported；:253 中止条件为 truncated||failed>0||unknown_order_type（不含 unsupported）；集成测试 test_order_engine.cpp:199 order_engine_patblt_bsnull_does_not_stop 断言 noop==1 && applied==1 && unsupported==0 且后续 BS_SOLID 订单仍绘制；:239 order_engine_patblt_zero_size_noop 覆盖零尺寸。D2 计数注释 order_engine.h:48-53 与语义一致。D3 :242-251 default 注释与计数一致。D4 拼写 greps 在 render 与 test_order_engine 中 0 命中。
