@@ -1773,4 +1773,31 @@ Y2 指出 RUN 的 open 条件写死 `tag == "RUN"` 而 close 白名单已大小�
 `[ Run  ] case` 时 `name` 保留整行，`name == want` 永假。
 **教训**：同一语义（"大小写不敏感"）在一条流水线上有多处实现时，
 必须逐处检查；改掉日志/错误信息里最显眼的那处，不等于改了根因。
-验证方式：**逐字段打印中间值**（`tag`/`name`/`tolower`），而不是猜。
+验证方式：**逐字段打印中间值**（`tag`/`name`/`tolower`），而不是猜。### 例 92：审计把"更宽松的拼写匹配"误报成 fail-open —— 要用"无输入"场景判别
+Y2 报 `/[Dd]rain:/` 是 fail-open。我用**无 marker 的三场景**判别：
+```
+variant         empty block   unrelated text   another case has it
+exact (base)    reject        reject           reject
+[Dd]rain        reject        reject           reject
+tolower         reject        reject           reject
+```
+三者都在"没有 marker"时 reject ⇒ `[Dd]rain` 只是**接受更多拼写变体**，
+无法让"某个用例没打印 marker"通过。它**不是**假绿。
+**判别法**：要证明一个"放宽"是 fail-open，必须给出一个**输入**使它 accept 而正确实现 reject。
+只是"接受更多正常输入"是宽容，不是漏洞。
+（同理：`tolower` 那种"忽略大小写"也是拼写宽容 —— 它 accept 的是大写 marker，
+真实 harness 打小写，所以不构成假绿；但它确实降低了"marker 必须原样出现"的约束。）
+
+仍值得加探针的理由是另一个：这类放宽会**掩盖 marker 文本被改动**（例如常量被改大小写后
+测试仍绿）。所以按"约束强度"而非"假绿"来加，措辞必须准确。
+
+### 例 93：截断探针有三个独立方向，不是两个
+批68 加了 tail 截断，批69 Y2 指出还漏：
+- **TAIL**（只匹配后半段，如 `/record/`）
+- **MID**（只匹配中间片段，如 `/coalesced record/`）
+- **大小写**（`tolower` 或 `[Dd]` 类）
+实测三个里前两个在七边界下都是 ACCEPT（漏）。
+**规律**：任何"模式匹配是否过松"的验证，至少要覆盖 **头、尾、中间、大小写** 四个方向。
+只截尾部只能证明"不是只匹配前半段"。
+（`[Dd]rain` 型用交替大小写也抓不到 —— 因为它接受 `Drain` 而交替串是 `DrAiN`；
+但这类不是假绿，见例 92。）

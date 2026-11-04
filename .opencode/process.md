@@ -1430,3 +1430,24 @@ Linux gate PASS 67/67；Win Release 69/69(73.22s)；Win Debug 69/69(83s)；MUT- 
 ### 教训（例89/90/91）
 边界测试要覆盖"匹配多严"这个独立维度；守卫本身必须做 Rule 16（死守卫比没守卫更糟）；
 同一语义在多处实现时逐一检查，靠逐字段打印而非猜测定位。
+## 第907轮：批69 —— 十四边界（TAIL/MID/大小写）+ 数组与短 marker 守卫（`18ac6d3`）
+### Y2 的 Q4：三条，两条真漏一条归类错误
+```
+MARKER_TAIL    (/record/)           七边界 ACCEPT 漏 -> 九边界 REJECT caught
+MARKER_MID     (/coalesced record/) 七边界 ACCEPT 漏 -> 九边界 REJECT caught
+MARKER_TOLOWER (tolower($0) ~)      九边界 REJECT caught
+MARKER_CASE_INS([Dd]rain)/           归类错误：无 marker 三场景全 reject => 只是拼写宽容
+```
+- tail 截断改比例 `${marker:0:${#marker}*2/3}`（Y2 指出 `%??????` 在 len==6 塌空串、
+  len<6 原样返回）。
+- 加 head 截断 `${marker#??????}`（同时覆盖 MID）+ 全大写探针 + 交替大小写探针。
+### X 的数组发现：实测不是 fail-open
+`declare -A` + 健康提取器 rc=0，但 + 损坏提取器 rc=1 => **vacuous pass 不是 false green**。
+仍按 `logvar=rc` 同等标准拒绝（`*a*|*A*` 分支）。九种 declare 组合实测通过。
+### X 的 marker 长度下限
+`[ "${#marker}" -le 12 ]` return 1。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(75.43s)；Win Debug 69/69(83s)；MUT- 0。
+### 教训（例92/93）
+"放宽"不等于 fail-open：要证明 fail-open 必须给出一个输入使它 accept 而正确实现 reject；
+截断探针有四个方向（头/尾/中/大小写），只截尾部只能证明"不是只匹配前半段"。

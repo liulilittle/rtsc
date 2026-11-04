@@ -1492,3 +1492,12 @@ Rule 16ï¼šåˆ  `gate_waited.store` â†’ 6 å€¼å…¨çº¢ï¼›`>= kConnect`â†’`+1` â†’ å…¨
 4. **æ–°å‘ç° fail-OPEN**ï¼š`logvar=rc` ä½¿ `return "$rc"` æ’ 0ï¼ˆæ°¸ä¹…æŸåçš„æå–å™¨ä¹Ÿé€šè¿‡ï¼‰ã€‚
    åŠ åˆæ³•åæ ¡éªŒ + å±€éƒ¨åé»‘åå• + readonly æ£€æµ‹ + printf -v å‡†ç¡®æŠ¥é”™ã€‚
 éªŒè¯ï¼šLinux gate PASS 67/67ï¼›Win Release 69/69ï¼›Win Debug 69/69ï¼›MUT- 0ã€‚
+### Åú 69£¨`18ac6d3`£©¡ª¡ª Ê®ËÄ±ß½ç×Ô¼ì + Êı×é/¶Ì marker ÊØÎÀ
+
+1. **Y2 ÈıÌõ**£ºMARKER_TAIL / MARKER_MID ÊÇÕæÂ©£¨Æß±ß½çÈ« ACCEPT£©£¬ÒÑ¼Ó head ½Ø¶Ï¸²¸Ç£»
+   MARKER_CASE_INS£¨`[Dd]rain`£©¾­ÎŞ marker Èı³¡¾°ÅĞ¶¨Îª"Æ´Ğ´¿íÈİ"²»ÊÇ fail-open£¬µÇ¼Ç¡£
+2. **tail ½Ø¶Ï¸Ä±ÈÀı** `${marker:0:${#marker}*2/3}`£¨¹Ì¶¨ 6 ×Ö·ûÔÚ len==6 Ê±Ëú³É¿Õ´®£©¡£
+3. **X µÄÊı×é**£ºÊµ²â vacuous pass ²»ÊÇ false green£¨Ëğ»µÌáÈ¡Æ÷ÈÔ rc=1£©£¬
+   µ«°´Í¬µÈ±ê×¼¾Ü¾ø `*a*|*A*`¡£¾ÅÖÖ declare ×éºÏÊµ²â¡£
+4. **marker ³¤¶ÈÏÂÏŞ** `<=12` Ö±½Ó return 1¡£
+ÑéÖ¤£ºLinux gate PASS 67/67£»Win Release 69/69£»Win Debug 69/69£»MUT- 0¡£
