@@ -1503,11 +1503,20 @@ RTSC_TEST(view_scale_benchmark_budget) {
         //    letterbox case is 0.11-0.16 ms idle and reached 0.89 ms while a
         //    parallel build ran, which is indistinguishable from a 5x regression
         //    in a single sample but obvious in a second one.
+        // Count the real ScaleSurface calls. The gate asserts this number, so a
+        // body that "measures" without doing the work (e.g. `return 0.01;`)
+        // cannot satisfy it: the counter would stay at zero. This is the same
+        // reasoning as the bench marker line, one step stronger -- the marker
+        // only proves the printf ran, this proves the resampler ran.
+        long long calls = 0;
         const auto measure = [&]() {
             double best = 1e9;
             for (int rep = 0; rep < 10; ++rep) {
                 const auto t0 = std::chrono::steady_clock::now();
-                for (int i = 0; i < c.iters; ++i) ScaleSurface(src, dst, vt);
+                for (int i = 0; i < c.iters; ++i) {
+                    ScaleSurface(src, dst, vt);
+                    ++calls;
+                }
                 const double ms =
                     std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - t0)
@@ -1524,6 +1533,13 @@ RTSC_TEST(view_scale_benchmark_budget) {
         }
         std::printf("  [bench] %-16s %4dx%-4d -> %4dx%-4d  %7.2f ms (budget %5.2f)\n",
                     c.label, c.sw, c.sh, c.dw, c.dh, best, c.budget_ms);
+        // `want` is the minimum number of calls a real measurement performs: ten
+        // reps of `iters` each. A retry doubles it, so the lower bound is the
+        // single-pass figure. The gate requires calls >= want.
+        const long long want = 10LL * c.iters;
+        std::printf("  [bench-calls] %-16s calls=%lld want=%lld\n", c.label,
+                    calls, want);
+        CHECK(calls >= want);
         CHECK(best < c.budget_ms);
     }
 #else

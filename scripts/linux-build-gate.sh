@@ -133,7 +133,7 @@ fi
 echo "LIB_BYTES=$(stat -c %s "$LIB")"  # output only, not asserted
 
 # The platform-neutral factory must exist even when no backend does.
-if ! nm -C "$LIB" 2>/dev/null | grep -q 'rtsc::tls::CreateTlsTransport'; then
+if ! nm -C --defined-only "$LIB" 2>/dev/null | grep -q 'rtsc::tls::CreateTlsTransport'; then
     echo "LINUX GATE FAIL: CreateTlsTransport missing from librtsc_tls.a"
     exit 1
 fi
@@ -212,8 +212,8 @@ fi
 SEC_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$SEC_LOG" | tail -1)
 SEC_TESTS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^([0-9]+) tests,.*/\1/')
 SEC_CHECKS=$(printf '%s' "$SEC_SUMMARY" | sed -E 's/^[0-9]+ tests, ([0-9]+) checks,.*/\1/')
-if [ "${SEC_TESTS:-0}" -lt 8 ] || [ "${SEC_CHECKS:-0}" -lt 67 ]; then
-    echo "LINUX GATE FAIL: ${P0_CASE} suite ran less than the full body (tests=${SEC_TESTS:-?} checks=${SEC_CHECKS:-?}, want >=8 tests / >=67 checks)"
+if [ "${SEC_TESTS:-0}" -ne 9 ] || [ "${SEC_CHECKS:-0}" -lt 79 ]; then
+    echo "LINUX GATE FAIL: ${P0_CASE} suite ran a different body than expected (tests=${SEC_TESTS:-?} checks=${SEC_CHECKS:-?}, want exactly 9 tests / >=79 checks; add/remove a case => update this gate)"
     printf '%s\n' "$SEC_SUMMARY"
     exit 1
 fi
@@ -294,8 +294,12 @@ fi
 # with 6 result lines + 1 retry line exited 0). A count alone is also padable, so
 # the real assertion is per-case identity below.
 VIEW_BENCH_LINES=$(grep -c "\[bench\]" "$VIEW_LOG")
-if [ "${VIEW_BENCH_LINES:-0}" -lt 7 ]; then
-    echo "LINUX GATE FAIL: view budget bodies did not run (bench lines=${VIEW_BENCH_LINES:-0}, want 7; the count comes from the printf inside the loop)"
+# Equality, not ">=": adding an eighth bench case must force someone to update
+# this gate. With "-lt 7" an extra case passed silently (measured: 7 old lines +
+# 1 new line -> exit 0), which violates the fail-closed rule the rest of this
+# script follows.
+if [ "${VIEW_BENCH_LINES:-0}" -ne 7 ]; then
+    echo "LINUX GATE FAIL: view bench result lines=${VIEW_BENCH_LINES:-0}, want exactly 7 (add/remove a case => update this gate and VIEW_MIN_CHECKS)"
     exit 1
 fi
 # Per-case identity: every bench case must print its OWN result line. This is the
@@ -317,6 +321,23 @@ for pat in \
 done
 if [ -n "$VIEW_MISSING" ]; then
     echo "LINUX GATE FAIL: view bench case(s) produced no result line:$VIEW_MISSING"
+    exit 1
+fi
+# The identity checks above prove the label was printed; they do NOT prove the
+# resampler ran. Measured attack: replacing measure() with `return 0.01;` kept
+# all 7 labels, 7 result lines and 7348 checks, and the gate passed -- the gate
+# never looked at what the line claimed. The test now prints the real number of
+# ScaleSurface calls per case; require the lower bound (10 reps x iters).
+VIEW_CALLS=$(grep -c "^  \[bench-calls\] " "$VIEW_LOG")
+if [ "${VIEW_CALLS:-0}" -ne 7 ]; then
+    echo "LINUX GATE FAIL: view bench call counters=${VIEW_CALLS:-0}, want exactly 7"
+    exit 1
+fi
+if grep "^  \[bench-calls\] " "$VIEW_LOG" |
+       sed -E 's/.* calls=([0-9]+) want=([0-9]+).*/\1 \2/' |
+       awk '{ if ($1 + 0 < $2 + 0) bad = 1 } END { exit bad ? 0 : 1 }'; then
+    echo "LINUX GATE FAIL: a view bench case made fewer ScaleSurface calls than its sample requires:"
+    grep "^  \[bench-calls\] " "$VIEW_LOG"
     exit 1
 fi
 VIEW_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1)

@@ -1,10 +1,11 @@
 // Local file-list provider for the CLIPRDR file-clip (CB_FILECONTENTS) path.
 //
 // The channel serves files to the remote peer (and is pointed at by the
-// direction-B store gate) exclusively through this seam. Direction B backends
-// (e.g. a cached store) are not implemented yet; the interface plus the
-// provider-gate behaviour (no provider => every file-contents request fails) is
-// all this layer provides.
+// direction-B store gate) exclusively through this seam. This layer defines the
+// seam only; the direction-B backend that serves a local CF_HDROP selection is
+// DropFileList in rtsc/clipboard/drop_files.h (covered by
+// tests/test_drop_files.cpp). The provider-gate behaviour stays here: with no
+// provider installed, every file-contents request fails.
 
 #pragma once
 

@@ -91,8 +91,10 @@ class CliprdrClient {
     //
     // Direction A: this client serves a local file list through an injected
     // FileListProvider and downloads remote files through CB_FILECONTENTS.
-    // Direction B (a cached file store) is not implemented; the interface and
-    // the "no provider => FAIL" gate above are all that exists.
+    // Direction B is a FileListProvider implementation, not part of this class:
+    // DropFileList (rtsc/clipboard/drop_files.h) serves a local CF_HDROP
+    // selection and is covered by tests/test_drop_files.cpp. What lives here is
+    // the gate: with no provider installed every file-contents request fails.
 
     // Advertises CB_STREAM_FILECLIP_ENABLED in the next Clipboard Capabilities
     // PDU. Off by default.

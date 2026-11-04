@@ -3364,12 +3364,20 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     // witness would read 0, and the test would report a Stop() defect that is
     // really its own. `gate_claimed` guarantees exactly one parking launcher and
     // `gate_expired` makes a timeout loud instead of silent.
+    //
+    // The park is witnessed from BOTH ends (`gate_entered` / `gate_parked`) and
+    // the claim is asserted too. A single "I ran this store" flag is not enough:
+    // audit X moved the store above the CAS and forced the park condition false,
+    // and the run stayed green -- `started_after_stop` was being satisfied by the
+    // fixed-delay branch, so the witness no longer proved a park had happened.
+    // Asserting claim + entered + parked together means "no park" cannot pass.
     std::atomic<bool> gate_claimed{false};
-    std::atomic<bool> gate_waited{false};
+    std::atomic<bool> gate_entered{false};
+    std::atomic<bool> gate_parked{false};
     std::atomic<bool> gate_expired{false};
     cfg.session_thread_launcher = [&launches, &stop_began, &started_after_stop,
-                                   &gate_claimed, &gate_waited, &gate_expired,
-                                   &server_raw,
+                                   &gate_claimed, &gate_entered, &gate_parked,
+                                   &gate_expired, &server_raw,
                                    delay_ms](std::function<void()> body) {
             const bool last_registered =
                 server_raw != nullptr &&
@@ -3377,11 +3385,11 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
             bool expected = false;
             if (last_registered &&
                 gate_claimed.compare_exchange_strong(expected, true)) {
+                gate_entered.store(true, std::memory_order_relaxed);
                 // A real deadline, not an iteration count: measured on this
                 // Windows host, sleep_for(1 ms) actually sleeps 15.50 ms (100
                 // calls = 1550 ms), so a 5000-iteration loop is bounded at ~78 s,
                 // not at 5 s.
-                gate_waited.store(true);
                 const auto deadline =
                     std::chrono::steady_clock::now() + std::chrono::seconds(10);
                 while (!stop_began.load(std::memory_order_relaxed) &&
@@ -3391,6 +3399,7 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
                 if (!stop_began.load(std::memory_order_relaxed)) {
                     gate_expired.store(true);
                 }
+                gate_parked.store(true, std::memory_order_relaxed);
             } else if (delay_ms > 0) {
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(delay_ms));
@@ -3454,10 +3463,25 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     // server defect but is only the knob outpacing the wait. Measured:
     // delay_ms=200 -> all_registered=false, 2 failed checks; delay_ms in
     // {0,1,5,40} -> green.
-    long long register_budget_ms = 2000 + 4LL * delay_ms * kConnect;
-    if (register_budget_ms > 60000) {
-        register_budget_ms = 60000;
+    const long long register_budget_wanted = 2000 + 4LL * delay_ms * kConnect;
+    const long long register_budget_cap = 60000;
+    // A clamp is NOT a guarantee: it only avoids a runaway wait. Past roughly
+    // 8600 ms of pause the clamped budget is spent before registration finishes
+    // and the case reds out again (measured: delay_ms=9000 -> `launches=7
+    // registered=-1` after ~60 s). Rather than silently spend a minute and then
+    // report what looks like a server defect, say so up front: this knob value
+    // is outside what the wait can cover.
+    if (register_budget_wanted > register_budget_cap) {
+        std::printf(
+            "  flood_vs_stop: RTSC_TEST_LAUNCH_DELAY_MS=%d is outside the "
+            "covered range (needs %lld ms of registration budget, the cap is "
+            "%lld ms)\n",
+            delay_ms, register_budget_wanted, register_budget_cap);
+        CHECK(register_budget_wanted <= register_budget_cap);
     }
+    const long long register_budget_ms =
+        register_budget_wanted > register_budget_cap ? register_budget_cap
+                                                     : register_budget_wanted;
     const auto register_deadline = std::chrono::steady_clock::now() +
                                    std::chrono::milliseconds(register_budget_ms);
     bool all_registered = false;
@@ -3487,18 +3511,22 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     std::printf(
         "  flood_vs_stop: stop_5s=%s launches=%d registered=%d live=%zu "
         "total=%zu sockets=%zu delay_ms=%d started_after_stop=%d "
-        "gate_wait=%d gate_expired=%d\n",
+        "gate_claim=%d gate_enter=%d gate_park=%d gate_expired=%d\n",
         stop_cleared ? "yes" : "RED_TIMEOUT", launches.load(),
         all_registered ? kConnect : -1, live, server->total_session_count(),
         keep_open.size(), delay_ms, started_after_stop.load(),
-        gate_waited.load() ? 1 : 0, gate_expired.load() ? 1 : 0);
+        gate_claimed.load() ? 1 : 0, gate_entered.load() ? 1 : 0,
+        gate_parked.load() ? 1 : 0, gate_expired.load() ? 1 : 0);
     CHECK(flood_finished);
     CHECK(all_registered);
     CHECK(launches.load() >= kConnect);
-    // The parking launcher must actually have parked, and must not have timed
-    // out: without these two the witness below could be vacuous (no window was
-    // ever created) or the run could be silently degraded.
-    CHECK(gate_waited.load());
+    // The parking launcher must be provable from both ends: claimed (the CAS
+    // decided), entered (it got past the gate), parked (it left the wait), and
+    // the wait must not have timed out. Without all four the witness below could
+    // be satisfied by the fixed-delay branch while no park ever happened.
+    CHECK(gate_claimed.load());
+    CHECK(gate_entered.load());
+    CHECK(gate_parked.load());
     CHECK(!gate_expired.load());
     if (delay_ms > 0) {
         // Necessary-not-sufficient witness for the window: at least one body
