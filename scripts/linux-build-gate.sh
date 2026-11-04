@@ -207,6 +207,17 @@ fi
 # Scoped to the CASE BLOCK, not the whole log. A whole-log grep accepts the same
 # string printed by any other case: measured with a synthetic log where P0 prints
 # nothing and `some_other_case` prints the marker -- the old check exited 0.
+# NOTE on detecting the batch-67 apostrophe mistake statically: do not try.
+# A guard was written and it was DEAD -- it scanned its own file for apostrophes
+# inside awk programs while the scanner's own header line (`awk -v q="'"`) carried
+# two apostrophes, so it never entered the program body and always reported clean.
+# Measured: re-injecting the exact batch-67 mistake left the guard silent.
+# bash -n is also not a semantic gate (audit Y2 built a case where `''` inside a
+# regex deletes whitespace, bash -n rc=0, regex silently wrong). The semantic gate
+# is selftest_marker_extractor below: every one of these mistakes turns a healthy
+# log into a reject, which the self-test catches. Deleting a dead check beats
+# keeping a green one.
+
 p0_block_has_marker() {
     # Any case boundary resets the flag, including "[ FAIL ]": a failed case
     # never prints "[  OK  ]", so keying the reset on OK alone would leak the
@@ -225,9 +236,9 @@ p0_block_has_marker() {
             tag = name
             sub(/^\[[[:space:]]+/, "", tag)
             sub(/[[:space:]]+\].*$/, "", tag)
-            sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
+            sub(/^\[[[:space:]]+[A-Za-z]+[[:space:]]+\][[:space:]]*/, "", name)
             sub(/[[:space:]]+$/, "", name)
-            inb = (tag == "RUN" && name == want) ? 1 : 0; next
+            inb = (tolower(tag) == "run" && name == want) ? 1 : 0; next
         }
         inb && /drain: challenge surfaced after coalesced record/ { found = 1 }
         END { exit found ? 0 : 1 }' "$SEC_LOG"
@@ -249,6 +260,24 @@ p0_block_has_marker() {
 selftest_marker_extractor() {
     local fn="$1" case_name="$2" marker="$3" logvar="$4"
     local probe rc=0 saved
+    # The helper writes the probe path through $logvar, so a name that the probe
+    # cannot own silently disconnects the data path. Measured: logvar=rc writes the
+    # helper's own return code and restore() puts the entry value back, so a
+    # permanently broken extractor still returned 0 -- fail-OPEN. logvar=probe /
+    # saved / fn / case_name similarly clobber helper locals. Reject anything that
+    # is not a caller-owned plain variable before doing any work.
+    case "$logvar" in
+        ''|*[!A-Za-z0-9_]*|[0-9]*) echo "  logvar '$logvar' is not a valid variable name" >&2; return 1 ;;
+    esac
+    case "$logvar" in
+        fn|case_name|marker|logvar|probe|rc|saved|reset|restore|expect_accept|expect_reject)
+            echo "  logvar '$logvar' collides with a helper local; pass the caller's log variable" >&2
+            return 1 ;;
+    esac
+    if declare -p "$logvar" 2>/dev/null | head -1 | cut -d' ' -f2 | grep -q r; then
+        echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2
+        return 1
+    fi
     # Indirect read/write by NAME, not eval. `eval "$logvar=..."` executes the
     # name: passing `EVIL; echo INJECTED` ran the echo (measured). printf -v
     # rejects a non-identifier instead, which is the behaviour we want and
@@ -256,14 +285,14 @@ selftest_marker_extractor() {
     # parameterised helper must not carry a live injection surface.
     printf -v saved '%s' "${!logvar:-}"
     probe="$(mktemp)" || { echo "  cannot create probe file (TMPDIR unset or full?)" >&2; return 1; }
-    reset() { printf -v "$logvar" '%s' "$probe"; }
-    restore() { printf -v "$logvar" '%s' "$saved"; }
+    reset() { printf -v "$logvar" '%s' "$probe" || { echo "  cannot write log var '$logvar'" >&2; return 1; }; }
+    restore() { printf -v "$logvar" '%s' "$saved" || { echo "  cannot restore log var '$logvar'" >&2; return 1; }; }
     expect_accept() {
-        reset
+        reset || { rc=1; return 1; }
         "$fn" || { echo "  rejected a healthy log" >&2; rc=1; }
     }
     expect_reject() {
-        reset
+        reset || { rc=1; return 1; }
         if "$fn"; then echo "  accepted $1" >&2; rc=1; fi
     }
     printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
@@ -287,6 +316,17 @@ selftest_marker_extractor() {
     printf '[ RUN  ] %s\n[rtsc-server] WARNING: x\n[GCC] static channels: 1\n%s\n[  OK  ] %s\n' \
         "$case_name" "$marker" "$case_name" >"$probe"
     expect_accept
+    # The marker match must not be loose. Truncate the TAIL of the marker (append a
+    # suffix and the truncated string still contains the whole marker, so the probe
+    # would be vacuous and the baseline itself would go red).
+    truncated="${marker%??????}"
+    printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$truncated" "$case_name" >"$probe"
+    expect_reject "a truncated marker (the marker regex is too loose)"
+    # The case name must match EXACTLY, not as a prefix.
+    printf '[ RUN  ] %s_extra\n%s\n[  OK  ] %s_extra\n' \
+        "$case_name" "$marker" "$case_name" >"$probe"
+    expect_reject "a marker printed by a case whose name merely starts with the wanted one"
     restore
     rm -f "$probe"
     unset -f reset restore expect_accept expect_reject
@@ -494,9 +534,9 @@ ui_block_has_marker() {
             tag = name
             sub(/^\[[[:space:]]+/, "", tag)
             sub(/[[:space:]]+\].*$/, "", tag)
-            sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
+            sub(/^\[[[:space:]]+[A-Za-z]+[[:space:]]+\][[:space:]]*/, "", name)
             sub(/[[:space:]]+$/, "", name)
-            inb = (tag == "RUN" && name == want) ? 1 : 0; next
+            inb = (tolower(tag) == "run" && name == want) ? 1 : 0; next
         }
         inb && /rgba->bgra 1280x1024:/ { found = 1 }
         END { exit found ? 0 : 1 }' "$UI_LOG"
