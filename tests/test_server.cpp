@@ -4800,4 +4800,131 @@ RTSC_TEST(server_sink_geometry_reports_untrusted_bits) {
     runner.join();
 }
 
+// ---- batch 79: Stop()/Run() lifetime, restart after Stop -------------------
+
+RTSC_TEST(server_stop_waits_for_run_to_exit) {
+    // B1: Stop() only waited for the registry's live count. The accept loop
+    // dereferences impl_ *after* the last session body has released its slot
+    // (Accept() itself, then total_session_count), so Stop() could return --
+    // and ~RdpServer free Impl -- while Run() was still executing on it.
+    //
+    // The launcher below is the documented seam (ServerConfig::
+    // session_thread_launcher). It runs the body inline (the caller *is* the
+    // accept thread) and then parks inside Run() until the test releases it.
+    // The park sits after the body returned, i.e. after the live count reached
+    // zero: exactly the window in which the pre-fix Stop() had nothing left to
+    // wait for. The discriminator is deterministic in both directions: a fixed
+    // Stop() cannot return before release_run is set (Run() cannot leave the
+    // launcher without it); the buggy one returns immediately.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    std::atomic<bool> body_done{false};
+    std::atomic<bool> release_run{false};
+    cfg.session_thread_launcher = [&body_done, &release_run](
+                                     std::function<void()> body) {
+        body();
+        body_done.store(true, std::memory_order_relaxed);
+        while (!release_run.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    };
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+
+    std::atomic<bool> run_returned{false};
+    std::thread runner([&server, &run_returned]() {
+        server.Run();
+        run_returned.store(true, std::memory_order_relaxed);
+    });
+
+    std::string connect_error;
+    auto peer =
+        rtsc::net::ConnectTcp("127.0.0.1", server.bound_port(), connect_error);
+    CHECK(peer != nullptr);
+    // End the session immediately: the body reads EOF, returns, and release()
+    // drops the live count to zero while Run() is still parked in the launcher.
+    if (peer != nullptr) peer->Close();
+    CHECK(WaitUntil([&body_done]() { return body_done.load(); }, 10000));
+    CHECK_EQ(server.session_count(), 0);
+
+    std::atomic<bool> stop_returned{false};
+    // Unblocks Run() so a *correct* Stop() can finish waiting. The buggy
+    // Stop() returns long before this fires; a fixed one cannot return until
+    // Run() has left the launcher.
+    std::thread releaser([&release_run, &stop_returned]() {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(400);
+        while (!stop_returned.load(std::memory_order_relaxed) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        release_run.store(true, std::memory_order_relaxed);
+    });
+    server.Stop();
+    const bool released_when_stop_returned = release_run.load();
+    const bool run_had_returned = run_returned.load();
+    stop_returned.store(true, std::memory_order_relaxed);
+    releaser.join();
+    runner.join();
+    std::printf("  b1: released_at_stop=%d run_returned_at_stop=%d\n",
+                released_when_stop_returned ? 1 : 0,
+                run_had_returned ? 1 : 0);
+    // The pre-fix failure: Run() was still parked inside the launcher when
+    // Stop() returned -- the accept loop had not exited and impl_ was about to
+    // be freed under it.
+    CHECK(released_when_stop_returned);
+    CHECK(run_returned.load());
+}
+
+RTSC_TEST(server_restart_after_stop_rebinds) {
+    // B2: Start() only checked `impl_->listener != nullptr`. Stop() closes the
+    // listener but never drops it, and a closed listener's Accept() returns
+    // nullptr at once (posix_transport.cpp:86 / winsock_transport.cpp:83), so a
+    // second Start() reported success on a dead socket: bound_port() pointed at
+    // a port nobody listened on and Run() returned immediately.
+    ServerConfig cfg;
+    cfg.port = 0;  // ephemeral: the kernel picks a free port
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+
+    std::string error;
+    CHECK(server.Start(error));
+    const uint16_t port1 = server.bound_port();
+    CHECK(port1 != 0);
+    // Double Start without Stop stays a no-op (idempotent, same port).
+    std::string error_repeat;
+    CHECK(server.Start(error_repeat));
+    CHECK(error_repeat.empty());
+    CHECK_EQ(server.bound_port(), port1);
+
+    server.Stop();
+    // The documented post-Stop read is still the last bound port.
+    CHECK_EQ(server.bound_port(), port1);
+
+    std::string error2;
+    CHECK(server.Start(error2));
+    CHECK(error2.empty());
+    const uint16_t port2 = server.bound_port();
+    CHECK(port2 != 0);
+
+    // The success must be real: the port has to serve a full handshake.
+    std::thread runner([&server]() { server.Run(); });
+    const HandshakeResult r = DriveToActive(port2);
+    CHECK(r.reached_active);
+    CHECK(r.error.empty());
+    CHECK_EQ(server.total_session_count(), 1);
+    server.Stop();
+    runner.join();
+    CHECK_EQ(server.session_count(), 0);
+}
+
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

@@ -84,6 +84,12 @@ class Listener {
     // Closes the listening socket. Idempotent.
     virtual void Close() = 0;
 
+    // True after Close() has been called (or the socket failed). Start() uses
+    // this to distinguish "already listening" from "listener was closed by a
+    // previous Stop()", so Stop()->Start() rebinds instead of reporting success
+    // on a dead socket.
+    virtual bool IsClosed() const noexcept = 0;
+
     // The TCP port the socket is actually bound to, as reported by the kernel
     // (getsockname) at bind time. When ListenTcp() is given port 0 the kernel
     // picks a free port; this accessor is the only way for a caller to learn

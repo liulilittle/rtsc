@@ -2237,6 +2237,81 @@ class RdpSession {
 }  // namespace
 
 // ---- RdpServer -------------------------------------------------------------
+//
+// Thread-local stop guards used by Stop() to avoid self-deadlocks (B3/B1).
+//
+// t_in_session_body is set while the calling thread is inside a session body
+// (Run()'s detached thread or ServeOne()'s inline session). t_in_accept_loop
+// is set while the calling thread executes Run()/ServeOne() itself. Stop()
+// cannot wait for a thread that is itself blocked in Stop(): waiting on the
+// registry's live count would deadlock (this session's slot can't reach zero
+// until this callback returns), and waiting for run_active == 0 would
+// deadlock when the call came from Run()/ServeOne() itself.
+//
+// thread_local flags instead of std::thread::id: thread ids are reused once a
+// thread exits, so an id table would misclassify an unrelated thread that
+// inherited a dead session's id.
+// ---- RdpServer -------------------------------------------------------------
+
+namespace {
+
+// Thread-local markers consulted by Stop() (above). Defined in an anonymous
+// namespace so each translation unit keeps its own state; only this file's
+// RdpServer methods set or read them.
+thread_local bool t_in_session_body = false;
+thread_local bool t_in_accept_loop = false;
+
+// Sets one of the thread-local markers for the lifetime of the object and
+// restores the previous value on every exit path (early return, exception).
+class ThreadRoleScope {
+ public:
+    ThreadRoleScope(bool& flag, bool value) : flag_(flag), previous_(flag) {
+        flag_ = value;
+    }
+    ~ThreadRoleScope() { flag_ = previous_; }
+    ThreadRoleScope(const ThreadRoleScope&) = delete;
+    ThreadRoleScope& operator=(const ThreadRoleScope&) = delete;
+
+ private:
+    bool& flag_;
+    bool previous_;
+};
+
+// Publishes "Run()/ServeOne() is executing on this Impl" so Stop() can wait for
+// the accept loop to actually leave impl_ before the host destroys it (B1).
+// The increment must happen before any other impl_ access (it is Run()'s /
+// ServeOne()'s first statement) and the decrement must be the last one: the
+// guard is the outermost local object, so its destructor runs after every
+// other local, including on early returns and exceptions.
+//
+// Lock order: stop_mu -> (nothing). Stop() waits on stop_cv with stop_mu
+// released by the wait; the notify below happens *while holding* stop_mu, so
+// Stop() cannot wake, return, and free the Impl before the notifier is done.
+// No path holds registry->mu and stop_mu at the same time, so they cannot form
+// a cycle. The counter (not a bool) lets Run() and ServeOne() overlap without
+// one wiping out the other's flag.
+class RunActiveScope {
+ public:
+    RunActiveScope(std::mutex& mu, std::condition_variable& cv, int& active)
+        : mu_(mu), cv_(cv), active_(active) {
+        std::lock_guard<std::mutex> lock(mu_);
+        ++active_;
+    }
+    ~RunActiveScope() {
+        std::lock_guard<std::mutex> lock(mu_);
+        --active_;
+        cv_.notify_all();
+    }
+    RunActiveScope(const RunActiveScope&) = delete;
+    RunActiveScope& operator=(const RunActiveScope&) = delete;
+
+ private:
+    std::mutex& mu_;
+    std::condition_variable& cv_;
+    int& active_;
+};
+
+}  // namespace
 
 struct RdpServer::Impl {
     explicit Impl(const ServerConfig& config)
@@ -2295,6 +2370,24 @@ struct RdpServer::Impl {
         bound_port = listener->local_port();
         return true;
     }
+
+    // ---- Stop()/Run() synchronization (B1/B3) -------------------------------
+    //
+    // run_active: how many of Run()/ServeOne() are currently executing inside
+    // this Impl. Stop() waits for it to reach zero after it has already
+    // drained the registry's live count. This prevents Stop() from returning
+    // while the accept loop is still accessing impl_ (the use-after-free
+    // observed under ASAN in batch 79).
+    //
+    // stop_mu / stop_cv: the condition variable that Stop() waits on while
+    // checking run_active. It is deliberately separate from registry->mu so
+    // that the release lambda (which holds registry->mu to decrement `live`)
+    // can never block a Stop() that is already holding stop_mu -- and vice
+    // versa, Stop() must never hold registry->mu while waiting on stop_cv.
+    // Lock order invariant: stop_mu -> (nothing). Always grab stop_mu alone.
+    std::mutex stop_mu;
+    std::condition_variable stop_cv;
+    int run_active = 0;
 };
 
 RdpServer::RdpServer(const ServerConfig& config)
@@ -2355,7 +2448,13 @@ bool RdpServer::Start(std::string& error) {
         return false;
     }
     WarnIfAcceptAll();
-    if (impl_->listener) return true;
+    // A listener that was closed by a previous Stop() must not be reused:
+    // its Accept() returns nullptr at once (posix_transport.cpp:86 /
+    // winsock_transport.cpp:83), so reporting success here would hand the host
+    // a dead socket. Drop it and rebind; an open listener stays untouched so
+    // double Start() without Stop() remains idempotent and keeps its port.
+    if (impl_->listener && !impl_->listener->IsClosed()) return true;
+    impl_->listener.reset();
     std::string why;
     if (!impl_->Listen(why)) {
         error = why;
@@ -2366,6 +2465,12 @@ bool RdpServer::Start(std::string& error) {
 }
 
 void RdpServer::Run() {
+    // Publish that this thread is executing Run() before touching anything else
+    // in impl_: Stop() waits for run_active to reach zero so it never returns
+    // while the accept loop is still dereferencing impl_ (B1). The guard
+    // decrements on every exit path -- early return, break, exception.
+    RunActiveScope run_active_scope(impl_->stop_mu, impl_->stop_cv, impl_->run_active);
+    ThreadRoleScope accept_role(t_in_accept_loop, true);
     if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
                              &last_error_)) {
         return;
@@ -2462,6 +2567,10 @@ void RdpServer::Run() {
         // (every other session included). The session phase is caught here and
         // teardown is the single no-throw `release` above.
         auto body = [registry, session, release]() noexcept {
+            // B3: mark this thread as inside a session body so that a Stop()
+            // re-entrant from a session callback can skip the wait and avoid
+            // self-deadlocking on its own live count.
+            ThreadRoleScope session_role(t_in_session_body, true);
             try {
                 session->Run();
             } catch (const std::exception& e) {
@@ -2517,6 +2626,10 @@ void RdpServer::Run() {
 }
 
 bool RdpServer::ServeOne() {
+    // Same synchronization as Run(): publish this thread before touching any
+    // impl_ member so Stop() can wait for the accept loop to leave.
+    RunActiveScope run_active_scope(impl_->stop_mu, impl_->stop_cv, impl_->run_active);
+    ThreadRoleScope accept_role(t_in_accept_loop, true);
     if (!ValidateDesktopSize(config_.desktop_width, config_.desktop_height,
                              &last_error_)) {
         return false;
@@ -2542,24 +2655,32 @@ bool RdpServer::ServeOne() {
     // contained step by step too: Close() is not noexcept, so a throwing Stop()
     // must not skip ScrubCredentials()/ReleaseInput() (that would leak the
     // input lease slot and the session's rate-limit bucket).
-    try {
-        session.Run();
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[rtsc-server] session failed: %s\n", e.what());
-    } catch (...) {
-        std::fprintf(stderr, "[rtsc-server] session failed: unknown exception\n");
-    }
-    try {
-        session.Stop();
-    } catch (...) {
-    }
-    try {
-        session.ScrubCredentials();
-    } catch (...) {
-    }
-    try {
-        session.ReleaseInput();
-    } catch (...) {
+    //
+    // B3: mark this thread as inside a session body so that a Stop() called
+    // from a session callback (rare but possible through the launcher seam) can
+    // skip the wait and avoid self-deadlocking on its own live count.
+    {
+        ThreadRoleScope session_role(t_in_session_body, true);
+        try {
+            session.Run();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[rtsc-server] session failed: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr,
+                         "[rtsc-server] session failed: unknown exception\n");
+        }
+        try {
+            session.Stop();
+        } catch (...) {
+        }
+        try {
+            session.ScrubCredentials();
+        } catch (...) {
+        }
+        try {
+            session.ReleaseInput();
+        } catch (...) {
+        }
     }
     return true;
 }
@@ -2587,7 +2708,35 @@ void RdpServer::Stop() {
         }
     }
 
+    // B3: if the calling thread is a session thread (its body or the accept
+    // loop is on the stack), skipping the wait avoids a self-deadlock
+    // because this session's live count can never reach zero while this
+    // callback is still active.
+    if (t_in_session_body || t_in_accept_loop) {
+        std::fprintf(stderr,
+                     "[rtsc-server] stop: called from a session thread; "
+                     "skipping the wait to avoid self-deadlock; the session "
+                     "will exit after this callback\n");
+        // Still deliver stop requests to live sessions so they can clean up.
+        const auto registry = impl_->registry;
+        {
+            std::lock_guard<std::mutex> lock(registry->mu);
+            for (const auto& session : registry->sessions) {
+                try {
+                    session->Stop();
+                } catch (...) {
+                }
+            }
+        }
+        return;
+    }
+
     const auto registry = impl_->registry;
+    // Ask every live session to stop, then wait until their detached threads
+    // have actually finished (server.h: Stop() closes the listener and every
+    // live session, then waits for their threads). Detached threads cannot be
+    // joined, so the wait is on the registry's live count -- the same
+    // guarantee the join used to give.
     // Ask every live session to stop, then wait until their detached threads
     // have actually finished (server.h: Stop() closes the listener and every
     // live session, then waits for their threads). Detached threads cannot be
@@ -2694,9 +2843,9 @@ void RdpServer::Stop() {
         } catch (...) {
             wait_failed = true;
         }
-        if (stopped) return;
+        if (stopped) break;
         const size_t live = registry->live.load(std::memory_order_relaxed);
-        if (live == 0) return;
+        if (live == 0) break;
         const auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
                                          std::chrono::steady_clock::now() -
                                          wait_started)
@@ -2716,6 +2865,18 @@ void RdpServer::Stop() {
                          "%llds\n",
                          live, static_cast<long long>(elapsed_seconds));
         }
+    }
+
+    // B1: after the live count reaches zero, wait for the accept loop to
+    // fully exit (run_active == 0). RunActiveScope in Run()/ServeOne()
+    // decrements run_active when they return. Stop() must wait for this to
+    // reach zero so that ~RdpServer doesn't free Impl while Run() is still
+    // dereferencing it.
+    {
+        std::unique_lock<std::mutex> stop_lock(impl_->stop_mu);
+        impl_->stop_cv.wait(stop_lock, [this] {
+            return impl_->run_active == 0;
+        });
     }
 }
 

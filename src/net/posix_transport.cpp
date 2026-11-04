@@ -103,6 +103,10 @@ class PosixListener : public Listener {
         }
     }
 
+    bool IsClosed() const noexcept override {
+        return closed_.load(std::memory_order_relaxed);
+    }
+
     uint16_t local_port() const override { return local_port_; }
 
  private:
