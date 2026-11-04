@@ -326,13 +326,14 @@ class RdpServer {
     // the session thread, once per decoded Fast-Path input event.
     void SetInputCallback(InputCallback cb);
 
-    // Sets the desktop input sink (nullptr clears it). MUST be called before
-    // Start() (or Run()/ServeOne()): a session snapshots the pointer when it is
-    // launched, so a sink installed while sessions are already running is not
-    // picked up by them. The server does not own the sink: it is a borrowed
-    // pointer with the same lifetime contract as SetClipboard, so it must
-    // outlive the server (including Stop()), because session threads call it
-    // until they are joined.
+    // Sets the desktop input sink (nullptr clears it). Call it before
+    // Start()/Run()/ServeOne() and never again while sessions are running:
+    // a session reads input_sink_ on every decoded event, so changing it
+    // mid-session is a data race (the new value may be read by one thread
+    // while another thread is still calling the old sink). The server does
+    // not own the sink: it is a borrowed pointer with the same lifetime
+    // contract as SetClipboard, so it must outlive the server (including
+    // Stop()), because session threads call it until they are joined.
     //
     // The sink is consulted only when ServerConfig::enable_desktop_input is
     // true: every decoded input event is then injected before the observation
