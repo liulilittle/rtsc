@@ -1242,3 +1242,29 @@ Linux gate PASS 67/67；Windows 六类诊断全 0 + 69/69(81.16s)；MUT- 0。
 ### 教训（discover 例 74）
 注释里每个数字都要从表里算一遍（"表在、结论错"最该避免）；余量要给实测值不给区间；
 注释描述实现，不能让实现迁就注释。
+## 第898轮：批61 —— 采纳 X 的 flood 防御性洞 + deadline，bench 注释去逐值（`7c54e1a`）
+### 未复现声明（W5）
+X 报 "Windows Debug + 全量 + 40 burner" 下 OLD(d687048) 1-2/6 红。我同条件实测
+**OLD 0/8 红、NEW 0/6 红**（本机 32 核，burner 配比不等价）。**未复现**，但两条修复
+是独立逻辑缺陷，不依赖复现。
+### 1. flood 用注册数而非 launcher 调用数（X §2 问题2）
+`index == kConnect` 假设"launcher 调用序 == 注册序"，但 `server.cpp:2509` 的
+`if (!started) { release(); continue; }` 会回滚注册而该次 launcher 已计入 ⇒ 洞。
+改为 `session_count() >= kConnect` + `gate_claimed` CAS 保证恰好一个 park，
+新增 `gate_waited`/`gate_expired` 并**断言**（让"从未 park"和"park 超时"显式失败）。
+### 2. 有界等待改真实 deadline（X §6）
+实测 `sleep_for(1ms)` = **15.50ms**（100 次=1550ms），5000 次 ≈ **78s** 而非 5s。
+改 `steady_clock` 10s deadline + `gate_expired`。
+### 3. bench 注释去逐值（X §4）
+X 实测 13.3/11.0/5.2/6.0/5.4/7.5/5.2x；我实测 10.9/10.0/4.4/5.4/5.0/6.3/4.6x
+⇒ 比值随机器漂移近 2x，逐值表必然过期。改为陈述不变量（绝对余量 ~1.4x），
+并把"前两版注释都错了"写进注释。
+### Rule 16
+删 `gate_waited.store` ⇒ 6 值全红；`>= kConnect` → `+1`（永不 park）⇒ 全红且 delay=1 时
+witness 归零。恢复后 10/10 绿、`gate_wait=1 gate_expired=0` 恒定。
+### 验证
+Linux gate PASS 67/67；Windows Release 六类诊断全 0 + 55/642 + ctest 69/69(73.46s)；
+**Windows Debug `verify.ps1` 69/69**(150s)；负载下 NEW 0/6 红；CRLF 4619/4619、1535/1535；MUT- 0。
+### 教训（discover 例 75/76）
+"迭代 N 次"不是时间上界（Windows sleep_for(1ms)=15.5ms）；跨机器测量值不能写进注释
+（同一注释数字本轮连错三次）。

@@ -1416,3 +1416,13 @@ Rule 16：改回 `[bench]` ⇒ B 假绿复现；删身份循环 ⇒ D 变绿。
 按实测重写注释 + iters 2x 2→3、1.33x 4→6。
 Rule 16：memcpy→逐像素+取模 ⇒ 1:1 9.22/1.20 红、letterbox 9.59/1.10 红，1 failing/2 failed。
 验证：RelWithDebInfo 7 结果行 0 重试 60/7348；Linux gate PASS；Windows 69/69；MUT- 0。
+### 批 61（`7c54e1a`）—— 采纳 X：flood 防御性洞 + 真实 deadline + bench 注释去逐值
+
+1. **flood 判据**：`index == kConnect` 假设 launcher 调用序 == 注册序，但
+   `server.cpp:2509` 回滚注册时该次调用已计入 ⇒ 改为 `session_count() >= kConnect`
+   + `gate_claimed` CAS，新增 `gate_waited`/`gate_expired` 并断言。
+2. **deadline**：实测 `sleep_for(1ms)` = 15.50ms，5000 次 ≈ 78s（非 5s）⇒ 改 `steady_clock` 10s。
+3. **bench 注释**：X 实测 13.3x…、我实测 10.9x…，比值随机器漂移近 2x ⇒ 删逐值表，改述不变量。
+Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全红且 witness 归零。
+验证：gate PASS；Windows Release 69/69；Windows Debug verify.ps1 69/69；负载 NEW 0/6；MUT- 0。
+未复现声明：X 的 OLD 1-2/6 红，我同条件 0/8。
