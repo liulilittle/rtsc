@@ -2007,3 +2007,47 @@ MSBuild 据此判断"源文件没变"而**跳过重编**，跑的还是变异版
 长度从 121311 不变，`git diff` 只有 1 行变化。
 **教训**：对编码不干净的记忆文件，**按字节做最小差分**（定位 → 校验上下文 → 单字节替换 →
 长度校验），不要整体解码-重编码（会二次损坏原来的坏字节）。
+### 例 109：surrogateescape 解码 + join 会合并行；混合编码文件必须全程字节级操作
+批76 我要在 `plan.md`（含历史坏字节）里勾选 8 个复选框。第一版做法：
+```python
+t = raw.decode('utf-8', errors='surrogateescape')
+lines = t.split('\n')
+...
+io.open(p,'wb').write('\n'.join(lines).encode('utf-8', errors='surrogateescape'))
+```
+结果：**行数从 1571 骤降，中文行全部黏在一起**。原因：文件里有裸 `\r`（CR 未跟 LF）
+作为行内字符，`split('\n')` 不会断开它们，而原文件实际是"某些行以 CR 结尾"，
+`split('\n')` 把多行当成一行；重新 join 时又插入 `\n`，于是内容错位。
+（无论机制细节如何，可复现的事实是：**解码-改-重编码改变了文件结构**，
+而 `git diff` 显示大量中文行被合并。）
+
+**正确做法：全程字节级**
+```python
+first = raw.find(b'TranslateInput(ev(640,512)')       # 唯一 ASCII 指纹定位
+block_start = raw.rfind(b'\n', 0, first) + 1
+block_end = raw.find(b'\n### ', block_start)          # 块内无空行，不能用 \n\n
+block = raw[block_start:block_end]
+lines = block.split(b'\n')                            # 逐行，不碰编码
+for i, ln in enumerate(lines):
+    if ln.startswith(b'- [ ] '):
+        lines[i] = b'- [x] ' + ln[6:]                 # 只改第 4 个字节
+wrapper = b'\n'.join(lines)
+```
+证据文本也只用 ASCII。结果字节数 123500→124617（+1117 全部来自新增 ASCII），
+行数 1571→1589（+18 行证据），结构完好。
+
+**规则**：
+1. 混合编码/含坏字节的文件，**禁止整体解码-改-重编码**；用 `bytes.find` / `bytes.replace`
+   做最小差分，并在写回后校验**行数变化符合预期**（只应等于新增行数）。
+2. 写回前先 `cmd /c "git checkout -- <path>"` 回到干净基线再重做，
+   不要在已损坏的工作树上继续叠加修改。
+
+### 例 110：锚点必须唯一且限定在目标块内
+同一批里，我用「文件里第一个 `fail-closed`」作为插入点，结果证据被插到 `:165`
+——那是另一个章节的同名短语。第二次用唯一 ASCII 指纹
+（`TranslateInput(ev(640,512)`）并**把搜索范围限制在这个块的起止之间**才正确。
+
+**这与"变异必须来自真实函数体并断言唯一"是同一条规则的推广**：
+任何按内容定位的编辑，都必须
+1. 断言指纹在**目标范围内**唯一（不是全文件唯一那么简单）；
+2. 定位后回读校验（`grep -n` 确认插入位置在预期行号区间）。

@@ -1657,3 +1657,26 @@ MSBuild 判定源文件未变而跳过重编，跑的还是变异版二进制。
   不要整体解码-重编码。
 ### 验证
 Linux gate PASS 67/67；Win Release 69/69(83.54s)；Win Debug 69/69(92s)；MUT- 0。
+
+## 第914轮：批76 —— plan 几何判据 8 项勾选 + 订正过时 metric 判据（`31559c9`）
+### 复核结论：8 个未勾选项全部已实现，只是从未勾选
+逐项对应（详见提交消息）：跨屏 n=(52429,32768) -> `test_desktop_input.cpp:353`；
+1:1 -> `:416`；n=52 -> `:441`；65535 -> `:460`；trust bits -> `:732`；
+DPI -> `src/server/desktop_gdi.cpp:77-86`；ctest 当时 69/69；变异 -> design-N 的 M1–M6+M5b。
+### 一处判据本身写错（不是实现错）
+原判据 `pixels_are_physical = (SM_*VIRTUALSCREEN == DESKTOPHORZRES/VERTRES)`。
+实现用 `SM_CXSCREEN/SM_CYSCREEN`（`:172-183`），注释明确说明：桌面 DC 的
+DESKTOPHORZRES/VERTRES 描述主显示器，用虚拟屏边界会在任意多屏机器上恒判 not-physical，
+**恰好让 `--monitor N` 的绝对定位全部失效**。已把 plan 里该行订正并附原因。
+### 动手过程中的两个坑
+- 例109：`surrogateescape` 解码 + `'\n'.join` 把多行合并（1571 行骤降，中文黏连）。
+  改用**全程字节级**：`bytes.find` 定位 → `block.split(b'\n')` 逐行 → 只改第 4 个字节；
+  证据文本纯 ASCII。结果 +1117 字节 / +18 行，结构完好。
+  教训：混合编码文件禁止整体解码-改-重编码；写回后校验行数变化符合预期。
+- 例110：用「第一个 `fail-closed`」作锚点，证据插到 `:165` 的另一个章节。
+  改用唯一 ASCII 指纹并**限定在块起止之间**，再 `grep -n` 回读确认位置。
+### 验证
+git status 只有 plan.md；`git diff --numstat` 27+/9-；Linux gate PASS 67/67 + FAILED_COUNT=0；
+无代码改动，未重复跑 Windows ctest（批75 已 69/69）。
+### 剩余（均需外部条件）
+plan P1（原生 ext4）UNVERIFIED（WSL load 146）；真机 U1/U2/U4-U9 需真实 Windows 桌面。
