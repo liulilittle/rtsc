@@ -274,8 +274,27 @@ selftest_marker_extractor() {
             echo "  logvar '$logvar' collides with a helper local; pass the caller's log variable" >&2
             return 1 ;;
     esac
-    if declare -p "$logvar" 2>/dev/null | head -1 | cut -d' ' -f2 | grep -q r; then
-        echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2
+    # One check for every way the target can fail to be a plain scalar:
+    #   r flag  -> readonly, printf -v refuses (fail-closed, but the message used
+    #             to blame the extractor)
+    #   a / A   -> array. printf -v writes element [0] and leaves $logvar empty,
+    #             so every probe runs against an empty path. Measured: the
+    #             self-test still returned 0 on a HEALTHY extractor (vacuous),
+    #             though a broken one was still caught, so this is a
+    #             vacuous-pass rather than a false green -- reject it anyway,
+    #             same standard as logvar=rc.
+    local flags
+    flags="$(declare -p "$logvar" 2>/dev/null | head -1 | cut -d" " -f2)"
+    case "$flags" in
+        *r*) echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2; return 1 ;;
+        *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable" >&2; return 1 ;;
+    esac
+    # The truncation probes below cut a proportion of the marker and strip its
+    # first six characters. Below that size the cuts stop being informative, so
+    # require enough length. Both call sites pass long literals; this guards a
+    # future short one rather than a live path.
+    if [ "${#marker}" -le 12 ]; then
+        echo "  marker '$marker' is too short for the truncation probes (need more than 12 chars)" >&2
         return 1
     fi
     # Indirect read/write by NAME, not eval. `eval "$logvar=..."` executes the
@@ -316,13 +335,32 @@ selftest_marker_extractor() {
     printf '[ RUN  ] %s\n[rtsc-server] WARNING: x\n[GCC] static channels: 1\n%s\n[  OK  ] %s\n' \
         "$case_name" "$marker" "$case_name" >"$probe"
     expect_accept
-    # The marker match must not be loose. Truncate the TAIL of the marker (append a
-    # suffix and the truncated string still contains the whole marker, so the probe
-    # would be vacuous and the baseline itself would go red).
-    truncated="${marker%??????}"
+    # The marker match must not be loose. Cut the TAIL (append a suffix instead and
+    # the string still contains the whole marker, making the probe vacuous and the
+    # baseline itself red). Cut a PROPORTION, not a fixed six characters: %??????
+    # returns the input unchanged when it is shorter than six and collapses to ""
+    # at exactly six, so a fixed count silently turns this probe into a no-op.
     printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
-        "$case_name" "$truncated" "$case_name" >"$probe"
-    expect_reject "a truncated marker (the marker regex is too loose)"
+        "$case_name" "${marker:0:${#marker}*2/3}" "$case_name" >"$probe"
+    expect_reject "a tail-truncated marker (the marker regex only matched its tail)"
+    # Cutting the HEAD is a separate hole: a regex that only matches the tail of the
+    # marker still passes the tail-truncation probe. Measured: /record/ stayed green
+    # against the seven boundaries. Cutting the head also covers "only matches a
+    # middle fragment", since that string is missing its head too.
+    printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "${marker#??????}" "$case_name" >"$probe"
+    expect_reject "a head-truncated marker (the marker regex only matched its tail)"
+    # Case is a third independent axis, and it has two shapes that need separate
+    # probes: fully case-insensitive matching (caught by the upper-case probe) and
+    # per-character classes like [Dd]rain (NOT caught by it -- DRAIN does not match
+    # [Dd]rain, only Drain does). The alternating-case probe catches the second
+    # shape because its first letter is upper-case while the rest is not.
+    printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$(printf '%s' "$marker" | tr '[:lower:]' '[:upper:]')" "$case_name" >"$probe"
+    expect_reject "an upper-cased marker (the marker regex ignored case)"
+    printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$(printf '%s' "$marker" | awk '{ out=""; for (i=1;i<=length($0);i++) { c=substr($0,i,1); out = out ((i%2)?toupper(c):tolower(c)) } print out }')" "$case_name" >"$probe"
+    expect_reject "an alternating-case marker (the marker regex accepts some case variants)"
     # The case name must match EXACTLY, not as a prefix.
     printf '[ RUN  ] %s_extra\n%s\n[  OK  ] %s_extra\n' \
         "$case_name" "$marker" "$case_name" >"$probe"
