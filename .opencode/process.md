@@ -1224,3 +1224,21 @@ Windows 六类诊断全 0 + ctest 69/69(82.47s)；bash -n OK；MUT- 0。
 ### 教训（discover 例 73）
 给测试加输出时必须 grep 该标记在 gate 里的全部消费者；计数断言升级为身份断言；
 修完要给两层红证；**"我自己刚改的代码"最该怀疑**——Rule 16 变异只测抓回归能力，不测门禁是否变弱。
+## 第897轮：批60 —— bench 注释事实错误 + iters 让"样本>=11ms"成立（`bb6d371`）
+### 缺陷（批56 我写错的注释）
+"Every budget is about 4x the idle measurement" 实际是 **3.3x–10.9x**（注释自带表可算）；
+"roughly 1.5x to 2x headroom" 实测是 **1.43x/1.43x/1.44x**；
+"every sample is at least ~10 ms" 不成立（2x 9.6ms、1.33x 7.2ms）。
+### 修法
+按实测重写注释（3.3x–10.9x，说明小用例给大倍数是因 1ms 抖动地板）；iters 2x 2→3、1.33x 4→6，
+七例空闲样本 15/16/14.4/22.9/16.9/10.8/43 ms 全部 ≥10.8ms。
+### Rule 16
+`CopyExact` 的 memcpy → 逐像素+取模（唯一变异）：1:1 **9.22 vs 1.20 红**、letterbox **9.59 vs 1.10 红**，
+其余 5 例绿 ⇒ 60/7348，1 failing/2 failed，EXIT=1。红态下 `bench_lines=7`（重试行走 `[bench-retry]`）。
+恢复 hash 一致、MUT- 0、确实重编。
+### 验证
+RelWithDebInfo 绿态 `bench_lines=7 retry_lines=0` 60/7348，实测 0.15/0.16/6.48/18.41/17.89/3.06/37.74；
+Linux gate PASS 67/67；Windows 六类诊断全 0 + 69/69(81.16s)；MUT- 0。
+### 教训（discover 例 74）
+注释里每个数字都要从表里算一遍（"表在、结论错"最该避免）；余量要给实测值不给区间；
+注释描述实现，不能让实现迁就注释。

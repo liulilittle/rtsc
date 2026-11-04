@@ -1410,3 +1410,9 @@ bench 重试行原用 `[bench]` 标记，被 gate 的 `grep -c "\[bench\]" >= 7`
 红证：B 场景（6 结果 + 1 retry）修前 exit=0、修后 exit=1；D 场景（换用例）仅身份断言能抓。
 Rule 16：改回 `[bench]` ⇒ B 假绿复现；删身份循环 ⇒ D 变绿。
 验证：Linux gate PASS 67/67；真实 RelWithDebInfo `bench_lines=7 retry_lines=0`；Windows 69/69；MUT- 0。
+### 批 60（`bb6d371`）—— bench 注释事实错误 + iters 修正
+
+注释称"预算约 4x 空闲"实际 3.3x–10.9x；称"1.5-2x 余量"实测 1.43x；称"样本≥10ms"对 2x/1.33x 不成立。
+按实测重写注释 + iters 2x 2→3、1.33x 4→6。
+Rule 16：memcpy→逐像素+取模 ⇒ 1:1 9.22/1.20 红、letterbox 9.59/1.10 红，1 failing/2 failed。
+验证：RelWithDebInfo 7 结果行 0 重试 60/7348；Linux gate PASS；Windows 69/69；MUT- 0。
