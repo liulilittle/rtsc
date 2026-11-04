@@ -287,11 +287,23 @@ selftest_marker_extractor() {
     #             and fails (fail-closed via reset's error branch)
     local flags
     flags="$(declare -p "$logvar" 2>/dev/null | head -1 | cut -d" " -f2)"
+    # A log variable that does not exist yet is not a correctness hole (printf -v
+    # would create it as a plain scalar and the data path would be intact), but it
+    # means the caller misspelled the name. Reject so a typo cannot silently test a
+    # fresh variable while the real log goes unread.
+    if ! declare -p "$logvar" >/dev/null 2>&1; then
+        echo "  logvar '$logvar' is not set; the caller must pass the variable that holds the log path" >&2
+        return 1
+    fi
+    # Order matters for the MESSAGE, not the verdict: `declare -in` is a nameref
+    # whose flag string is "-in", and its printf -v error is byte-identical to a
+    # pure nameref's, so nameref is checked before integer to name the real cause.
+    # Every branch returns 1, so no ordering can change fail-open/fail-closed.
     case "$flags" in
         *r*) echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2; return 1 ;;
         *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable to see the data path" >&2; return 1 ;;
-        *i*) echo "  logvar '$logvar' is an integer; printf -v would evaluate the path as arithmetic" >&2; return 1 ;;
         *n*) echo "  logvar '$logvar' is a nameref; pass the real variable to see the data path" >&2; return 1 ;;
+        *i*) echo "  logvar '$logvar' is an integer; printf -v would evaluate the path as arithmetic" >&2; return 1 ;;
     esac
     # The truncation probes below cut a proportion of the marker and strip its
     # first six characters. Below that size the cuts stop being informative, so
@@ -330,6 +342,14 @@ selftest_marker_extractor() {
     printf '[ RUN  ] %s\n[ FAIL ] %s\n%s\n[ RUN  ] some_other_case\n' \
         "$case_name" "$case_name" "$marker" >"$probe"
     expect_reject "a marker printed after the case's own FAIL line (block never closed)"
+    # A lowercase tag must OPEN the block. The name-strip regex is [A-Za-z]+
+    # precisely so "[ Run  ] <case>" is recognised; a regression to [A-Z]+ passes
+    # every other probe, because they all spell RUN in upper case the way the real
+    # harness does (tests/test_main.h:63). Measured: [A-Z]+ survived the 11-probe
+    # set and is only caught by this line.
+    printf '[ Run  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$marker" "$case_name" >"$probe"
+    expect_accept
     # A lowercase tag still has to close the block.
     printf '[ RUN  ] %s\n[ ok ] %s\n%s\n[ RUN  ] some_other_case\n' \
         "$case_name" "$case_name" "$marker" >"$probe"
@@ -362,10 +382,15 @@ selftest_marker_extractor() {
     #
     # KNOWN GAP (registered, not fixed): no current probe feeds the bare
     # capitalized spelling "Drain...", so a /[Dd]rain:/ style regex would pass this
-    # self-test. It is not fail-open -- the three no-marker scenes (empty block,
-    # unrelated text, another case prints it) all still reject, so it only accepts
-    # extra spellings. Closing it needs a full-line anchor ^[[:space:]]*marker$,
-    # which would pin the printf indentation forever; not worth it.
+    # self-test. It is not fail-open: empty block, unrelated text, and a marker
+    # printed by a different case all still reject, so it only accepts extra
+    # spellings of a marker that was really printed.
+    #
+    # A full-line anchor does NOT close it. Measured against a /[Dd]rain:/ body,
+    # ^[[:space:]]*<marker>$ still accepts "  Drain: ...", and it newly REJECTS two
+    # honest shapes ("  note: <marker> (see above)" and "<marker>  extra"). The only
+    # real fix is another probe feeding "Drain...", and the class variants are
+    # unbounded ([Dd]x, [Dd][Rr]ain, ...), so chasing them has no end. Not worth it.
     printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
         "$case_name" "$(printf '%s' "$marker" | tr '[:lower:]' '[:upper:]')" "$case_name" >"$probe"
     expect_reject "an upper-cased marker (the marker regex ignored case)"
