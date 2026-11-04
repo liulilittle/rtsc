@@ -3335,33 +3335,61 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     cfg.desktop_height = 48;
     constexpr int kConnect = 8;
     const int delay_ms = launch_delay_ms();
+    // Set once the server exists; the launcher reads it to ask the server how
+    // many sessions are registered right now.
+    RdpServer* server_raw = nullptr;
     std::atomic<int> launches{0};
-    std::atomic<int> entered{0};
     std::atomic<bool> stop_began{false};
     std::atomic<int> started_after_stop{0};
     // The launcher runs INSIDE the accept loop (server.cpp: RdpServer::Run calls
-    // it synchronously), so launchers are entered one at a time and the last one
-    // entered is the session that is still registered-but-unstarted when the
-    // flood finishes. That makes the window deterministic instead of a race with
-    // the scheduler:
-    //   * every launcher except the last sleeps `delay_ms` and returns, which
-    //     keeps the accept pipeline moving;
-    //   * the last one waits for the test to declare that Stop() has begun, then
-    //     launches and counts.
-    // The previous version had every launcher sleep a fixed 40 ms and hoped the
+    // it synchronously), one launcher at a time, each after its session has been
+    // registered. That makes the window deterministic:
+    //   * every launcher but the last sleeps `delay_ms` and returns, which keeps
+    //     the accept pipeline moving;
+    //   * the launcher that observes kConnect registrations parks until the test
+    //     declares Stop() has begun, then launches and counts.
+    // The previous version had every launcher sleep a fixed 40 ms and hope the
     // test thread reacted before the last sleep expired. On a loaded machine the
     // test thread can be descheduled for longer than that, so every body started
     // before `stop_began` and started_after_stop stayed 0 -- a red that says
-    // nothing about Stop() (audit X measured 2/6 under load, 0/20 idle). The wait
-    // is bounded, so a genuinely broken test fails instead of hanging.
-    cfg.session_thread_launcher = [&entered, &launches, &stop_began,
-                                   &started_after_stop,
+    // nothing about Stop() (audit X reproduced it on the full suite under load:
+    // OLD 1-2 of 6 red, NEW 0 of 6).
+    //
+    // "Last" is decided by the server's own registration count, NOT by counting
+    // launcher calls. An earlier version used `index == kConnect`, which silently
+    // assumed the two never diverge. They can: a launcher call is not atomic with
+    // registration, and `started == false` rolls the registration back
+    // (server.cpp:2509). If that happened, `index == kConnect` would be spent on a
+    // call whose session no longer exists, no launcher would ever park, the
+    // witness would read 0, and the test would report a Stop() defect that is
+    // really its own. `gate_claimed` guarantees exactly one parking launcher and
+    // `gate_expired` makes a timeout loud instead of silent.
+    std::atomic<bool> gate_claimed{false};
+    std::atomic<bool> gate_waited{false};
+    std::atomic<bool> gate_expired{false};
+    cfg.session_thread_launcher = [&launches, &stop_began, &started_after_stop,
+                                   &gate_claimed, &gate_waited, &gate_expired,
+                                   &server_raw,
                                    delay_ms](std::function<void()> body) {
-            const int index = entered.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (index == kConnect) {
-                for (int i = 0;
-                     i < 5000 && !stop_began.load(std::memory_order_relaxed); ++i) {
+            const bool last_registered =
+                server_raw != nullptr &&
+                server_raw->session_count() >= static_cast<size_t>(kConnect);
+            bool expected = false;
+            if (last_registered &&
+                gate_claimed.compare_exchange_strong(expected, true)) {
+                // A real deadline, not an iteration count: measured on this
+                // Windows host, sleep_for(1 ms) actually sleeps 15.50 ms (100
+                // calls = 1550 ms), so a 5000-iteration loop is bounded at ~78 s,
+                // not at 5 s.
+                gate_waited.store(true);
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                while (!stop_began.load(std::memory_order_relaxed) &&
+                       std::chrono::steady_clock::now() < deadline) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (!stop_began.load(std::memory_order_relaxed)) {
+                    gate_expired.store(true);
                 }
             } else if (delay_ms > 0) {
                 std::this_thread::sleep_for(
@@ -3384,6 +3412,7 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     // Heap-owned so a failing (red) run can leak the server instead of hanging
     // the suite in its destructor.
     auto server = std::make_unique<RdpServer>(cfg);
+    server_raw = server.get();
     server->SetDesktopSource(pattern.get());
     std::string error;
     CHECK(server->Start(error));
@@ -3457,13 +3486,20 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     const size_t live = server->session_count();
     std::printf(
         "  flood_vs_stop: stop_5s=%s launches=%d registered=%d live=%zu "
-        "total=%zu sockets=%zu delay_ms=%d started_after_stop=%d\n",
+        "total=%zu sockets=%zu delay_ms=%d started_after_stop=%d "
+        "gate_wait=%d gate_expired=%d\n",
         stop_cleared ? "yes" : "RED_TIMEOUT", launches.load(),
         all_registered ? kConnect : -1, live, server->total_session_count(),
-        keep_open.size(), delay_ms, started_after_stop.load());
+        keep_open.size(), delay_ms, started_after_stop.load(),
+        gate_waited.load() ? 1 : 0, gate_expired.load() ? 1 : 0);
     CHECK(flood_finished);
     CHECK(all_registered);
     CHECK(launches.load() >= kConnect);
+    // The parking launcher must actually have parked, and must not have timed
+    // out: without these two the witness below could be vacuous (no window was
+    // ever created) or the run could be silently degraded.
+    CHECK(gate_waited.load());
+    CHECK(!gate_expired.load());
     if (delay_ms > 0) {
         // Necessary-not-sufficient witness for the window: at least one body
         // must have been started after Stop() had already begun, otherwise the

@@ -1435,37 +1435,38 @@ RTSC_TEST(view_scale_benchmark_budget) {
         int sw, sh, dw, dh;
         const char* label;
         double budget_ms;
-        // Iterations per sample, chosen so every sample lasts roughly 10 ms or
-        // more. A single 0.11 ms call is dominated by jitter: the same case that
-        // reads 0.11 ms idle reached 0.89 ms (7.4x) while a parallel build ran,
-        // while the 43 ms case only doubled under the same load. Amortising the
-        // small shapes makes every case respond to load the same way (about 2x),
-        // which is what makes one budget policy work for all of them.
+        // Iterations per sample. Chosen so a sample is long enough that scheduler
+        // jitter (about 1 ms) is a small fraction of it: at least ~10 ms on the
+        // reference machine, and large shapes are single-shot because one call
+        // already exceeds that. The exact durations drift with the host, so the
+        // comment states the intent, not a table of values that would go stale.
         int iters;
     };
-    // Budgets are 3.3x to 11x the idle measurement -- deliberately NOT a single
-    // ratio. The small shapes get the larger multiple because a 0.1 ms call has
-    // an absolute jitter floor of about 1 ms (scheduler granularity): a budget
-    // of "2x idle" would be 0.24 ms, i.e. inside the noise. Every sample is
-    // ~11 ms or more (see `iters`), so jitter cannot dominate a single sample.
+    // Budgets are NOT a fixed multiple of the idle measurement, and deliberately
+    // so. Idle cost here ranges from 0.1 ms to 43 ms; the budget/idle ratio was
+    // measured at 3.3x..10.9x on one host and 5.2x..13.3x on another (the same
+    // HEAD, different machine/load), i.e. the ratio itself drifts by ~2x. What
+    // stays constant is the ABSOLUTE headroom: a 0.1 ms call has a ~1 ms jitter
+    // floor (scheduler granularity), so a "2x idle" budget of 0.24 ms would sit
+    // inside the noise; the small shapes therefore get the larger multiple.
     //
-    // Idle measurements on this machine (RelWithDebInfo, NDEBUG):
-    //   1:1 0.11 ms | letterbox 0.12 ms | 2x 4.8 ms | 0.8x 22.9 ms
-    //   0.5x 4K 16.9 ms | 1.33x 1.8 ms | 0.4x 4K 43.0 ms
-    //   => budget/idle 10.9x | 9.2x | 4.2x | 3.5x | 3.6x | 6.7x | 3.3x
+    // Do not hard-code a ratio here again. An earlier revision of this comment
+    // claimed "about 4x" (wrong: it is 3.3x..13x) and then listed per-case ratios
+    // that were stale by the next machine, which is exactly the failure mode this
+    // project keeps hitting: a number written from memory instead of measured.
     //
-    // The regression to catch is structural: replacing a fast path with a
-    // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy
-    // (a per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 2.6-3.1
-    // ms, i.e. 12-14x, well past their 1.1/1.2 ms budgets.
+    // `iters` keeps each sample at roughly 10-30 ms on the reference machine
+    // (large shapes are single-shot because one call already takes that long).
+    // It exists because a single 0.1 ms call measured 0.89 ms (7.4x) under a
+    // parallel build while a 43 ms call only reached 92 ms (2.1x): without
+    // amortising, the small shapes measure scheduler jitter rather than work.
     //
-    // The floor is real load, not imagination: with a parallel build running the
-    // same binary reported 0.89 ms for a 0.12 ms shape (7.4x) before the sample
-    // length was raised, and 0.4x 4K reached 92 ms against its 43 ms idle value
-    // (2.1x). Re-measured under load AFTER the sample length was raised:
-    //   0.8x 55.78/80 = 1.43x | 0.5x 4K 42.09/60 = 1.43x | 0.4x 4K 97.38/140 = 1.44x
-    // so the real headroom under load is about 1.4x (an earlier draft of this
-    // comment claimed 1.5-2x, which the measurement does not support).
+    // The regression this guards is structural: replacing a fast path with a
+    // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy (a
+    // per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 9.2-9.6 ms
+    // after amortising, i.e. well past their 1.1/1.2 ms budgets. The headroom
+    // under load is about 1.4x (measured 0.8x 55.78/80, 0.5x 4K 42.09/60,
+    // 0.4x 4K 97.38/140) -- not the "1.5x to 2x" an earlier revision claimed.
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},
