@@ -69,6 +69,21 @@ $sha256 = [System.Security.Cryptography.SHA256]::Create()
 foreach ($dir in $buildInputs) {
     $fullDir = Join-Path $root $dir
     if (-not (Test-Path -LiteralPath $fullDir)) { continue }
+    # `Get-ChildItem -Recurse -File` does NOT descend into a junction or a
+    # directory symlink, and it does not complain either: the subtree simply
+    # never reaches the hash, so a header under a junction is a blind spot. Pair
+    # that with a restored mtime and Ninja skips the recompile too, which is
+    # exactly the "tree changed, verify still green" failure this guard exists
+    # to prevent (measured end to end). There is no junction or symlink under
+    # these four trees today, so refusing is free; a future tree that needs one
+    # should hash the link target instead of silently skipping it.
+    $reparse = @(Get-ChildItem -LiteralPath $fullDir -Recurse -Force |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+    if ($reparse.Count -gt 0) {
+        $reparse | Select-Object -First 5 | ForEach-Object { Write-Host "    $($_.FullName)" }
+        Write-Error "fingerprint refuses to run: $($reparse.Count) reparse point(s) under $fullDir cannot be hashed"
+        exit 1
+    }
     $items = Get-ChildItem -LiteralPath $fullDir -Recurse -File -Force |
         Sort-Object -Property FullName
     foreach ($it in $items) {
