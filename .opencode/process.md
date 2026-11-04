@@ -1173,3 +1173,32 @@ Linux gate **LINUX GATE PASS**；构建输入 MUT- 0。
 ### 教训（discover 例 70/71）
 时间断言必须先量空闲值/噪声峰值/回归值；witness 与不变量要分开，witness 依赖时序要改同步；
 没复现不等于不存在，但必须标注"未复现，基于结构分析"。
+
+## 第895轮：批58 —— flood 测试的注册等待预算随 launcher 暂停缩放（`9beeab0`）
+### 怎么发现的
+批57 后按"分支完备"逐个跑 `RTSC_TEST_LAUNCH_DELAY_MS`，发现 **`delay_ms=200` 时测试自己红**：
+```
+flood_vs_stop: launches=6 registered=-1 live=0 total=6 sockets=8 delay_ms=200
+1 failing tests, 2 failed checks
+```
+`{0,1,5,40}` 全绿。服务器代码一字未改 ⇒ 红在测试自身。
+### 根因
+launcher 在 accept 循环里同步执行 ⇒ 非最后一个 launcher 的 `delay_ms` 睡眠串行化后续注册
+（8 个连接要 `7 × delay_ms`）；而用例的注册等待是**固定 1 s**。`delay_ms=200` 需 ~1400 ms
+→ `all_registered=false` → 只注册 6 个就发起 Stop()。失效阈值约 140 ms。
+### 修法
+`register_budget_ms = min(2000 + 4 × delay_ms × kConnect, 60000)`，并把耦合与实测阈值写进注释。
+### 验证（分支空间）
+delay ∈ {0,1,5,40,200,1000} × 2 次 = **12/12 绿**，`started_after_stop=1` 恒定；
+delay=1000 实际耗时 ~7s（预算 34s）。
+### Rule 16
+变异缩放预算 → 固定 1000：`{0,1,5,40}` 仍绿，**只有 `delay_ms=200` 红**
+（`launches=6 registered=-1`、2 failed checks）⇒ 缩放正好且仅在该生效处 load-bearing。
+恢复：hash 一致、MUT- 0、确实重编、12/12 再绿。
+### 验证（C0）
+Windows Release 六类诊断全 0；Linux 全量重建 0 错误 + ctest **67/67**(84.84s)；
+Windows ctest **69/69**(74.37s)；Linux gate **LINUX GATE PASS** + `FAILED_COUNT=0`；
+test_server.cpp CRLF 4583/4583；构建输入 MUT- 0。
+### 教训（discover 例 72 / memory 规则 76）
+测试装置自己的参数空间也是分支；任何"可调大"的旋钮，其最大有用值必须被测试自身的等待预算覆盖；
+判据是问"把这个旋钮调到 10 倍会怎样"。

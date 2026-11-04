@@ -1391,3 +1391,14 @@ Rule 16：跳过所有 `session->Stop()` → `RED_TIMEOUT live=8` + `FAIL stop_c
 WSL 被 `/mnt/f/tctp` 交叉编译占满（load 8.7）+ sqlservr/beam.smp，解释三次 bench 偶发红。
 
 验证：C0 全 0；server 55/641；view 60/7348；Linux 67/67；Windows 69/69；Linux gate PASS；MUT- 0。
+
+### 批 58（`9beeab0`）—— flood 测试的注册等待预算随 launcher 暂停缩放
+
+按"分支完备"逐个跑 `RTSC_TEST_LAUNCH_DELAY_MS`，发现 **`delay_ms=200` 时测试自己红**
+（`launches=6 registered=-1`、2 failed checks），`{0,1,5,40}` 全绿。
+根因：launcher 在 accept 循环里同步执行 ⇒ `delay_ms × (kConnect-1)` 串行化注册，
+而用例的注册等待固定 1 s。失效阈值约 140 ms。
+修法：`register_budget_ms = min(2000 + 4 × delay_ms × kConnect, 60000)`。
+验证：delay ∈ {0,1,5,40,200,1000} × 2 次 = 12/12 绿，`started_after_stop=1` 恒定。
+Rule 16：缩放预算 → 固定 1000 ⇒ **只有 delay=200 红**，其余全绿。
+C0：六类诊断全 0；Linux 67/67（84.84s）；Windows 69/69（74.37s）；Linux gate PASS；MUT- 0。
