@@ -69,22 +69,37 @@ $sha256 = [System.Security.Cryptography.SHA256]::Create()
 foreach ($dir in $buildInputs) {
     $fullDir = Join-Path $root $dir
     if (-not (Test-Path -LiteralPath $fullDir)) { continue }
-    # `Get-ChildItem -Recurse -File` does NOT descend into a junction or a
-    # directory symlink, and it does not complain either: the subtree simply
-    # never reaches the hash, so a header under a junction is a blind spot. Pair
-    # that with a restored mtime and Ninja skips the recompile too, which is
-    # exactly the "tree changed, verify still green" failure this guard exists
-    # to prevent (measured end to end). There is no junction or symlink under
-    # these four trees today, so refusing is free; a future tree that needs one
-    # should hash the link target instead of silently skipping it.
-    $reparse = @(Get-ChildItem -LiteralPath $fullDir -Recurse -Force |
-        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
-    if ($reparse.Count -gt 0) {
-        $reparse | Select-Object -First 5 | ForEach-Object { Write-Host "    $($_.FullName)" }
-        Write-Error "fingerprint refuses to run: $($reparse.Count) reparse point(s) under $fullDir cannot be hashed"
+    # A DIRECTORY reparse point (junction, directory symlink) is a blind spot:
+    # `Get-ChildItem -Recurse -File` does not descend into it and does not
+    # complain, so the whole subtree never reaches the hash. Pair that with a
+    # restored mtime and Ninja skips the recompile too -- exactly the "tree
+    # changed, verify still green" failure this guard exists to prevent
+    # (measured end to end). Refuse rather than silently skip.
+    #
+    # A FILE reparse point is different and must NOT be refused: `-File` does
+    # enumerate it, so ReadAllBytes hashes it (following a file symlink to its
+    # target, hydrating a cloud placeholder). Refusing those would make the
+    # script unusable from any cloud-synced checkout -- OneDrive marks every
+    # unhydrated file this way (measured: 392 of 400 sampled files carried
+    # Archive+ReparsePoint, tag 0x9000601A), and the user would only see an
+    # unexplained refusal.
+    $dirReparse = @(Get-ChildItem -LiteralPath $fullDir -Recurse -Force -ErrorAction Stop |
+        Where-Object {
+            $_.PSIsContainer -and ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        })
+    if ($dirReparse.Count -gt 0) {
+        $dirReparse | Select-Object -First 5 | ForEach-Object { Write-Host "    $($_.FullName)" }
+        Write-Error ("fingerprint refuses to run: $($dirReparse.Count) directory reparse point(s) under $fullDir cannot be hashed. " +
+            "Move the checkout out of a cloud-synced folder, or replace the junction with a real directory.")
         exit 1
     }
-    $items = Get-ChildItem -LiteralPath $fullDir -Recurse -File -Force |
+    # -ErrorAction Stop on purpose: an unreadable subdirectory must fail the
+    # guard, not be skipped. Without it the behaviour silently depends on the
+    # global $ErrorActionPreference at the top of this file, and moving that one
+    # line would quietly reopen the blind spot (measured: with the global set to
+    # Continue an access-denied subtree produced the exact same fingerprint as a
+    # tree that never had the file).
+    $items = Get-ChildItem -LiteralPath $fullDir -Recurse -File -Force -ErrorAction Stop |
         Sort-Object -Property FullName
     foreach ($it in $items) {
         # Path relative to the repository root, always with forward slashes so
