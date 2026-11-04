@@ -277,17 +277,20 @@ selftest_marker_extractor() {
     # One check for every way the target can fail to be a plain scalar:
     #   r flag  -> readonly, printf -v refuses (fail-closed, but the message used
     #             to blame the extractor)
-    #   a / A   -> array. printf -v writes element [0] and leaves $logvar empty,
-    #             so every probe runs against an empty path. Measured: the
-    #             self-test still returned 0 on a HEALTHY extractor (vacuous),
-    #             though a broken one was still caught, so this is a
-    #             vacuous-pass rather than a false green -- reject it anyway,
-    #             same standard as logvar=rc.
+    #   a / A   -> array. This is NOT a correctness hole: measured, printf -v and
+    #             $var both resolve to element [0], so the probe path stays intact
+    #             and a healthy extractor still accepts. The only side effect is
+    #             that restore leaves an empty [0] behind. Rejected anyway because
+    #             a log variable must be a plain scalar -- keep the data path
+    #             obvious rather than relying on scalar/element aliasing.
+    #   i flag  -> integer, printf -v treats the path as an arithmetic expression
+    #             and fails (fail-closed via reset's error branch)
     local flags
     flags="$(declare -p "$logvar" 2>/dev/null | head -1 | cut -d" " -f2)"
     case "$flags" in
         *r*) echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2; return 1 ;;
-        *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable" >&2; return 1 ;;
+        *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable to see the data path" >&2; return 1 ;;
+        *i*) echo "  logvar '$logvar' is an integer; printf -v would evaluate the path as arithmetic" >&2; return 1 ;;
     esac
     # The truncation probes below cut a proportion of the marker and strip its
     # first six characters. Below that size the cuts stop being informative, so
