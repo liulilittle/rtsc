@@ -1435,15 +1435,41 @@ RTSC_TEST(view_scale_benchmark_budget) {
         int sw, sh, dw, dh;
         const char* label;
         double budget_ms;
+        // Iterations per sample, chosen so every sample lasts roughly 10 ms or
+        // more. A single 0.11 ms call is dominated by jitter: the same case that
+        // reads 0.11 ms idle reached 0.89 ms (7.4x) while a parallel build ran,
+        // while the 43 ms case only doubled under the same load. Amortising the
+        // small shapes makes every case respond to load the same way (about 2x),
+        // which is what makes one budget policy work for all of them.
+        int iters;
     };
+    // Every budget is about 4x the idle measurement, and every sample is at
+    // least ~10 ms so that jitter cannot dominate a single sample (see `iters`).
+    // That combination tolerates a machine that is twice as busy while still
+    // catching the regression this test exists for.
+    //
+    // Idle measurements on this machine (RelWithDebInfo, NDEBUG):
+    //   1:1 0.11 ms | letterbox 0.12 ms | 2x 4.8 ms | 0.8x 22.9 ms
+    //   0.5x 4K 16.9 ms | 1.33x 1.8 ms | 0.4x 4K 43.0 ms
+    //
+    // The regression to catch is structural: replacing a fast path with a
+    // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy
+    // (a per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 2.6-3.1
+    // ms, i.e. 12-14x, well past their 1.1/1.2 ms budgets.
+    //
+    // The floor is real load, not imagination: with a parallel build running the
+    // same binary reported 0.89 ms for a 0.12 ms shape (7.4x) before the sample
+    // length was raised, and 0.4x 4K reached 92 ms against its 43 ms idle value
+    // (2.1x). Budgets sit above the load-induced values with roughly 1.5x to 2x
+    // headroom.
     static const Case cases[] = {
-        {1280, 1024, 1280, 1024, "1:1", 1.0},
-        {1280, 1024, 1280, 1200, "1:1 letterbox", 0.6},
-        {1920, 1080, 3840, 2160, "2x", 15.0},
-        {1920, 1080, 1536, 864, "0.8x", 50.0},
-        {3840, 2160, 1920, 1080, "0.5x 4K", 45.0},
-        {1920, 1080, 2560, 1440, "1.33x", 10.0},
-        {3840, 2160, 1536, 864, "0.4x 4K", 90.0},
+        {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
+        {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},
+        {1920, 1080, 3840, 2160, "2x", 20.0, 2},
+        {1920, 1080, 1536, 864, "0.8x", 80.0, 1},
+        {3840, 2160, 1920, 1080, "0.5x 4K", 60.0, 1},
+        {1920, 1080, 2560, 1440, "1.33x", 12.0, 4},
+        {3840, 2160, 1536, 864, "0.4x 4K", 140.0, 1},
     };
     for (const Case& c : cases) {
         Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));
@@ -1457,16 +1483,39 @@ RTSC_TEST(view_scale_benchmark_budget) {
         const auto vt = ComputeViewTransform(c.sw, c.sh, c.dw, c.dh,
                                              static_cast<double>(c.dw) / c.sw,
                                              false);
-        double best = 1e9;
-        const int iters = 5;
-        for (int rep = 0; rep < 3; ++rep) {
-            const auto t0 = std::chrono::steady_clock::now();
-            for (int i = 0; i < iters; ++i) ScaleSurface(src, dst, vt);
-            const double ms =
-                std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - t0)
-                    .count() / iters;
-            if (ms < best) best = ms;
+        // Measurement policy. A wall-clock budget on a shared machine is only
+        // meaningful if it survives other processes, and the minimum is the
+        // right statistic: interference can only ever ADD time, so the smallest
+        // sample is the closest estimate of the true cost. Two things follow.
+        //
+        // 1. Sample generously. Ten short reps cost well under a millisecond for
+        //    the small shapes, and give the scheduler more chances to hand us an
+        //    uncontended window.
+        // 2. Give a case a second chance before calling it a regression. A real
+        //    algorithmic regression (per-pixel division, float resample: 10x or
+        //    worse) reproduces on every sample, so re-measuring cannot hide it.
+        //    A busy machine usually does not reproduce. Measured here: the 1:1
+        //    letterbox case is 0.11-0.16 ms idle and reached 0.89 ms while a
+        //    parallel build ran, which is indistinguishable from a 5x regression
+        //    in a single sample but obvious in a second one.
+        const auto measure = [&]() {
+            double best = 1e9;
+            for (int rep = 0; rep < 10; ++rep) {
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < c.iters; ++i) ScaleSurface(src, dst, vt);
+                const double ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count() / c.iters;
+                if (ms < best) best = ms;
+            }
+            return best;
+        };
+        double best = measure();
+        if (!(best < c.budget_ms)) {
+            std::printf("  [bench] %-16s retrying: %.2f ms is over the %.2f ms budget\n",
+                        c.label, best, c.budget_ms);
+            best = measure();
         }
         std::printf("  [bench] %-16s %4dx%-4d -> %4dx%-4d  %7.2f ms (budget %5.2f)\n",
                     c.label, c.sw, c.sh, c.dw, c.dh, best, c.budget_ms);
