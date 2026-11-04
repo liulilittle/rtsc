@@ -1,4 +1,4 @@
-﻿// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
+// RDP server: X.224 / MCS / licensing / Demand Active encoding and the
 // connection state machine, exercised end to end.
 //
 // The tests drive the server with a scripted peer that speaks the client half
@@ -3336,15 +3336,34 @@ RTSC_TEST(server_flood_vs_stop_race_converges) {
     constexpr int kConnect = 8;
     const int delay_ms = launch_delay_ms();
     std::atomic<int> launches{0};
+    std::atomic<int> entered{0};
     std::atomic<bool> stop_began{false};
     std::atomic<int> started_after_stop{0};
-    cfg.session_thread_launcher = [&launches, &stop_began, &started_after_stop,
+    // The launcher runs INSIDE the accept loop (server.cpp: RdpServer::Run calls
+    // it synchronously), so launchers are entered one at a time and the last one
+    // entered is the session that is still registered-but-unstarted when the
+    // flood finishes. That makes the window deterministic instead of a race with
+    // the scheduler:
+    //   * every launcher except the last sleeps `delay_ms` and returns, which
+    //     keeps the accept pipeline moving;
+    //   * the last one waits for the test to declare that Stop() has begun, then
+    //     launches and counts.
+    // The previous version had every launcher sleep a fixed 40 ms and hoped the
+    // test thread reacted before the last sleep expired. On a loaded machine the
+    // test thread can be descheduled for longer than that, so every body started
+    // before `stop_began` and started_after_stop stayed 0 -- a red that says
+    // nothing about Stop() (audit X measured 2/6 under load, 0/20 idle). The wait
+    // is bounded, so a genuinely broken test fails instead of hanging.
+    cfg.session_thread_launcher = [&entered, &launches, &stop_began,
+                                   &started_after_stop,
                                    delay_ms](std::function<void()> body) {
-            if (delay_ms > 0) {
-                // Widen the "registered but body not started" window: far
-                // longer than Stop() needs to take its snapshot, so the
-                // snapshot-vs-launch ordering is exercised every run, not by
-                // scheduling luck.
+            const int index = entered.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (index == kConnect) {
+                for (int i = 0;
+                     i < 5000 && !stop_began.load(std::memory_order_relaxed); ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            } else if (delay_ms > 0) {
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(delay_ms));
             }
