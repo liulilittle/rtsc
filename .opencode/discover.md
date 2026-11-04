@@ -1341,3 +1341,35 @@ X 的 M5 变异把 Write 里的过滤改成 `&& e.status != kClosed`。但 `e` �
 `ScriptedClosingTls` 注释说 "a real backend answers kNeedMoreInput"，
 但只有 SChannel 这样（`:597-600`）；OpenSSL 返回 **kOk + 空明文**（`:404`）。
 **教训**：涉及多个实现的共性描述，必须逐个实现核对，不能从一个实现外推。
+## 第892轮：遍历 API 的静默跳过（例 67）
+
+### 症状
+`verify.ps1` 的内容哈希用 `Get-ChildItem -LiteralPath $fullDir -Recurse -File -Force`。
+审计 X 指出：该调用在 PowerShell 5.1 **不进入接合点/目录符号链接，也不报错**。
+
+### 我自己的复现（不采信）
+```
+tree\src\a.cpp  +  tree\src\inc -> external (mklink /J)
+Get-ChildItem tree -Recurse -File -Force   -> 只有 \tree\src\a.cpp
+Get-ChildItem tree -Recurse -Force | ? ReparsePoint -> 1 个: \tree\src\inc
+```
+⇒ 接合点里的 `inc\value.h` **完全不在结果里**，且没有任何错误或警告。
+
+### 后果链
+接合点里的头文件是盲区 → 改它指纹不变 → 配 mtime 回填后 Ninja 也不重编
+→ **"树变了但 verify 报绿"**，正是本守卫存在的目的。
+
+### 修法
+遍历前先扫 reparse，有则 `exit 1`（fail-closed），并说明将来若要支持应哈希链接目标。
+
+### 教训（例 67）
+1. **"递归遍历"不保证遍历到全部**。符号链接、接合点、挂载点、权限拒绝的目录
+   都可能被**静默跳过**。凡是用遍历结果做完整性判断（哈希/计数/校验），
+   必须先确认遍历器是否覆盖了链接与特殊文件。
+2. **静默跳过比报错更危险**：报错会被人发现，跳过不会。设计"必须看到全部"的
+   逻辑时，要么显式检测并拒绝，要么显式跟随并在指纹里记录"我跟随了哪里"。
+3. 这类洞与我前一轮修的 A/B/C/D（git 状态）**同族**：判据看似观测了全部，
+   实际有一类输入根本没被观测。判断"我的判据覆盖了 X 吗"时，要问
+   **"有没有一类输入能让判据看不见变化"**，而不只是"判据是否合理"。
+4. 交叉验证的价值：我自己写的指纹我测了 4 个攻击（A/B/C/D）都堵住了，
+   但**没想到 reparse**；审计 X 想到了。**自证 + 他证** 缺一不可。

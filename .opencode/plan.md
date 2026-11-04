@@ -1349,3 +1349,14 @@ C `showUntrackedFiles=no` 三种都能让旧指纹"不变"；D git 失败时 fp 
 **注释更正**：`ScriptedClosingTls` 的 "real backend answers kNeedMoreInput" 只对 SChannel 成立。
 
 验证：C0 全 0；gateway 125/1243；Linux 67/67；Windows 69/69；Linux gate PASS；`MUT-` 0。
+### 批 54（`40d2d47`）—— 指纹补 reparse point fail-closed
+
+审计 X 复核批53 全 PASS，残留 1 洞：`Get-ChildItem -Recurse -File` 静默跳过接合点/目录符号链接
+（我自己复现：接合点下的 `value.h` 完全不在结果里且不报错）。配 mtime 回填 → Ninja 也不重编
+→ "树变了但 verify 报绿"。
+
+修法：遍历前扫 reparse，有则 `exit 1`。红证（抽取 verify.ps1 真实代码块）：干净树 exit=0，
+加接合点 → `fingerprint refuses to run: 1 reparse point(s) ... cannot be hashed` exit=1。
+当前四树 reparse=0，两个 verify 入口均 EXIT=0。
+
+表述更正：n2 断言 `:3934/:3935`、Write-kClosed `:4010`；"MUT- 0" 精确为"构建输入 0"。

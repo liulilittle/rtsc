@@ -1108,3 +1108,20 @@ Linux gate **LINUX GATE PASS** + 五标记；verify.ps1 EXIT=0 且改 docs 不�
 ### 教训（discover 例 65/66）
 守卫判据要直接观测被测事实，不能依赖 git 状态等间接元信息；"查不到"≠"没变化"；
 变异报绿时先问该变异是否真改变了行为（等价变异不可杀）。
+## 第892轮：批54 —— 指纹补 reparse fail-closed（`40d2d47`）
+审计 X 复核批53：A/B/C/D 全堵、M3/M5 闭合、端到端 `-Clean -LinuxBuild` 通过（69/69 + LINUX GATE PASS）。
+**残留 1 洞**：reparse point 不被 `Get-ChildItem -Recurse -File` 遍历。
+
+我自己复现确认：接合点 `tree\src\inc` 下的 `value.h` 完全不在 `-Recurse -File` 结果里，且不报错。
+后果：接合点内头文件是盲区 + mtime 回填 → Ninja 不重编 → "树变了但 verify 报绿"。
+
+修法：遍历前扫 reparse，有则 `exit 1`（fail-closed）。
+红证（直接抽取 verify.ps1 的真实代码块跑最小工程）：干净树 exit=0；加接合点 → 
+`fingerprint refuses to run: 1 reparse point(s) ... cannot be hashed` exit=1。
+当前四树 reparse=0，`verify.ps1` 与 `-LinuxBuild` 均 EXIT=0。
+
+采纳 X 的表述更正：n2 断言在 `:3934/:3935`、Write-kClosed 在 `:4010`；
+"MUT- 0" 精确为"构建输入 0"（记忆与 backups 里有该字样，但门只扫构建输入）。
+### 教训（discover 例 67）
+递归遍历不保证遍历到全部（链接/接合点会被静默跳过）；静默跳过比报错更危险；
+判据覆盖性要问"有没有一类输入能让判据看不见变化"；自证 + 他证缺一不可。
