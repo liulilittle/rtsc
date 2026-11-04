@@ -1469,17 +1469,30 @@ RTSC_TEST(view_scale_benchmark_budget) {
     // Headroom is NOT uniform across the cases, and the large ones are the tight
     // ones. Measured on this host (40 busy loops, load ~43) over four runs, the
     // slowest case reached:
-    //   1:1        0.52 / 1.20  (43%)      0.4x 4K  138.07 / 140  (99%)  <-- tight
-    //   1:1 lb     0.52 / 1.10  (47%)      0.5x 4K   53.63 /  60  (89%)
-    //   2x        13.81 / 20    (69%)      0.8x      72.34 /  80  (90%)
-    //   1.33x      5.98 / 12    (50%)
-    // A second host (audit X) exceeded all three of 0.8x / 0.5x 4K / 0.4x 4K on
-    // the same HEAD, while 1:1 never came close. So the large cases -- not the
-    // small ones -- set the load headroom, and they were given roughly 2x their
-    // idle value here. Do not "tighten 1:1 to catch a 2x regression": measured,
-    // doubling the real work only moves 1:1 by 1.31x (fixed overhead is ~2/3 of
-    // the call), so the millisecond ratio and the algorithmic ratio are not the
-    // same number.
+    //   1:1        0.52 / 1.20  (43%)      0.4x 4K  ~145 / 280  (52%)
+    //   1:1 lb     0.52 / 1.10  (47%)      0.5x 4K   70.23 / 115 (61%)
+    //   2x        13.81 / 30    (46%)      0.8x      76.01 / 150 (51%)
+    //   1.33x      5.98 / 18    (33%)
+    // A second host (audit X) exceeded all three of 0.8x / 0.5x 4K / 0.4x 4K at
+    // their previous budgets, while 1:1 never came close. So the large cases --
+    // not the small ones -- set the load headroom, and they were given roughly 2x
+    // their idle value here. Do not "tighten 1:1 to catch a 2x regression":
+    // measured, doubling the real work only moves 1:1 by 1.31x (fixed overhead is
+    // ~2/3 of the call), so the millisecond ratio and the algorithmic ratio are
+    // not the same number.
+    //
+    // Which case can see which regression matters more than the budget. ResampleArea
+    // has two branches: an integer-box fast path (uniform taps on both axes) and a
+    // generic tap walk. Measured by doubling ONE branch's row loop:
+    //   doubling uniform    -> 0.5x 4K  13.92 -> 24.89 ms (1.79x); 0.8x / 0.4x 4K unmoved
+    //   doubling generic    -> 0.8x     20.50 -> 39.18 ms (1.91x); 0.4x 4K 40.57 -> 75.35 (1.86x)
+    //                          0.5x 4K unmoved (14.51 ms)
+    // So 0.5x 4K (3840->1920, exactly 2x) guards the uniform path, and 0.8x
+    // (1920->1536, 1.25x) guards the generic path with the most headroom to spare.
+    // 0.4x 4K (3840->1536, 2.5x) is non-integer and therefore also generic, but its
+    // fixed overhead is so large that even the 1.86x branch doubling is what it
+    // takes to be visible -- smaller algorithmic changes vanish into the constant.
+    // Keep it for the non-integer ratio, not as a fine-grained probe.
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},

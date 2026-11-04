@@ -221,6 +221,29 @@ p0_block_has_marker() {
         inb && /drain: challenge surfaced after coalesced record/ { found = 1 }
         END { exit found ? 0 : 1 }' "$SEC_LOG"
 }
+# Self-test the extractor before trusting it. Two shipped revisions of this
+# function were silently broken while `bash -n` passed: one regex had an extra
+# space so no line matched, and one used `awk -v case=` which gawk rejects as a
+# builtin name. Both made the function return non-zero for a HEALTHY log, i.e.
+# the gate could never print PASS. Feeding it an inline known-good log turns
+# that class of mistake into a startup failure instead of a build-time mystery.
+selftest_p0_block_has_marker() {
+    local saved="${SEC_LOG:-}"
+    local probe
+    probe="$(mktemp)"
+    printf '[ RUN  ] %s\n  drain: challenge surfaced after coalesced record\n[  OK  ] %s\n' \
+        "${P0_CASE}" "${P0_CASE}" >"$probe"
+    SEC_LOG="$probe"
+    local rc=0
+    p0_block_has_marker || rc=1
+    rm -f "$probe"
+    SEC_LOG="$saved"
+    return "$rc"
+}
+if ! selftest_p0_block_has_marker; then
+    echo "LINUX GATE FAIL: p0_block_has_marker rejects a known-good log; the extractor itself is broken (regex or awk variable name), not the build"
+    exit 1
+fi
 if ! p0_block_has_marker; then
     echo "LINUX GATE FAIL: ${P0_CASE} case block did not print the drain marker (another case's marker does not count)"
     grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
