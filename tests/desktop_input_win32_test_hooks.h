@@ -18,7 +18,13 @@
 #include <cstdint>
 #include <memory>
 
+// Self-contained: DesktopInputEmitHook below names PlatformInput, which lives
+// in desktop_input_map.h, NOT in desktop_input.h. Including only
+// desktop_input.h used to compile solely because every caller happened to
+// include the map header first (an implicit include-order dependency that
+// fails with C2143/C4430 on a standalone include).
 #include "rtsc/server/desktop_input.h"
+#include "rtsc/server/desktop_input_map.h"
 
 namespace rtsc::server {
 

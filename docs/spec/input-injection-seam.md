@@ -213,12 +213,27 @@ void SetInputSink(DesktopInputSink* sink);  // nullptr 关闭注入；指针必�
 | 字段 | 含义 |
 |---|---|
 | `injected` | 成功的平台动作（Win32：`SendInput` 成功发出一个 `INPUT`；null sink：接受的 `Inject` 次数） |
-| `dropped_queue_full` | 硬/软上限拒绝、被驱逐的旧移动、**会话结束 purge 的排队项**（`ForgetReleasedSessionsLocked`）——不只是硬限丢弃 |
+| `dropped_queue_full` | 硬/软上限拒绝、被驱逐的旧移动、**会话结束 purge 的排队项**（`ForgetReleasedSessionsLocked`）、以及**Dispatch 入口复核发现该会话已 ReleaseSession 而丢弃的已弹出项**（`forget_sessions_.count(...)` 之后的 `return`）——不只是硬限丢弃 |
 | `dropped_rate_limited` | 限流拒绝（§2.3） |
 | `send_failures` | `SendInput` 返回值 != 1 |
 | `release_failures` | teardown 的合成 up 无法入队（`AppendReleasesLocked` 抛异常），键/按钮可能仍按下 |
 | `worker_failures` | worker 线程吞掉的异常动作（非 0 表示有注入被静默丢弃） |
 | `dropped_unmapped` | 几何不可信而被 fail-closed 丢弃的纯移动；含**未持租约**的会话（`NoteUnmappableMove`） |
+
+Residual window (unfixed, stated so it is not mistaken for a guarantee):
+
+- `EmitDueMoves()` runs at the top of every worker iteration with the
+  injection lock released and does not re-check `forget_sessions_`.
+  A `ReleaseSession` that lands after that iteration's drain and before
+  that call can still let ONE already-due frame move the pointer.
+  The exposure is bounded (one frame, one iteration); closing it needs a
+  per-session atomic generation, or moving the platform call under the
+  lock, which D13 forbids.
+- The Dispatch entry re-check narrows the already-popped-item window from
+  unbounded to at most one item per worker iteration.
+- Therefore the post-release guarantee is HARD for synthetic key/button
+  ups (dropping them leaves the local key stuck) and BEST EFFORT for
+  MOVEMENT.
 
 `sink` 内部另有 `dropped_unsupported`（已释放会话的迟到事件、翻译为空的事件），**未接出**结构体。
 `SendInput` 失败日志行为：任意一次失败后，若距上一条失败日志已满 5 s 就打印一行（`kFailureLogInterval`），

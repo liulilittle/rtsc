@@ -67,7 +67,9 @@ struct InjectGeometry {
 // `dropped_queue_full` counts platform actions refused by the bounded injection
 // queue (including an older movement evicted to make room for the incoming
 // action) or discarded when their session is released (the session-end purge
-// drops the session's queued non-synthetic events), `dropped_rate_limited`
+// drops the session's queued non-synthetic events, and the Dispatch-side
+// re-check drops an already-popped item that reached the worker after its
+// ReleaseSession), `dropped_rate_limited`
 // counts platform actions refused by the
 // injection rate limiter (400 actions/s and a burst of 800 per session,
 // 1000 actions/s and a burst of 2000 globally; only a HELD release -- the up of

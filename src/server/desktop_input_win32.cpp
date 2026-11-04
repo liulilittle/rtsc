@@ -457,19 +457,31 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     // are worker-owned and the rate limiter is guarded by mu_, so this runs on
     // the worker under mu_ (which also guards forget_sessions_) and is called
     // before emitting or dispatching anything: a move enqueued after
-    // ReleaseSession cannot be throttled by the old session's timestamp, cannot
-    // move the pointer after the release, and a reused session id starts with a
-    // full rate-limit burst.
+    // ReleaseSession cannot be throttled by the old session's timestamp, and a
+    // reused session id starts with a full rate-limit burst.
+    //
+    // It does NOT make "no movement after the release" a hard guarantee. One
+    // window survives: EmitDueMoves() runs at the top of every worker iteration
+    // with the lock released, and it does not re-check forget_sessions_. A
+    // ReleaseSession landing after this drain and before that call can still
+    // let one already-due frame move the pointer. That window is bounded (one
+    // frame, one iteration) and is stated again at the Dispatch entry check;
+    // closing it needs a per-session atomic generation or moving Emit under the
+    // lock, which D13 forbids. Treat the post-release guarantee as best effort
+    // for MOVEMENT (the synthetic key/button ups are still guaranteed).
     void ForgetReleasedSessionsLocked() {
         for (const uint32_t session_id : forget_sessions_) {
             pending_moves_.erase(session_id);
             last_move_sent_.erase(session_id);
             rate_limiter_.Forget(session_id);
-            // Input is real-time state: a queued press/move of a session that
-            // has already ended must not be injected after the release (the
-            // synthetic ups below are the exception -- they clear the physical
-            // key/button state and must stay). Purging here also guarantees a
-            // late Dispatch cannot recreate the rate-limit bucket.
+            // Input is real-time state: a press/move STILL QUEUED for a session
+            // that has already ended must not be injected after the release
+            // (the synthetic ups below are the exception -- they clear the
+            // physical key/button state and must stay). Purging here also
+            // guarantees a late Dispatch cannot recreate the rate-limit bucket.
+            // This scope is queue_ only: an already-popped item and a pending
+            // move are covered by the Dispatch entry re-check and by the
+            // residual window documented above.
             for (auto it = queue_.begin(); it != queue_.end();) {
                 if (it->session_id == session_id && !it->synthetic) {
                     it = queue_.erase(it);
@@ -563,6 +575,58 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             throw std::runtime_error("forced dispatch failure");
         }
 #endif
+        // A queued item can outlive its session: the worker pops it under mu_
+        // and then dispatches with the lock released, so a ReleaseSession
+        // landing in that gap is invisible to ForgetReleasedSessionsLocked
+        // (the item is no longer in queue_, and a pending move may be queued
+        // after the drain). Re-check under mu_ and re-drain before emitting
+        // anything: a released session's input must not be injected after the
+        // release. The synthetic ups are the exception -- they clear the
+        // physical key/button state and are the only queued items allowed to
+        // outlive their session.
+        //
+        // Residual windows, stated honestly. Emit runs outside the lock (D13),
+        // so this entry check is not a full barrier:
+        //   (a) EmitDueMoves() at the top of the worker iteration still emits a
+        //       pending move without re-checking forget_sessions_ against it.
+        //       The drain that runs in that same iteration (under mu_, just
+        //       before the pop) is what removes the pending move, so only a
+        //       ReleaseSession landing between that drain and that call -- with
+        //       a move already due -- lets one frame through.
+        //   (b) a ReleaseSession landing between this check and the Emit of an
+        //       ALREADY ACCEPTED item lets that item through. The exposure is
+        //       bounded: at most ONE already-popped item per worker iteration,
+        //       and it cannot grow -- ForgetReleasedSessionsLocked already
+        //       removed everything still in queue_, and Inject() rejects a
+        //       forgotten id, so nothing new can be admitted. The exposure ends
+        //       when that item's own Emit finishes; the next iteration's drain
+        //       cannot retroactively undo an Emit that already happened.
+        // Closing both fully would require moving Emit under mu_ (violates D13)
+        // or a per-session atomic generation, which this batch does not do.
+        //
+        // Deliberately NO ForgetReleasedSessionsLocked() re-drain here. The
+        // worker drains under mu_ earlier in this same iteration, in the same
+        // critical section that pops the item, and Inject() refuses a forgotten
+        // id, so this point cannot see a queue_ entry the first drain missed.
+        // A synthetic up can be dispatched while forget_sessions_ is non-empty
+        // (only via a second ReleaseSession landing in this window), but a
+        // second ReleaseSession finds sessions_ already erased and therefore
+        // appends no ups and creates no pending move, while the first release's
+        // drain already erased pending_moves_ for the id. Re-draining here is
+        // consequently unobservable -- deleting it leaves the suite green
+        // (batch78 audit A, M3). If a future path can ever populate
+        // pending_moves_ for a forgotten id at this point, the re-drain must
+        // come back: FlushSessionMove() below would otherwise emit a move of an
+        // already released session.
+        bool session_released = false;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            session_released = forget_sessions_.count(item.session_id) != 0;
+        }
+        if (session_released && !item.synthetic) {
+            dropped_queue_full_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         // The rate limiter already ran in Inject(), before the event could
         // enter the queue, so a queued item is always admitted (including the
         // synthetic ups AppendReleasesLocked queues for teardown, which must

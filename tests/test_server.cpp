@@ -2392,6 +2392,162 @@ RTSC_TEST(server_slowpath_event_count_mismatch_is_counted) {
     runner.join();
 }
 
+RTSC_TEST(server_slowpath_input_short_header_counts_malformed) {
+    // Batch78: ParseSlowPathInput has three malformed branches. The
+    // "pos + kSlowPathInputEventHeaderSize > n" one (:1910-1913) is already
+    // pinned by server_slowpath_event_count_mismatch_is_counted; the remaining
+    // two had no test at all. This case pins the FIRST one: "n < 4" (:1903-1906).
+    //
+    // WHY THE BODY IS 2 BYTES AND NOT 4 (do not "fix" this back):
+    //   TS_INPUT_PDU_DATA = numberEvents(2) + pad2Octets(2), then events.
+    //   n is the payload length AFTER the 18-byte share header.
+    //     body = 2 bytes -> n = 2  -> n < 4 is TRUE  -> :1903 fires, count +1.
+    //     body = 4 bytes -> n = 4  -> n < 4 is FALSE -> pos = 4, and then
+    //                        pos(4) + kSlowPathInputEventHeaderSize(6) > n(4)
+    //                        -> :1910 fires instead, so :1904 is never reached.
+    //   With a 4-byte body, deleting the :1904 fetch_add therefore stays GREEN.
+    //   Constants: kSlowPathInputEventHeaderSize = 6 and
+    //   kSlowPathInputEventSize = 12 (include/rtsc/proto/share.h:189-190).
+    //   Verified by mutation: 2-byte body + delete :1904 -> red; 4-byte body +
+    //   delete :1904 -> green.
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    const size_t malformed_before = server.malformed_input_pdu_count();
+    // TS_INPUT_PDU_DATA header needs 4 bytes; only numberEvents(2) is here.
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kInput,
+                          {0x01, 0x00}));
+
+    bool malformed_counted = false;
+    for (int i = 0; i < 200 && !malformed_counted; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        malformed_counted =
+            server.malformed_input_pdu_count() > malformed_before;
+    }
+    CHECK(malformed_counted);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        CHECK(events.empty());
+    }
+    CHECK_EQ(server.malformed_input_pdu_count(), malformed_before + 1);
+
+    // The session survives a malformed PDU: a following fast-path key decodes.
+    CHECK(WriteAll(*r.transport,
+                   McsSendData::build_request(
+                       r.user_channel, r.io_channel,
+                       EncodeFastPathInputPdu(
+                           {EncodeKeyboardEvent(0x2C, false, false)}))));
+    bool saw_key = false;
+    for (int i = 0; i < 100 && !saw_key; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        for (const auto& ev : events) {
+            if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
+                ev.scancode == static_cast<uint8_t>(0x2C)) {
+                saw_key = true;
+                break;
+            }
+        }
+    }
+    CHECK(saw_key);
+
+    server.Stop();
+    runner.join();
+}
+
+RTSC_TEST(server_slowpath_input_short_event_body_counts_malformed) {
+    // Batch78: pins the "event header present, 6-byte body missing" branch of
+    // ParseSlowPathInput. numberEvents says 1, the event carries only the
+    // 6-byte TS_INPUT_EVENT header (eventTime + messageType) and no body, so
+    // the decoder must abandon the PDU: count it as malformed and deliver no
+    // event (the messageType here is SCANCODE, i.e. one that WOULD deliver a
+    // key if the length check were skipped).
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+
+    std::mutex mu;
+    std::vector<rtsc::server::InputEvent> events;
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    server.SetInputCallback([&](const rtsc::server::InputEvent& ev) {
+        std::lock_guard<std::mutex> lock(mu);
+        events.push_back(ev);
+    });
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port());
+    CHECK(r.reached_active);
+
+    const size_t malformed_before = server.malformed_input_pdu_count();
+    ByteWriter w;
+    w.u16le(1);  // numEvents
+    w.u16le(0);  // pad2Octets
+    w.u32le(0);  // eventTime: the 6-byte event header...
+    w.u16le(0x0004);  // ...messageType SCANCODE, and NO 6-byte body
+    const std::vector<uint8_t> body = w.take();
+    CHECK_EQ(body.size(), static_cast<size_t>(10));
+    CHECK(SendSlowPathPdu(r, ShareDataPduType::kInput, body));
+
+    bool malformed_counted = false;
+    for (int i = 0; i < 200 && !malformed_counted; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        malformed_counted =
+            server.malformed_input_pdu_count() > malformed_before;
+    }
+    CHECK(malformed_counted);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        CHECK(events.empty());
+    }
+    CHECK_EQ(server.malformed_input_pdu_count(), malformed_before + 1);
+
+    // The session survives: a following well-formed fast-path key decodes.
+    CHECK(WriteAll(*r.transport,
+                   McsSendData::build_request(
+                       r.user_channel, r.io_channel,
+                       EncodeFastPathInputPdu(
+                           {EncodeKeyboardEvent(0x2D, false, false)}))));
+    bool saw_key = false;
+    for (int i = 0; i < 100 && !saw_key; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::lock_guard<std::mutex> lock(mu);
+        for (const auto& ev : events) {
+            if (ev.kind == rtsc::server::InputEvent::Kind::kKey &&
+                ev.scancode == static_cast<uint8_t>(0x2D)) {
+                saw_key = true;
+                break;
+            }
+        }
+    }
+    CHECK(saw_key);
+
+    server.Stop();
+    runner.join();
+}
+
 RTSC_TEST(server_undefined_share_data_type_is_not_reinterpreted) {
     // F4: a payload that parses as a TS_SHAREDATAHEADER but carries an
     // undefined pduType2 is malformed share data -- it must NOT be handed to

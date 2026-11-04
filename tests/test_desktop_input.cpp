@@ -2484,5 +2484,277 @@ RTSC_TEST(desktop_input_move_interval_gates_next_move) {
     CHECK(log.size() == 2u && IsMove(log.back(), second));
 }
 
+// ---- Released session must not emit queued moves/buttons ------------------
+
+RTSC_TEST(desktop_input_released_session_is_not_dispatched) {
+    // GAP-9 (batch78): after ReleaseSession, a queue item that was popped
+    // before the release can still be dispatched and emitted. The purge only
+    // removes items still in queue_ (ForgetReleasedSessionsLocked), but an
+    // item popped by the worker leaves queue_ and is then dispatched with the
+    // lock released, so a ReleaseSession landing in that gap cannot see it.
+    // A pending move queued before the release is equally reachable through
+    // the flush that a key/button does on dispatch.
+    //
+    // The dispatch-failure hook runs on the worker at the very top of
+    // Dispatch, with no sink lock held, so it is a deterministic gate: spin
+    // until the test opens it, while the test performs ReleaseSession from
+    // the outer thread. The hook must return false (true throws, which would
+    // be a different code path).
+
+    // Function-scope statics: the hook is a plain function pointer, so the
+    // state it spins on cannot live in a capturing lambda.
+    static std::atomic<bool> gate_open{false};
+    static std::atomic<bool> in_gate{false};
+    gate_open.store(false, std::memory_order_relaxed);
+    in_gate.store(false, std::memory_order_relaxed);
+    const auto gate_func = [](uint32_t) -> bool {
+        in_gate.store(true, std::memory_order_release);
+        while (!gate_open.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        return false;  // a blocking gate, never a forced failure
+    };
+
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 7;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+
+    // 1) Establish last_move_sent_[session] with a first move that is due
+    // immediately because the session is still unknown to the throttler.
+    sink->Inject(session, MouseMoveEvent(1, 1));
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }));
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 0;
+    }));
+
+    // 2) A second move stays pending: the 10 s interval cannot elapse.
+    sink->Inject(session, MouseMoveEvent(2, 2));
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 1;
+    }));
+    CHECK_EQ(EmitLogCount(), static_cast<size_t>(1));
+
+    // 3) Arm the gate and queue a button press. The worker pops it and parks
+    // in Dispatch's hook with no lock held: exactly the pre-release gap.
+    rtsc::server::SetDesktopInputDispatchFailureHook(gate_func);
+    sink->Inject(session, LeftButtonDownEvent());
+    CHECK(WaitUntil([]() {
+        return in_gate.load(std::memory_order_acquire);
+    }));
+
+    // 4) Release while the worker is parked. The worker cannot drain the
+    // forget request (it is not inside the mutex), so both the request and
+    // the pending move are deterministically still present here.
+    sink->ReleaseSession(session);
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(sink.get()),
+             static_cast<size_t>(1));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingMoveCount(sink.get()),
+             static_cast<size_t>(1));
+    const size_t before = EmitLogCount();
+    CHECK_EQ(before, static_cast<size_t>(1));
+
+    // Snapshot stats before opening the gate; we expect dropped_queue_full
+    // to increase by exactly one when the released session's queued button
+    // press is discarded.
+    const rtsc::server::InputStats before_stats = sink->Stats();
+    CHECK_EQ(before_stats.dropped_queue_full, static_cast<size_t>(0));
+
+    // 5) Let the parked Dispatch run.
+    gate_open.store(true, std::memory_order_release);
+    rtsc::server::SetDesktopInputDispatchFailureHook(nullptr);
+
+    // The synthetic button up ReleaseSession queued is the ONLY post-release
+    // action allowed (it clears the physical state). Wait for it, then let
+    // the log settle so a late move/press cannot hide behind the timing.
+    const bool emitted_up = WaitUntil([before]() {
+        return EmitLogCount() > before;
+    }, 3000);
+    CHECK(emitted_up);
+    size_t stable = EmitLogCount();
+    for (int quiet = 0; quiet < 6 && EmitLogCount() == stable; ++quiet) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    // Barrier stronger than the settle window: once the worker is parked again,
+    // every dispatch of this iteration has finished, so a stats read now is a
+    // real happens-before point for the drop count (see the hook header's note
+    // on the published counters). The settle loop above only bounds the emit
+    // log; this one proves the worker idled.
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestWorkerWaiting(sink.get());
+    }, 3000));
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+
+    // The released press must be counted, not silently discarded: deleting the
+    // fetch_add in Dispatch leaves the emit assertions above green (audit A, M7),
+    // so this is the only thing that turns that mutation red.
+    const rtsc::server::InputStats after_stats = sink->Stats();
+    CHECK_EQ(after_stats.dropped_queue_full,
+             before_stats.dropped_queue_full + 1);
+
+    bool saw_post_release_move = false;
+    bool saw_post_release_button_down = false;
+    bool saw_synthetic_button_up = false;
+    for (size_t i = before; i < log.size(); ++i) {
+        const PlatformInput& p = log[i];
+        if (p.kind == PlatformInput::Kind::kMouseMove) {
+            saw_post_release_move = true;
+        }
+        if (p.kind == PlatformInput::Kind::kMouseButton && p.button_down) {
+            saw_post_release_button_down = true;
+        }
+        if (p.kind == PlatformInput::Kind::kMouseButton && !p.button_down &&
+            p.button == 1) {
+            saw_synthetic_button_up = true;
+        }
+    }
+    // A released session's real input must not reach the desktop...
+    CHECK(!saw_post_release_move);
+    CHECK(!saw_post_release_button_down);
+    // ...but its synthetic up must: dropping it leaves the local button down.
+    // This is what makes the "synthetic items are exempt" branch load bearing.
+    CHECK(saw_synthetic_button_up);
+}
+
+RTSC_TEST(desktop_input_synthetic_up_survives_a_released_dispatch) {
+    // Batch78 M2 regression net. The re-check in Dispatch drops the item of a
+    // released session, but the synthetic ups ReleaseSession queues MUST pass:
+    // dropping one leaves the local key physically down.
+    //
+    // The `session_released && item.synthetic` branch is normally NOT
+    // reachable: the worker drains forget_sessions_ under mu_ in the same
+    // critical section that pops the next item, so a synthetic up popped after
+    // a release always finds an empty forget set. It becomes reachable only
+    // when a second ReleaseSession lands while a synthetic up is already parked
+    // at Dispatch entry. This case builds exactly that window:
+    //
+    //   hold A and S                        -> two synthetic ups exist later
+    //   queue D (a real press)
+    //   hook parks D at Dispatch entry      (phase=real)
+    //   ReleaseSession #1                   -> forget={id}, ups for A,S,D queued
+    //   release the hook, phase=synthetic   -> D is dropped as released input,
+    //                                          worker drains forget, pops the
+    //                                          first synthetic up, parks there
+    //   wait for the synthetic park
+    //   ReleaseSession #2                   -> forget={id} again (sessions_ is
+    //                                          already empty, so no new ups and
+    //                                          no new pending move)
+    //   release the hook                    -> THAT synthetic up must survive
+    //
+    // With the `!item.synthetic` exemption removed, the parked up is dropped and
+    // one of the three scancodes never gets its up -> red.
+    //
+    // The gate is driven by the PHASE the test publishes, not by a call
+    // ordinal, so an extra Dispatch (or a different synthetic-up order) parks
+    // at the right place instead of producing a false red.
+    static std::atomic<int> phase{0};  // 0=pass, 1=park real press, 2=park up
+    static std::atomic<bool> parked_real{false};
+    static std::atomic<bool> parked_up{false};
+    phase.store(0, std::memory_order_relaxed);
+    parked_real.store(false, std::memory_order_relaxed);
+    parked_up.store(false, std::memory_order_relaxed);
+    const auto gate_func = [](uint32_t) -> bool {
+        const int p = phase.load(std::memory_order_acquire);
+        if (p == 1) {
+            parked_real.store(true, std::memory_order_release);
+            while (phase.load(std::memory_order_acquire) == 1) {
+                std::this_thread::yield();
+            }
+        } else if (p == 2) {
+            parked_up.store(true, std::memory_order_release);
+            while (phase.load(std::memory_order_acquire) == 2) {
+                std::this_thread::yield();
+            }
+        }
+        return false;  // a blocking gate, never a forced failure
+    };
+
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 11;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+
+    // Two HELD keys: their ups become synthetic items on release.
+    sink->Inject(session, KeyEvent(0x1E, false, false));  // A
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }));
+    sink->Inject(session, KeyEvent(0x1F, false, false));  // S
+    CHECK(WaitUntil([]() { return EmitLogCount() == 2; }));
+
+    // Park a REAL queued press at Dispatch entry.
+    rtsc::server::SetDesktopInputDispatchFailureHook(gate_func);
+    phase.store(1, std::memory_order_release);
+    sink->Inject(session, KeyEvent(0x20, false, false));  // D
+    CHECK(WaitUntil([]() {
+        return parked_real.load(std::memory_order_acquire);
+    }));
+
+    // Release #1: forget request + one synthetic up per held key (A, S, D).
+    sink->ReleaseSession(session);
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(sink.get()),
+             static_cast<size_t>(1));
+
+    // Let the parked real press run. The fix drops it; the worker then drains
+    // forget and parks on the FIRST synthetic up (phase=2).
+    phase.store(2, std::memory_order_release);
+    CHECK(WaitUntil([]() {
+        return parked_up.load(std::memory_order_acquire);
+    }, 3000));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(sink.get()),
+             static_cast<size_t>(0));
+
+    // Release #2 while the synthetic up is parked: forget={id} again.
+    sink->ReleaseSession(session);
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingForgetCount(sink.get()),
+             static_cast<size_t>(1));
+
+    // Open the gate for real: this synthetic up must still be emitted.
+    phase.store(0, std::memory_order_release);
+    rtsc::server::SetDesktopInputDispatchFailureHook(nullptr);
+
+    auto key_up_seen = [](uint8_t scancode) {
+        return WaitUntil([scancode]() {
+            const auto log = EmitLogSnapshot();
+            for (const auto& p : log) {
+                if (p.kind == PlatformInput::Kind::kKey && p.release &&
+                    p.scancode == scancode && p.unicode == 0) {
+                    return true;
+                }
+            }
+            return false;
+        }, 3000);
+    };
+    // Every held key must be lifted, including the one whose up crossed the
+    // released-dispatch window above.
+    //
+    // Order independence: the three assertions below cover ALL held keys, not
+    // just the one the gate happened to park. Whichever synthetic up is the
+    // first in `pressed.keys` (a std::set<KeyId> ordered by scancode,
+    // desktop_input_map.h:185-188) is the one that parks, so under the M2
+    // mutation exactly one of these three checks fails -- never zero. Measured
+    // with a temporary emit-log probe on this build: baseline emits
+    //   key(30,down) key(31,down) key(30,up) key(31,up) key(32,up)
+    // (5 actions, pending_moves=0, forget=0) and M2 emits only 4, missing
+    // key(30,up) -- the parked one, confirming 0x1E is indeed the first.
+    // A different std::set order would shift WHICH check fails, not WHETHER
+    // one fails, so the case does not depend on the iteration order.
+    CHECK(key_up_seen(0x1E));
+    CHECK(key_up_seen(0x1F));
+    CHECK(key_up_seen(0x20));
+    // The real press parked in the window must NOT have been injected: only the
+    // synthetic ups may outlive the release.
+    for (const auto& p : EmitLogSnapshot()) {
+        CHECK(!(p.kind == PlatformInput::Kind::kKey && !p.release &&
+                p.scancode == 0x20));
+    }
+}
+
 #endif  // RTSC_DESKTOP_INPUT_TESTING
 
