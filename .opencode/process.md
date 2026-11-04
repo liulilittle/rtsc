@@ -1404,3 +1404,29 @@ Rule 16：BASELINE 绿；UPPER-ONLY / ANY-BRACKET 两回归均 caught；撇号�
 ### 验证
 Linux gate PASS 67/67；Win Release 69/69(85.14s)；Win Debug 69/69(126s)；MUT- 0；
 片段级 bash -n rc=0。
+## 第906轮：批68 —— 七边界 + RUN 大小写 + 删除死守卫（`546edab`）
+### Y2 的四个宽松 fail-open（全复现，全修）
+六边界只钉"是否在块内"，不钉"marker 精确"与"用例名相等"：
+MARKER_LOOSE / MARKER_PREFIX / NAME_PREFIX / NAME_PREFIX2 全部 rc=0 漏。
+加两条边界：截断 marker（`${marker%??????}` 去尾部，不是追加后缀）、前缀用例名。
+### Y2 的 RUN 大小写（我修时踩了两层）
+先改 `tolower(tag)=="run"` **无效**（8 拼写仍 reject）。逐字段打印发现真正根因是
+名字剥离正则 `[A-Z]+` 只吃大写 ⇒ `[ Run  ] case` 时 name 保留整行。
+改 `[A-Za-z]+` 后 8/8 accept，真实 harness 仍 accept。
+### 我批67 的死守卫（自己发现，已删）
+"awk 程序内撇号静态守卫"从未生效：守卫自身 `awk -v q="'"` 带两个撇号。
+重新注入原错误，守卫沉默。已删除，注释写明"不要试图静态检测"，
+语义闸是七边界自检（Y2 也独立指出片段级 bash -n 不是语义闸）。
+### 我另发现的 fail-OPEN（logvar 撞名）
+`logvar=rc` 时 reset 写 helper 自己的 rc、restore 写回入口值 0 ⇒ `return "$rc"` 恒 0，
+**永久损坏的提取器也 rc=0**。已加：合法标识符校验 + helper 局部名黑名单 + readonly 检测
++ printf -v 失败准确报错。修后 logvar=rc 在完好/损坏提取器上均 rc=1。
+### Rule 16
+八变体：MARKER_LOOSE/MARKER_PREFIX/NAME_PREFIX/NAME_PREFIX2/ALWAYS_ACCEPT/NO_SCOPE/
+NO_CLOSURE 全 caught；BASELINE 绿。RUN 大小写矩阵 8/8。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(73.22s)；Win Debug 69/69(83s)；MUT- 0；
+产品代码未改（只改 gate 脚本）。
+### 教训（例89/90/91）
+边界测试要覆盖"匹配多严"这个独立维度；守卫本身必须做 Rule 16（死守卫比没守卫更糟）；
+同一语义在多处实现时逐一检查，靠逐字段打印而非猜测定位。

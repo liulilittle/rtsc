@@ -1482,3 +1482,13 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
    （引号总量平衡），提取器变永远 accept。检测靠片段级 `bash -n` + 场景矩阵。
 6. **自检扩到六边界**：+小写关闭须 reject、+块内方括号行须 accept。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+### 批 68（`546edab`）—— 七边界自检 + RUN 大小写对齐 + 删死守卫
+
+1. **Y2 四个宽松 fail-open**（MARKER_LOOSE/PREFIX、NAME_PREFIX/PREFIX2）全部复现并修：
+   加"截断 marker 必须 reject"（`${marker%??????}` 去尾部）与"前缀用例名必须 reject"。
+2. **Y2 的 RUN 大小写**：改 `tolower(tag)=="run"` 无效；真正根因是名字剥离正则
+   `[A-Z]+` 只吃大写 → 改 `[A-Za-z]+`，8/8 拼写 accept。
+3. **删除我批67 的死守卫**：撇号静态守卫自身带撇号从未生效；语义闸是七边界自检。
+4. **新发现 fail-OPEN**：`logvar=rc` 使 `return "$rc"` 恒 0（永久损坏的提取器也通过）。
+   加合法名校验 + 局部名黑名单 + readonly 检测 + printf -v 准确报错。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
