@@ -1373,3 +1373,41 @@ Get-ChildItem tree -Recurse -Force | ? ReparsePoint -> 1 个: \tree\src\inc
    **"有没有一类输入能让判据看不见变化"**，而不只是"判据是否合理"。
 4. 交叉验证的价值：我自己写的指纹我测了 4 个攻击（A/B/C/D）都堵住了，
    但**没想到 reparse**；审计 X 想到了。**自证 + 他证** 缺一不可。
+## 第893轮：修 fail-closed 过头造成的误伤（例 68）
+
+### 症状
+批54 我给指纹加了"有 reparse point 就 exit 1"。审计 X 指出：OneDrive 未水合文件
+也是 reparse point（tag `0x9000601A`），仓库若在同步目录下会**永久 exit 1**，
+且用户看不出原因。
+
+### 我的实测
+```
+OneDrive 递归 -File  -> 400 个文件里 392 个是 reparse
+OneDrive 递归 -Force -> 582 个目录是 reparse
+```
+**关键**：文件型 reparse **会被 `-Recurse -File` 枚举到**（392 个就是这么数出来的），
+所以 `ReadAllBytes` 能读到它。只有**目录型**才是 `-Recurse -File` 的盲区。
+
+⇒ 我批54 的判据把"所有 reparse"当成盲区，**过度拒绝**。
+
+### 修法
+只拒绝 `PSIsContainer -and ReparsePoint`（目录型）；文件型照常哈希。
+
+### 教训（例 68）
+1. **fail-closed 的粒度必须对准真正的危险**。危险的只有"目录型 reparse"
+   （遍历器不进入），文件型 reparse 是**可读的**，拒绝它纯属误伤。
+2. 一个判据如果**无法在正常环境里通过**，它就不是守卫而是障碍。
+   设计 fail-closed 时必须问：**"什么情况下这个检查会误伤合法输入？"**
+3. 区分"看不见"与"看得见但类型特殊"：前者必须拒绝，后者应该正常处理。
+   我批54 把两者混为一谈。
+4. 这次是审计 X 想到的 OneDrive 场景，我自己只测了 junction/symlink。
+   **自证容易漏掉自己环境里不存在的情况**——这正是他证的价值。
+
+### 附带：全局 EAP 不是显式契约（例 69）
+X 指出两处 `Get-ChildItem` 没有 `-ErrorAction Stop`，权限拒绝的子树能静默消失。
+我实测确认：**无 `-ErrorAction Stop` + 全局 EAP=Continue + deny** 时，
+fp 与"文件根本不存在"**逐字节相同**（`A2CAFE20...`）。
+
+**教训**：依赖全局 `$ErrorActionPreference` 的行为是**隐式契约**。
+任何一个"必须失败"的操作都要显式 `-ErrorAction Stop`，
+否则将来有人挪动/删除那一行全局设置，行为就静默退化，而且没有任何测试会红。

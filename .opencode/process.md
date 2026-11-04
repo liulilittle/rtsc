@@ -1125,3 +1125,26 @@ Linux gate **LINUX GATE PASS** + 五标记；verify.ps1 EXIT=0 且改 docs 不�
 ### 教训（discover 例 67）
 递归遍历不保证遍历到全部（链接/接合点会被静默跳过）；静默跳过比报错更危险；
 判据覆盖性要问"有没有一类输入能让判据看不见变化"；自证 + 他证缺一不可。
+## 第893轮：批55 —— 只拒绝目录型 reparse + 显式 -ErrorAction Stop（`5993d24`）
+### 加固 1：权限拒绝盲区
+X 指出两处 `Get-ChildItem` 无 `-ErrorAction Stop`。实测（从 verify.ps1 逐字抽取代码块，
+icacls deny 一个子目录）：
+| 条件 | 结果 |
+|---|---|
+| 无 `-ErrorAction Stop` + EAP=Continue + deny | exit=0，fp=`A2CAFE20...` |
+| 文件完全不存在（参照） | fp=`A2CAFE20...` ← **逐字节相同** |
+| 有 `-ErrorAction Stop` + deny | exit=1（fail-closed） |
+已给两处加 `-ErrorAction Stop`。
+### 加固 2：OneDrive 误伤
+实测 OneDrive：`-Recurse -File` 枚举 400 个文件，其中 **392 个是 reparse**（可读、可哈希）；
+`-Recurse -Force` 另有 582 个目录型 reparse。⇒ 文件型不是盲区，只有目录型是。
+改为只拒绝 `PSIsContainer -and ReparsePoint`。
+### 红证（抽取真实代码块）
+干净树 exit=0；文件符号链接 exit=0 且改目标内容 fp 变化；目录接合点 exit=1 refused；
+恢复后 fp 逐字节回到原值。
+### 验证
+`verify.ps1` EXIT=0；`-LinuxBuild` EXIT=0 → LINUX GATE PASS（中途一次 view bench 偶发红，
+重跑即绿，例60 同族）；构建输入 MUT- 0；verify.ps1 CRLF 600/600。
+### 教训（discover 例 68/69）
+fail-closed 粒度要对准真正的危险（只有目录型 reparse 是盲区）；判据若在正常环境无法通过
+就是障碍不是守卫；全局 EAP 是隐式契约，"必须失败"的操作要显式 `-ErrorAction Stop`。

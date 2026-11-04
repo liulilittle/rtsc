@@ -1360,3 +1360,16 @@ C `showUntrackedFiles=no` 三种都能让旧指纹"不变"；D git 失败时 fp 
 当前四树 reparse=0，两个 verify 入口均 EXIT=0。
 
 表述更正：n2 断言 `:3934/:3935`、Write-kClosed `:4010`；"MUT- 0" 精确为"构建输入 0"。
+### 批 55（`5993d24`）—— 只拒绝目录型 reparse + 显式 -ErrorAction Stop
+
+审计 X 复核批54 PASS，报两条加固项，实测均成立。
+
+**加固 1**：两处 `Get-ChildItem` 缺 `-ErrorAction Stop`，权限拒绝的子树只靠全局 EAP 兜底。
+实测无该参数 + EAP=Continue + deny 时，fp 与"文件不存在"**逐字节相同**（静默跳过）。已补。
+
+**加固 2**：批54 拒绝所有 reparse，但 OneDrive 未水合文件也是 reparse（实测 392/400），
+会永久 exit 1。实测发现**文件型 reparse 会被 `-Recurse -File` 枚举**（可哈希），
+只有目录型是盲区。改为只拒绝 `PSIsContainer -and ReparsePoint`。
+
+红证（抽取真实代码块）：干净 exit=0；文件链接不拒绝且目标变化被抓；目录接合点 exit=1；恢复 fp 原值。
+验证：`verify.ps1` 与 `-LinuxBuild` 均 EXIT=0（后者 LINUX GATE PASS）；构建输入 MUT- 0。
