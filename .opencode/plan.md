@@ -1426,3 +1426,14 @@ Rule 16：memcpy→逐像素+取模 ⇒ 1:1 9.22/1.20 红、letterbox 9.59/1.10 
 Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全红且 witness 归零。
 验证：gate PASS；Windows Release 69/69；Windows Debug verify.ps1 69/69；负载 NEW 0/6；MUT- 0。
 未复现声明：X 的 OLD 1-2/6 红，我同条件 0/8。
+### 批 62（`8a35947`）—— gate 从"计数"升级为"身份 + 实际工作量"
+
+采纳 Y2 的 E5/§D3/§E 与 X 的 Q3 共 5 条：
+1. bench 加 `[bench-calls] calls=N want=M` + gate 断言 `calls>=want`（Y2 的 `return 0.01;` 攻击 → 7 failed）
+2. `VIEW_BENCH_LINES -lt 7` → `-ne 7`（第 8 用例强制改 gate）
+3. `nm --defined-only`（U 符号假阳，真实 archive 复现）
+4. `SEC_TESTS -ne 9` + checks>=79
+5. `gate_claimed`/`gate_entered`/`gate_parked` 三点断言（X 的假绿攻击 → 全红）
+反驳：Y2 的"1:1 预算收到 4x"会低于 0.89ms 噪声峰值，不采纳，改为限定"≥5x 结构回归"。
+顺带闭合批50 两处 UNVERIFIED（DropFileList 已实现，变异红在 test_drop_files.cpp:419）。
+验证：gate PASS；RelWithDebInfo 60/7355；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。

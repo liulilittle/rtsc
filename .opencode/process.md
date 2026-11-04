@@ -1272,3 +1272,25 @@ Linux gate PASS 67/67；Windows Release 六类诊断全 0 + 55/642 + ctest 69/69
 补充发现（C9 同型排查，见 discover 例 77）：全仓 18 处 `sleep_for(1ms)` 已分类——
 2 处 deadline（正确）、1 处批61 已改、2 处是原子信号同步点（非上界）、其余为带 CHECK 的短轮询。
 `sleep_for(10ms)xN` 的 80 余处在 Windows 上会拉长失败等待但不动判定，**登记不改**（风险大于收益）。
+## 第900轮：批62 —— gate 从"计数"升级为"身份+实际工作量"（`8a35947`）
+### 五条缺陷（4 条来自 Y2 独立审计，1 条来自 X 的 Q3）
+1. **bench 门禁测不出"体没跑"（中）**：`measure()` → `return 0.01;` 仍 PASS。
+   修：测试打印 `[bench-calls] label calls=N want=M`，gate 断言 7 条且 `calls>=want`。
+   红证：7 failed checks（calls=0）。
+2. **第 8 个用例不强制改 gate（低）**：`-lt 7` → `-ne 7`。
+3. **FACTORY_SYMBOL 可被 U 符号满足（低）**：加 `nm --defined-only`（真实 archive 复现假阳）。
+4. **SEC_TESTS 下限可补足（低）**：`-ne 9` + `checks>=79`。
+5. **gate_waited 不够抗改（中，X 做出假绿）**：改为 `gate_claimed`/`gate_entered`/`gate_parked`
+   三点断言。红证：复现 X 攻击 → 全红且 `gate_claim=0`。
+### 反驳 Y2 一条
+Y2 建议把 1:1 预算收到 4x；批56 实测噪声峰值 0.89ms > 4x 空闲 0.44ms ⇒ 必假红，不采纳。
+改为在 commit 措辞上限定"≥5x 结构回归"。
+### 顺带闭合批50 的 UNVERIFIED
+`file_list.h:5` / `cliprdr_client.h:94` 声称 direction-B 未实现，实际 `DropFileList` 已实现
+且有 tests/test_drop_files.cpp。变异 `offset > size` → `false &&` ⇒ `test_drop_files.cpp:419` 红。
+### 验证
+Linux gate PASS 67/67 + VIEW_BUDGETS/UI_RATIO；RelWithDebInfo `calls==want` 60/7355；
+Windows Release 69/69(88.13s)；Windows Debug verify.ps1 69/69(143s)；delay 5 值 ×2 全绿；MUT- 0。
+### 教训（discover 例 78/79）
+三层断言若读同一个量则等于一层；下限在可增可减集合上必 fail-open；
+单一"我执行过"标志会被位置改变架空，必须入门+出口+认领三点断言。
