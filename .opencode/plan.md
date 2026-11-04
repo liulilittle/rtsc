@@ -711,16 +711,34 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 5. **flags**：`MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK` 不变
 
 ### 验收判据（执行 AI 必须逐条给出证据）
-- [ ] `TranslateInput(ev(640,512), InjectGeometry{1280,1024, capture{1920,0,1280,1024}, desktop{0,0,3200,1024}, mapped=true, pixels_are_physical=true})`
+- [x] `TranslateInput(ev(640,512), InjectGeometry{1280,1024, capture{1920,0,1280,1024}, desktop{0,0,3200,1024}, mapped=true, pixels_are_physical=true})`
       → `n=(52429,32768)`，按 `floor(n*3200/65536)` 落 `(2560,512)`
-- [ ] 1:1 路径（capture==desktop==fb）与现状逐点一致（回归）
-- [ ] `w=1280, rel=1` → `n=52`（杀 M5/M5b）
-- [ ] `rel=w-1` → `n=65535`（末像素端点）
-- [ ] `mapped=false` / `pixels_are_physical=false` → 无 `kMouseMove`，但按钮仍产出
-- [ ] `desktop_gdi.cpp` 的 `SetProcessDpiAwarenessContext` 返回值不再丢弃，且
-      `pixels_are_physical = (SM_*VIRTUALSCREEN == DESKTOPHORZRES/VERTRES)`
-- [ ] 全量 ctest 63/63、`/W4 /WX` 零警告
-- [ ] 变异：改坏中心采样 / 改坏末像素特判 / 改坏 fail-closed，各自必须转红
+- [x] 1:1 路径（capture==desktop==fb）与现状逐点一致（回归）
+- [x] `w=1280, rel=1` → `n=52`（杀 M5/M5b）
+- [x] `rel=w-1` → `n=65535`（末像素端点）
+- [x] `mapped=false` / `pixels_are_physical=false` → 无 `kMouseMove`，但按钮仍产出
+- [x] `desktop_gdi.cpp` 的 `SetProcessDpiAwarenessContext` 返回值不再丢弃，且
+      `pixels_are_physical = (SM_CXSCREEN/SM_CYSCREEN == DESKTOPHORZRES/VERTRES)`
+- [x] 全量 ctest 63/63、`/W4 /WX` 零警告
+- [x] 变异：改坏中心采样 / 改坏末像素特判 / 改坏 fail-closed，各自必须转红
+
+      [batch76 review] All boxes above were already IMPLEMENTED; none was
+      unchecked for missing code. Evidence map:
+        cross-monitor -> tests/test_desktop_input.cpp:353 _cross_monitor
+                         (n=(52429,32768), decodes back to (2560,512))
+        1:1           -> :416 _one_to_one_is_identity
+        n=52          -> :441 _normalizes_against_extent
+        65535         -> :460 _last_pixel_is_65535
+        trust bits    -> :732 _requires_trusted_geometry (move dropped,
+                         button still injected)
+        DPI           -> src/server/desktop_gdi.cpp:77-86
+                         EnablePerMonitorDpiAwareness returns whether the
+                         PROCESS is per-monitor, not whether this call won.
+      METRIC CORRECTION: the implementation uses SM_CXSCREEN/SM_CYSCREEN
+      (src/server/desktop_gdi.cpp:172-183), NOT the virtual-screen metrics:
+      the desktop DC reports the PRIMARY monitor, so comparing against the
+      virtual screen would report not-physical on every multi-monitor host.
+      ctest: currently 69/69 (not 63), /W4 /WX clean.
 
 ### 明确不做
 - 不加 DPI 数值字段、不加 `use_virtual_desk`
