@@ -350,9 +350,17 @@ if [ "${VIEW_CALLS:-0}" -ne 7 ]; then
     echo "LINUX GATE FAIL: view bench call counters=${VIEW_CALLS:-0}, want exactly 7"
     exit 1
 fi
+# Fail closed on a malformed line too. `sed` leaves a non-matching line untouched,
+# and awk then saw its fields as ("[bench-calls]", <label>): with the current
+# labels that happened to trip the check, but a label starting with 0 or a
+# non-digit would have slipped through. Require both extracted fields to be
+# numeral before comparing.
 if grep "^  \[bench-calls\] " "$VIEW_LOG" |
        sed -E 's/.* calls=([0-9]+) want=([0-9]+).*/\1 \2/' |
-       awk '{ if ($1 + 0 < $2 + 0) bad = 1 } END { exit bad ? 0 : 1 }'; then
+       awk 'NF != 2 { bad = 1; next }
+            $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { bad = 1; next }
+            $1 + 0 < $2 + 0 { bad = 1 }
+            END { exit bad ? 0 : 1 }'; then
     echo "LINUX GATE FAIL: a view bench case made fewer ScaleSurface calls than its sample requires:"
     grep "^  \[bench-calls\] " "$VIEW_LOG"
     exit 1
