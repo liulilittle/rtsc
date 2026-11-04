@@ -1845,3 +1845,43 @@ Release 0 诊断 / ctest 69/69（73.6s）；Debug 0 诊断 / ctest 69/69（78.2s
 2. `SetInputSink` 注释误导（Run/ServeOne 期间调用是 data race，注释却说"只是不被采纳"）
 3. `Stop()` 不覆盖 `ServeOne()` 会话（B 指出与 `server.h:357-368` 承诺不符）
 4. `g_move_interval_ns` 是进程级单例，B 建议按 sink 隔离
+
+## 第884轮：批79 —— Stop() 等待 Run()/ServeOne() 退出 (提交 `2c4dec0`)
+
+### 做了什么
+- **B1 交付**：`RunActiveScope` RAII 前后景计数（`run_active`，由 `stop_mu` 保护，`stop_cv` 通知）发表
+  "Run()/ServeOne() 仍在执行"，使 `Stop()` 等待接受循环真正离开 `impl_` 后才返回，避免宿主销毁
+  `Impl` 时出现 UAF。原因见 `src/server/server.cpp:2280-2292`。
+- **B2 交付**：`Start()` 现在检查 `listener->IsClosed()`，对已关闭的监听器丢弃并重新绑定。
+  这修复了 Stop->Start 重启时在已关闭套接字上"成功"的 bug。`rtsc/net/transport.h:91` 新增
+  纯虚 `IsClosed()`，两个平台后端均实现：`src/net/posix_transport.cpp:106`、
+  `src/net/winsock_transport.cpp:108`。
+- **B3 交付**：`ThreadRoleScope` 标记 thread-local 角色（`t_in_session_body`、`t_in_accept_loop`），
+  使 `Stop()` 在会话线程内调用时跳过等待逻辑，避开自死锁。见 `src/server/server.cpp:2256-2278`。
+- `Run()`（`src/server/server.cpp:2472-2473`）和 `ServeOne()`（`src/server/server.cpp:2631-2632`）第一行
+  创建 `RunActiveScope` 和 `ThreadRoleScope`；会话体（`src/server/server.cpp:2573`、2663）亦创建
+  `ThreadRoleScope`。
+
+### 测试
+- 新增 2 个用例（`tests/test_server.cpp:4881` / 4922）：
+  - `server_stop_waits_for_run_to_exit`（B1）：数 `run_active` 等待
+  - `server_restart_after_stop_rebinds`（B2）：Stop 后重启真实握手
+- 变异：
+  - M1：`stop_cv.wait` 谓词由 `run_active == 0` 改为 `true` → B1 红（`released_at_stop=0`）
+  - M2：`Start()` 中删除 `!IsClosed()` 检查 → B2 红（`r.reached_active=0`、
+    `total_session_count=0`)
+- 恢复后：59 tests 全绿
+
+### 验证
+- Windows Release 构建 0 诊断 / ctest **69/69** (84.87s)
+- `rtsc_server_tests` 59 tests / 680 checks / 0 failing
+
+### 候选后续
+1. 批79 候选第 1 项（per-session 原子代号）仍开放
+2. 批79 候选第 2 项（`SetInputSink` 注释）已完成 - 修正 data race 语义，注释从"必须在 Start 前调用，且仅生效于启动时的快照中，而非实时注入"改为"在 Start 前调用，且实时注入会使用已安装的 sink，因此永远不要在会话运行后再次调用 SetInputSink"，避免数据竞争。
+3. 批79 候选第 4 项（`g_move_interval_ns` 隔离）—— **已评估，登记为 deferred**。
+   理由：`MoveInterval()` 在生产构建中直接返回 `kMoveInterval`（`desktop_input_win32.cpp:118`），
+   进程级单例 `g_move_interval_ns` **只存在于 `RTSC_DESKTOP_INPUT_TESTING`**；
+   测试套件已用 `EmitHooksForTest::CHECK_EQ(g_live_emit_hook_guards, 1)`
+   （`test_desktop_input.cpp:2285`）强制单 recorder 约束，析构时恢复 `SetDesktopInputTestMoveIntervalMs(0)`。
+   改动需动 sink 成员、`MoveInterval()`、钩子接口、7 个调用点，收益近零。按 SOP 第7条 + C4-C6 不做。
