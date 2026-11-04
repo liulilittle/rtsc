@@ -1449,3 +1449,9 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 7. 诚实登记：0.4x 4K 倍率 2.5 走 generic 路径，三种变异仅 1.02-1.05x ⇒ 该用例 ms 预算
    无法表达 2x 算法回归，只能抓 ≥8x；已在注释写明，精细守护交给 0.5x 4K。
 验证：gate PASS；Linux 67/67；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。
+### 批 64（`8711c9a`）—— [bench-calls] 解析器畸形行 fail-closed
+
+采纳 Y2 §2：`sed` 不匹配行原样输出会让以数字开头标签的畸形行静默通过。
+改为 `NF != 2 || 非纯数字 || calls<want` 三者任一即 fail。五场景 5/5 符合。
+本轮三次验证脚本自身失误（片段不完整/引号二次解析/if 语义写反）→ discover 例 82。
+验证：gate PASS 67/67 + 三标记；MUT- 0。
