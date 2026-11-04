@@ -1486,3 +1486,31 @@ Linux gate PASS 67/67；Win Release 69/69(78.21s)；Win Debug 69/69(95s)；MUT- 
 ### 教训（例94/95/96）
 注释里的"为什么"必须与"做什么"同等验证；变异测试第一步是断言变异已应用；
 "接受更多拼写"不等于 fail-open（要给出"该拒却受"的输入）。
+
+## 第909轮：批71 —— 更正大小写探针注释 + 拒绝 nameref + 14 形状矩阵（`f354a1c`）
+### X 的 Q1 两处"错误"：一条作废、一条成立
+- **错误 A 作废**：X 用 Python `i=0` 起枚举得 `dRaIn`，但 gate 真实构造是 awk 1 基
+  （`i=1 -> i%2=1 -> toupper`）⇒ 首字母大写 `D`，实测产出 `DrAiN: cHaLl...`。
+  原注释正确。X 在续报里主动撤回，并总结"审计别人构造的字符串必须复用同一构造函数"。
+- **错误 B 成立**：`DrAiN` 不匹配 `/[Dd]rain/`，原注释"交替探针能抓逐字符类"自相矛盾。
+  已重写为 KNOWN GAP 段（含三场景非 fail-open 的实测依据）。
+### X 的 nameref（Q3 + §4）
+`declare -n` 的 flag 串只有 `-n`，三个既有分支全不匹配：
+- nameref→数组：写穿 `REAL[0]`，**数组守卫完全绕过**（最强理由）
+- nameref→readonly：目标自身拦住 rc=1
+- nameref 链：写穿到末端
+- nameref→未设置：printf -v 创建新全局变量
+已加 `*n*` 分支。
+### X 的 flag 顺序（Q2）
+`*i*` 放 `*a*` 之后正确，不调整：`-ai` 被 `*a*` 先吃 ⇒ 报"是数组"（更准确）。
+### 14 种变量形状矩阵（我独立实测）
+plain/export = 0/1（正常）；其余 12 种（readonly / readonly数组 / readonly+int /
+readonly+export / 索引数组 / 关联数组 / 整数元素数组 / 关联整数数组 / 整数 /
+nameref三种）= 1/1 全部拒绝。
+### X 的 §5 建议
+"仓库加 `extract_fn` helper、所有审计/变异脚本统一用它提取真实函数体并断言唯一性" ——
+**采纳为方法学规则写入 memory**，不加进 gate（gate 不需要提取自己的函数）。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(74.55s)；Win Debug 69/69(86s)；MUT- 0。
+### 教训（例97/98）
+审计构造的输入必须复用真实构造函数；按 flag 串判断变量形态的守卫对 nameref 一律失明。

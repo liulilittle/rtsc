@@ -1848,3 +1848,29 @@ BAD_REGEX       ACCEPT ACCEPT  *** MISSED ***
 **判别标准**：要证明 fail-open，必须给出一个"正确实现 reject 而它 accept"的输入。
 "接受更多正常输入"是宽容，不是漏洞。登记为已知盲区，不修（整行锚定会要求 printf
 格式永不改缩进，风险收益不划算）。
+### 例 97：审计用"自己重写的等价物"验证，得出与真实代码相反的结论
+审计 X 报我注释"the alternating probe's first letter is upper-case"是错的，实测小写 `d`。
+**他自己错了**：他用 Python `i=0` 起枚举（`c.upper() if i%2 else c.lower()`）得到 `dRaIn`；
+而 gate 里的真实构造是 awk **1 基**：
+```awk
+for (i=1;i<=length($0);i++) { ... ((i%2)?toupper(c):tolower(c)) }
+```
+`i=1 -> i%2=1 -> toupper` ⇒ 首字母大写 `D`。X 在续报里主动撤回。
+**教训**：审计别人构造的字符串时，必须**复用同一个构造函数**（直接运行源码里的那段），
+不能用自己的语言重写"等价物"。这是"变异必须来自真实函数体"规则的另一面 ——
+我对变异有这条规则，对"构造探针输入"却没有，结果是同一个坑的两端。
+（我这轮也犯了镜像错误：批70 的注释里写"catches the second shape"但没同步自己的实测结论，
+是"结论更新了、注释没更新"。两个错误方向相反，根因相同：**注释与代码/实测脱节**。）
+
+### 例 98：nameref 会完全绕过数组守卫
+`declare -n` 的 `declare -p` flag 串**只有 `-n`**，不含目标变量的 `-a/-A/-i/-r`：
+```
+nameref -> 数组  : flags="-n"，printf -v 写穿到 REAL[0]，数组守卫完全看不见
+nameref -> readonly : printf -v 报 readonly（目标自身拦住，rc=1）
+nameref 链 A→B→C : 写穿到 C
+nameref -> 未设置 : printf -v 创建一个新的全局变量（副作用）
+```
+**规律**：任何"按 flag 串判断变量形态"的守卫，对 **nameref 一律失明** ——
+因为 flag 串描述的是引用本身，不是目标。
+**处理**：nameref 必须与数组/整数/只读同级拒绝（`*n*` 分支），
+理由不是"它坏了"，而是"数据路径不可见"这个原则（与数组同标准）。

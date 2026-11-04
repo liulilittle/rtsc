@@ -1514,3 +1514,15 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 5. **我自己的失误**：`rule16_b68.py` 的变异替换串随源码演进而失效，输出 "MISSED"
    实为"变异未应用"；换 `rule16_final.py` 后 11/11 caught。记入 discover 例 95。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+
+### 批 71（`f354a1c`）—— 更正大小写探针注释 + 拒绝 nameref
+
+1. **X 的 Q1**：错误 A（首字母大写）X 自己撤回 —— gate 用 awk 1 基构造，
+   实际产出 `DrAiN: cHaLl...`，首字母确为大写。错误 B（"交替能抓 [Dd]"）成立，
+   已重写为 KNOWN GAP 段。
+2. **X 的 nameref**：`declare -n` flag 串只有 `-n`，**完全绕过数组守卫**
+   （nameref→数组时写穿 `REAL[0]`）。已加 `*n*` 分支。
+3. **X 的 flag 顺序**：`*i*` 放 `*a*` 之后正确（`-ai` 报"数组"更准确），不调整。
+4. **14 形状矩阵**：plain/export = 正常；其余 12 种全部拒绝。
+5. **X 的 §5**：`extract_fn` helper 采纳为方法学规则（写入 memory），不加进 gate。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
