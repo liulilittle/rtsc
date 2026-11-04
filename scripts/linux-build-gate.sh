@@ -295,10 +295,14 @@ selftest_marker_extractor() {
         echo "  logvar '$logvar' is not set; the caller must pass the variable that holds the log path" >&2
         return 1
     fi
-    # Order matters for the MESSAGE, not the verdict: `declare -in` is a nameref
-    # whose flag string is "-in", and its printf -v error is byte-identical to a
-    # pure nameref's, so nameref is checked before integer to name the real cause.
-    # Every branch returns 1, so no ordering can change fail-open/fail-closed.
+    # Order matters for the MESSAGE, not the verdict. `declare -in V` (no
+    # assignment) is constructible and reports flags "-in"; it behaves as a
+    # nameref -- measured, its printf -v error is byte-identical to a pure
+    # nameref's -- so nameref is checked before integer to name the real cause.
+    # (The assigned form `declare -in V=x` fails at declare time, rc=4, and never
+    # reaches here.) Every branch returns 1, so no ordering can change
+    # fail-open/fail-closed. Do not reorder back just because "-in is rare": the
+    # only affected input is the constructible no-assignment form above.
     case "$flags" in
         *r*) echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2; return 1 ;;
         *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable to see the data path" >&2; return 1 ;;
