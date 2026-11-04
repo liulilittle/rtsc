@@ -1552,3 +1552,49 @@ Rule 16：9 变体，8 变异全部断言已应用，0 失败。
 ### 教训（例99/100/101）
 锚点闭合一个口子会开两个新口子；修复一类输入必须补该输入的探针；
 枚举变量形态守卫时"未设置"必须列出。
+
+## 第911轮：批73 —— 更正 -in 构造形式的注释 + 13 变异矩阵（`a540dcc`）
+### X 更正我的 `-in` 论据
+我说「`declare -in V=R` 报 V: not found 且变量没创建」⇒ 不可构造。
+X 指出这只对**带赋值**的形式成立。实测四象限：
+```
+declare -in V          -> flags=[-in]   可构造
+declare -in V=R        -> flags=[]      rc=4 失败
+declare -in V=42       -> flags=[]      rc=4
+declare -in V=NOEXIST  -> flags=[]      rc=4
+```
+⇒ 无赋值形式 `declare -in V` 可构造且能到达守卫。调序后报 nameref（正确），
+调序前报 integer（错误）。**改动本身的理由不是"不可构造"，而是"无赋值形式可构造、
+调序修正消息"**。代码注释已补充构造形式说明与"不要因此回退"。
+### X 的 13 变异矩阵 —— 我完整复现
+```
+BASELINE                     PASS
+NAME_STRIP_[A-Z]+            RED
+NO_SCOPE                     RED
+ALWAYS_ACCEPT                RED
+ALWAYS_REJECT                RED
+KEEP_AFTER_CLOSE             RED
+MARKER_LOOSE                 RED
+NAME_PREFIX                  RED
+CASE_BUILTIN                 RED   <- 上轮 GREEN，本批新探针修好
+MARKER_TAIL                  RED
+MARKER_MID                   RED
+DD_GAP                       GREEN（已登记缺口）
+LOWER_CLOSE_LOST             RED
+ANY_BRACKET_WIDEN            RED
+RED: 12, GREEN: 2（baseline + 已登记缺口）
+```
+### CASE_BUILTIN 从 GREEN 变 RED 是真的增量
+上一轮 tag=="RUN" 与 tolower(...) 语义等价（harness 只打大写）⇒ 11 探针全绿。
+本批新加的 `[ Run  ]` 探针喂混合大小写 ⇒ tag=="RUN" 会拒 ⇒ caught。
+一条新输入形态的探针顺带闭合了第二个盲点。
+### X 其余验证我复核一致
+- blob 双向一致、diff 30+/5-、无夹带
+- 未设置守卫零误触发：`SEC_LOG=''`（空但已 set）→ rc=0（**空串不误拦**）、unset → rc=1
+- 控制流：`SEC_LOG` 在 `:171`、`UI_LOG` 在 `:575` 赋值，都在自检调用前
+- shellcheck `REL_TEST_LOG` unused 为批37 既存，登记不处理
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(81.03s)；Win Debug 69/69(80s)；MUT- 0。
+### 教训（例102/103）
+"不可构造"必须按构造形式分类枚举（带赋值/不带赋值是不同形态）；
+一条覆盖"新输入形态"的探针会顺带闭合该形态下的多个变异。

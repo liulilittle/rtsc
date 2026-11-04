@@ -1540,3 +1540,16 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 5. **Y2 的 Q4**：`-n` 与 `-a/-A/-i` 互斥但与 `-r`/`-x` 可组合（`-nr`→`*r*`、`-nx`→`*n*`）。
 6. **收尾**：X 与 Y2 各自独立同意。下一步转真机验证清单（仍 UNVERIFIED）。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+
+### 批 73（`a540dcc`）—— 更正 -in 构造形式注释 + 13 变异矩阵复现
+
+1. **X 更正我的 `-in` 论据**："不可构造"只对带赋值形式（`declare -in V=R`，rc=4）成立；
+   无赋值形式 `declare -in V` 可构造且 `flags=-in`，能到达守卫，调序后报 nameref 正确。
+   代码注释已补构造形式说明 + "不要因此回退调序"。
+2. **13 变异矩阵完整复现**：12 RED / 2 GREEN（baseline + 已登记 DD_GAP）。
+3. **`CASE_BUILTIN` 从 GREEN 变 RED**：本批新加的 `[ Run  ]` 探针喂混合大小写 RUN，
+   顺带闭合了这个盲点（上一轮 tag=="RUN" 与 tolower 语义等价）。
+4. **X 的其余验证复核一致**：blob 双向一致无夹带；未设置守卫零误触发
+   （空串 `SEC_LOG=''` → rc=0 不误拦，unset → rc=1）；控制流赋值都在自检调用前。
+5. **收尾**：X 明确"同意收尾"。下一步转真机验证清单。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
