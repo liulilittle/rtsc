@@ -291,6 +291,7 @@ selftest_marker_extractor() {
         *r*) echo "  logvar '$logvar' is readonly; the probe cannot be written" >&2; return 1 ;;
         *a*|*A*) echo "  logvar '$logvar' is an array; pass a plain string variable to see the data path" >&2; return 1 ;;
         *i*) echo "  logvar '$logvar' is an integer; printf -v would evaluate the path as arithmetic" >&2; return 1 ;;
+        *n*) echo "  logvar '$logvar' is a nameref; pass the real variable to see the data path" >&2; return 1 ;;
     esac
     # The truncation probes below cut a proportion of the marker and strip its
     # first six characters. Below that size the cuts stop being informative, so
@@ -353,11 +354,18 @@ selftest_marker_extractor() {
     printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
         "$case_name" "${marker#??????}" "$case_name" >"$probe"
     expect_reject "a head-truncated marker (the marker regex only matched its tail)"
-    # Case is a third independent axis, and it has two shapes that need separate
-    # probes: fully case-insensitive matching (caught by the upper-case probe) and
-    # per-character classes like [Dd]rain (NOT caught by it -- DRAIN does not match
-    # [Dd]rain, only Drain does). The alternating-case probe catches the second
-    # shape because its first letter is upper-case while the rest is not.
+    # Case is a third independent axis. The upper-case probe catches a fully
+    # case-insensitive regex. The alternating probe ("DrAiN: cHaLl...") is a
+    # different spelling and catches regexes that fold case in other ways, but it
+    # does NOT catch a per-character class like /[Dd]rain:/: that class accepts
+    # exactly "Drain" and "drain", and "DrAiN" is neither.
+    #
+    # KNOWN GAP (registered, not fixed): no current probe feeds the bare
+    # capitalized spelling "Drain...", so a /[Dd]rain:/ style regex would pass this
+    # self-test. It is not fail-open -- the three no-marker scenes (empty block,
+    # unrelated text, another case prints it) all still reject, so it only accepts
+    # extra spellings. Closing it needs a full-line anchor ^[[:space:]]*marker$,
+    # which would pin the printf indentation forever; not worth it.
     printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
         "$case_name" "$(printf '%s' "$marker" | tr '[:lower:]' '[:upper:]')" "$case_name" >"$probe"
     expect_reject "an upper-cased marker (the marker regex ignored case)"
