@@ -177,7 +177,7 @@ SEC_LOG="$LOG_DIR/server_security.log"
 # P0_REGRESSION=executed and LINUX GATE PASS before this check existed).
 # Require all three: the case ran, nothing skipped, and at least the checks the
 # real body produces.
-if ! grep -q "OK .* ${P0_CASE}\$" "$SEC_LOG"; then
+if ! grep -qE "^\[  OK  \] ${P0_CASE}\$" "$SEC_LOG"; then
     echo "LINUX GATE FAIL: ${P0_CASE} did not execute (OpenSSL backend compiled out?)"
     grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
     exit 1
@@ -204,8 +204,25 @@ fi
 # CHECK only calls report_failure and does not change control flow
 # (tests/test_framework.h:47-53). Detecting a deleted assertion needs review, not
 # a gate. Do not claim otherwise here or in the commit message.
-if ! grep -q "drain: challenge surfaced after coalesced record" "$SEC_LOG"; then
-    echo "LINUX GATE FAIL: ${P0_CASE} body did not reach its success path (drain marker missing)"
+# Scoped to the CASE BLOCK, not the whole log. A whole-log grep accepts the same
+# string printed by any other case: measured with a synthetic log where P0 prints
+# nothing and `some_other_case` prints the marker -- the old check exited 0.
+p0_block_has_marker() {
+    # Any case boundary resets the flag, including "[ FAIL ]": a failed case
+    # never prints "[  OK  ]", so keying the reset on OK alone would leak the
+    # block into whatever follows.
+    awk -v want="${P0_CASE}" '
+        /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
+            name = $0
+            sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
+            sub(/[[:space:]]+$/, "", name)
+            inb = (name == want) ? 1 : 0; next
+        }
+        inb && /drain: challenge surfaced after coalesced record/ { found = 1 }
+        END { exit found ? 0 : 1 }' "$SEC_LOG"
+}
+if ! p0_block_has_marker; then
+    echo "LINUX GATE FAIL: ${P0_CASE} case block did not print the drain marker (another case's marker does not count)"
     grep -E "tests?, .*checks?" "$SEC_LOG" | tail -2
     exit 1
 fi
@@ -379,8 +396,23 @@ if grep -q "skipped: relative timing" "$UI_LOG"; then
 fi
 # Same reasoning as the view block above: assert the measurement line the ratio
 # body prints, not a checks total that unrelated CHECKs can top up.
-if ! grep -q "rgba->bgra 1280x1024:" "$UI_LOG"; then
-    echo "LINUX GATE FAIL: ui ratio body did not run (its 'rgba->bgra 1280x1024:' measurement line is missing)"
+# Same case-block scoping as the P0 marker above: the measurement line only counts
+# if it was printed by the ratio case itself. A whole-log grep accepts the string
+# from any case, so a body that stopped running while another case echoed the
+# same text would still pass.
+ui_block_has_marker() {
+    awk -v want="rgba_to_bgra_present_faster_than_the_old_per_pixel_loop" '
+        /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
+            name = $0
+            sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
+            sub(/[[:space:]]+$/, "", name)
+            inb = (name == want) ? 1 : 0; next
+        }
+        inb && /rgba->bgra 1280x1024:/ { found = 1 }
+        END { exit found ? 0 : 1 }' "$UI_LOG"
+}
+if ! ui_block_has_marker; then
+    echo "LINUX GATE FAIL: ui ratio case block did not print its 'rgba->bgra 1280x1024:' line (another case's line does not count)"
     exit 1
 fi
 UI_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$UI_LOG" | tail -1)

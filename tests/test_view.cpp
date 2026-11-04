@@ -1463,18 +1463,31 @@ RTSC_TEST(view_scale_benchmark_budget) {
     //
     // The regression this guards is structural: replacing a fast path with a
     // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy (a
-    // per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 9.2-9.6 ms
-    // after amortising, i.e. well past their 1.1/1.2 ms budgets. The headroom
-    // under load is about 1.4x (measured 0.8x 55.78/80, 0.5x 4K 42.09/60,
-    // 0.4x 4K 97.38/140) -- not the "1.5x to 2x" an earlier revision claimed.
+    // per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 9.05-9.22 ms
+    // after amortising, i.e. 7.5x past their 1.1/1.2 ms budgets.
+    //
+    // Headroom is NOT uniform across the cases, and the large ones are the tight
+    // ones. Measured on this host (40 busy loops, load ~43) over four runs, the
+    // slowest case reached:
+    //   1:1        0.52 / 1.20  (43%)      0.4x 4K  138.07 / 140  (99%)  <-- tight
+    //   1:1 lb     0.52 / 1.10  (47%)      0.5x 4K   53.63 /  60  (89%)
+    //   2x        13.81 / 20    (69%)      0.8x      72.34 /  80  (90%)
+    //   1.33x      5.98 / 12    (50%)
+    // A second host (audit X) exceeded all three of 0.8x / 0.5x 4K / 0.4x 4K on
+    // the same HEAD, while 1:1 never came close. So the large cases -- not the
+    // small ones -- set the load headroom, and they were given roughly 2x their
+    // idle value here. Do not "tighten 1:1 to catch a 2x regression": measured,
+    // doubling the real work only moves 1:1 by 1.31x (fixed overhead is ~2/3 of
+    // the call), so the millisecond ratio and the algorithmic ratio are not the
+    // same number.
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},
-        {1920, 1080, 3840, 2160, "2x", 20.0, 3},
-        {1920, 1080, 1536, 864, "0.8x", 80.0, 1},
-        {3840, 2160, 1920, 1080, "0.5x 4K", 60.0, 1},
-        {1920, 1080, 2560, 1440, "1.33x", 12.0, 6},
-        {3840, 2160, 1536, 864, "0.4x 4K", 140.0, 1},
+        {1920, 1080, 3840, 2160, "2x", 30.0, 3},
+        {1920, 1080, 1536, 864, "0.8x", 150.0, 1},
+        {3840, 2160, 1920, 1080, "0.5x 4K", 115.0, 1},
+        {1920, 1080, 2560, 1440, "1.33x", 18.0, 6},
+        {3840, 2160, 1536, 864, "0.4x 4K", 280.0, 1},
     };
     for (const Case& c : cases) {
         Surface src(static_cast<uint16_t>(c.sw), static_cast<uint16_t>(c.sh));
