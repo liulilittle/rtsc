@@ -57,16 +57,27 @@ mkdir -p "$LOG_DIR"
 
 # Delete all but the newest LOG_KEEP-1 *other* PID-suffixed log dirs; this run's
 # own dir and the legacy (suffix-less) dir are always preserved.
+#
+# An EMPTY suffix is not a PID. "linux-gate-logs." (a legacy dir named with a
+# trailing dot) used to pass the digit test and be counted and deleted -- measured:
+# it was removed while the gate is supposed to preserve legacy evidence, and it
+# consumed one of the five kept slots so a real PID dir was deleted instead.
+# Match the whole basename shape instead of trusting ${d##*.}.
 rotate_logs() {
-    local parent prefix d suf i=0
+    local parent prefix d base suf i=0
     parent="$(dirname "$LOG_DIR")"
     prefix="$LOG_PREFIX"
     while IFS= read -r d; do
         [ -n "$d" ] || continue
         [ -d "$d" ] || continue
         [ "$d" = "$LOG_DIR" ] && continue
-        suf="${d##*.}"
-        case "$suf" in *[!0-9]*) continue ;; esac
+        base="${d##*/}"
+        case "$base" in
+            "$prefix".*) ;;
+            *) continue ;;
+        esac
+        suf="${base#"$prefix".}"
+        case "$suf" in ''|*[!0-9]*) continue ;; esac
         i=$((i + 1))
         [ "$i" -gt "$((LOG_KEEP - 1))" ] && rm -rf -- "$d"
     done < <(ls -1dt -- "$parent/$prefix".* 2>/dev/null)
