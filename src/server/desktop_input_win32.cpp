@@ -91,6 +91,7 @@ using Clock = std::chrono::steady_clock;
 #if defined(RTSC_DESKTOP_INPUT_TESTING)
 std::atomic<DesktopInputAppendFailureHook> g_append_failure_hook{nullptr};
 std::atomic<DesktopInputDispatchFailureHook> g_dispatch_failure_hook{nullptr};
+std::atomic<DesktopInputEmitHook> g_emit_hook{nullptr};
 #endif
 
 constexpr size_t kMaxQueue = 256;
@@ -100,6 +101,22 @@ constexpr size_t kMaxQueue = 256;
 // session can legitimately need between two worker drains.
 constexpr size_t kHardQueueLimit = 4 * kMaxQueue;
 constexpr Clock::duration kMoveInterval = std::chrono::milliseconds(4);  // 250 Hz
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+// Test-only override of kMoveInterval in nanoseconds (0 = the production
+// constant). Only the test build can write it; the production MoveInterval()
+// below folds to kMoveInterval, so there is no runtime cost or data race.
+//
+// Clock::duration(ns) is exact here: this seam only exists on MSVC, whose
+// steady_clock::duration is std::chrono::nanoseconds (rep = long long,
+// period = nano), so no duration_cast truncation is possible.
+std::atomic<int64_t> g_move_interval_ns{0};
+static Clock::duration MoveInterval() {
+    const int64_t ns = g_move_interval_ns.load(std::memory_order_relaxed);
+    return ns > 0 ? Clock::duration(ns) : kMoveInterval;
+}
+#else
+static Clock::duration MoveInterval() { return kMoveInterval; }
+#endif
 constexpr Clock::duration kFailureLogInterval = std::chrono::seconds(5);
 // Marks the injected events for local diagnostics (see
 // docs/spec/input-injection-seam.md 2.4): ASCII "RTSC".
@@ -270,6 +287,15 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     size_t DroppedUnsupportedForTest() const {
         return static_cast<size_t>(
             dropped_unsupported_.load(std::memory_order_relaxed));
+    }
+    // Worker-published sizes of the worker-owned move maps (see
+    // PublishMoveCountsForTest): the only race-free way for a test thread to
+    // observe them.
+    size_t PendingMoveCountForTest() const {
+        return pending_move_count_for_test_.load(std::memory_order_acquire);
+    }
+    size_t LastMoveSentCountForTest() const {
+        return last_move_sent_count_for_test_.load(std::memory_order_acquire);
     }
 #endif
 
@@ -455,18 +481,26 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             }
         }
         forget_sessions_.clear();
+        PublishMoveCountsForTest();
     }
 
-    Clock::time_point MoveDue(uint32_t session_id) const {
+    // `now` is the caller's sampling. It must be reused for the "unknown
+    // session" result instead of taking a second Clock::now(): EmitDueMoves
+    // compares the result against the `now` it already sampled, and a later
+    // timestamp would make `due <= now` false and defer a first frame by one
+    // worker pass (an unbounded spin on a nanosecond-resolution clock). The
+    // semantics stay "an unseen session is due immediately".
+    Clock::time_point MoveDue(uint32_t session_id, Clock::time_point now) const {
         const auto it = last_move_sent_.find(session_id);
-        if (it == last_move_sent_.end()) return Clock::now();
-        return it->second + kMoveInterval;
+        if (it == last_move_sent_.end()) return now;
+        return it->second + MoveInterval();
     }
 
     std::optional<Clock::time_point> NextMoveDeadline() const {
+        const Clock::time_point now = Clock::now();
         std::optional<Clock::time_point> deadline;
         for (const auto& entry : pending_moves_) {
-            const Clock::time_point due = MoveDue(entry.first);
+            const Clock::time_point due = MoveDue(entry.first, now);
             if (!deadline || due < *deadline) deadline = due;
         }
         return deadline;
@@ -475,7 +509,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     void EmitDueMoves() {
         const Clock::time_point now = Clock::now();
         for (auto it = pending_moves_.begin(); it != pending_moves_.end();) {
-            if (MoveDue(it->first) <= now) {
+            if (MoveDue(it->first, now) <= now) {
                 Emit(it->second);
                 last_move_sent_[it->first] = Clock::now();
                 it = pending_moves_.erase(it);
@@ -483,6 +517,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
                 ++it;
             }
         }
+        PublishMoveCountsForTest();
     }
 
     void FlushSessionMove(uint32_t session_id) {
@@ -491,6 +526,7 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         Emit(it->second);
         last_move_sent_[session_id] = Clock::now();
         pending_moves_.erase(it);
+        PublishMoveCountsForTest();
     }
 
     void FlushMoves() {
@@ -499,6 +535,21 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             last_move_sent_[entry.first] = Clock::now();
         }
         pending_moves_.clear();
+        PublishMoveCountsForTest();
+    }
+
+    // The two move maps above are worker-owned: the worker mutates them while
+    // the queue mutex is NOT held, so a test thread must never read them
+    // directly. The worker publishes their sizes into test-only atomics after
+    // every mutation instead -- the only race-free observation point, and it
+    // needs no locking on the (lock-free) Emit path.
+    void PublishMoveCountsForTest() {
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+        pending_move_count_for_test_.store(pending_moves_.size(),
+                                           std::memory_order_release);
+        last_move_sent_count_for_test_.store(last_move_sent_.size(),
+                                             std::memory_order_release);
+#endif
     }
 
     void Dispatch(QueuedInput item) {
@@ -627,6 +678,14 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             dropped_unsupported_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+        // Test seam: record WHAT is emitted, on the worker, right before the
+        // platform call. The hook is a plain function pointer loaded from an
+        // atomic and called with no sink lock held (D13: no I/O under a lock).
+        const DesktopInputEmitHook hook =
+            g_emit_hook.load(std::memory_order_relaxed);
+        if (hook != nullptr) hook(input);
+#endif
         const UINT sent = ::SendInput(1, &native, sizeof(INPUT));
         if (sent == 1) {
             injected_ok_.fetch_add(1, std::memory_order_relaxed);
@@ -705,6 +764,8 @@ class Win32DesktopInputSink final : public DesktopInputSink {
             last_move_sent_.clear();
         } catch (...) {
         }
+        // The worker has joined; publish the now-empty maps for the test seam.
+        PublishMoveCountsForTest();
     }
 
     std::mutex mu_;
@@ -732,6 +793,13 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     // the join.
     std::map<uint32_t, PlatformInput> pending_moves_;
     std::map<uint32_t, Clock::time_point> last_move_sent_;
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+    // Mirrors of the sizes of the two maps above, published by the worker after
+    // every mutation (PublishMoveCountsForTest). The maps themselves stay
+    // worker-owned and lock-free; the test seam reads these atomics.
+    std::atomic<size_t> pending_move_count_for_test_{0};
+    std::atomic<size_t> last_move_sent_count_for_test_{0};
+#endif
     // Guarded by mu_: Allow() runs in Inject() (session threads) and Forget()
     // runs on the worker, both while holding the queue mutex.
     InputRateLimiter rate_limiter_;
@@ -763,6 +831,17 @@ void SetDesktopInputAppendFailureHook(DesktopInputAppendFailureHook hook) {
 
 void SetDesktopInputDispatchFailureHook(DesktopInputDispatchFailureHook hook) {
     g_dispatch_failure_hook.store(hook, std::memory_order_relaxed);
+}
+
+void SetDesktopInputTestEmitHook(DesktopInputEmitHook hook) {
+    g_emit_hook.store(hook, std::memory_order_relaxed);
+}
+
+void SetDesktopInputTestMoveIntervalMs(int64_t ms) {
+    // 0 (or a negative value) restores the production constant. Store
+    // nanoseconds; MoveInterval() converts them to the clock's duration.
+    const int64_t ns = ms > 0 ? ms * 1000000 : 0;
+    g_move_interval_ns.store(ns, std::memory_order_relaxed);
 }
 
 std::unique_ptr<DesktopInputSink> MakeWin32DesktopInputSinkForTest() {
@@ -827,6 +906,18 @@ size_t DesktopInputTestDroppedUnsupported(DesktopInputSink* sink) {
     auto* win32 = AsWin32(sink);
     if (win32 == nullptr) return 0;
     return win32->DroppedUnsupportedForTest();
+}
+
+size_t DesktopInputTestPendingMoveCount(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return 0;
+    return win32->PendingMoveCountForTest();
+}
+
+size_t DesktopInputTestLastMoveSentCount(DesktopInputSink* sink) {
+    auto* win32 = AsWin32(sink);
+    if (win32 == nullptr) return 0;
+    return win32->LastMoveSentCountForTest();
 }
 
 #else

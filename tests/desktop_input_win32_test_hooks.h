@@ -71,6 +71,34 @@ bool DesktopInputTestWorkerWaiting(DesktopInputSink* sink);
 // InputStats::dropped_unmapped and never additionally here.
 size_t DesktopInputTestDroppedUnsupported(DesktopInputSink* sink);
 
+// Every platform action actually emitted (BuildNative succeeded), recorded on
+// the worker thread. Lets a test assert WHAT was sent and in which order
+// without depending on wall-clock timing or a real cursor.
+//
+// Both this hook and SetDesktopInputTestMoveIntervalMs are PROCESS-GLOBAL, not
+// per sink: every sink in the process shares them. The suite relies on the
+// EmitHooksForTest guard (one live sink per case, restored in its destructor)
+// rather than on any isolation. A test that needs two concurrently live sinks
+// with different expectations would see them interleave in one recorder.
+using DesktopInputEmitHook = void (*)(const PlatformInput& input);
+void SetDesktopInputTestEmitHook(DesktopInputEmitHook hook);
+
+// Overrides the 4 ms move interval for every sink in the process (0 restores
+// the production default). Tests use a long interval so "pending" is
+// deterministic, never the real 4 ms.
+void SetDesktopInputTestMoveIntervalMs(int64_t ms);
+
+// Sizes of the worker-owned move maps, published by the worker after every
+// mutation. acquire/release gives a race-free read, but it is EVENTUAL
+// consistency only: a size observed here proves that store happened-before
+// this load, NOT that the worker will emit nothing afterwards. A queued item
+// can still be dispatched after the observer's read, so a test must poll with
+// WaitUntil instead of treating a single observation as a barrier. The one
+// point that does have a full happens-before edge is the publish after the
+// worker is joined in Shutdown().
+size_t DesktopInputTestPendingMoveCount(DesktopInputSink* sink);
+size_t DesktopInputTestLastMoveSentCount(DesktopInputSink* sink);
+
 }  // namespace rtsc::server
 
 #endif  // RTSC_DESKTOP_INPUT_TESTING

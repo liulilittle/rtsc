@@ -6,6 +6,7 @@
 // come from docs/spec/input-injection-seam.md (P-1..P-8) and
 // docs/spec/input-injection-evidence.md (1.3-1.7).
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -2189,3 +2190,299 @@ RTSC_TEST(desktop_input_kind_token_covers_every_kind) {
     CHECK(std::string(InputEventKindToken(InputEvent::Kind::kMouseRel)) ==
           "relative-move");
 }
+
+#if defined(RTSC_DESKTOP_INPUT_TESTING)
+// Move coalescing and throttling live entirely on the sink's worker thread and
+// are otherwise invisible: a move that is coalesced, flushed, throttled or
+// dropped simply never reaches SendInput, so a broken implementation stays
+// green. These cases record every platform action the worker actually emits
+// (via the emit hook, after BuildNative succeeded) and assert WHAT is emitted
+// and in which order, with the 4 ms production interval overridden so
+// "pending" never depends on wall-clock timing.
+namespace {
+
+constexpr size_t kEmitLogCapacity = 64;
+PlatformInput g_emit_log[kEmitLogCapacity];
+std::atomic<size_t> g_emit_log_count{0};
+
+void RecordEmit(const PlatformInput& input) {
+    const size_t index = g_emit_log_count.load(std::memory_order_relaxed);
+    if (index >= kEmitLogCapacity) return;
+    g_emit_log[index] = input;
+    g_emit_log_count.store(index + 1, std::memory_order_release);
+}
+
+size_t EmitLogCount() {
+    return g_emit_log_count.load(std::memory_order_acquire);
+}
+
+std::vector<PlatformInput> EmitLogSnapshot() {
+    const size_t count = EmitLogCount();
+    const size_t bounded = count < kEmitLogCapacity ? count : kEmitLogCapacity;
+    return std::vector<PlatformInput>(g_emit_log, g_emit_log + bounded);
+}
+
+void ResetEmitLog() { g_emit_log_count.store(0, std::memory_order_release); }
+
+InputEvent MouseMoveEvent(uint16_t x, uint16_t y) {
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kMouse;
+    ev.is_move = true;
+    ev.x = x;
+    ev.y = y;
+    return ev;
+}
+
+InputEvent LeftButtonDownEvent() {
+    InputEvent ev;
+    ev.kind = InputEvent::Kind::kMouse;
+    ev.is_move = false;
+    ev.button = 1;
+    ev.button_down = true;
+    return ev;
+}
+
+// The platform action the mapping layer produces for one wire move in the
+// geometry every case installs. Used only to identify WHICH move was emitted;
+// the mapping itself is pinned by its own table.
+PlatformInput MappedMove(uint16_t x, uint16_t y) {
+    const std::vector<PlatformInput> out =
+        TranslateInput(MouseMoveEvent(x, y), PhysicalGeometry(1280, 1024));
+    CHECK_EQ(out.size(), static_cast<size_t>(1));
+    if (out.size() != 1) return PlatformInput{};
+    return out[0];
+}
+
+bool IsMove(const PlatformInput& input, const PlatformInput& expected) {
+    return input.kind == PlatformInput::Kind::kMouseMove &&
+           input.x == expected.x && input.y == expected.y;
+}
+
+bool IsLeftButtonDown(const PlatformInput& input) {
+    return input.kind == PlatformInput::Kind::kMouseButton &&
+           input.button == 1 && input.button_down;
+}
+
+// Installs the process-global recorder/hooks for one case and restores the
+// production interval afterwards. There is exactly one sink per case, and the
+// sink is destroyed before this guard (reverse declaration order), so the
+// worker has joined by the time the hooks are cleared.
+//
+// `live` makes that convention ENFORCED rather than assumed: the emit hook and
+// the move-interval override are process-global (test_hooks.h documents this),
+// so a second concurrently live recorder would silently mix two cases' events
+// into one log. Constructing one while another is alive now fails the suite
+// instead of producing an order-dependent result. The counter is a plain int
+// because the suite runs every case on one thread.
+int g_live_emit_hook_guards = 0;
+
+struct EmitHooksForTest {
+    EmitHooksForTest() {
+        ++g_live_emit_hook_guards;
+        CHECK_EQ(g_live_emit_hook_guards, 1);
+        ResetEmitLog();
+        rtsc::server::SetDesktopInputTestEmitHook(&RecordEmit);
+    }
+    ~EmitHooksForTest() {
+        rtsc::server::SetDesktopInputTestEmitHook(nullptr);
+        rtsc::server::SetDesktopInputTestMoveIntervalMs(0);
+        --g_live_emit_hook_guards;
+    }
+    EmitHooksForTest(const EmitHooksForTest&) = delete;
+    EmitHooksForTest& operator=(const EmitHooksForTest&) = delete;
+};
+
+}  // namespace
+
+RTSC_TEST(desktop_input_move_coalesces_to_latest_position) {
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 1;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const PlatformInput first = MappedMove(1, 1);
+    const PlatformInput second = MappedMove(2, 2);
+    const PlatformInput third = MappedMove(3, 3);
+    CHECK(!IsMove(first, second));
+    CHECK(!IsMove(second, third));
+
+    sink->Inject(session, MouseMoveEvent(1, 1));
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }));
+    const std::vector<PlatformInput> after_first = EmitLogSnapshot();
+    CHECK(!after_first.empty() && IsMove(after_first.front(), first));
+
+    // Wait until the second move reached the worker: under the coalescing
+    // implementation it is now the pending move; a per-move Dispatch emits it.
+    // Without this barrier a fast queue-side coalescing could hide the
+    // per-move mutation (the queue merges consecutive moves before Dispatch).
+    sink->Inject(session, MouseMoveEvent(2, 2));
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 1 ||
+               EmitLogCount() == 2;
+    }));
+
+    sink->Inject(session, MouseMoveEvent(3, 3));
+    sink->Inject(session, LeftButtonDownEvent());
+    CHECK(WaitUntil([]() {
+        const std::vector<PlatformInput> log = EmitLogSnapshot();
+        return !log.empty() && IsLeftButtonDown(log.back());
+    }));
+
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+    bool saw_second = false;
+    for (const PlatformInput& action : log) {
+        if (IsMove(action, second)) saw_second = true;
+    }
+    // (2,2) was replaced by (3,3) before either became due; the button then
+    // flushes the latest position so the click lands where the client meant.
+    CHECK(!saw_second);
+    CHECK(log.size() >= 2u);
+    if (log.size() >= 2) {
+        CHECK(IsMove(log[log.size() - 2], third));
+        CHECK(IsLeftButtonDown(log.back()));
+    }
+}
+
+RTSC_TEST(desktop_input_click_flushes_pending_move_first) {
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 3;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const PlatformInput anchor = MappedMove(100, 100);
+    const PlatformInput pending = MappedMove(4, 4);
+
+    // Establish last_move_sent_[session] (and an empty pending slot) with a
+    // move that is emitted immediately because the session is still unknown.
+    sink->Inject(session, MouseMoveEvent(100, 100));
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }));
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 0;
+    }));
+    const std::vector<PlatformInput> after_anchor = EmitLogSnapshot();
+    CHECK(!after_anchor.empty() && IsMove(after_anchor.front(), anchor));
+    const size_t before = EmitLogCount();
+
+    // The 10 s interval cannot have elapsed: this move must stay pending.
+    sink->Inject(session, MouseMoveEvent(4, 4));
+    CHECK(WaitUntil([&sink, before]() {
+        return rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 1 ||
+               EmitLogCount() > before;
+    }));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingMoveCount(sink.get()),
+             static_cast<size_t>(1));
+    CHECK_EQ(EmitLogCount(), before);
+
+    sink->Inject(session, LeftButtonDownEvent());
+    CHECK(WaitUntil([]() {
+        const std::vector<PlatformInput> log = EmitLogSnapshot();
+        return !log.empty() && IsLeftButtonDown(log.back());
+    }));
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+    CHECK_EQ(log.size(), before + 2);
+    if (log.size() >= 2) {
+        CHECK(IsMove(log[log.size() - 2], pending));
+        CHECK(IsLeftButtonDown(log.back()));
+    }
+}
+
+RTSC_TEST(desktop_input_released_session_starts_unthrottled) {
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 7;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const PlatformInput freed = MappedMove(6, 6);
+
+    sink->Inject(session, MouseMoveEvent(5, 5));
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }));
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestLastMoveSentCount(sink.get()) == 1;
+    }));
+
+    sink->ReleaseSession(session);
+    CHECK(WaitUntil([&sink]() {
+        return rtsc::server::DesktopInputTestLastMoveSentCount(sink.get()) == 0 &&
+               rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 0 &&
+               rtsc::server::DesktopInputTestPendingForgetCount(sink.get()) == 0;
+    }));
+
+    // ReleaseSession erased the session state, so a reused id needs a fresh
+    // trusted geometry before a move can be mapped at all.
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const size_t before = EmitLogCount();
+    sink->Inject(session, MouseMoveEvent(6, 6));
+    // The old last_move_sent_[7] must be gone: with the 10 s interval still
+    // in force a stale timestamp would throttle this move for 10 s. The wait
+    // is 2 s, i.e. far below the interval, so a kept timestamp is red.
+    CHECK(WaitUntil([before]() { return EmitLogCount() == before + 1; }, 2000));
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+    CHECK(!log.empty() && IsMove(log.back(), freed));
+}
+
+RTSC_TEST(desktop_input_first_move_is_due_immediately) {
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(10000);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 9;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const PlatformInput move = MappedMove(7, 7);
+
+    sink->Inject(session, MouseMoveEvent(7, 7));
+    const bool emitted = WaitUntil([]() { return EmitLogCount() == 1; }, 2000);
+    CHECK(emitted);
+    CHECK_EQ(EmitLogCount(), static_cast<size_t>(1));
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingMoveCount(sink.get()),
+             static_cast<size_t>(0));
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+    CHECK(!log.empty() && IsMove(log.front(), move));
+}
+
+RTSC_TEST(desktop_input_move_interval_gates_next_move) {
+    EmitHooksForTest hooks;
+    rtsc::server::SetDesktopInputTestMoveIntervalMs(300);
+    std::unique_ptr<rtsc::server::DesktopInputSink> sink =
+        rtsc::server::MakeWin32DesktopInputSinkForTest();
+    CHECK(sink != nullptr);
+    if (!sink) return;
+    const uint32_t session = 5;
+    sink->SetGeometry(session, PhysicalGeometry(1280, 1024));
+    const PlatformInput second = MappedMove(20, 20);
+
+    sink->Inject(session, MouseMoveEvent(10, 10));
+    CHECK(WaitUntil([]() { return EmitLogCount() == 1; }, 2000));
+
+    sink->Inject(session, MouseMoveEvent(20, 20));
+    // The gate: after one emission the next move must WAIT for the interval.
+    // A clock that always reports "due" emits it immediately (pending stays 0),
+    // which is exactly what the mutation removes.
+    const bool gated = WaitUntil([&sink]() {
+        return EmitLogCount() == 1 &&
+               rtsc::server::DesktopInputTestPendingMoveCount(sink.get()) == 1;
+    }, 2000);
+    CHECK(gated);
+    CHECK_EQ(rtsc::server::DesktopInputTestPendingMoveCount(sink.get()),
+             static_cast<size_t>(1));
+    CHECK_EQ(EmitLogCount(), static_cast<size_t>(1));
+
+    // The timer path must eventually emit it (300 ms interval, 5 s budget).
+    CHECK(WaitUntil([]() { return EmitLogCount() == 2; }, 5000));
+    CHECK_EQ(EmitLogCount(), static_cast<size_t>(2));
+    const std::vector<PlatformInput> log = EmitLogSnapshot();
+    CHECK(log.size() == 2u && IsMove(log.back(), second));
+}
+
+#endif  // RTSC_DESKTOP_INPUT_TESTING
+
