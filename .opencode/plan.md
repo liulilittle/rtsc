@@ -1526,3 +1526,17 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 4. **14 形状矩阵**：plain/export = 正常；其余 12 种全部拒绝。
 5. **X 的 §5**：`extract_fn` helper 采纳为方法学规则（写入 memory），不加进 gate。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+
+### 批 72（`90d54b6`）—— 锚点说法更正 + 小写 RUN 回归探针 + 未设置变量拒绝
+
+1. **X 的终审**：我注释"锚点能闭合 [Dd] 缺口"错了。真实函数体四象限实测：
+   锚点+[Dd] 仍接受 `Drain`，且新假红两条（inline-ref / trailing-text）。
+   注释已重写为"锚点不闭合它 + 唯一真修法是补探针 + 类变体无穷"。
+2. **Y2 的新发现**：`[A-Z]+` 回退能让 11 探针全绿（小写 RUN 无探针）。
+   已加 `[ Run  ]` 的 expect_accept，回归现在 caught。
+3. **我自己发现**：未设置变量 `flags=""` 无守卫（非 fail-open，但拼错名会静默）。
+   已加 `declare -p` 存在性检查。
+4. **X 的 `-in`**：X 说诊断消息错；Y2 实测不可构造。仍把 `*n*` 移前（只影响消息）。
+5. **Y2 的 Q4**：`-n` 与 `-a/-A/-i` 互斥但与 `-r`/`-x` 可组合（`-nr`→`*r*`、`-nx`→`*n*`）。
+6. **收尾**：X 与 Y2 各自独立同意。下一步转真机验证清单（仍 UNVERIFIED）。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。

@@ -1514,3 +1514,41 @@ nameref三种）= 1/1 全部拒绝。
 Linux gate PASS 67/67；Win Release 69/69(74.55s)；Win Debug 69/69(86s)；MUT- 0。
 ### 教训（例97/98）
 审计构造的输入必须复用真实构造函数；按 flag 串判断变量形态的守卫对 nameref 一律失明。
+
+## 第910轮：批72 —— 锚点说法更正 + 小写 RUN 回归探针 + 未设置变量拒绝（`90d54b6`）
+### X 终审：我注释"锚点能闭合 [Dd]"是错的
+真实函数体四象限实测：
+```
+log              real    [Dd]    anchor+drain  anchor+[Dd]
+canonical        ACCEPT  ACCEPT  ACCEPT        ACCEPT
+capitalized      REJECT  ACCEPT  REJECT        ACCEPT   <- 锚点闭合不了 [Dd]
+inline-ref       ACCEPT  ACCEPT  REJECT        REJECT   <- 新假红
+trailing-text    ACCEPT  ACCEPT  REJECT        REJECT   <- 新假红
+```
+注释已重写："A full-line anchor does NOT close it... it newly REJECTS two honest
+shapes... the only real fix is another probe, and the class variants are unbounded"。
+### Y2 的新发现：小写 RUN 回归无探针覆盖（真盲点）
+把 `[A-Za-z]+` 回退成 `[A-Z]+`，11 探针全绿。已加 `[ Run  ]` 的 expect_accept，
+回归现在 caught。
+### 我自己发现：未设置变量无守卫
+`declare -p` 对未设置变量返回空 ⇒ flags="" ⇒ 五分支全不匹配。
+非 fail-open（printf -v 创建普通标量），但拼错变量名会静默测试新变量。
+已加 `declare -p` 存在性检查。
+### X 的 `-in` 诊断消息
+X 说 `-in` 是 nameref-primary、当前报 "integer" 错。Y2 实测 `-in` 不可构造
+（我复现：`declare -in V=R` 报 `V: not found` 且变量没创建）。
+仍把 `*n*` 移到 `*i*` 前（对 `-nx`/`-nr` 归属不变，对不可构造的 `-in` 不产生错误消息）。
+### Y2 的 Q4：X 的说法部分正确
+`-n` 与 `-a/-A/-i` 互斥，但与 `-r`、`-x` **可组合**（`-nr` 落 `*r*`、`-nx` 落 `*n*`）。
+### Y2 的 Q2：无等价探针
+单删一条探针 × 20 变异矩阵证明每条探针都有唯一防线。P03/P04 独立（OPEN_ON_FAIL
+只让 P04 红）。
+### 收尾
+X 与 Y2 各自独立给出"可以收尾"：无该拒却受输入（22 场景×2 各 0 个）、
+无等价探针、14 形状归属正确、剩余只有"变体无穷"类盲区（已登记非 fail-open）。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(84.96s)；Win Debug 69/69(100s)；MUT- 0。
+Rule 16：9 变体，8 变异全部断言已应用，0 失败。
+### 教训（例99/100/101）
+锚点闭合一个口子会开两个新口子；修复一类输入必须补该输入的探针；
+枚举变量形态守卫时"未设置"必须列出。
