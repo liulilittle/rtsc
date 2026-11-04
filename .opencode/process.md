@@ -1329,3 +1329,25 @@ healthy 通过；缺 `want=` / `calls=0` / 数字开头畸形 / `calls=999` 全�
 教训：**验证脚本必须先跑一个已知答案的场景自检**。
 ### 验证
 Linux gate PASS + FAILED_COUNT=0 + 67/67 + 三标记；bash -n OK；MUT- 0；gate LF 438。
+## 第903轮：批65 —— 更正分支守护归属 + gate 提取器自检（`0f4fcfa`）
+### X 的两处更正（我独立复现，X 对、我错）
+分别只把一个分支的行循环跑两遍：
+| 变异 | 0.5x 4K | 0.8x | 0.4x 4K |
+|---|---|---|---|
+| uniform ×2 | 13.92→**24.89 (1.79x)** | 14.70（无） | 29.44（无） |
+| generic ×2 | 14.51（无） | 20.50→**39.18 (1.91x)** | 40.57→**75.35 (1.86x)** |
+⇒ 0.5x 4K 护 uniform，0.8x 护 generic（判别力最强），0.4x 4K 是非整数倍率的存活性守护。
+批63 注释"精细守护交给 0.5x 4K"是错的，已改。
+### gate 提取器自检（采纳 X 建议）
+`selftest_p0_block_has_marker()`：用内联已知健康日志先跑一遍，失败即
+`extractor itself is broken`。Rule 16：重新注入"多一个空格的正则"与 `-v case=`
+两个历史错误，自检均 REJECTED（后者报 gawk builtin fatal）。
+### X 的 Q2 G 场景
+X 用 gate 原文函数实测 G = rejected（正确）；我上报的表写 accepted，**是我的表错了**
+（跑的是更早的整行比较版本）。G 不改。
+### 验证
+Linux gate PASS 67/67；RelWithDebInfo 60/7355；Windows Release 69/69(76.98s)；
+Windows Debug verify.ps1 69/69(134s)；MUT- 0；gate LF 461；test_view.cpp 1577/1577。
+### 教训（discover 例 83）
+多路径函数必须按路径分别变异；写"X 守护 Y"必须证明"Y 坏时 X 红"；
+不能因免疫某变异就删用例（形状覆盖另算）；我的表与审计冲突时默认我错。

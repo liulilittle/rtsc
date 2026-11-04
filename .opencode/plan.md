@@ -1455,3 +1455,11 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 改为 `NF != 2 || 非纯数字 || calls<want` 三者任一即 fail。五场景 5/5 符合。
 本轮三次验证脚本自身失误（片段不完整/引号二次解析/if 语义写反）→ discover 例 82。
 验证：gate PASS 67/67 + 三标记；MUT- 0。
+### 批 65（`0f4fcfa`）—— 更正分支守护归属 + gate 提取器自检
+
+1. **X 纠正我**：0.5x 4K 护 uniform 快路径（13.92→24.89），0.8x 护 generic（20.50→39.18
+   判别力最强），0.4x 4K 是非整数倍率的存活性守护。批63 注释归属写反，已改。
+2. **gate 提取器自检**（采纳 X 建议）：`selftest_p0_block_has_marker()` 用内联健康日志
+   先跑；重新注入"多一空格正则"与 `-v case=` 两个历史错误，自检均 REJECTED。
+3. **X 的 G 场景**：X 实测 rejected（正确），我上报表写 accepted —— 我的表错了，G 不改。
+验证：gate PASS 67/67；RelWithDebInfo 60/7355；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。
