@@ -1501,3 +1501,16 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
    ����ͬ�ȱ�׼�ܾ� `*a*|*A*`������ declare ���ʵ�⡣
 4. **marker ��������** `<=12` ֱ�� return 1��
 ��֤��Linux gate PASS 67/67��Win Release 69/69��Win Debug 69/69��MUT- 0��
+### 批 70（`672b684`）—— 更正数组注释 + 整数变量拒绝 + 探针独立性
+
+1. **X 更正我的数组机制解释**：`printf -v V` 写 `[0]`、`$V` 读 `[0]`，读写同址，
+   数据路径完好（实测 `wc -l < "${V}"` = 3）。我批69 的 "vacuous pass" 是错的，
+   注释已重写。仍拒绝数组，理由改为"数据路径显式可见"。
+2. **`declare -i`** 原已 fail-closed 但报错误导；加显式 `*i*` 分支，四种组合实测 rc=1。
+3. **探针独立性**（X 的 Q3）：实测 `ONLY_FAIL_CLOSE_BROKEN` 使 P04 绿而 P03 红；
+   `CLASS_REGEX_[Dd]` 使 P10b 绿而 P09 红 ⇒ 两组探针不等价，全保留。
+   更正 X 一处：P10（交替大小写）也抓不到 `[Dd]`，登记为已知盲区（非 fail-open）。
+4. **2/3 维持**（X：改 1/2 是同轴移动不增维度）。
+5. **我自己的失误**：`rule16_b68.py` 的变异替换串随源码演进而失效，输出 "MISSED"
+   实为"变异未应用"；换 `rule16_final.py` 后 11/11 caught。记入 discover 例 95。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。

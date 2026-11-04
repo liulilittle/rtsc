@@ -1451,3 +1451,38 @@ Linux gate PASS 67/67；Win Release 69/69(75.43s)；Win Debug 69/69(83s)；MUT- 
 ### 教训（例92/93）
 "放宽"不等于 fail-open：要证明 fail-open 必须给出一个输入使它 accept 而正确实现 reject；
 截断探针有四个方向（头/尾/中/大小写），只截尾部只能证明"不是只匹配前半段"。
+
+## 第908轮：批70 —— 更正数组注释事实错误 + 整数变量拒绝 + 探针独立性（`672b684`）
+### X 更正我的数组判定（X 对，我和 X 上一轮都错）
+我批69 注释写 "printf -v writes element [0] and leaves $logvar empty, so every probe
+runs against an empty path... vacuous-pass"。实测：
+```
+declare -A V=([k]=orig); printf -v V '%s' "/tmp/probe"
+  scalar=[/tmp/probe]  elem0=[/tmp/probe]  wc -l < "${V}" -> 3
+```
+**读写同址到 [0]，数据路径完好，自检完全正常。** 注释已整体重写；
+仍拒绝数组，但理由改成"让数据路径显式可见，不依赖标量/元素别名"。
+唯一真实副作用：restore 在关联数组里新建空 [0]（gate 无影响）。
+### X 的 `declare -i`
+原行为已 fail-closed（printf -v 当算术表达式报错 → reset 的 || return 1），
+但报错文本误导。已加显式 `*i*` 分支，四种组合实测 rc=1 且报错正确。
+### X 的探针独立性（我实测证实两条）
+```
+variant                  P01  P02  P03  P04  P09  P10  P10b
+ONLY_FAIL_CLOSE_BROKEN   acc  rej  rej  acc  rej  rej  rej   <- P04 绿，P03 红
+CLASS_REGEX_[Dd]         acc  rej  rej  rej  rej  rej  acc   <- P10b 绿，P09 红
+```
+⇒ P03/P04 独立；P09/P10 也不等价。
+**但更正 X 一处**：X 说 "P10 能抓 [Dd]"，实测 P10（`DrAiN`）也抓不到 ——
+`[Dd]rain` 只接受 `Drain`/`drain`。登记为已知盲区（非 fail-open）。
+### X 的 2/3 vs 1/2
+维持 2/3：两个探针是互补方向，改 1/2 是同轴移动不增维度。
+### 我自己的失误：旧变异脚本静默失效
+`rule16_b68.py` 的 NO_CLOSURE/BAD_REGEX 替换串针对旧版 `tag == "RUN"`，
+源码改成 `tolower` 后替换不匹配 ⇒ 变异根本没应用，但输出显示 "MISSED"。
+换 `rule16_final.py` 后 11/11 全 caught。记入 discover 例 95。
+### 验证
+Linux gate PASS 67/67；Win Release 69/69(78.21s)；Win Debug 69/69(95s)；MUT- 0。
+### 教训（例94/95/96）
+注释里的"为什么"必须与"做什么"同等验证；变异测试第一步是断言变异已应用；
+"接受更多拼写"不等于 fail-open（要给出"该拒却受"的输入）。
