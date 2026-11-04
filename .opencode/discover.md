@@ -2051,3 +2051,115 @@ wrapper = b'\n'.join(lines)
 任何按内容定位的编辑，都必须
 1. 断言指纹在**目标范围内**唯一（不是全文件唯一那么简单）；
 2. 定位后回读校验（`grep -n` 确认插入位置在预期行号区间）。
+### 例 111：现有测试对"跨线程观测面缺失"完全免疫（F-6 移动合并）
+`desktop_input_win32.cpp` 的移动合并/节流逻辑有 4 段关键判断，**任何一段改坏，70 个用例全绿**：
+| 变异 | 行 | 现有套件 | 独立探针 |
+|---|---|---|---|
+| 合并改逐条 Emit | `:522` | 70/13934 全绿 | P2/P8 红 |
+| 去掉 `+kMoveInterval` | `:463` | 全绿 | P2 红 |
+| 删点击前 `FlushSessionMove` | `:529` | 全绿 | P3 红 |
+| 删 `last_move_sent_.erase` | `:440` | 全绿 | P6 红 |
+
+根因：**套件唯一的跨线程信号是 `Stats().injected`**，每个成功动作只 +1（`:631-633`），
+不含坐标、顺序、时间。`pending_moves_`/`last_move_sent_` 是 worker 私有的（`:729-734`），
+钩子头（`tests/desktop_input_win32_test_hooks.h`）也没有 move 观测入口。
+于是"发什么/什么顺序/何时发"全都不在断言面内 ⇒ 变异只改变内容不改变计数。
+
+**规则**：只要被测逻辑的输出是"动作序列"而不是"计数"，就必须有能观测**动作内容与顺序**的 seam；
+纯计数器只能证明"发生了 N 次"，不能证明"发生的是正确的那 N 次"。
+
+### 例 112：MoveDue 二次采样时钟（真实缺陷，平台相关表现）
+```cpp
+Clock::time_point MoveDue(uint32_t id) const {
+    auto it = last_move_sent_.find(id);
+    if (it == last_move_sent_.end()) return Clock::now();   // 第二次采样
+    return it->second + kMoveInterval;
+}
+void EmitDueMoves() {
+    const Clock::time_point now = Clock::now();             // 第一次采样
+    ... if (MoveDue(id) <= now) { Emit(...); }              // 后采 <= 先采？
+}
+```
+末知 session 时 `MoveDue` 采的时间**晚于** `now`，所以 `<= now` 恒不成立，本轮不发，
+靠下一轮重试。主代理在 Windows 实测：`avg_passes=1.2355 max=2 stuck=0`（2000 会话），
+`consecutive_samples_equal=1611/2000`（该时钟粒度粗，两次采样常相等，常一次就过）。
+同一代码写在 1ns 分辨率时钟上则**无限自旋**（Linux 复现 `stuck=200`）。
+审计 A 的探针报 `avg=3.27 max=13`（其会话数与节奏不同）。
+
+**规则**：`MoveDue` 这种"纯查询"函数**禁止自己取时钟**；时间点必须由调用方传入，
+一次逻辑操作只采样一次。这样既消除二次采样，又让测试可以注入确定性时间。
+
+### 例 113：ReleaseSession 后仍可能发出一帧移动（跨事件窗口，行为缺陷非 UAF）
+`ReleaseSession`（`:196-215`）只把 id 放进 `forget_sessions_` 并 notify；
+真正清 `pending_moves_`/`last_move_sent_` 在**下一轮** `WorkerMain` 顶部的
+`ForgetReleasedSessionsLocked()`（`:437-440`）。而 `:415 EmitDueMoves()` 在 wait 返回后、
+下一轮 Forget 之前执行；`Dispatch` 的非 move 分支 `:529 FlushSessionMove` 也不查 forget。
+⇒ 已 pending 且到期的 move 会在 `ReleaseSession` 返回**之后**被发出，
+违反 `:429-435` 注释的 "cannot move the pointer after the release"。
+
+这是**行为缺陷**，不是内存安全（`Emit` 只碰 sink 自身成员；宿主析构前必走 `Shutdown`
+`:662-700` join worker）。确定性复现需要 worker gate（现有 `SetDesktopInputDispatchFailureHook`
+只能在 Dispatch 顶部阻塞，恰好可用作闸门）。
+
+**规则**：向 worker 投递"遗忘请求"后，**同一轮**必须先把该 session 的所有挂起状态清掉再发任何动作；
+把清理放在循环顶部等于给出一个"清理前窗口"，任何在该窗口内到达的动作都不受约束。
+### 例 114：变异必须保证"编译通过"，否则不是测试红证
+批77 的 M2 变异本想删掉移动节流：
+```cpp
+return it->second + MoveInterval();   // 原
+return it->second;                    // M2 第一版
+```
+结果 **构建失败**：`MoveInterval()` 从此无人调用，`/W4 /WX` 下的 C4505
+（"已删除具有内部链接的未引用函数"）被当成错误。跑出来的"失败"是编译错误，
+不是测试断言红——**这个变异什么也没证明**。
+
+改成 `return it->second + MoveInterval() * 0;` 后编译通过，3 个用例真正变红。
+
+**规则**：变异验证必须分两步判定——先确认 `BUILD_EXIT==0`，再看测试红。
+构建失败的变异体一律作废重设计。反过来，`/WX` 的 C4505 顺带证明了
+"删掉节流逻辑"这类改坏确实会让整个函数变成死代码，是有效的静态信号。
+
+### 例 115：变异矩阵不能累积应用
+第一轮我写了循环，在同一个工作树上依次套 M1→M2→M3→M4→M5，
+每轮只做 `--build` + 跑测试。结果**五个变异全部报同样的 4 failing**。
+
+原因有两层：
+1. M2 那轮构建失败，跑的是 M1 留下的旧二进制；
+2. 更根本的是每个变异都叠加在上一个变异之上，M5 的失败其实是 M1..M5 的并集。
+
+正确做法（第二轮）：**每个变异前先从干净基线恢复，断言替换次数 == 1，
+再编译、再跑**。改完后 5 个变异给出 5 组不同的红名单，
+且 M4 只红了 1 个用例——这才说明每条用例的针对性是真的。
+
+**规则**：变异之间必须完全独立。恢复动作要**验证文件确实回到基线**
+（hash 或 `grep` 反向确认变异串 0 命中），不能只靠 `Copy-Item` 成功。
+
+### 例 116：release/acquire 只给"最终一致"，不能当屏障用
+批77 用 release 原子发布 worker 私有的两个 map 的 size，测试侧 acquire 读。
+表面上这是标准的 acquire/release 配对，但审计 B 指出：**它只证明
+"那次 store happens-before 这次 load"，不证明"读完之后 worker 不会再 emit"**。
+
+原因是 worker 的序列是：
+```
+Emit(...) → PublishMoveCountsForTest()      // 同一个 Dispatch 内
+... 队列里可能还有下一个 item → 又 Emit ...
+```
+于是"观察到 pending==0"之后仍可能再来一次 Emit。唯一的完整 happens-before
+是 `Shutdown()` 里 `worker_.join()` 之后那次发布。
+
+**规则**：把"最终一致"的观测写成最终一致——测试必须用 `WaitUntil` 轮询，
+不能把单次观测当同步屏障。文档里必须写清楚这个降级，否则下一个读者会误以为
+acquire 已经提供了顺序保证。（已写进 `tests/desktop_input_win32_test_hooks.h`。）
+
+### 例 117：仅靠注释约定的"进程级测试钩子"要变成硬断言
+`g_emit_hook` 和 `g_move_interval_ns` 是进程级全局，而"每个用例只创建一个 sink"
+只是注释里的约定。审计 B 指出：两个 sink 同时存活就会把事件混进同一个日志。
+修法不是重构（代价大），而是把约定变成断言：
+```cpp
+int g_live_emit_hook_guards = 0;
+EmitHooksForTest() { ++g_live_emit_hook_guards; CHECK_EQ(g_live_emit_hook_guards, 1); ... }
+~EmitHooksForTest() { ...; --g_live_emit_hook_guards; }
+```
+变异验证：把 `1` 改成 `99` → 5 个用例各红 1 次。
+**规则**：凡是"约定俗成"的不变量，只要违反会导致难以诊断的错误结果，
+就必须写成断言。注释只对遵守注释的人有效。

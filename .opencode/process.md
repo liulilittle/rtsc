@@ -1680,3 +1680,61 @@ git status 只有 plan.md；`git diff --numstat` 27+/9-；Linux gate PASS 67/67 
 无代码改动，未重复跑 Windows ctest（批75 已 69/69）。
 ### 剩余（均需外部条件）
 plan P1（原生 ext4）UNVERIFIED（WSL load 146）；真机 U1/U2/U4-U9 需真实 Windows 桌面。
+
+## 第915轮：批77 —— F-6 移动合并/节流双审计 + 执行（进行中）
+### 审计 A（F-6，只读 + 探针红证）
+四条盲区，**改坏任一现有 70 用例全绿**：
+- `:522` 合并改逐条 Emit → 套件 0 failing；探针 P2/P8 红（`emits=10`、`before=2 after=2`）
+- `:463` 去 `+kMoveInterval` → 套件绿；探针 P2 红
+- `:529` 删 `FlushSessionMove` → 套件绿；探针 P3 红（`press_index=1 pending_before_press=0`）
+- `:440` 删 `last_move_sent_.erase` → 套件绿；探针 P6 红（复用 id 300ms 内 0 次）
+根因：套件唯一跨线程观测是 `Stats().injected`（每动作 +1，无坐标/顺序/时间）。
+**新发现实现缺陷**：`MoveDue :462` 二次采样 `Clock::now()`，`EmitDueMoves :476` 已采 now 供 `:478` 比较。
+主代理独立复核（Windows，2000 会话）：`avg_passes=1.2355 max=2 stuck=0`，`consecutive_samples_equal=1611/2000`
+→ 时钟粒度粗时常一次过；同结构在 1ns 时钟上无限自旋。A 探针报 `avg=3.27 max=13`（会话数/节奏不同）。
+### 审计 B（F-7 / GAP，独立复核）
+- `SetInputSink` 裸写 + 无锁；在 Run/ServeOne 期间调用=**data race→UB**，注释却说"只是不被采纳"→ 注释误导。零测试覆盖 Start 后替换。
+- `was_share_data` 恒 false 只有 `test_server.cpp:2395` 一条回归网；`ParseSlowPathInput` 的 n<4 与短 body 两分支**无仓库测试**。
+- **F-6×F-7 交叉**：`ReleaseSession` 仅登记 forget（`:201`），清 pending 在下一轮 `:437-440`；
+  而 `:415 EmitDueMoves` 在 wait 返回后、`Dispatch :529 FlushSessionMove` 不查 forget
+  → ReleaseSession 返回后仍可能发一帧移动，违反 `:429-435` 注释承诺。**行为缺陷，非 UAF**（宿主析构前必走 Shutdown join）。
+### 主代理复核
+- `MoveDue` 二次采样属实（自写探针，见上）。
+- `:529` 确实不查 forget（`sed -n '526-531p'`）。
+- `Stop()` 只等 registry live==0（`:2684-2696`），不覆盖 ServeOne 会话 → 批78 评估。
+### 入库
+discover 例111（观测面缺失）、例112（二次采样时钟）、例113（ReleaseSession 窗口）。
+### 执行
+执行 AI `ses_e58ce0a48ffepr6g6ytw5PPmc7` 派发；当前 TDD 红证阶段
+（`test_desktop_input.cpp:2272+ error C2039/C3861`，钩子未加，符合预期）。
+已提示两个风险：`pending_moves_/last_move_sent_` 是 worker 独占，钩子直读=data race；
+`Emit` 里调钩子不得持锁（D13）。
+### 批78 待办
+SetInputSink 注释/锁；`was_share_data` 计数分支测试；ReleaseSession 窗口 gate 测试；Stop 覆盖 ServeOne。
+
+## 第916轮：批77 提交（`21130cb`）—— F-6 补测试 + MoveDue 二次采样修复
+### 交付
+`desktop_input_win32.cpp` +96 / `desktop_input_win32_test_hooks.h` +28 / `test_desktop_input.cpp` +292。
+5 个新用例覆盖 4 条盲区；`MoveDue(id, now)` 消除二次采样；`PublishMoveCountsForTest` 原子发布 map size。
+### 变异矩阵（独立基线，替换次数==1）
+M1 合并→Emit → 4 红；M2 `MoveInterval()*0` → 3 红；M3 删 FlushSessionMove → 2 红；
+M4 删 last_move_sent_.erase → 1 红；M5 未知 session now+interval → 5 红。全部编译通过。
+### 两次自我纠正（已入 discover 方向）
+- 第一轮 5 变异**累积应用**（都得到同样 4 failing）→ 重做为独立基线。
+- M2 用 `return it->second;` 使 MoveInterval 变死代码，`/WX` C4505 让变异变成**构建失败**
+  而非测试红 → 改 `MoveInterval() * 0` 才有效。**教训：变异必须保证编译通过，否则不是测试红证。**
+### 双审 ⑤ 结论
+A 盖章。B 批77 功能面盖章，但要求：
+- D12/D20 降级为"仅最终一致、需 WaitUntil 轮询"→ 已写进 hooks.h 注释。
+- D8 降级为"单 sink + 进程级配置"→ 已加 `CHECK_EQ(g_live_emit_hook_guards, 1)` 强制（变异验证：改 99 → 5 用例红）。
+B 明确 **F-6×F-7 交叉缺陷未覆盖、不盖章**：`released_session_starts_unthrottled` 注入前先等
+三计数归零，永远碰不到 `Dispatch :529 FlushSessionMove` 不查 forget 的窗口。
+B 已在干净基线上用 DispatchFailureHook 作闸门确定性复现（ReleaseSession 返回后又 emit 3 次）。
+### 验证
+Release 0 诊断 / ctest 69/69 / Debug 69/69 / 单测 75 tests 13988 checks 0 failing / Linux gate PASS 67/67。
+### 批78 待办（B 的三项 + A 的补充）
+1. ReleaseSession 后仍发一帧（行为缺陷，非 UAF）—— 需 worker gate 的确定性用例
+2. `SetInputSink` 注释误导（文档用法下无 UB，Run/ServeOne 期间调用才是 race）
+3. `was_share_data` 恒 false 仅 1 条回归网；`ParseSlowPathInput` n<4 / 短 body 无测试
+4. `Stop()` 不覆盖 `ServeOne()` 会话
+5. `g_move_interval_ns` 进程级单例：B 建议按 sink 隔离（当前靠 guard 强制唯一）
