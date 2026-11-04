@@ -1402,3 +1402,11 @@ WSL 被 `/mnt/f/tctp` 交叉编译占满（load 8.7）+ sqlservr/beam.smp，解�
 验证：delay ∈ {0,1,5,40,200,1000} × 2 次 = 12/12 绿，`started_after_stop=1` 恒定。
 Rule 16：缩放预算 → 固定 1000 ⇒ **只有 delay=200 红**，其余全绿。
 C0：六类诊断全 0；Linux 67/67（84.84s）；Windows 69/69（74.37s）；Linux gate PASS；MUT- 0。
+### 批 59（`ca0aad1`）—— 修批56 引入的 gate 断言退化
+
+bench 重试行原用 `[bench]` 标记，被 gate 的 `grep -c "\[bench\]" >= 7` 计为结果行
+⇒ 一个用例被编译掉 + 另一个重试 = 7 ⇒ 假绿（与批42/例52 同族，我自己违反）。
+修法：重试行改 `[bench-retry]` + 逐用例身份断言（标签后必须紧跟数字串）。
+红证：B 场景（6 结果 + 1 retry）修前 exit=0、修后 exit=1；D 场景（换用例）仅身份断言能抓。
+Rule 16：改回 `[bench]` ⇒ B 假绿复现；删身份循环 ⇒ D 变绿。
+验证：Linux gate PASS 67/67；真实 RelWithDebInfo `bench_lines=7 retry_lines=0`；Windows 69/69；MUT- 0。
