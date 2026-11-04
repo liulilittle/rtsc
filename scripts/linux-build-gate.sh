@@ -214,34 +214,64 @@ p0_block_has_marker() {
     awk -v want="${P0_CASE}" '
         /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
             name = $0
+            tag = name
+            sub(/^\[[[:space:]]+/, "", tag)
+            sub(/[[:space:]]+\].*$/, "", tag)
             sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
             sub(/[[:space:]]+$/, "", name)
-            inb = (name == want) ? 1 : 0; next
+            inb = (tag == "RUN" && name == want) ? 1 : 0; next
         }
         inb && /drain: challenge surfaced after coalesced record/ { found = 1 }
         END { exit found ? 0 : 1 }' "$SEC_LOG"
 }
-# Self-test the extractor before trusting it. Two shipped revisions of this
-# function were silently broken while `bash -n` passed: one regex had an extra
-# space so no line matched, and one used `awk -v case=` which gawk rejects as a
-# builtin name. Both made the function return non-zero for a HEALTHY log, i.e.
-# the gate could never print PASS. Feeding it an inline known-good log turns
-# that class of mistake into a startup failure instead of a build-time mystery.
-selftest_p0_block_has_marker() {
-    local saved="${SEC_LOG:-}"
-    local probe
+# Self-test a case-block extractor before trusting it. Three shipped revisions of
+# these extractors were broken while `bash -n` passed, and each failure mode was
+# invisible to a weaker test:
+#   1. regex had an extra space      -> nothing matched          (healthy REJECTED)
+#   2. `awk -v case=`                -> gawk fatal on builtin    (healthy REJECTED)
+#   3. only the "accept" direction measured -> `return 0` passed (fail-OPEN: the
+#      marker gate is dead and the gate still prints PASS; measured on HEAD
+#      0f4fcfa: ALWAYS_ACCEPT gave selftest=ACCEPT AND real_attack=ACCEPT)
+# A block that never closes is a fourth hole with the same shape: the target
+# case's own OK/FAIL line keeps `inb` set, so anything printed after it is
+# attributed to that case. Measured before the fix: marker-after-OK and
+# marker-after-FAIL were both accepted.
+#
+# So pin all four boundaries at once. Args: helper-name case-name marker logvar.
+selftest_marker_extractor() {
+    local fn="$1" case_name="$2" marker="$3" logvar="$4"
+    local probe rc=0 saved
+    saved="$(eval "printf '%s' \"\${$logvar:-}\"")"
     probe="$(mktemp)"
-    printf '[ RUN  ] %s\n  drain: challenge surfaced after coalesced record\n[  OK  ] %s\n' \
-        "${P0_CASE}" "${P0_CASE}" >"$probe"
-    SEC_LOG="$probe"
-    local rc=0
-    p0_block_has_marker || rc=1
+    reset() { eval "$logvar=\$probe"; }
+    restore() { eval "$logvar=\$saved"; }
+    expect_accept() {
+        reset
+        "$fn" || { echo "  rejected a healthy log" >&2; rc=1; }
+    }
+    expect_reject() {
+        reset
+        if "$fn"; then echo "  accepted $1" >&2; rc=1; fi
+    }
+    printf '[ RUN  ] %s\n%s\n[  OK  ] %s\n' \
+        "$case_name" "$marker" "$case_name" >"$probe"
+    expect_accept
+    printf '[ RUN  ] %s\n[  OK  ] %s\n[ RUN  ] some_other_case\n%s\n[  OK  ] some_other_case\n' \
+        "$case_name" "$case_name" "$marker" >"$probe"
+    expect_reject "a marker that another case printed (case scoping is gone)"
+    printf '[ RUN  ] %s\n[  OK  ] %s\n%s\n[ RUN  ] some_other_case\n' \
+        "$case_name" "$case_name" "$marker" >"$probe"
+    expect_reject "a marker printed after the case's own OK line (block never closed)"
+    printf '[ RUN  ] %s\n[ FAIL ] %s\n%s\n[ RUN  ] some_other_case\n' \
+        "$case_name" "$case_name" "$marker" >"$probe"
+    expect_reject "a marker printed after the case's own FAIL line (block never closed)"
+    restore
     rm -f "$probe"
-    SEC_LOG="$saved"
     return "$rc"
 }
-if ! selftest_p0_block_has_marker; then
-    echo "LINUX GATE FAIL: p0_block_has_marker rejects a known-good log; the extractor itself is broken (regex or awk variable name), not the build"
+if ! selftest_marker_extractor p0_block_has_marker "${P0_CASE}" \
+        'drain: challenge surfaced after coalesced record' SEC_LOG; then
+    echo "LINUX GATE FAIL: p0_block_has_marker is itself broken (regex, awk variable name, case scoping, or block closure); this is a gate bug, not a build failure"
     exit 1
 fi
 if ! p0_block_has_marker; then
@@ -431,17 +461,29 @@ fi
 # if it was printed by the ratio case itself. A whole-log grep accepts the string
 # from any case, so a body that stopped running while another case echoed the
 # same text would still pass.
+# Case name for the ratio body; also used by the self-test below.
+UI_CASE="rgba_to_bgra_present_faster_than_the_old_per_pixel_loop"
+
 ui_block_has_marker() {
-    awk -v want="rgba_to_bgra_present_faster_than_the_old_per_pixel_loop" '
+    awk -v want="${UI_CASE}" '
         /^\[[[:space:]]+(RUN|OK|FAIL)[[:space:]]+\]/ {
             name = $0
+            tag = name
+            sub(/^\[[[:space:]]+/, "", tag)
+            sub(/[[:space:]]+\].*$/, "", tag)
             sub(/^\[[[:space:]]+[A-Z]+[[:space:]]+\][[:space:]]*/, "", name)
             sub(/[[:space:]]+$/, "", name)
-            inb = (name == want) ? 1 : 0; next
+            inb = (tag == "RUN" && name == want) ? 1 : 0; next
         }
         inb && /rgba->bgra 1280x1024:/ { found = 1 }
         END { exit found ? 0 : 1 }' "$UI_LOG"
 }
+# Same four-boundary self-test as the P0 extractor, via the shared helper.
+if ! selftest_marker_extractor ui_block_has_marker "${UI_CASE}" \
+        'rgba->bgra 1280x1024:' UI_LOG; then
+    echo "LINUX GATE FAIL: ui_block_has_marker is itself broken (regex, awk variable name, case scoping, or block closure); this is a gate bug, not a build failure"
+    exit 1
+fi
 if ! ui_block_has_marker; then
     echo "LINUX GATE FAIL: ui ratio case block did not print its 'rgba->bgra 1280x1024:' line (another case's line does not count)"
     exit 1

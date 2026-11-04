@@ -1462,9 +1462,13 @@ RTSC_TEST(view_scale_benchmark_budget) {
     // amortising, the small shapes measure scheduler jitter rather than work.
     //
     // The regression this guards is structural: replacing a fast path with a
-    // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy (a
-    // per-pixel copy with a division): the two 1:1 shapes go 0.12 -> 9.05-9.22 ms
-    // after amortising, i.e. 7.5x past their 1.1/1.2 ms budgets.
+    // per-pixel loop. Measured by doing exactly that to CopyExact's row memcpy:
+    // a per-pixel copy with a division the optimizer cannot fold takes the two
+    // 1:1 shapes from ~0.13 ms to ~2.4 ms after amortising, i.e. 2x past their
+    // 1.1/1.2 ms budget -- 3/3 runs red. The same per-pixel copy with a foldable
+    // division only reaches ~0.95 ms and stays green, so the discriminating
+    // mutation needs a volatile divisor. (The shipped test measures the real
+    // ScaleSurface; the mutations are the audit harness, not product code.)
     //
     // Headroom is NOT uniform across the cases, and the large ones are the tight
     // ones. Measured on this host (40 busy loops, load ~43) over four runs, the
@@ -1483,16 +1487,34 @@ RTSC_TEST(view_scale_benchmark_budget) {
     //
     // Which case can see which regression matters more than the budget. ResampleArea
     // has two branches: an integer-box fast path (uniform taps on both axes) and a
-    // generic tap walk. Measured by doubling ONE branch's row loop:
-    //   doubling uniform    -> 0.5x 4K  13.92 -> 24.89 ms (1.79x); 0.8x / 0.4x 4K unmoved
-    //   doubling generic    -> 0.8x     20.50 -> 39.18 ms (1.91x); 0.4x 4K 40.57 -> 75.35 (1.86x)
-    //                          0.5x 4K unmoved (14.51 ms)
+    // generic tap walk. Measured by doubling ONE branch's row loop, on two hosts
+    // with 3-5 runs each (ratios are per-host stable, the absolute factor is not
+    // portable, so these are ranges and should stay ranges):
+    //   doubling uniform -> 0.5x 4K 1.4-1.8x;  0.8x / 0.4x 4K 0.85-1.05x
+    //   doubling generic -> 0.8x 1.4-1.9x;     0.4x 4K 1.2-1.9x;  0.5x 4K ~1.0x
+    // Note the <1.0 factors: the cases that do not touch the mutated branch run
+    // slightly FASTER, not identical (cache/layout noise). Do not read them as a
+    // stable control baseline.
     // So 0.5x 4K (3840->1920, exactly 2x) guards the uniform path, and 0.8x
     // (1920->1536, 1.25x) guards the generic path with the most headroom to spare.
     // 0.4x 4K (3840->1536, 2.5x) is non-integer and therefore also generic, but its
-    // fixed overhead is so large that even the 1.86x branch doubling is what it
-    // takes to be visible -- smaller algorithmic changes vanish into the constant.
-    // Keep it for the non-integer ratio, not as a fine-grained probe.
+    // fixed overhead is so large that small algorithmic changes vanish into the
+    // constant. Keep it for the non-integer ratio, not as a fine-grained probe.
+    //
+    // Sensitivity is just budget/base, so it can be read off the idle numbers
+    // instead of assumed. On this host the thresholds are 1:1 8.6x, 1:1 lb 7.9x,
+    // 2x 5.5x, 0.8x 7.3x, 0.5x 4K 8.3x, 1.33x 12.1x, 0.4x 4K 6.9x; the audit host
+    // measured 7.1x-12.8x over the same cases. Two consequences follow, and the
+    // earlier "only catches >=8x" note got the first one wrong:
+    //   * a 2x structural regression -- e.g. replacing the uniform fast path with
+    //     a per-pixel loop, output still correct -- trips NOTHING. Measured twice:
+    //     0.5x 4K goes 1.79-2.0x wall clock against an 8.3x threshold.
+    //   * a per-source-pixel float division added INSIDE the fast path is ~2.3x
+    //     and also stays green. "per-pixel division is 10x" only holds when the
+    //     fast path is REPLACED, not when it is merely made slower.
+    // These budgets are runaway/structural alarms at the ~6x-12x scale, not
+    // 2x detectors. Do not cite them as proof that a 2x regression would be
+    // caught.
     static const Case cases[] = {
         {1280, 1024, 1280, 1024, "1:1", 1.2, 100},
         {1280, 1024, 1280, 1200, "1:1 letterbox", 1.1, 100},
