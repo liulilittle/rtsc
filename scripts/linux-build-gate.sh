@@ -288,9 +288,35 @@ fi
 # bound while the budget bodies are compiled out (audit X measured this: `#if 0`
 # on the bench loop plus 7 padded CHECKs still reported 7348 and passed). Assert
 # the line each bench iteration prints instead -- it exists only if the body ran.
+# Count the RESULT lines only. The retry line printed by the same loop is tagged
+# `[bench-retry]`, not `[bench]`: when both carried the marker, one compiled-out
+# case plus one retry kept the count at 7 and the gate passed (measured: a log
+# with 6 result lines + 1 retry line exited 0). A count alone is also padable, so
+# the real assertion is per-case identity below.
 VIEW_BENCH_LINES=$(grep -c "\[bench\]" "$VIEW_LOG")
 if [ "${VIEW_BENCH_LINES:-0}" -lt 7 ]; then
     echo "LINUX GATE FAIL: view budget bodies did not run (bench lines=${VIEW_BENCH_LINES:-0}, want 7; the count comes from the printf inside the loop)"
+    exit 1
+fi
+# Per-case identity: every bench case must print its OWN result line. This is the
+# same reasoning as REQUIRED_TESTS -- a count can be padded by a retry or an extra
+# case, a named row cannot. The patterns require a digit run immediately after the
+# label, so `1:1` does not match the `1:1 letterbox` row.
+VIEW_MISSING=""
+for pat in \
+    '\[bench\] 1:1 +[0-9]+x' \
+    '\[bench\] 1:1 letterbox +[0-9]+x' \
+    '\[bench\] 2x +[0-9]+x' \
+    '\[bench\] 0\.8x +[0-9]+x' \
+    '\[bench\] 0\.5x 4K +[0-9]+x' \
+    '\[bench\] 1\.33x +[0-9]+x' \
+    '\[bench\] 0\.4x 4K +[0-9]+x'; do
+    if ! grep -Eq "$pat" "$VIEW_LOG"; then
+        VIEW_MISSING="$VIEW_MISSING ${pat}"
+    fi
+done
+if [ -n "$VIEW_MISSING" ]; then
+    echo "LINUX GATE FAIL: view bench case(s) produced no result line:$VIEW_MISSING"
     exit 1
 fi
 VIEW_SUMMARY=$(grep -E "^[0-9]+ tests, [0-9]+ checks, " "$VIEW_LOG" | tail -1)

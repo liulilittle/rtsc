@@ -1513,7 +1513,7 @@ RTSC_TEST(view_scale_benchmark_budget) {
         };
         double best = measure();
         if (!(best < c.budget_ms)) {
-            std::printf("  [bench] %-16s retrying: %.2f ms is over the %.2f ms budget\n",
+            std::printf("  [bench-retry] %-16s retrying: %.2f ms is over the %.2f ms budget\n",
                         c.label, best, c.budget_ms);
             best = measure();
         }
