@@ -1148,3 +1148,28 @@ icacls deny 一个子目录）：
 ### 教训（discover 例 68/69）
 fail-closed 粒度要对准真正的危险（只有目录型 reparse 是盲区）；判据若在正常环境无法通过
 就是障碍不是守卫；全局 EAP 是隐式契约，"必须失败"的操作要显式 `-ErrorAction Stop`。
+## 第894轮：批56/57 —— bench 预算重设 + flood witness 确定性化（`d4f341a` / `f68eeb9`）
+### 批56：view bench（`d4f341a`）
+测量三个数后重设预算：空闲 0.11-0.16ms / 噪声峰值 0.89ms（并行构建）/ 真实回归
+1.47-1.53ms（CopyExact 换成逐像素+除法）。
+- 每用例新增 `iters` 使样本 ≥10ms（小用例对负载 7.4x、大用例 2.1x 的差异被抹平）
+- 预算改为约 4x 空闲值：1:1 1.2、letterbox 1.1、2x 20、0.8x 80、0.5x4K 60、1.33x 12、0.4x4K 140
+- 有界单次重试（打印 `retrying:`）
+- Rule 16：逐像素+除法 → 11 用例红；float 加权混合 → 1:1 达 22ms、6 用例红；恢复全绿
+- X 独立复测：同负载 HEAD 2/8 失败 vs 本改动 0/8，且变异仍被抓
+### 批57：flood witness（`f68eeb9`）
+X 报 `server_flood_vs_stop_race_converges` 负载下 flaky。**我 14 次全绿、checks 恒定，未复现**。
+但读代码找到真因：launcher 在 accept 循环里**同步**调用（`server.cpp:2491`），旧实现让每个
+launcher 固定睡 40ms 赌测试线程先置 `stop_began`；负载下测试线程可被挂起 >40ms → witness 恒 0。
+修法：入口计数识别最后一个 launcher，有界等待 `stop_began` 后再启动（结构保证）。
+Rule 16：`if (snapshot_taken && false)`（跳过所有 session->Stop()）→ `RED_TIMEOUT live=8` +
+`FAIL stop_cleared`，不变量仍 load-bearing。
+### 环境发现（例 70）
+WSL 被另一个项目 `/mnt/f/tctp` 的交叉编译占满（load 8.7），另有 sqlservr/beam.smp。
+这解释了之前三次 bench 偶发红。"重跑就绿"是逃避，不是证据。
+### 验证
+C0 六类诊断全 0；server 55/641；view 60/7348；Linux ctest 67/67；Windows ctest **69/69**(76.04s)；
+Linux gate **LINUX GATE PASS**；构建输入 MUT- 0。
+### 教训（discover 例 70/71）
+时间断言必须先量空闲值/噪声峰值/回归值；witness 与不变量要分开，witness 依赖时序要改同步；
+没复现不等于不存在，但必须标注"未复现，基于结构分析"。

@@ -1373,3 +1373,21 @@ C `showUntrackedFiles=no` 三种都能让旧指纹"不变"；D git 失败时 fp 
 
 红证（抽取真实代码块）：干净 exit=0；文件链接不拒绝且目标变化被抓；目录接合点 exit=1；恢复 fp 原值。
 验证：`verify.ps1` 与 `-LinuxBuild` 均 EXIT=0（后者 LINUX GATE PASS）；构建输入 MUT- 0。
+### 批 56（`d4f341a`）—— view bench 按测量重设
+
+三个数：空闲 0.11-0.16ms / 噪声峰值 0.89ms（并行构建，7.4x）/ 真实回归 1.47-1.53ms（12-14x）。
+每用例新增 `iters` 使样本 ≥10ms（抹平小用例 7.4x vs 大用例 2.1x 的负载敏感度差异）；
+预算改为约 4x 空闲值；有界单次重试。
+Rule 16：逐像素+除法 → 11 用例红；float 混合 → 1:1 22ms、6 用例红；恢复全绿。
+
+### 批 57（`f68eeb9`）—— flood witness 确定性化
+
+X 报负载下 flaky，我 14 次全绿未复现，但代码结构分析出真因：launcher 在 accept 循环里同步
+调用（`server.cpp:2491`），旧实现赌测试线程在 40ms 内反应。改为入口计数识别最后一个 launcher +
+有界等待 `stop_began`。
+Rule 16：跳过所有 `session->Stop()` → `RED_TIMEOUT live=8` + `FAIL stop_cleared`，不变量仍 load-bearing。
+
+### 环境（例 70）
+WSL 被 `/mnt/f/tctp` 交叉编译占满（load 8.7）+ sqlservr/beam.smp，解释三次 bench 偶发红。
+
+验证：C0 全 0；server 55/641；view 60/7348；Linux 67/67；Windows 69/69；Linux gate PASS；MUT- 0。
