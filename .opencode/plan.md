@@ -1463,3 +1463,12 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
    先跑；重新注入"多一空格正则"与 `-v case=` 两个历史错误，自检均 REJECTED。
 3. **X 的 G 场景**：X 实测 rejected（正确），我上报表写 accepted —— 我的表错了，G 不改。
 验证：gate PASS 67/67；RelWithDebInfo 60/7355；Windows Release 69/69；Debug verify.ps1 69/69；MUT- 0。
+### 批 66（`53fde63`）—— marker 提取器四边界闭合 + 双向自检
+
+1. **Y2 真缺陷**：块在目标用例 OK/FAIL 后不闭合（`inb` 仍为 1），marker-after-OK /
+   marker-after-FAIL 均被误接受。修法 `tag=="RUN" && name==want`，修后 5/5 正确。
+2. **X fail-OPEN**：HEAD 自检只钉接受方向，`return 0` 时 marker 门已死而 gate 仍 PASS。
+   改共享 helper `selftest_marker_extractor` 钉四边界；六个变异 P0+UI 全部 caught。
+3. **Y2 UI_CASE 未接线**：`-v want` 硬编码 → 改 `${UI_CASE}`。
+4. **数字可推导化**：敏感度 = budget/base（5.5x-12.1x），写明 2x 结构性回归不可见。
+验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。

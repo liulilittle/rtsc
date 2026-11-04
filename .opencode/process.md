@@ -1351,3 +1351,28 @@ Windows Debug verify.ps1 69/69(134s)；MUT- 0；gate LF 461；test_view.cpp 1577
 ### 教训（discover 例 83）
 多路径函数必须按路径分别变异；写"X 守护 Y"必须证明"Y 坏时 X 红"；
 不能因免疫某变异就删用例（形状覆盖另算）；我的表与审计冲突时默认我错。
+## 第904轮：批66 —— 四处边界闭合 + 双向自检 + 数字可推导化（`53fde63`）
+### Y2 的真缺陷：块不闭合
+`inb = (name == want)` 在 OK/FAIL 行仍为 1，块等下一个 RUN 才关。实测
+marker-after-OK / marker-after-FAIL 均 **accept（应为 reject）**。修法：先剥 tag,
+`tag=="RUN" && name==want`。修后 5/5 正确。P0 与 UI 都有此洞。
+### X 的 fail-OPEN
+HEAD 版自检只钉"接受"：`return 0` 时自检 ACCEPT + 真实检查 ACCEPT ⇒ marker 门已死
+而 gate 仍 PASS。实测三变体证实。改共享 helper `selftest_marker_extractor`，
+钉四边界（健康接受 / 他人marker拒 / OK后拒 / FAIL后拒），P0+UI 各调一次。
+Rule 16：BASELINE 绿，ALWAYS_ACCEPT/ALWAYS_REJECT/NO_SCOPE/NO_CLOSURE/BAD_REGEX/
+CASE_BUILTIN 六变异 P0+UI **全部 caught**。
+### UI_CASE 未接线（Y2）
+`-v want` 仍硬编码字符串，改 `UI_CASE` 不影响真检查 → 改 `-v want="${UI_CASE}"`。
+### 数字纠正（Y2 + X）
+- "only catches >=8x" 无推导 → 改 budget/base：5.5x-12.1x（本机实测算得）。
+  并写明 **2x 结构性回归不可见**（MUT-STRUCT 2.0x → suite rc=0）。
+- "per-pixel division is 10x" 只在**整条快路径被替换**时成立；只加除法是 2.3x 仍绿。
+- 跨机数字：X 定量一致（0.8x 是 generic 最佳探针）但量级差大；'unmoved' 不精确
+  （0.4x 4K 在无关变异下稳定快 10%）→ 改区间 + 双机标注 + 写明 <1.0 是缓存效应。
+### 验证
+Linux gate PASS 67/67；Windows Release 69/69(86.21s)；Windows Debug 69/69(127s)；
+MUT- 0；resample.cpp 未改（18104 bytes BOM 完整）。
+### 教训（例 84/85/86）
+自检必须钉双向（只钉接受会放行 `return 0`）；区间提取必须定义开启+关闭；
+注释数字必须可推导（公式/区间/多机），不能抄一次测量。
