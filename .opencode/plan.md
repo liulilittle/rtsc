@@ -1553,3 +1553,16 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
    （空串 `SEC_LOG=''` → rc=0 不误拦，unset → rc=1）；控制流赋值都在自检调用前。
 5. **收尾**：X 明确"同意收尾"。下一步转真机验证清单。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
+
+### 批 74（`63e98c4`）—— rotate_logs 空后缀缺陷（plan 遗留项）
+
+1. **缺陷**：`${d##*.}` 对 `linux-gate-logs.` 得空串，`*[!0-9]*` 对空串不匹配
+   ⇒ 该 legacy 目录被计数并删除，违反"legacy 永远保留"的注释，还吃掉一个配额。
+   实测：8 目录轮转后 `linux-gate-logs.` 消失。
+2. **修法**：白名单匹配 `"$prefix".<digits>`（先取 basename）+ 显式 `''|` 排除空串。
+   修后两个 legacy 目录都保留、PID 目录仍 5 个。
+3. **Rule 16**：当前 PASS；回退 `''|` 分支 → 带点目录死亡 = caught。
+   （判据第一版混入"PID 数变 4"导致误报 SURVIVED，改为只看被修的不变量后正确。）
+4. **plan P1（原生 ext4）**：**UNVERIFIED** —— WSL load 146，探测超时 300s，已清理。
+   构建目录已在 ext4，源码在 9p；属性能优化非正确性问题。
+验证：Linux gate PASS 67/67（日志目录 5 个）；Win Release 69/69；Win Debug 69/69；MUT- 0。

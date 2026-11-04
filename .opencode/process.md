@@ -1598,3 +1598,28 @@ Linux gate PASS 67/67；Win Release 69/69(81.03s)；Win Debug 69/69(80s)；MUT- 
 ### 教训（例102/103）
 "不可构造"必须按构造形式分类枚举（带赋值/不带赋值是不同形态）；
 一条覆盖"新输入形态"的探针会顺带闭合该形态下的多个变异。
+
+## 第912轮：批74 —— rotate_logs 空后缀缺陷（`63e98c4`）
+### 缺陷（plan 遗留项："linux-gate-logs. 会被当 PID 目录"）
+`${d##*.}` 对 `linux-gate-logs.` 得空串，`case "$suf" in *[!0-9]*)` 对空串不匹配
+⇒ 该目录被计数并参与轮转删除，**违反"legacy 目录永远保留"的注释**。
+实测：8 目录轮转后 `linux-gate-logs.` 消失，且吃掉 5 个配额中的一个。
+### 修法
+白名单匹配完整形状 `"$prefix".<digits>`：先取 basename，`case "$base" in "$prefix".*)`，
+再 `case "$suf" in ''|*[!0-9]*) continue` 显式排除空串。
+修后两个 legacy 目录都保留，PID 目录仍保留 5 个（333/444/555/666 + 999）。
+### Rule 16
+```
+A. 当前代码：带点目录存活 True, PID 数 5  -> PASS
+B. 回退 ''| 分支：带点目录存活 False       -> caught
+```
+判据第一版写成"带点目录死亡 AND PID 数变 4"，回归版 PID 仍是 5 → 误报 SURVIVED。
+改为只看被修的不变量（带点目录存活）后正确。
+### plan 另一项 P1（原生 ext4 构建）—— UNVERIFIED
+WSL load 146（他项目占满），fs_probe 脚本超时 300s，已清理。
+现状：构建目录已在 ext4（`${TMPDIR:-/tmp}/rtsc-gate-build.$$`，/tmp 是 /dev/sdd ext4），
+源码仍在 9p、日志在仓库 `.tmp`。属性能优化非正确性问题，门禁判定不依赖文件系统类型。
+### 验证
+Linux gate PASS 67/67（日志目录 5 个）；Win Release 69/69(80.55s)；Win Debug 69/69(82s)；MUT- 0。
+### 教训（例104/105）
+"拒绝含 X 的输入"漏掉空串，安全过滤器要用白名单；回归判据必须精确认准被修的那个不变量。
