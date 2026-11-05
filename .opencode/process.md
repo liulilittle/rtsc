@@ -1885,3 +1885,52 @@ Release 0 诊断 / ctest 69/69（73.6s）；Debug 0 诊断 / ctest 69/69（78.2s
    测试套件已用 `EmitHooksForTest::CHECK_EQ(g_live_emit_hook_guards, 1)`
    （`test_desktop_input.cpp:2285`）强制单 recorder 约束，析构时恢复 `SetDesktopInputTestMoveIntervalMs(0)`。
    改动需动 sink 成员、`MoveInterval()`、钩子接口、7 个调用点，收益近零。按 SOP 第7条 + C4-C6 不做。
+
+## 第884轮：批81 —— plan.md P5 文档一致性裁决（SlowPath 输出解析）
+
+### 发现
+- plan.md:96 标记 [ ] 未完成，:100 标记 [x] 已完成 —— 文档矛盾。
+- 代码证据（W5）：
+  - include/rtsc/proto/output.h:109 定义 SlowPathGraphicsUpdate 结构体
+  - include/rtsc/proto/output.h:100-101 定义 kUpdateBitmap = 0x0001 / kUpdateOrders = 0x0000
+  - src/client/graphics.cpp:212-250 ApplySlowPathUpdate 完整实现 kUpdateBitmap 与 kUpdateOrders 两分支
+  - tests/test_graphics.cpp 中 24 处引用 SlowPathGraphicsUpdate/ApplySlowPathUpdate
+- 裁决：实现已完成，plan.md:96 应为 [x]。
+
+### 修复
+- plan.md:96 [ ] → [x]（SlowPath 输出解析 TS_GRAPHICS_UPDATE）
+
+### 验证
+- 无代码改动，无需编译；文档一致性已修正。
+
+### 当前真正未完成项（需真机/凭据，不可自动推进）
+- plan.md:56 TLS1.3 ticket 分支（回环对端仅 TLS1.2）
+- plan.md:75 Security Exchange PDU 接入（目标服务器用 HYBRID_EX，此路径不触发）
+- plan.md:67 数据面签名（PROTOCOL_RDP 路径）
+- plan.md:137-138 真机联调和真实服务器抓包比对
+
+## 第885轮：批81 —— plan.md 批6/7 完成度裁决（输入注入主线收口）
+
+### 发现
+plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实现：
+- F-1 慢路径 MOUSEREL：server.cpp:1972-1999（SlowPathInputEventType::kMouseRel 分支，signed rel_x/rel_y）
+- F-4 队列硬上限：desktop_input_win32.cpp:102 kHardQueueLimit = 4 * kMaxQueue
+- F-5 Stats / F-6 last_move_sent_：desktop_input.h:91-104 InputStats 结构 + Stats() 纯虚
+- F-7 SetInputSink 时序：批79 e82d3c9 注释修正（data race 事实）
+- GAP② numberEvents 计数：server.cpp:1908 ParseInputEvents 逐事件 count 循环
+- GAP④ was_share_data 白名单：server.cpp:1788 !was_share_data fail-closed
+- 批7 ② scancode==0：desktop_input_map.cpp:75 映射层过滤
+- 批7 ⑤ sink/server 集成测试：test_server.cpp 输入事件用例
+- 批7 ⑥ max_input_sessions=1 租约：server.cpp:830-897
+
+### 修复
+- plan.md:599-601 [ ] → [x]，附证据路径
+
+### 验证
+无代码改动；文档一致性已修正。
+
+### 剩余未完成项（均需真机/凭据，不可自动推进）
+- plan.md:56 TLS1.3 ticket 分支（回环对端仅 TLS1.2）
+- plan.md:75 Security Exchange PDU 接入（目标服务器用 HYBRID_EX，此路径不触发）
+- plan.md:67 数据面签名（PROTOCOL_RDP 路径）
+- plan.md:137-138 真机联调和真实服务器抓包比对

@@ -93,7 +93,7 @@
       + `EncodeFastPathInputPdu`（fpInputHeader + length + 事件）— 10 用例 / 35 检查
 - [x] Fast-Path 输出解析（TS_FP_UPDATE_PDU + TS_FP_UPDATE + 位图/调色板 payload）
       — 7 用例 / 32 检查
-- [ ] SlowPath 输出解析（TS_GRAPHICS_UPDATE）
+- [x] SlowPath 输出解析（TS_GRAPHICS_UPDATE）
 - [x] 位图解码未压缩路径 `DecodeRawBitmap`（8/15/16/24/32 bpp -> RGBA；自底向上 + 4 字节行补齐）
       + `BitmapCompressedHeader`（TS_CD_HEADER）— 6 用例 / 22 检查
 - [x] 位图解码 Interleaved RLE `DecodeRleBitmap`（全部压缩序，8/15/16/24 bpp）— 6 用例
@@ -596,9 +596,9 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - [x] 批 3 慢路径 0x1C + 能力位 0x0008/0x0020 → `10b3b20`
 - [x] 批 5 切块上限可观测 → `e6c4ad7`
 - [x] 批 4 注入器骨架（DesktopInputSink，默认 off、危险组合 EXIT=2）→ `afb2a69`
-- [ ] 批 6 F-1 慢路径 MOUSEREL 解码 / F-4 队列硬上限 / F-5 Stats / F-6 last_move_sent_ /
-      F-7 SetInputSink 时序 / GAP② numberEvents 计数 / GAP④ was_share_data 白名单（在途）
-- [ ] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤；⑤ sink↔server 集成测试；
+- [x] 批 6 F-1 慢路径 MOUSEREL 解码（`server.cpp:1972-1999`） / F-4 队列硬上限（`desktop_input_win32.cpp:102`） / F-5 Stats / F-6 last_move_sent_（`desktop_input.h:91-104`）
+      / F-7 SetInputSink 时序注释修正（批79 `e82d3c9`） / GAP② numberEvents 计数（`ParseInputEvents` 逐事件 `count` 循环，`server.cpp:1908`） / GAP④ was_share_data 白名单（`server.cpp:1788` `!was_share_data` fail-closed）
+- [x] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤（`desktop_input_map.cpp:75`）；⑤ sink↔server 集成测试（`test_server.cpp` 输入事件用例）；⑥ `max_input_sessions=1` 单会话控制租约（`server.cpp:830-897`）
       ⑥ `max_input_sessions=1` 单会话控制租约（设计文档要求，未实现）
 - [ ] 真机验证：按 `docs/spec/input-injection-real-machine-checklist.md` 逐项（UIPI/多会话/SAS/Pause/多屏）
 ## 批 9 设计定案（限流与可观测，round 805 预写）
@@ -1510,15 +1510,15 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 4. **新发现 fail-OPEN**：`logvar=rc` 使 `return "$rc"` 恒 0（永久损坏的提取器也通过）。
    加合法名校验 + 局部名黑名单 + readonly 检测 + printf -v 准确报错。
 验证：Linux gate PASS 67/67；Win Release 69/69；Win Debug 69/69；MUT- 0。
-### �� 69��`18ac6d3`������ ʮ�ı߽��Լ� + ����/�� marker ����
+### �� 69��`18ac6d3`������ ʮ�ı߽��Լ� + ����/�� marker ����
 
-1. **Y2 ����**��MARKER_TAIL / MARKER_MID ����©���߽߱�ȫ ACCEPT�����Ѽ� head �ضϸ��ǣ�
-   MARKER_CASE_INS��`[Dd]rain`������ marker �������ж�Ϊ"ƴд����"���� fail-open���Ǽǡ�
-2. **tail �ضϸı���** `${marker:0:${#marker}*2/3}`���̶� 6 �ַ��� len==6 ʱ���ɿմ�����
-3. **X ������**��ʵ�� vacuous pass ���� false green������ȡ���� rc=1����
-   ����ͬ�ȱ�׼�ܾ� `*a*|*A*`������ declare ���ʵ�⡣
-4. **marker ��������** `<=12` ֱ�� return 1��
-��֤��Linux gate PASS 67/67��Win Release 69/69��Win Debug 69/69��MUT- 0��
+1. **Y2 ����**��MARKER_TAIL / MARKER_MID ����©���߽߱�ȫ ACCEPT�����Ѽ� head �ضϸ��ǣ�
+   MARKER_CASE_INS��`[Dd]rain`������ marker �������ж�Ϊ"ƴд����"���� fail-open���Ǽǡ�
+2. **tail �ضϸı���** `${marker:0:${#marker}*2/3}`���̶� 6 �ַ��� len==6 ʱ���ɿմ�����
+3. **X ������**��ʵ�� vacuous pass ���� false green������ȡ���� rc=1����
+   ����ͬ�ȱ�׼�ܾ� `*a*|*A*`������ declare ���ʵ�⡣
+4. **marker ��������** `<=12` ֱ�� return 1��
+��֤��Linux gate PASS 67/67��Win Release 69/69��Win Debug 69/69��MUT- 0��
 ### 批 70（`672b684`）—— 更正数组注释 + 整数变量拒绝 + 探针独立性
 
 1. **X 更正我的数组机制解释**：`printf -v V` 写 `[0]`、`$V` 读 `[0]`，读写同址，
