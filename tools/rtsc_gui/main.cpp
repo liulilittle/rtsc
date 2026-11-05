@@ -970,6 +970,11 @@ int main(int argc, char** argv) {
     auto last_fps = started;
     unsigned fps_frames = 0;
     unsigned fps_renders = 0;
+    // Ring of the last few cumulative render counts, sampled after each Present().
+    // The "frames" debug command reports this so an operator can see the render
+    // cadence (not just the total) without a full pixel walk.
+    std::vector<unsigned> frame_ring;
+    constexpr size_t kFrameRingMax = 8;
     bool view_dirty = true;  // the first frame must be rendered
     int last_view_w = static_cast<int>(windows[0]->surface().width());
     int last_view_h = static_cast<int>(windows[0]->surface().height());
@@ -1091,6 +1096,10 @@ int main(int argc, char** argv) {
                   } else {
                       snap.screenshot_path.clear();
                   }
+              }
+
+              if (rtsc::debug::CommandRequestsFrames(cmd.body)) {
+                  snap.frame_samples = frame_ring;
               }
 
               dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
@@ -1409,6 +1418,10 @@ int main(int argc, char** argv) {
                 last_render = now;
                 ++renders;
                 ++fps_renders;
+                frame_ring.push_back(renders);
+                if (frame_ring.size() > kFrameRingMax) {
+                    frame_ring.erase(frame_ring.begin());
+                }
                 client.NoteFrame();
             }
         }

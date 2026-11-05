@@ -132,6 +132,10 @@ std::string ExecuteGuiCommand(const DebugSnapshot& s, const std::string& json_bo
         return r;
     }
 
+    if (op == "frames") {
+        return FormatFrameSamples(s.frame_samples);
+    }
+
     return "\"ok\":false,\"error\":\"unknown op: " + JsonEscape(op) + "\"";
 }
 
@@ -143,6 +147,21 @@ bool CommandRequestsSurface(const std::string& json_body) {
 bool CommandRequestsScreenshot(const std::string& json_body) {
     std::string op;
     return FieldValue(json_body, "op", op) && op == "screenshot";
+}
+
+bool CommandRequestsFrames(const std::string& json_body) {
+    std::string op;
+    return FieldValue(json_body, "op", op) && op == "frames";
+}
+
+std::string FormatFrameSamples(const std::vector<unsigned>& samples) {
+    std::string r = "\"ok\":true,\"frames\":[";
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (i != 0) r += ",";
+        r += std::to_string(samples[i]);
+    }
+    r += "]";
+    return r;
 }
 
 bool ScreenshotPath(const std::string& json_body, std::string& path) {

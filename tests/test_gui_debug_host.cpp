@@ -222,12 +222,36 @@ RTSC_TEST(gui_debug_screenshot_path_extract) {
     CHECK(path == "C:\\out.bmp");
 }
 
-RTSC_TEST(gui_debug_command_requests_screenshot_only_for_screenshot_op) {
-    CHECK(rtsc::debug::CommandRequestsScreenshot("\"op\":\"screenshot\""));
-    CHECK(!rtsc::debug::CommandRequestsScreenshot("\"op\":\"surface\""));
-    CHECK(!rtsc::debug::CommandRequestsScreenshot("\"op\":\"state\""));
-    CHECK(!rtsc::debug::CommandRequestsScreenshot("\"op\":\"screenshotish\""));
-    CHECK(!rtsc::debug::CommandRequestsScreenshot("\"op\":\"\""));
+RTSC_TEST(gui_debug_command_requests_frames_only_for_frames_op) {
+    CHECK(rtsc::debug::CommandRequestsFrames("\"op\":\"frames\""));
+    CHECK(rtsc::debug::CommandRequestsFrames("\"op\" : \"frames\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"state\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"dirty\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"ping\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"screenshot\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames(""));
+    // A prefix of "frames" must not match: the op is compared whole.
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"framesish\""));
+    CHECK(!rtsc::debug::CommandRequestsFrames("\"op\":\"\""));
+}
+
+RTSC_TEST(gui_debug_format_frame_samples_joins_with_commas) {
+    // Empty array.
+    CHECK(rtsc::debug::FormatFrameSamples({}) == "\"ok\":true,\"frames\":[]");
+    // Single element.
+    std::vector<unsigned> single = {42};
+    CHECK(rtsc::debug::FormatFrameSamples(single) == "\"ok\":true,\"frames\":[42]");
+    // Multiple elements.
+    std::vector<unsigned> multi = {10, 20, 30};
+    CHECK(rtsc::debug::FormatFrameSamples(multi) == "\"ok\":true,\"frames\":[10,20,30]");
+}
+
+RTSC_TEST(gui_debug_frames_op_reports_samples) {
+    DebugSnapshot s = MakeSnapshot();
+    s.frame_samples = {5, 12, 30};
+    const std::string out = rtsc::debug::ExecuteGuiCommand(s, "\"op\":\"frames\"");
+    CHECK(out.find("\"ok\":true") != std::string::npos);
+    CHECK(out.find("\"frames\":[5,12,30]") != std::string::npos);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_gui_debug_tests"); }

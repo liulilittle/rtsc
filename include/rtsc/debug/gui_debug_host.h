@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace rtsc::debug {
 
@@ -43,15 +44,17 @@ struct DebugSnapshot {
     unsigned non_black_pixels = 0;
     unsigned distinct_colours = 0;
     unsigned total_pixels = 0;
+    // Sampled render frames for the "frames" command (filled by main()).
+    std::vector<unsigned> frame_samples;
 };
 
 // Executes one command and returns a JSON object body (no enclosing braces),
 // exactly as UiDebugHost::Execute promises.
 //
-// Recognised ops: "ping", "state", "dirty", "surface". Anything else -- including a
-// missing "op" -- answers ok=false with an error naming the offending value. That is
-// deliberate: a debugger that silently answers "fine" to a typo turns a broken
-// query into a false pass.
+// Recognised ops: "ping", "state", "dirty", "surface", "screenshot", "frames".
+// Anything else -- including a missing "op" -- answers ok=false with an error
+// naming the offending value. That is deliberate: a debugger that silently
+// answers "fine" to a typo turns a broken query into a false pass.
 std::string ExecuteGuiCommand(const DebugSnapshot& snapshot, const std::string& json_body);
 
 // Returns true if the command body is asking for the pixel-statistics command.
@@ -66,5 +69,11 @@ bool ScreenshotPath(const std::string& json_body, std::string& path);
 // Encodes a top-down RGBA pixel buffer as a 32bpp BMP (BGRA, negative height).
 // Returns empty on invalid dimensions.
 std::string EncodeBmp32(const uint8_t* rgba, uint32_t width, uint32_t height);
+
+// Serializes the collected frame samples to a JSON array string.
+std::string FormatFrameSamples(const std::vector<unsigned>& samples);
+
+// Returns true if the command body is asking for the frame-sample command.
+bool CommandRequestsFrames(const std::string& json_body);
 
 }  // namespace rtsc::debug
