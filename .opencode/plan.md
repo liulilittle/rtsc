@@ -140,12 +140,13 @@
 - [x] 门禁目录累积（甲第7点）：`scripts/linux-build-gate.sh` 唯一化后 `.tmp/linux-gate.<pid>` 无界累积。
       已修：`cleanup()`→`rotate_logs()`（保留最近 5 个、不删目录）+ `trap cleanup EXIT`；`BUILD_DIR` 整体清。
       证据：`linux-build-gate.sh:60 rotate_logs()` / `:79 cleanup()` / `:83 trap cleanup EXIT`。
-- [ ] 显式传参分支无 PID 唯一化（甲附加观察，可接受）：并发同传同一显式目录仍竞态；
-      属调用方自选路径，文档注明即可。
+- [x] 显式传参分支无 PID 唯一化（甲附加观察，可接受）：`linux-build-gate.sh:32-34` 已注明
+      "the caller is responsible for making an explicitly passed build-dir unique"。
 
-- [ ] P1：Linux 门禁改在 WSL 原生 ext4 工作副本构建（避开 `/mnt/f` 9p 抖动），使 LINUX GATE PASS 作为绿证可信。
-      判定约定：出现 `mkdir ... No such file`/`BUILD_EXIT=1` 但 `FAILED_COUNT=0` → 疑似 9p 抖动，复跑一次区分。
-- [ ] 低：`linux-gate-logs.`（空后缀）会被当 PID 目录；同秒 mtime 下 `ls -1dt` 排序不确定（不影响有界性）。
+- [x] P1：Linux 门禁改在 WSL 原生 ext4 工作副本构建（避开 `/mnt/f` 9p 抖动），使 LINUX GATE PASS 作为绿证可信。
+      `linux-build-gate.sh:35` 默认 `BUILD_DIR="${TMPDIR:-/tmp}/rtsc-gate-build.$$}"` — 原生 FS + PID 唯一化。
+- [x] 低：`linux-gate-logs.`（空后缀）会被当 PID 目录；同秒 mtime 下 `ls -1dt` 排序不确定（不影响有界性）。
+      `linux-build-gate.sh:61-65` 注释记录该缺陷与实测；`:75-80` 整 basename 形状匹配 + `case "$suf" in ''|*[!0-9]*) continue` 跳过空/非数字后缀。
 
 ## W11 主绘制 orders + ROP 引擎（进行中，双审计+执行三角色）
 
@@ -598,8 +599,7 @@ openssl_server_coalesced_final_flight_plus_first_record 锁后端契约（变异
 - [x] 批 4 注入器骨架（DesktopInputSink，默认 off、危险组合 EXIT=2）→ `afb2a69`
 - [x] 批 6 F-1 慢路径 MOUSEREL 解码（`server.cpp:1972-1999`） / F-4 队列硬上限（`desktop_input_win32.cpp:102`） / F-5 Stats / F-6 last_move_sent_（`desktop_input.h:91-104`）
       / F-7 SetInputSink 时序注释修正（批79 `e82d3c9`） / GAP② numberEvents 计数（`ParseInputEvents` 逐事件 `count` 循环，`server.cpp:1908`） / GAP④ was_share_data 白名单（`server.cpp:1788` `!was_share_data` fail-closed）
-- [x] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤（`desktop_input_map.cpp:75`）；⑤ sink↔server 集成测试（`test_server.cpp` 输入事件用例）；⑥ `max_input_sessions=1` 单会话控制租约（`server.cpp:830-897`）
-      ⑥ `max_input_sessions=1` 单会话控制租约（设计文档要求，未实现）
+- [x] 批 7（甲2 新发现）：② `scancode==0` 映射层过滤（`desktop_input_map.cpp:75`）；⑤ sink↔server 集成测试（`test_server.cpp` 输入事件用例）；⑥ `max_input_sessions=1` 单会话控制租约（`server.cpp:830-897`，`ServerConfig::max_input_sessions` 门）
 - [ ] 真机验证：按 `docs/spec/input-injection-real-machine-checklist.md` 逐项（UIPI/多会话/SAS/Pause/多屏）
 ## 批 9 设计定案（限流与可观测，round 805 预写）
 > 目的：把 `docs/spec/input-injection-seam.md` §2 的限流要求落到实现，并消除文档漂移。

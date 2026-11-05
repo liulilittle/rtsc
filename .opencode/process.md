@@ -1934,3 +1934,46 @@ plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实
 - plan.md:75 Security Exchange PDU 接入（目标服务器用 HYBRID_EX，此路径不触发）
 - plan.md:67 数据面签名（PROTOCOL_RDP 路径）
 - plan.md:137-138 真机联调和真实服务器抓包比对
+## 第886轮：批81 —— plan.md 门禁三项与批7尾注裁决
+
+### 发现
+- plan.md:602 尾注 stale：批7 ⑥ 已标 [x] 但下一行仍写"设计文档要求，未实现"。
+- plan.md:143/146/148 三项 Linux gate 标记为 [ ]，但实现均已在 scripts/linux-build-gate.sh 落地。
+
+### 证据（W5）
+- 租约已实现：server.cpp:688 注释 "ServerConfig::max_input_sessions caps how many sessions may hold"、:819-840 ReleaseInput 路径、:887/:924 TryAcquireInputLease。
+- 默认 BUILD_DIR 原生 FS + PID：linux-build-gate.sh:35 默认 ${TMPDIR:-/tmp}/rtsc-gate-build.$$
+- 空后缀防御：linux-build-gate.sh:61-65 注释（实测证据）、:75-80 basename 形状匹配 + case 跳过空/非数字。
+- 显式传参责任：linux-build-gate.sh:32-34 注释。
+- 语法：bash -n scripts/linux-build-gate.sh → SYNTAX_OK。
+
+### 修复
+- plan.md:602 删除 stale 尾注，合并入 :601 并补 ServerConfig::max_input_sessions 门证据。
+- plan.md:143/146/148 [ ] → [x]，附实现路径与行号。
+
+### 验证
+无代码改动；脚本语法 PASS；文档一致性已修正。
+
+### 当前剩余未完成项
+不可自动化（需真机/凭据）：plan.md:56 TLS1.3 ticket、:75 Security Exchange PDU、:67 数据面签名、:137-138 真机联调、:603 真机输入注入清单。## 第886轮：批81 —— plan.md 门禁三项与批7尾注裁决
+
+### 发现
+- plan.md:602 尾注 stale：批7 ⑥ 已标 [x] 但下一行仍写"设计文档要求，未实现"。
+- plan.md:143/146/148 三项 Linux gate 标记为 [ ]，但实现均已在 scripts/linux-build-gate.sh 落地。
+
+### 证据（W5）
+- 租约已实现：server.cpp:688 注释 "ServerConfig::max_input_sessions caps how many sessions may hold"、:819-840 ReleaseInput 路径、:887/:924 TryAcquireInputLease。
+- 默认 BUILD_DIR 原生 FS + PID：linux-build-gate.sh:35 默认 ${TMPDIR:-/tmp}/rtsc-gate-build.$$
+- 空后缀防御：linux-build-gate.sh:61-65 注释（实测证据）、:75-80 basename 形状匹配 + case 跳过空/非数字。
+- 显式传参责任：linux-build-gate.sh:32-34 注释。
+- 语法：bash -n scripts/linux-build-gate.sh → SYNTAX_OK。
+
+### 修复
+- plan.md:602 删除 stale 尾注，合并入 :601 并补 ServerConfig::max_input_sessions 门证据。
+- plan.md:143/146/148 [ ] → [x]，附实现路径与行号。
+
+### 验证
+无代码改动；脚本语法 PASS；文档一致性已修正。
+
+### 当前剩余未完成项
+不可自动化（需真机/凭据）：plan.md:56 TLS1.3 ticket、:75 Security Exchange PDU、:67 数据面签名、:137-138 真机联调、:603 真机输入注入清单。
