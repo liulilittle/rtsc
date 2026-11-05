@@ -2083,7 +2083,9 @@ Release 全量 0 error 0 warning；ctest **69/69**（77.43s）
 ### 诚实登记（未验证，禁止声称已覆盖）
 `Receive` 的 `progressed` 修复逻辑正确，但**无测试可证伪**：TLS 1.3 回环无法产出
 一个能发 ticket 的服务端上下文（`RawServer` 的 `STREAM_SIZES` 在手动 SSPI 握手后
-返回 `SEC_E_INTERNAL_ERROR`）。已在代码注释中标注 UNVERIFIED，并说明可证伪条件。## 第890轮：批84 —— 用户报告"打开直接马赛克"的排查（提交 7ca14f3）
+返回 `SEC_E_INTERNAL_ERROR`）。已在代码注释中标注 UNVERIFIED，并说明可证伪条件。
+
+## 第890轮：批84 —— 用户报告"打开直接马赛克"的排查（提交 7ca14f3）
 
 ### 用户报告
 GUI 打开后画面是马赛克。
@@ -2096,6 +2098,13 @@ GUI 打开后画面是马赛克。
 3. GUI 侧对每个 rect 打印：`w=1280 h=3 bpp=32 flags=0x0000 len=15360 colours=769`，
    1024 行被切成 342 个 3 行 band，每个 band 有 769 种颜色 → 传输与解码正确
 4. **矛盾点**：band 有 769 色，但汇总统计显示 `1 distinct colours`
+
+### 【已推翻】当时的结论
+本批次曾写道"渲染本身是正确的，坏掉的是诊断"。该结论依据是
+自建 test-pattern 的 65537 distinct colours，属循环论证，**已作废**
+（见第891轮与 discover 例122）。保留下来的有效部分是下面的统计口径
+修复；"渲染正确"这一判断直到批85 用真机 dump
+（render12: non-black=1101245 / 84.02% / 1842 色）才真正成立。
 
 ### 根因
 `tools/rtsc_gui/main.cpp` 的 `count_non_black` 只采样前 1024 个像素：
@@ -2128,3 +2137,106 @@ Release 全量 0 error 0 warning；ctest **69/69**（90.71s）；server_tests 60
 "能观测"不等于"观测覆盖了全样本"：抽样上限 = 1024 让唯一的画面诊断对
 第 0 行以下全部失明，且这个盲区正好落在最常被问的问题上
 （"远程桌面到底画出来了吗"）。诊断口径必须与它声称的范围一致。
+
+## 第891轮：批85-88 —— 用户报告的四个真实缺陷（真机 192.168.1.7）
+
+### 用户报告
+1. "所有页签的功能都不生效"
+2. "整个画面是闪烁的，非常抖动"
+3. "我操作远程拖动里面的窗口的时候就非常的闪烁"
+4. "远程桌面应该默认按照远程全屏缩放到应用窗口" + "多屏幕场景"
+
+### 关键前提：先纠正我自己的两处误判
+- 误判A：我曾说"进程 0 窗口"。实际那次枚举发生在 `--seconds 12` 到期、
+  进程已退出之后。常驻运行实测 `windows=4`，`RtscWindowClass vis=True`
+  稳定存活。窗口一直存在。
+- 误判B：批次84 我曾声称"渲染一直是对的"，依据是 test-pattern 的
+  `65537 distinct colours`。那是拿自造假图自证假图（循环论证）。真机
+  dump 证据：`render12 client 1280x1024 non-black=1101245 (84.02%)
+  distinct=1842`，说明真机渲染确实正常，但当时的论证方式无效。
+
+### 缺陷 1：连接信息对话框永不出现（批85，211beb3）
+实测手段：跨进程 WM_COMMAND 逐项驱动菜单 + 按 PID 枚举全部窗口。
+
+| 命令 | 观测 |
+|---|---|
+| 智能调整大小(1102) | 标题 fit to window -> zoom 100%，生效 |
+| 全屏(1101) | 窗口矩形变化，生效 |
+| 连接信息(1103) | 无对话框，无变化 |
+| 智能卡(1104) / 帮助(1105) | 无变化 |
+
+插桩决定性证据：
+```
+[diag] ShowConnectionInfoDialog enter parent=0000000000000000
+[diag] CreateWindowExW failed err=1400
+```
+根因：`connection_info_dialog_win32.cpp` 的 `Handle()` 默认分支调用
+`DefWindowProcW(hwnd_, ...)`（成员），而 `WM_NCCREATE` 时 `hwnd_` 尚未赋值
+（赋值在 `CreateWindowExW` 返回之后）。`DefWindowProcW(nullptr, WM_NCCREATE)`
+返回 FALSE -> 系统中止创建 -> `CreateWindowExW` 返回 nullptr，
+`GetLastError()=1400 ERROR_INVALID_WINDOW_HANDLE`。
+修复：`Handle(HWND hwnd, ...)`，`WndProc` 传入自己收到的 hwnd。
+参照 `src/ui/window_win32.cpp:570` 的正确写法。
+
+漏网原因：原测试 `tests/test_ui.cpp:1522` 只断言
+`ShowConnectionInfoDialog(nullptr, ...)` 被调用——**调用点存在不等于
+对话框能创建**。新测试改为结构化断言（Handle 收 HWND、WndProc 转发、
+文件内不得出现 `DefWindowProcW(hwnd_,`）。
+
+### 缺陷 2/3：闪烁与抖动（批86/87，5a04064 / 9418dc0）
+根因是**架构性的**，不是某个函数的错。整条链路只有一个 bool：
+
+| 环节 | 缺陷 |
+|---|---|
+| GraphicsPipeline | `dirty_` 单布尔，任意小矩形置 true |
+| RenderTo | 无条件整幅 ScaleSurface（1280x1024 全量重采样）|
+| Win32Window::Present | 无条件整幅 5MB RgbaToBgra |
+| InvalidateRect | `nullptr` = 整客户区失效 |
+| WM_PAINT | 无条件整幅 BitBlt，无视 ps.rcPaint |
+
+拖动远程窗口时服务端连续发小块位图，每块都触发全屏重采样 + 全屏字节转换
++ 全窗口重绘。mstsc 不闪不是因为它快，而是**只画变化的那块**。
+
+修复：
+- `Rect`（半开区间）+ `dirty_region()/mark_all_dirty()/clear_dirty()`
+- `MarkSurfaceRectDirty`：按 `Surface::Blit` 同一套裁剪规则累积，
+  完全落在画面外的位图不扩大脏区
+- `coarse_dirty` 区分两类更新：位图是矩形寻址（精确），
+  orders/调色板/指针样式是非矩形寻址（回退整屏）
+- `ScaleSurfaceClipped`：只写 dirty∩视口∩目标的交集
+- `PresentRect(x,y,w,h)`：只转换并失效覆盖的那些行
+- `WM_PAINT` 按 `ps.rcPaint` 拷贝
+- GUI：`view_dirty` 传整视口，否则传 `dirty_region()`
+
+### 缺陷 4：默认缩放（批87）
+`fit_arg` 默认 false -> true（fit=0 可显式切回 1:1）；
+显式指定 zoom 时强制 fit=false 避免覆盖；库层默认仍 1:1
+（`test_view.cpp:972/1206` 两个锁定用例不动，它们测的是库不是前端）。
+实测：`view: 1280x1024 -> 1280x1024 at (0,0), scale 1.000 (fit)`。
+
+### 多屏（批88，8cd35a7）
+`RenderMonitorTo(index, dst, dirty, dst_dirty)`：dirty 是虚拟桌面坐标，
+与 monitor 求交后平移到局部坐标；无交集返回 false 让调用方整屏跳过。
+GUI 多窗路径改用 local 矩形调 PresentRect。
+
+### 变异记录（第16条，全部实测）
+| 变异 | 结果 |
+|---|---|
+| `Rect::Union` 空值分支改成 return a | 3 红 |
+| x1 不做右裁剪 | clips_at_surface_edges 红 |
+| 任意更新都 mark_all_dirty | 5 红 15 断言 |
+| dst_dirty 恒为整屏 | 3 红 7 断言 |
+| 去掉 monitor 求交判断 | **存活**（下游裁剪兜住，防御性冗余）|
+| 去掉右侧 clamp | **存活**（lx1 的 dst 宽度裁剪兜住）|
+
+教训：`Rect::Union` 定义在 header，改 .cpp 无效（第一次变异因此假存活）。
+`--clean-first` 会删掉其它测试目标导致 ctest "Not Run"，需重建全量。
+
+### C0
+每批均 Release 全量 0 error 0 warning；最终 ctest 69/69（84.51s）；
+graphics 22/390；multimon 27/112。
+
+### 未完成
+- 智能卡（kCmdToggleSmartCard）/ 帮助（kCmdHelp）：代码里**完全没有实现**，
+  只有常量定义与窗口投递，GUI 无消费者。属功能缺失不是缺陷。
+- CDP 调试通道（用户提议参照 F:\VGWW 的 `--ui-debug-port` 方案）

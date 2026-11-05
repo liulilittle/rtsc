@@ -263,10 +263,42 @@
 - [ ] 主机/端口/域/用户；**保存凭据**（等价 cmdkey / RDP 文件）；**RDP 文件导入/导出**
 - [ ] NLA（CredSSP/NTLM）、TLS（SChannel/OpenSSL）、Standard RDP Security、许可（自建）
 - [ ] **RD Gateway（TS Gateway）**、服务器身份验证级别、证书校验（当前 kInsecure，应可配）
-- [ ] 智能卡 / Kerberos（域）
+- [ ] 智能卡 / Kerberos（域）—— **智能卡确认完全未实现**（2026-11-05 核查）：
+      `kCmdToggleSmartCard` 只有常量定义（window.h:81）与窗口投递
+      （window_win32.cpp:683），GUI 主循环无任何消费者，协议侧无 MS-RDPESC 代码。
+      `ViewMenuState.smart_card` 恒为 true，菜单勾选切换无效。
+      同批核查：`kCmdHelp`（window.h:91）同样只有定义与投递，无消费者。
+
+### B-1. 绘制质量（2026-11-05 用户三轮追问后完成）
+
+用户原话："整个画面是闪烁的，非常抖动"、"我操作远程拖动里面的窗口的时候
+就非常的闪烁"、"重绘没有这么完整重绘的"、"要双缓冲"、"一秒钟最多六十帧，
+但大多数时候是不渲染的"。
+
+- [x] **脏矩形局部重绘**（批86 `5a04064`）：`Rect` + `dirty_region()` +
+      `MarkSurfaceRectDirty`；位图按目的矩形精确累积，orders/调色板/指针
+      样式回退整屏（`coarse_dirty`）。6 个用例，变异 3 红。
+- [x] **局部合成**：`ScaleSurfaceClipped` + `RenderTo(dst, dirty)`
+- [x] **局部上传**：`Window::PresentRect`（默认转发 Present，X11/Wayland 不变）；
+      Win32 只转换脏区覆盖的行
+- [x] **WM_PAINT 尊重 rcPaint**（批87 `9418dc0`）：原先无视更新区整幅 BitBlt
+- [x] **双缓冲**：DIB（`CreateDIBSection` + `mem_dc_`）即后缓冲，
+      且 `hbrBackground` 未设置（系统不擦背景），合成先写内存再一次拷屏
+- [x] **60 fps 上限 + 空闲不渲染**：`kMinFrameInterval=16ms` 闸门 + 脏区为空
+      时整帧跳过。更新到达时不立即绘制，只在帧边界提交
+- [ ] 三缓冲：未实现；当前双缓冲已满足需求，三缓冲对非垂直同步的 GDI 路径
+      收益未验证（**未验证**，需先量化撕裂是否实际发生）
 
 ### B. 显示
-- [ ] 分辨率、全屏、**智能缩放（smart sizing）**、**多显示器（/multimon、span）**、缩放（连续）
+- [x] 分辨率、全屏、**智能缩放（smart sizing）**、**多显示器（/multimon、span）**、缩放（连续）
+      - 全屏：`kCmdToggleFullscreen` -> `ToggleFullscreen(windows)`（批85 实测 RECT_CHANGED 生效）
+      - 智能缩放：批87 `9418dc0` GUI 默认 fit=true（实测 `scale 1.000 (fit)`；
+        fit=0 可切回 1:1；库层默认仍 1:1，见 test_view.cpp:972/1206）
+      - 多显示器：`--multimon` 每显示器一窗 + span 单窗；批88 `8cd35a7` 让多窗
+        也走脏区（`RenderMonitorTo(index,dst,dirty,dst_dirty)`，3 个用例）
+      - 连续缩放：Ctrl+滚轮 / 菜单 13 档（`ApplyZoomInput`）
+      - 未验证：真机只有 1 个显示器（`monitor layout: 1 monitor(s)`），
+        多屏路径目前只有单元测试覆盖，**未做真机双屏实测**
 - [ ] 色深（8/15/16/24/32）、字体平滑、桌面合成、视觉样式
 - [ ] 帧率/画质（连接质量自适应）、持久位图缓存
 
