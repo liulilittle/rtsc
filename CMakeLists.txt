@@ -344,7 +344,9 @@ target_include_directories(rtsc_rop_tests PRIVATE tests)
 # UI debug channel (loopback HTTP + JSON) used by rtsc_gui when launched
 # with --ui-debug-port. Platform code is confined to the socket layer.
 add_library(rtsc_debug STATIC
-    src/debug/ui_debug_server.cpp)
+    src/debug/ui_debug_server.cpp
+    src/debug/gui_debug_host.cpp
+    src/debug/pending_command_queue.cpp)
 target_include_directories(rtsc_debug PUBLIC include)
 if(WIN32)
     target_link_libraries(rtsc_debug PUBLIC ws2_32)
@@ -363,6 +365,10 @@ target_compile_definitions(rtsc_ui_tests PRIVATE
 add_executable(rtsc_ui_debug_tests tests/test_ui_debug.cpp)
 target_link_libraries(rtsc_ui_debug_tests PRIVATE rtsc_debug rtsc_util)
 target_include_directories(rtsc_ui_debug_tests PRIVATE tests)
+
+add_executable(rtsc_gui_debug_tests tests/test_gui_debug_host.cpp)
+target_link_libraries(rtsc_gui_debug_tests PRIVATE rtsc_debug rtsc_util)
+target_include_directories(rtsc_gui_debug_tests PRIVATE tests)
 
 add_executable(rtsc_graphics_tests tests/test_graphics.cpp)
 target_link_libraries(rtsc_graphics_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
@@ -625,7 +631,7 @@ if(WIN32)
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp
                tools/rtsc_gui/help_dialog_win32.cpp)
-target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util)
+target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util rtsc_debug)
 target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc rtsc_smartcard)
 if(WIN32)
     target_link_libraries(rtsc_gui PRIVATE rtsc_audio rtsc_usb_win32)
@@ -849,6 +855,7 @@ add_test(NAME orders COMMAND rtsc_orders_tests)
 add_test(NAME rop COMMAND rtsc_rop_tests)
 add_test(NAME ui COMMAND rtsc_ui_tests)
 add_test(NAME ui_debug COMMAND rtsc_ui_debug_tests)
+add_test(NAME gui_debug COMMAND rtsc_gui_debug_tests)
 add_test(NAME graphics COMMAND rtsc_graphics_tests)
 add_test(NAME view COMMAND rtsc_view_tests)
 add_test(NAME session_info COMMAND rtsc_session_info_tests)

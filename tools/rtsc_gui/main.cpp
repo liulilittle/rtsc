@@ -32,6 +32,13 @@
 
 #include "connection_info_dialog_win32.h"
 #include "help_dialog_win32.h"
+#include "rtsc/debug/gui_debug_host.h"
+#include "rtsc/debug/pending_command_queue.h"
+#include "rtsc/debug/ui_debug_server.h"
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/channel/drdynvc_client.h"
@@ -373,6 +380,8 @@ int main(int argc, char** argv) {
     bool gateway_insecure = false;
     std::string gateway_address;  // "--gateway=host:port"
     std::string gateway_pinned_spki;  // "--gateway-trust=<64-hex>"
+    // 0 = debug channel disabled (the default). Binds 127.0.0.1 only.
+    uint16_t ui_debug_port = 0;
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(argc));
     for (int i = 1; i < argc; ++i) {
@@ -383,6 +392,17 @@ int main(int argc, char** argv) {
         }
         if (std::strcmp(a, "--input-probe") == 0) {
             input_probe = true;
+            continue;
+        }
+        // In-process debug channel (loopback HTTP + JSON). Default off:
+        // nothing starts unless this flag is given. See
+        // include/rtsc/debug/ui_debug_server.h for scope and safety.
+        if (std::strncmp(a, "--ui-debug-port=", 16) == 0) {
+            ui_debug_port = static_cast<uint16_t>(std::atoi(a + 16));
+            continue;
+        }
+        if (std::strcmp(a, "--ui-debug-port") == 0 && i + 1 < argc) {
+            ui_debug_port = static_cast<uint16_t>(std::atoi(argv[++i]));
             continue;
         }
         if (std::strcmp(a, "--rail") == 0) {
@@ -961,6 +981,36 @@ int main(int argc, char** argv) {
         }
         return true;
     };
+
+    // ---- In-process debug channel (opt-in) --------------------------------
+    // The HTTP server runs on its own thread; commands are queued here and
+    // answered from the render loop below, so a command can read live client
+    // state without racing the compositor. Everything here is inert unless
+    // --ui-debug-port was given.
+    rtsc::debug::PendingCommandQueue dbg_queue;
+    class GuiDebugHost final : public rtsc::debug::UiDebugHost {
+     public:
+        explicit GuiDebugHost(rtsc::debug::PendingCommandQueue* q) : q_(q) {}
+        std::string Execute(const std::string& json_body) override {
+            return q_ != nullptr ? q_->Run(json_body)
+                                 : "\"ok\":false,\"error\":\"no queue\"";
+        }
+     private:
+        rtsc::debug::PendingCommandQueue* q_;
+    };
+
+    GuiDebugHost dbg_host(&dbg_queue);
+    rtsc::debug::UiDebugServer dbg_server;
+    if (ui_debug_port != 0) {
+        std::string dbg_error;
+        if (dbg_server.Start(ui_debug_port, &dbg_host, dbg_error)) {
+            std::printf("ui debug channel: http://127.0.0.1:%u/debug\n",
+                        static_cast<unsigned>(dbg_server.port()));
+        } else {
+            std::printf("ui debug channel failed: %s\n", dbg_error.c_str());
+        }
+    }
+
     while (!all_closed()) {
         // Pump() waits at most kReadTimeoutMs for network data, so this loop
         // iterates several times a second even when the server is silent. That
@@ -968,6 +1018,32 @@ int main(int argc, char** argv) {
         // every iteration and its PeekMessageW is non-blocking, so keyboard and
         // mouse input is forwarded to the server promptly instead of the message
         // queue being starved while a blocking recv() waited on a quiet peer.
+        // Answer queued debug commands on the UI thread, before the pump,
+        // so a command sees the state the last frame left behind. Bounded:
+        // one drain per iteration, never a blocking wait.
+        rtsc::debug::PendingCommand cmd;
+        while (dbg_queue.Pop(cmd)) {
+            rtsc::debug::DebugSnapshot snap;
+            snap.desktop_width = client.desktop_width();
+            snap.desktop_height = client.desktop_height();
+            snap.view_width = static_cast<int>(windows[0]->surface().width());
+            snap.view_height = static_cast<int>(windows[0]->surface().height());
+            snap.zoom = client.graphics().zoom();
+            snap.fit = client.graphics().fit();
+            snap.frames_rendered = renders;
+            snap.loop_iterations = frames;
+            snap.input_events_sent = input_sends;
+            const auto& dr = client.graphics().dirty_region();
+            snap.dirty_left = dr.left;
+            snap.dirty_top = dr.top;
+            snap.dirty_right = dr.right;
+            snap.dirty_bottom = dr.bottom;
+            snap.session_active = true;
+            snap.host = host;
+            snap.backend = windows[0]->backend_name();
+            dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
+        }
+
         if (!client.Pump(*transport, error)) {
             std::printf("session ended: %s\n", error.c_str());
             break;
