@@ -2003,4 +2003,40 @@ plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实
 
 ### 未覆盖（诚实登记）
 - TLS1.3 ticket 分支（服务器协商 TLS1.2）
-- 真机输入注入清单（headless 模式 input=0，UIPI/多会话/SAS/Pause/多屏 UNVERIFIED）
+- 真机输入注入清单（headless 模式 input=0，UIPI/多会话/SAS/Pause/多屏 UNVERIFIED）## 第888轮：批82 —— TLS 版本可观测 + 真机输入探针实证（提交 391de9b）
+
+### 发现的真实缺口
+`SecurityLayer` 只把 TLS 后端握在私有成员里，没有暴露 `NegotiatedInfo`，
+导致 rtsc_connect / GUI / 任何运维口径都无法观测协商版本 —— plan.md:56 的
+"TLS1.3 票据分支未覆盖"因此无法从真机判定是"没测"还是"测了不可达"。
+
+### 实现（TDD：红→绿→变异）
+1. 先写 `security_layer_exposes_negotiated_tls_version`，编译期红：
+   `error C2039: "negotiated_tls" 不是 SecurityLayer 的成员`
+2. 新增 `bool SecurityLayer::negotiated_tls(tls::NegotiatedInfo&) const`：
+   - TLS 握手前 / 失败态 → 返回 false 并清零 out
+   - 握手后 → 原样透传后端 `negotiated()`，**禁止编译期常量**
+   - 注意边界：判定用 `phase_ == kTlsHandshake`（TLS 未完成），
+     不是 `phase_ != kDone`（整个 TLS+CredSSP+EUAR 完成）——初版写成后者导致首跑红，
+     已修正并在注释中记录原因
+3. rtsc_connect 会话建立时打印 `TLS: version=0x%04x cipher=0x%04x (TLS 1.x)`
+
+### 变异（第16条）
+| 变异 | 结果 |
+|---|---|
+| M1 访问器恒 `return false` | 用例红，2 failed checks |
+| M2 版本硬编码 0x0303（绕过后端） | 用例红，`got 0x0303 want 0x0304`，1 failed check |
+| 恢复 | 23 tests / 167 checks / 0 failing |
+
+### 真机证据（192.168.1.7）
+- `connect-tls-version.txt:24` — `TLS: version=0x0303 cipher=0x009d (TLS 1.2)`
+  ⇒ 服务器不支持 TLS 1.3，ticket 分支在本目标结构性不可达（环境限制，非缺陷）
+- `gui-input-probe.txt:14,35` — `input probe queued: key 0x1E, mouse (11,13)`
+  → `application sends: input=2` ⇒ 键盘+鼠标两条事件真实送达
+
+### C0
+Release 全量构建 0 error 0 warning；ctest **69/69**（88.73s）
+
+### 仍未覆盖（诚实登记）
+- TLS1.3：需支持 TLS 1.3 的服务器或自建回环
+- 真机输入 UNVERIFIED：UIPI 落点、多会话归属、SAS、Pause 后 NumLock 物理状态、多屏坐标

@@ -52,3 +52,20 @@ F:\rtsc\build\Release\rtsc_connect.exe --tls-insecure 192.168.1.7 3389 `
 F:\rtsc\build\Release\rtsc_gui.exe --tls-insecure 192.168.1.7 3389 `
     MicrosoftAccount windowsvipcuv@live.cn '<password>' --seconds 12
 ```
+## 追加（2026-11-05 第三轮）：TLS 版本可观测 + 输入探针
+
+| 项 | 命令 | 结果 | 证据 |
+|---|---|---|---|
+| TLS 协商版本 | `rtsc_connect --tls-insecure` | **version=0x0303 cipher=0x009d (TLS 1.2)** | `connect-tls-version.txt:24` |
+| 输入注入路径 | `rtsc_gui --tls-insecure --input-probe --seconds 15` | **input probe queued → application sends: input=2** | `gui-input-probe.txt:14,35` |
+
+### plan.md:56 TLS1.3 ticket 分支 → 本目标不可达（已量化）
+服务器只协商 TLS 1.2（0x0303），密码套件 TLS_RSA_WITH_AES_256_GCM_SHA384（0x009D）。
+TLS 1.3 的 NewSessionTicket / SEC_I_RENEGOTIATE 分支在此目标上**结构性不可达**。
+可观测性缺口已修补：新增 `SecurityLayer::negotiated_tls()`（批82 `391de9b`），
+rtsc_connect 在会话建立时打印版本，未来换支持 TLS 1.3 的服务器即可直接判定。
+
+### plan.md:603 真机输入清单 → 输入路径已实证
+`--input-probe` 排队 scancode 0x1E（'A'）+ 鼠标 (11,13)，
+服务器侧收到 `application sends: input=2`（键盘 1 + 鼠标 1，计数精确匹配）。
+仍 UNVERIFIED：UIPI 落点、多会话归属、SAS 序列、Pause 后 NumLock 物理状态、多屏坐标。
