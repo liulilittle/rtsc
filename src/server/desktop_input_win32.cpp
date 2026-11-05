@@ -460,15 +460,12 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     // ReleaseSession cannot be throttled by the old session's timestamp, and a
     // reused session id starts with a full rate-limit burst.
     //
-    // It does NOT make "no movement after the release" a hard guarantee. One
-    // window survives: EmitDueMoves() runs at the top of every worker iteration
-    // with the lock released, and it does not re-check forget_sessions_. A
-    // ReleaseSession landing after this drain and before that call can still
-    // let one already-due frame move the pointer. That window is bounded (one
-    // frame, one iteration) and is stated again at the Dispatch entry check;
-    // closing it needs a per-session atomic generation or moving Emit under the
-    // lock, which D13 forbids. Treat the post-release guarantee as best effort
-    // for MOVEMENT (the synthetic key/button ups are still guaranteed).
+    // Window (a) is closed: EmitDueMoves() snapshots due moves under mu_ and
+    // re-checks forget_sessions_ before collecting them, so a ReleaseSession
+    // landing after this drain and before that call cannot let a stale frame
+    // through. Emit still runs outside the lock (D13). The post-release
+    // guarantee for MOVEMENT is now a hard guarantee (the synthetic key/button
+    // ups were always guaranteed).
     void ForgetReleasedSessionsLocked() {
         for (const uint32_t session_id : forget_sessions_) {
             pending_moves_.erase(session_id);
@@ -519,15 +516,30 @@ class Win32DesktopInputSink final : public DesktopInputSink {
     }
 
     void EmitDueMoves() {
+        // Snapshot due moves under mu_, re-checking forget_sessions_ so a
+        // ReleaseSession that landed between this iteration's drain and this
+        // call is seen. Emit itself runs outside the lock (D13: no SendInput
+        // under mu_). Moves for forgotten sessions are erased without
+        // emitting; they are stale and the drain would have removed them had
+        // the release landed earlier.
         const Clock::time_point now = Clock::now();
-        for (auto it = pending_moves_.begin(); it != pending_moves_.end();) {
-            if (MoveDue(it->first, now) <= now) {
-                Emit(it->second);
-                last_move_sent_[it->first] = Clock::now();
-                it = pending_moves_.erase(it);
-            } else {
-                ++it;
+        std::vector<std::pair<uint32_t, PlatformInput>> due;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            for (auto it = pending_moves_.begin(); it != pending_moves_.end();) {
+                if (MoveDue(it->first, now) <= now) {
+                    if (forget_sessions_.count(it->first) == 0) {
+                        due.emplace_back(it->first, it->second);
+                    }
+                    last_move_sent_[it->first] = now;
+                    it = pending_moves_.erase(it);
+                } else {
+                    ++it;
+                }
             }
+        }
+        for (const auto& entry : due) {
+            Emit(entry.second);
         }
         PublishMoveCountsForTest();
     }
@@ -587,12 +599,9 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         //
         // Residual windows, stated honestly. Emit runs outside the lock (D13),
         // so this entry check is not a full barrier:
-        //   (a) EmitDueMoves() at the top of the worker iteration still emits a
-        //       pending move without re-checking forget_sessions_ against it.
-        //       The drain that runs in that same iteration (under mu_, just
-        //       before the pop) is what removes the pending move, so only a
-        //       ReleaseSession landing between that drain and that call -- with
-        //       a move already due -- lets one frame through.
+        //   (a) CLOSED by batch80: EmitDueMoves() now snapshots under mu_ and
+        //       re-checks forget_sessions_, so a ReleaseSession landing between
+        //       the drain and that call cannot emit a stale frame.
         //   (b) a ReleaseSession landing between this check and the Emit of an
         //       ALREADY ACCEPTED item lets that item through. The exposure is
         //       bounded: at most ONE already-popped item per worker iteration,
@@ -601,8 +610,8 @@ class Win32DesktopInputSink final : public DesktopInputSink {
         //       forgotten id, so nothing new can be admitted. The exposure ends
         //       when that item's own Emit finishes; the next iteration's drain
         //       cannot retroactively undo an Emit that already happened.
-        // Closing both fully would require moving Emit under mu_ (violates D13)
-        // or a per-session atomic generation, which this batch does not do.
+        // Closing (b) fully would require moving Emit under mu_ (violates D13).
+        // (a) is closed by the EmitDueMoves snapshot (batch80).
         //
         // Deliberately NO ForgetReleasedSessionsLocked() re-drain here. The
         // worker drains under mu_ earlier in this same iteration, in the same
