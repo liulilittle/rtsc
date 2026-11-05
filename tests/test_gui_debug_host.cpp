@@ -115,4 +115,43 @@ RTSC_TEST(gui_debug_string_fields_are_escaped) {
     CHECK(out.find("\"host\":\"a\\\"b\\\\c\"") != std::string::npos);
 }
 
+RTSC_TEST(gui_debug_surface_reports_pixel_statistics) {
+    DebugSnapshot s = MakeSnapshot();
+    s.non_black_pixels = 123456;
+    s.distinct_colours = 256;
+    s.total_pixels = 1310720;
+    const std::string out = rtsc::debug::ExecuteGuiCommand(s, "\"op\":\"surface\"");
+    CHECK(out.find("\"ok\":true") != std::string::npos);
+    CHECK(out.find("\"non_black_pixels\":123456") != std::string::npos);
+    CHECK(out.find("\"distinct_colours\":256") != std::string::npos);
+    CHECK(out.find("\"total_pixels\":1310720") != std::string::npos);
+}
+
+RTSC_TEST(gui_debug_surface_reports_zero_for_empty_surface) {
+    DebugSnapshot s = MakeSnapshot();
+    s.non_black_pixels = 0;
+    s.distinct_colours = 0;
+    s.total_pixels = 0;
+    const std::string out = rtsc::debug::ExecuteGuiCommand(s, "\"op\":\"surface\"");
+    CHECK(out.find("\"ok\":true") != std::string::npos);
+    CHECK(out.find("\"non_black_pixels\":0") != std::string::npos);
+    CHECK(out.find("\"distinct_colours\":0") != std::string::npos);
+    CHECK(out.find("\"total_pixels\":0") != std::string::npos);
+}
+
+RTSC_TEST(gui_debug_command_requests_surface_only_for_surface_op) {
+    // main() uses this to decide whether to pay for a full pixel walk, so a
+    // false positive costs a frame and a false negative hides the one command
+    // the flicker investigation needed.
+    CHECK(rtsc::debug::CommandRequestsSurface("\"op\":\"surface\""));
+    CHECK(rtsc::debug::CommandRequestsSurface("\"op\" : \"surface\""));
+    CHECK(!rtsc::debug::CommandRequestsSurface("\"op\":\"state\""));
+    CHECK(!rtsc::debug::CommandRequestsSurface("\"op\":\"dirty\""));
+    CHECK(!rtsc::debug::CommandRequestsSurface("\"op\":\"ping\""));
+    CHECK(!rtsc::debug::CommandRequestsSurface(""));
+    // A prefix of "surface" must not match: the op is compared whole.
+    CHECK(!rtsc::debug::CommandRequestsSurface("\"op\":\"surfaceish\""));
+    CHECK(!rtsc::debug::CommandRequestsSurface("\"op\":\"\""));
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_gui_debug_tests"); }

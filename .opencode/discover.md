@@ -2383,3 +2383,15 @@ mstsc 平滑不是因为它画得快，而是它只画变化的那块矩形。
 
 **规则**：C++ 局部类体（非嵌套在 lambda 内）禁止直接引用 `main()`/函数体里的
 局部变量；共享状态必须提升为函数作用域的对象，由局部类持指针/引用传递。
+
+### 例 134：main() 内局部类不能捕获外围局部变量（MSVC C2326，2026-11-05）
+
+**尝试**：批92 在 `tools/rtsc_gui/main.cpp` 的 `main()` 内定义局部类 `GuiDebugHost`，让它直接引用同一函数里的 `std::mutex dbg_mutex`、`std::condition_variable dbg_cv`、`std::deque<PendingCommand> dbg_queue`。
+
+**错误**：MSVC 报 `C2326: "std::string main::GuiDebugHost::Execute(const std::string &)"` 函数无法访问 `dbg_mutex`/`dbg_queue`/`dbg_cv`。
+
+**根因**：C++ 局部类**不捕获**外围函数的局部变量（只捕获类的 `static` 成员/全局），与 lambda 不同。`Execute` 在局部类定义之后、与 `dbg_*` 同处 `main()` 作用域，但局部类体内无法看见这些局部变量。
+
+**下一步 / 正确做法**：把 HTTP 线程与 UI 线程共享的队列封装成一个 **独立类型**（`PendingCommandQueue`），`main()` 里建一个实例，`GuiDebugHost` 持该实例的指针。两个线程都通过这一个对象访问，不再有"局部类引用局部变量"的问题。
+
+**规则**：C++ 局部类体（非嵌套在 lambda 内）禁止直接引用 `main()`/函数体里的局部变量；共享状态必须提升为函数作用域的对象，由局部类持指针/引用传递。

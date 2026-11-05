@@ -113,7 +113,20 @@ std::string ExecuteGuiCommand(const DebugSnapshot& s, const std::string& json_bo
         return r;
     }
 
+    if (op == "surface") {
+        std::string r = "\"ok\":true";
+        r += ",\"non_black_pixels\":" + std::to_string(s.non_black_pixels);
+        r += ",\"distinct_colours\":" + std::to_string(s.distinct_colours);
+        r += ",\"total_pixels\":" + std::to_string(s.total_pixels);
+        return r;
+    }
+
     return "\"ok\":false,\"error\":\"unknown op: " + JsonEscape(op) + "\"";
+}
+
+bool CommandRequestsSurface(const std::string& json_body) {
+    std::string op;
+    return FieldValue(json_body, "op", op) && op == "surface";
 }
 
 }  // namespace rtsc::debug

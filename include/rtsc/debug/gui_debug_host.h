@@ -36,15 +36,22 @@ struct DebugSnapshot {
     bool session_active = false;
     std::string host;
     std::string backend;
+    // Pixel statistics for the "surface" command (filled on demand).
+    unsigned non_black_pixels = 0;
+    unsigned distinct_colours = 0;
+    unsigned total_pixels = 0;
 };
 
 // Executes one command and returns a JSON object body (no enclosing braces),
 // exactly as UiDebugHost::Execute promises.
 //
-// Recognised ops: "ping", "state", "dirty". Anything else -- including a missing
-// "op" -- answers ok=false with an error naming the offending value. That is
+// Recognised ops: "ping", "state", "dirty", "surface". Anything else -- including a
+// missing "op" -- answers ok=false with an error naming the offending value. That is
 // deliberate: a debugger that silently answers "fine" to a typo turns a broken
 // query into a false pass.
 std::string ExecuteGuiCommand(const DebugSnapshot& snapshot, const std::string& json_body);
+
+// Returns true if the command body is asking for the pixel-statistics command.
+bool CommandRequestsSurface(const std::string& json_body);
 
 }  // namespace rtsc::debug

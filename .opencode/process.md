@@ -2327,3 +2327,4 @@ readers are shared with the remote session"（语义更准且不再撞锚点）�
 
 ### C0
 Release 全量 0 error 0 warning；每批构建各自目标 exit=0。
+**批93**：rtsc_gui --ui-debug-port（调试通道实测，HTTP 200 {"ok":true} / state / dirty / surface 命令返回真实像素：non_black=1310650/1310720、102479 色）。变异：empty 恒假 -> 1 用例红；恢复全绿。违规：git checkout 导致整文件丢弃（已修）**

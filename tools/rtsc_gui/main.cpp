@@ -39,6 +39,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <unordered_set>
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/channel/drdynvc_client.h"
@@ -62,6 +63,7 @@
 #include "rtsc/smartcard/backend.h"
 #include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
+#include "rtsc/ui/surface.h"
 #include "rtsc/usb/usb_device.h"
 #include "rtsc/usb/usb_gate.h"
 #include "rtsc/util/crash_guard.h"
@@ -1017,32 +1019,60 @@ int main(int argc, char** argv) {
         // is what keeps the Win32 window responsive: PollEvent() below runs
         // every iteration and its PeekMessageW is non-blocking, so keyboard and
         // mouse input is forwarded to the server promptly instead of the message
-        // queue being starved while a blocking recv() waited on a quiet peer.
-        // Answer queued debug commands on the UI thread, before the pump,
-        // so a command sees the state the last frame left behind. Bounded:
-        // one drain per iteration, never a blocking wait.
-        rtsc::debug::PendingCommand cmd;
-        while (dbg_queue.Pop(cmd)) {
-            rtsc::debug::DebugSnapshot snap;
-            snap.desktop_width = client.desktop_width();
-            snap.desktop_height = client.desktop_height();
-            snap.view_width = static_cast<int>(windows[0]->surface().width());
-            snap.view_height = static_cast<int>(windows[0]->surface().height());
-            snap.zoom = client.graphics().zoom();
-            snap.fit = client.graphics().fit();
-            snap.frames_rendered = renders;
-            snap.loop_iterations = frames;
-            snap.input_events_sent = input_sends;
-            const auto& dr = client.graphics().dirty_region();
-            snap.dirty_left = dr.left;
-            snap.dirty_top = dr.top;
-            snap.dirty_right = dr.right;
-            snap.dirty_bottom = dr.bottom;
-            snap.session_active = true;
-            snap.host = host;
-            snap.backend = windows[0]->backend_name();
-            dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
-        }
+         // queue being starved while a blocking recv() waited on a quiet peer.
+         // Answer queued debug commands on the UI thread, before the pump,
+         // so a command sees the state the last frame left behind. Bounded:
+         // one drain per iteration, never a blocking wait.
+         rtsc::debug::PendingCommand cmd;
+         while (dbg_queue.Pop(cmd)) {
+             rtsc::debug::DebugSnapshot snap;
+             snap.desktop_width = client.desktop_width();
+             snap.desktop_height = client.desktop_height();
+             snap.view_width = static_cast<int>(windows[0]->surface().width());
+             snap.view_height = static_cast<int>(windows[0]->surface().height());
+             snap.zoom = client.graphics().zoom();
+             snap.fit = client.graphics().fit();
+             snap.frames_rendered = renders;
+             snap.loop_iterations = frames;
+             snap.input_events_sent = input_sends;
+             const auto& dr = client.graphics().dirty_region();
+             snap.dirty_left = dr.left;
+             snap.dirty_top = dr.top;
+             snap.dirty_right = dr.right;
+             snap.dirty_bottom = dr.bottom;
+             snap.session_active = true;
+             snap.host = host;
+             snap.backend = windows[0]->backend_name();
+             // The pixel walk is O(width*height) with a hash set, so it runs only
+             // when the command actually asked for it. A "state" or "ping" query
+             // must not cost a full-surface scan.
+             if (rtsc::debug::CommandRequestsSurface(cmd.body)) {
+                 const rtsc::ui::Surface& srv = windows[0]->surface();
+                 const size_t px_count =
+                     static_cast<size_t>(srv.width()) * srv.height();
+                 snap.total_pixels = static_cast<unsigned>(px_count);
+                 if (px_count > 0) {
+                     const uint8_t* p = srv.data();
+                     unsigned non_black = 0;
+                     std::unordered_set<std::uint64_t> colours;
+                     colours.reserve(px_count);
+                     for (size_t i = 0; i < px_count; ++i) {
+                         const std::uint64_t rgba =
+                             static_cast<std::uint64_t>(p[0]) |
+                             (static_cast<std::uint64_t>(p[1]) << 8) |
+                             (static_cast<std::uint64_t>(p[2]) << 16) |
+                             (static_cast<std::uint64_t>(p[3]) << 24);
+                         if ((rgba & 0x00FFFFFFu) != 0) ++non_black;
+                         colours.insert(rgba);
+                         p += 4;
+                     }
+                     snap.non_black_pixels = non_black;
+                     snap.distinct_colours =
+                         static_cast<unsigned>(colours.size());
+                 }
+             }
+             dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
+         }
 
         if (!client.Pump(*transport, error)) {
             std::printf("session ended: %s\n", error.c_str());
