@@ -314,8 +314,16 @@
       `POST /debug` 批命令 + `GET /health`，仅 loopback、默认关，
       命令在 UI 线程执行；8 用例 22 检查，变异 3 组（其中 1 组暴露了
       我的假测试并已重写）
-- [ ] `rtsc_gui` 侧接线 `--ui-debug-port` 与 `UiDebugHost` 实现
-- [ ] 命令集定义（tree/state/screenshot/click/type/frames/dirty 等）
+- [x] **`rtsc_gui` 侧接线 `--ui-debug-port` 与 `UiDebugHost` 实现**（批92 `08750d9`）：
+      参数解析 + 渲染循环每轮 Pop 一条命令并组快照应答；命令集 ping/state/dirty；
+      未知/缺失 op 一律 ok=false 并回显违规值。HTTP 线程与 UI 线程经
+      `PendingCommandQueue`（一次一条、2 秒超时）解耦，绝不碰 client/window。
+      实测（真机 192.168.1.7，`--ui-debug-port=17777`）：
+      `state` = desktop 1280x1024 / view 1280x1024 / zoom 1 / fit true / frames_rendered 23 /
+      loop_iterations 663 / input_events_sent 0 / session_active true / host 192.168.1.7 /
+      backend win32；`dirty` = left0 top0 right0 bottom0 empty true；`ping` = pong true；
+      `bad op` = ok false error "unknown op: zzz"；`/health` = 200 {"ok":true}。
+- [ ] 命令集扩展：input 注入（click/type/key）、screenshot、resize、frames 采样序列
 
 ### B. 显示
 - [x] 分辨率、全屏、**智能缩放（smart sizing）**、**多显示器（/multimon、span）**、缩放（连续）
