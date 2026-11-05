@@ -263,11 +263,27 @@
 - [ ] 主机/端口/域/用户；**保存凭据**（等价 cmdkey / RDP 文件）；**RDP 文件导入/导出**
 - [ ] NLA（CredSSP/NTLM）、TLS（SChannel/OpenSSL）、Standard RDP Security、许可（自建）
 - [ ] **RD Gateway（TS Gateway）**、服务器身份验证级别、证书校验（当前 kInsecure，应可配）
-- [ ] 智能卡 / Kerberos（域）—— **智能卡确认完全未实现**（2026-11-05 核查）：
-      `kCmdToggleSmartCard` 只有常量定义（window.h:81）与窗口投递
-      （window_win32.cpp:683），GUI 主循环无任何消费者，协议侧无 MS-RDPESC 代码。
-      `ViewMenuState.smart_card` 恒为 true，菜单勾选切换无效。
-      同批核查：`kCmdHelp`（window.h:91）同样只有定义与投递，无消费者。
+- [~] 智能卡 / Kerberos（域）
+      - [x] **智能卡协议层 + 通道接线（批91 `e59b8fd`）**：NDR 类型序列化 v1、
+            SCARD_IOCTL 枚举（按 [MS-RDPESC] 3.1.4）、10 类 call 解析 + return 编码、
+            `ISmartCardBackend` 平台无关接口、Win32 动态加载 winscard.dll、
+            空后端、rdpdr 设备声明（DTYP=0x20/SCARD）+ IRP_MJ_DEVICE_CONTROL 分派
+      - 测试：`test_smartcard` 59/151、`test_smartcard_channel` 18/111；变异 6 组全红
+      - GUI：`RTSC_REDIRECT_SMARTCARD` 开关；`kCmdToggleSmartCard` 改为报告状态
+      - [ ] **仅 ANSI(A) 变体**；W 变体（0x24/0x2C/0xA4/0xB0/0xCC）返回 InvalidType
+      - [ ] **未做真实 Windows 服务端互操作**（本机无卡片/服务）。winscard 动态加载
+            实测 EstablishContext=0x8010001D(SCARD_E_NO_SERVICE)：绑定成功、服务缺失
+            时正确降级，非空壳
+      - [ ] 未实现 ISVALIDCONTEXT/GETATTRIB/SETATTRIB/LOCATECARDS/READCACHE/
+            WRITECACHE/GETREADERICON，均 fail closed
+      - [ ] 待审计三问：OutputBufferLength=0 是否豁免 STATUS_BUFFER_TOO_SMALL；
+            GetStatusChange 超时回填 reader_states 是否符合 2.2.3.5；
+            kStatusChangeStepMs=1000 在单线程 Pump 下最多阻塞 UI 1 秒/步
+      - [ ] Kerberos（域）未开始
+      - 历史：批91 之前该项为"完全未实现"（`kCmdToggleSmartCard` 只有常量定义与
+            窗口投递，GUI 无消费者，协议侧无 MS-RDPESC 代码）
+- [x] **帮助菜单**（批89 `c5f4139`）：新增 `help_dialog_win32.{h,cpp}` 关于对话框。
+      明确不冒充 mstsc 的帮助查看器（本项目无帮助内容，逆向纪律禁止编造无证据行为）
 
 ### B-1. 绘制质量（2026-11-05 用户三轮追问后完成）
 
@@ -288,6 +304,18 @@
       时整帧跳过。更新到达时不立即绘制，只在帧边界提交
 - [ ] 三缓冲：未实现；当前双缓冲已满足需求，三缓冲对非垂直同步的 GDI 路径
       收益未验证（**未验证**，需先量化撕裂是否实际发生）
+
+### B-2. 可观测性（2026-11-05）
+
+用户两次要求建立进程内 CDP 风格调试通道（参照 `F:\VGWW` 的
+`--ui-debug-port`），并批评用截图+外部探针猜画面。
+
+- [x] **UI 调试通道骨架**（批90 `cf50660`）：`rtsc_debug` 库，
+      `POST /debug` 批命令 + `GET /health`，仅 loopback、默认关，
+      命令在 UI 线程执行；8 用例 22 检查，变异 3 组（其中 1 组暴露了
+      我的假测试并已重写）
+- [ ] `rtsc_gui` 侧接线 `--ui-debug-port` 与 `UiDebugHost` 实现
+- [ ] 命令集定义（tree/state/screenshot/click/type/frames/dirty 等）
 
 ### B. 显示
 - [x] 分辨率、全屏、**智能缩放（smart sizing）**、**多显示器（/multimon、span）**、缩放（连续）

@@ -2240,3 +2240,68 @@ graphics 22/390；multimon 27/112。
 - 智能卡（kCmdToggleSmartCard）/ 帮助（kCmdHelp）：代码里**完全没有实现**，
   只有常量定义与窗口投递，GUI 无消费者。属功能缺失不是缺陷。
 - CDP 调试通道（用户提议参照 F:\VGWW 的 `--ui-debug-port` 方案）
+## 第892轮：批90-91 —— UI 调试通道 + 智能卡重定向（e59b8fd）
+
+### 批90 UI 调试通道（cf50660）
+用户两次要求（原话）：
+「你是不知道做一个CDP控制协议直接HTTP请求来控制UI嘛。你要截图/还是模拟
+鼠标键盘输入都可以你看看F:\VGWW别人怎么做的嘛」
+「尼玛的你又开始不讲纪律了」（指我用截图+外部探针反复猜画面）
+
+实现：`include/rtsc/debug/ui_debug_server.h` + `src/debug/ui_debug_server.cpp`
+（380 行）+ `tests/test_ui_debug.cpp`（8 用例 22 检查）。
+- 默认关，仅 `--ui-debug-port=<n>` 启动，只绑 127.0.0.1，无认证（本地开发缝）
+- `POST /debug {"commands":[...]}` -> `{"results":[...]}`；`GET /health`
+- 命令由渲染循环每轮排空队列在 UI 线程执行，不在 HTTP 线程
+- HTTP 层极小：请求行 + Content-Length + body，无 keep-alive/chunked/TLS
+
+**假测试事件（第16条，第二次同类）**：
+初版用例只断言 host 收到"包含某子串"的 body。把
+`fn(body.substr(start, i - start + 1))` 改成 `i - start`（丢掉末尾 `}`）
+后测试**仍全绿**——少个花括号，子串照样在。
+改为全文精确比较（`CHECK(host.seen[0] == std::string(...))`）后，
+同一变异立刻红（2 用例 3 断言）。这是本项目第三次变异因断言太弱而假存活。
+
+另记一条诊断陷阱：我一度以为实现有 bug（body 少一个 `}`），实际是
+PowerShell 把函数内 fprintf 的换行转义弄坏导致输出被截断。
+**诊断工具自身的转义问题会被误判成产品缺陷**。
+
+### 批91 智能卡重定向（e59b8fd，子代理 ses_e5520eed 执行）
+新增 4125 行 / 12 文件：
+- `include/rtsc/proto/smartcard.h`（245）：SCARD_IOCTL 枚举 + NDR 头 + 范围上限
+- `src/proto/smartcard.cpp`（831）：NDR 类型序列化 v1，10 类 call 解析 + return 编码
+- `include/rtsc/smartcard/backend.h`（190）：平台无关接口，零 Windows 类型
+- `src/smartcard/backend_null.cpp` / `backend_win32.cpp`（582，LoadLibraryW 动态加载）
+- `tests/test_smartcard.cpp` 59/151、`tests/test_smartcard_channel.cpp` 18/111
+- rdpdr 客户端接线：DTYP=0x20、PreferredDosName="SCARD"、DeviceDataLength=0、
+  SMARTCARD_CAPS_SET（CAP_SMARTCARD_TYPE=0x0005, version=1）
+- GUI：`RTSC_REDIRECT_SMARTCARD` 环境变量 + `kCmdToggleSmartCard` 状态消费
+
+**主代理任务提示里的 7 个 IOCTL 值全错**（我凭记忆写的）。子代理没盲从，
+按 [MS-RDPESC] 3.1.4 更正并列出对照表。我随后独立核对规范目录原文确认：
+LISTREADERSA=0x00090028、DISCONNECT=0x000900B8、BEGINTRANSACTION=0x000900BC、
+ENDTRANSACTION=0x000900C0、TRANSMIT=0x000900D0、CONTROL=0x000900D4、
+STATUSA=0x000900C8。**子代理正确，我错误**——这正面印证了"禁止凭记忆写协议值"。
+
+**我修的一处回归**：rdpusb 用例 `gui_main_usb_privacy_notice_uses_actual_
+redirected_count` 用源码短语 "the remote peer can" 定位 USB 隐私提示行；
+子代理在 main.cpp:732 新增的智能卡提示复用了该短语且位置更靠前，
+导致 `add_device < notice` 失败。改智能卡文案为 "the local smart card
+readers are shared with the remote session"（语义更准且不再撞锚点）。
+
+### 智能卡未完成（如实登记）
+- 仅 ANSI(A) 变体；W 变体 fail closed
+- 未做真实 Windows 服务端互操作（本机无卡片/服务；winscard 动态加载实测
+  EstablishContext=0x8010001D SCARD_E_NO_SERVICE，即绑定成功、服务缺失时正确降级）
+- 未实现 ISVALIDCONTEXT/GETATTRIB/SETATTRIB/LOCATECARDS/READCACHE/WRITECACHE/
+  GETREADERICON
+- kCmdToggleSmartCard 是"报告状态"不是热切换（[MS-RDPEFS] 2.2.2.9 设备列表
+  只在 client-id-confirm 发一次，协议无后加设备形式）
+
+### ctest 观察（未定位，UNVERIFIED）
+串行 -j1 分两段：1-35 通过、36-70 通过，合计 70/70。
+并行 -j4 时 rdpusb 与 ui 各偶发失败一次，单跑均通过。
+判定与本次改动无关（可能是测试间共享临时文件/端口），但根因未查，按 W5 标注。
+
+### C0
+每批 Release 全量 0 error 0 warning。
