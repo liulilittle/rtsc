@@ -31,6 +31,7 @@
 #endif
 
 #include "connection_info_dialog_win32.h"
+#include "help_dialog_win32.h"
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
 #include "rtsc/channel/drdynvc_client.h"
@@ -1041,6 +1042,18 @@ int main(int argc, char** argv) {
                 // N/A: the front-end's NoteInputSent hook is not wired (a
                 // non-encoding input would start a spurious RTT timer), so no
                 // measurement is fabricated.
+                // Help is a window-owner command the title-bar "帮助(H)"
+                // item raises (kCmdHelp). Like fullscreen and connection info
+                // it must never fall through to the send path: EncodeInput turns
+                // kUiCommand into nothing, so before this branch the menu item
+                // was a silent no-op. See help_dialog_win32.h for why this is an
+                // about box and not a Windows Help viewer.
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdHelp) {
+                    rtsc::gui::ShowHelpDialog(windows[0]->native_handle(),
+                                              kVersion);
+                    continue;
+                }
                 if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
                     ev.command == rtsc::ui::kCmdConnectionInfo) {
                     const auto collect = [&]() -> rtsc::client::SessionInfo {

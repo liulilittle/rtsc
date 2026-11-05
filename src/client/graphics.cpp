@@ -388,6 +388,34 @@ void GraphicsPipeline::RenderTo(ui::Surface& dst) const {
     RenderTo(dst, Rect{0, 0, dst.width(), dst.height()});
 }
 
+// First destination pixel whose sampled source pixel is >= `v`, for a
+// `src_len` -> `dst_len` axis. This is the exact inverse of the centre-phase
+// rule the resampler samples with (src/client/resample.cpp NearestIndex):
+//
+//     src(d) = ((2*d + 1) * S - 1) / (2*D)          [integer division]
+//
+// Solving src(d) >= v for the smallest integer d:
+//
+//     ((2*d + 1) * S - 1) / (2*D) >= v
+//     (2*d + 1) * S - 1 >= v * 2*D
+//     2*d + 1 >= ceil((v * 2*D + 1) / S)
+//     d >= ceil((ceil((v * 2*D + 1) / S) - 1) / 2) = c / 2
+//
+// where c = ceil((v * 2*D + 1) / S). Using the approximation d ~ v*D/S
+// instead is off by one on non-integer scales, which leaves the last row or
+// column of a changed block unpainted on screen.
+namespace {
+int FirstDestShowingSource(int v, int src_len, int dst_len) {
+    if (v <= 0) return 0;
+    if (v >= src_len) return dst_len;
+    const long long t = static_cast<long long>(v) * 2LL * dst_len + 1;
+    const long long c = (t + src_len - 1) / src_len;  // ceil(t / S)
+    const long long d = c / 2;                        // ceil((c - 1) / 2)
+    if (d > dst_len) return dst_len;
+    return static_cast<int>(d);
+}
+}  // namespace
+
 void GraphicsPipeline::RenderTo(ui::Surface& dst, const Rect& dirty) const {
     if (dst.width() == 0 || dst.height() == 0) return;
     const ViewTransform vt = view_transform(dst.width(), dst.height());
@@ -395,12 +423,21 @@ void GraphicsPipeline::RenderTo(ui::Surface& dst, const Rect& dirty) const {
         dst.Fill(0, 0, 0, 255);
         return;
     }
-    // The caller may pass the whole destination (full repaint) or the
-    // bounding box of what actually changed. Clip the work to it.
-    const int cx0 = dirty.left;
-    const int cy0 = dirty.top;
-    const int cx1 = dirty.right;
-    const int cy1 = dirty.bottom;
+    // `dirty` is in REMOTE-DESKTOP (source) coordinates, because that is the
+    // space the protocol reports updates in (destLeft/destTop/width/height).
+    // The surface and the window are in DESTINATION coordinates. At 1:1 the
+    // two spaces coincide, which is why treating them as one worked until the
+    // view started scaling by default -- and then it repainted a destination
+    // rectangle taken from source coordinates, leaving the changed area stale
+    // and painting an unrelated block: torn, misplaced fragments.
+    const int cx0 = vt.x + FirstDestShowingSource(dirty.left, surface_.width(),
+                                                  vt.width);
+    const int cy0 = vt.y + FirstDestShowingSource(dirty.top, surface_.height(),
+                                                  vt.height);
+    const int cx1 = vt.x + FirstDestShowingSource(dirty.right, surface_.width(),
+                                                   vt.width);
+    const int cy1 = vt.y + FirstDestShowingSource(dirty.bottom, surface_.height(),
+                                                    vt.height);
     if (cx0 >= cx1 || cy0 >= cy1) return;  // nothing to repaint
 
     // Clear only the letterbox bars outside the scaled image. When the image

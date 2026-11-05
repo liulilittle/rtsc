@@ -43,6 +43,7 @@ add_library(rtsc_proto STATIC
     src/proto/drdynvc.cpp
     src/proto/rdpusb.cpp
     src/proto/rdpdr.cpp
+    src/proto/smartcard.cpp
     src/proto/rdpsnd.cpp
     src/proto/rdp6.cpp
     src/proto/nsc.cpp
@@ -260,6 +261,12 @@ target_compile_definitions(rtsc_rdpusb_tests PRIVATE
 add_executable(rtsc_rdpdr_tests tests/test_rdpdr.cpp tests/test_rdpdr_client.cpp)
 target_link_libraries(rtsc_rdpdr_tests PRIVATE rtsc_rdpdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdpdr_tests PRIVATE tests)
+
+# [MS-RDPESC] smart card payload codec: NDR headers, the SCARD_IOCTL_* call
+# and return structures, and the fail-closed range/pointer checks.
+add_executable(rtsc_smartcard_tests tests/test_smartcard.cpp)
+target_link_libraries(rtsc_smartcard_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_smartcard_tests PRIVATE tests)
 
 # Server-side rdpdr handler: the channel-level minimum handshake (design S1-S6).
 add_executable(rtsc_rdpdr_server_tests tests/test_rdpdr_server.cpp)
@@ -585,7 +592,8 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 # redirection path are all Win32.
 if(WIN32)
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
-               tools/rtsc_gui/connection_info_dialog_win32.cpp)
+               tools/rtsc_gui/connection_info_dialog_win32.cpp
+               tools/rtsc_gui/help_dialog_win32.cpp)
 target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util)
 target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc)
 if(WIN32)
@@ -795,6 +803,7 @@ add_test(NAME clipboard COMMAND rtsc_clipboard_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
+add_test(NAME smartcard COMMAND rtsc_smartcard_tests)
 add_test(NAME rdpdr_server COMMAND rtsc_rdpdr_server_tests)
 add_test(NAME rdpdr_server_io COMMAND rtsc_rdpdr_server_io_tests)
 add_test(NAME drive_enum COMMAND rtsc_drive_enum_tests)
@@ -879,6 +888,7 @@ if(MSVC)
         target_compile_options(rtsc_usb_win32 PRIVATE /W4 /WX)
     endif()
     target_compile_options(rtsc_rdpdr_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_smartcard_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpdr_server_io_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drive_enum_tests PRIVATE /W4 /WX)

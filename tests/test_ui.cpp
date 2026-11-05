@@ -1563,4 +1563,36 @@ RTSC_TEST(conninfo_dialog_wndproc_passes_real_hwnd_to_defwindowproc) {
     CHECK(src.find("self->Handle(hwnd, msg, wp, lp)") != std::string::npos);
 }
 
+RTSC_TEST(gui_dispatch_explicitly_consumes_help_command) {
+    // The View/title-bar menu raises kCmdHelp for "帮助(H)". Until this batch
+    // the command had NO consumer anywhere in the GUI: the menu item pushed the
+    // event and it was dropped on the send path (EncodeInput turns kUiCommand
+    // into nothing), so clicking Help did nothing at all.
+    //
+    // The dialog cannot be linked into this suite (it lives in rtsc_gui), so the
+    // dispatch is guarded structurally, the same way the fullscreen and
+    // connection-info commands are: the branch must appear, it must come before
+    // the generic send path, and it must end with a continue so a UI command
+    // never reaches EncodeInput.
+    std::ifstream in(RTSC_SOURCE_DIR "/tools/rtsc_gui/main.cpp");
+    if (!in) {
+        SkipTest("gui_dispatch_explicitly_consumes_help_command",
+                 "cannot open tools/rtsc_gui/main.cpp");
+        return;
+    }
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    const size_t cmd = src.find("kCmdHelp");
+    const size_t call = src.find("ShowHelpDialog(");
+    CHECK(cmd != std::string::npos);
+    CHECK(call != std::string::npos);
+    CHECK(cmd < call);  // the command gates the dialog call
+    // The branch must be skipped from the generic send path.
+    const size_t cont = src.find("continue", call);
+    CHECK(cont != std::string::npos);
+    // And it must be reachable before the send call, not after it.
+    const size_t send = src.find("client.SendInput(", call);
+    CHECK(send == std::string::npos || cont < send);
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }

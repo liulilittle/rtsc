@@ -755,4 +755,83 @@ RTSC_TEST(graphics_dirty_region_clips_a_negative_origin) {
     CHECK(d.bottom == 2);
 }
 
+RTSC_TEST(graphics_dirty_render_maps_source_rect_onto_a_scaled_view) {
+    // THE BUG THIS LOCKS DOWN: dirty_region() is in REMOTE-DESKTOP coordinates,
+    // but the window paints in DESTINATION coordinates. At 1:1 the two are
+    // equal and using one as the other is invisible; as soon as the view is
+    // scaled (now the default, since the GUI fits the remote desktop to the
+    // window) the update repainted the wrong rectangle and left the rest of the
+    // frame stale. On a real session that showed up as torn, misplaced blocks
+    // over the wallpaper.
+    //
+    // 8x8 source shown at 2x into a 16x16 destination. The update touches the
+    // source top-left 2x2, which must map to the destination top-left 4x4.
+    GraphicsPipeline g(8, 8);
+    g.surface().Fill(0, 0, 0, 0xFF);  // source stays black except the update
+    g.set_zoom(2.0);
+    g.clear_dirty();  // the constructor dirties everything; start from clean
+
+    // A 2x2 blue bitmap at the source origin.
+    const auto pdu = FastPathBitmapPdu({SolidRect(0, 0, 2, 2, 0xFF0000FF)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    CHECK(g.ApplyFastPathOutput(parsed) > 0);
+    const Rect dirty = g.dirty_region();
+    CHECK(dirty.left == 0 && dirty.top == 0);
+    CHECK(dirty.right == 2 && dirty.bottom == 2);  // half-open: [0,2)
+
+    rtsc::ui::Surface dst(16, 16);
+    dst.Fill(0xFF, 0, 0xFF, 0xFF);  // magenta, so any unpainted hole is obvious
+
+    g.RenderTo(dst, dirty);
+
+    // The mapped destination rectangle is 4x4 at the origin: blue.
+    uint8_t r = 0, gg = 0, b = 0, a = 0;
+    CHECK(dst.GetPixel(0, 0, r, gg, b, a));
+    CHECK(r == 0 && gg == 0 && b == 0xFF);
+    CHECK(dst.GetPixel(3, 3, r, gg, b, a));
+    CHECK(r == 0 && gg == 0 && b == 0xFF);
+
+    // Nothing outside the mapped rectangle may be repainted, and nothing inside
+    // it may be left as the magenta sentinel.
+    CHECK(dst.GetPixel(8, 8, r, gg, b, a));
+    CHECK(r == 0xFF && gg == 0 && b == 0xFF);  // still the sentinel
+    CHECK(dst.GetPixel(15, 15, r, gg, b, a));
+    CHECK(r == 0xFF && gg == 0 && b == 0xFF);
+}
+
+RTSC_TEST(graphics_dirty_render_covers_every_source_pixel_at_a_fractional_scale) {
+    // The mapping must not lose the last row/column of a changed block. With a
+    // fractional scale an approximation (d = src * dst / src_len) is off by one
+    // at the tail, which shows up as a one-pixel stale seam. Paint the WHOLE
+    // source (dirty == full) and assert the whole destination viewport is
+    // covered: any destination pixel left as the sentinel is a mapping hole.
+    const int scales[] = {3, 5, 7};   // source sizes
+    const int dsts[] = {5, 7, 11};    // dst/src is fractional in every pair
+    for (int i = 0; i < 3; ++i) {
+        const int s = scales[i];
+        const int d = dsts[i];
+        GraphicsPipeline g(static_cast<uint16_t>(s), static_cast<uint16_t>(s));
+        g.surface().Fill(0, 0, 0xFF, 0xFF);  // blue everywhere
+        g.set_zoom(static_cast<double>(d) / static_cast<double>(s));
+
+        rtsc::ui::Surface dst(static_cast<uint16_t>(d), static_cast<uint16_t>(d));
+        dst.Fill(0xFF, 0, 0xFF, 0xFF);  // magenta sentinel
+
+        // Full-surface dirty rectangle: every destination pixel must be painted.
+        g.RenderTo(dst, Rect{0, 0, s, s});
+
+        for (int y = 0; y < d; ++y) {
+            for (int x = 0; x < d; ++x) {
+                uint8_t r = 0, gg = 0, b = 0, a = 0;
+                CHECK(dst.GetPixel(x, y, r, gg, b, a));
+                // Letterboxing can add black bars; those are painted too, so the
+                // only failure is a pixel still holding the magenta sentinel.
+                const bool sentinel = (r == 0xFF && gg == 0 && b == 0xFF);
+                CHECK(!sentinel);
+            }
+        }
+    }
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_graphics_tests"); }
