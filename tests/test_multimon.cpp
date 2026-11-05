@@ -591,4 +591,74 @@ RTSC_TEST(multimon_pipeline_empty_layout_keeps_single_surface) {
     CHECK(dst.GetPixel(0, 0, r, gg, b, a) && r == 0xFF);
 }
 
+RTSC_TEST(multimon_dirty_render_touches_only_the_affected_monitor) {
+    // A rectangular update on the left monitor must not make the right monitor
+    // repaint. With one window per monitor this is what keeps a drag on screen 1
+    // from flickering screen 2.
+    client::GraphicsPipeline g(4, 4);
+    g.set_monitor_layout(MakeMonitors());
+    g.surface().FillRect(0, 0, 8, 4, 0x11, 0x11, 0x11, 0xFF);
+
+    ui::Surface left(4, 4);
+    ui::Surface right(4, 4);
+
+    client::Rect local;
+    // Dirty rectangle entirely inside the left monitor (virtual x 1..3).
+    const bool hit_left = g.RenderMonitorTo(
+        0, left, client::Rect{1, 1, 3, 3}, local);
+    CHECK(hit_left);
+    CHECK(local.left == 1);
+    CHECK(local.top == 1);
+    CHECK(local.right == 3);
+    CHECK(local.bottom == 3);
+
+    // The right monitor is untouched by that rectangle.
+    const bool hit_right = g.RenderMonitorTo(
+        1, right, client::Rect{1, 1, 3, 3}, local);
+    CHECK(!hit_right);
+}
+
+RTSC_TEST(multimon_dirty_render_clips_a_rect_spanning_both_monitors) {
+    // A rectangle straddling the monitor boundary must be clipped to each
+    // monitor, and each half reported in monitor-local coordinates.
+    client::GraphicsPipeline g(4, 4);
+    g.set_monitor_layout(MakeMonitors());
+    g.surface().FillRect(0, 0, 8, 4, 0x22, 0x22, 0x22, 0xFF);
+
+    ui::Surface left(4, 4);
+    ui::Surface right(4, 4);
+    client::Rect local;
+
+    CHECK(g.RenderMonitorTo(0, left, client::Rect{2, 0, 6, 4}, local));
+    CHECK(local.left == 2);
+    CHECK(local.right == 4);  // clipped at the left monitor's edge
+
+    CHECK(g.RenderMonitorTo(1, right, client::Rect{2, 0, 6, 4}, local));
+    CHECK(local.left == 0);
+    CHECK(local.right == 2);  // the part that fell on the right monitor
+}
+
+RTSC_TEST(multimon_dirty_render_maps_a_negative_origin_rect) {
+    // With a monitor above the primary, a virtual-desktop rectangle starting at
+    // a negative y must still resolve to the correct local rows.
+    client::GraphicsPipeline g(4, 4);
+    g.set_monitor_layout(MakeNegativeOriginMonitors());
+    g.surface().FillRect(0, 0, 4, 8, 0x33, 0x33, 0x33, 0xFF);
+
+    // MakeNegativeOriginMonitors: index 0 is the primary at (0,0)-(3,3),
+    // which is virtual rows 4..7 because the union origin is (0,-4); index 1
+    // is the monitor above at (0,-4)-(3,-1), i.e. virtual rows 0..3.
+    ui::Surface upper(4, 4);
+    client::Rect local;
+    CHECK(g.RenderMonitorTo(1, upper, client::Rect{0, 0, 4, 2}, local));
+    CHECK(local.left == 0);
+    CHECK(local.top == 0);
+    CHECK(local.right == 4);
+    CHECK(local.bottom == 2);
+
+    // The primary (index 0) is not covered by virtual rows 0..2.
+    ui::Surface lower(4, 4);
+    CHECK(!g.RenderMonitorTo(0, lower, client::Rect{0, 0, 4, 2}, local));
+}
+
 int main() { return rtsc::test::run_all("rtsc_multimon_tests"); }

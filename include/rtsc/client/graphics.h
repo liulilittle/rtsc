@@ -83,6 +83,13 @@ class GraphicsPipeline {
     // 1:1 (clipped to `dst`). This is what a per-monitor window presents.
     void RenderMonitorTo(size_t index, ui::Surface& dst) const;
 
+    // Same 1:1 copy, restricted to the rows/columns the given virtual-desktop
+    // rectangle covers on this monitor. Returns false when the dirty rectangle
+    // does not intersect the monitor at all, so the caller can skip the
+    // present entirely. `dirty` is in virtual-desktop coordinates.
+    bool RenderMonitorTo(size_t index, ui::Surface& dst, const Rect& dirty,
+                         Rect& dst_dirty) const;
+
     // Recreates the surface at a new size (used when the server's Demand Active
     // reveals a desktop size that differs from the one the window was created
     // with). Any already-painted pixels are lost; callers use this right after

@@ -140,6 +140,48 @@ void GraphicsPipeline::RenderMonitorTo(size_t index, ui::Surface& dst) const {
     }
 }
 
+bool GraphicsPipeline::RenderMonitorTo(size_t index, ui::Surface& dst,
+                                      const Rect& dirty,
+                                      Rect& dst_dirty) const {
+    if (index >= monitors_.size()) return false;
+    const proto::MonitorDef& m = monitors_[index];
+    const int sx = m.left - origin_x_;
+    const int sy = m.top - origin_y_;
+    if (sx < 0 || sy < 0) return false;
+    // Intersect the virtual-desktop dirty rectangle with this monitor, then
+    // translate into monitor-local coordinates (the source of the copy).
+    const int mx0 = std::max(dirty.left, sx);
+    const int my0 = std::max(dirty.top, sy);
+    const int mx1 = std::min(dirty.right, sx + static_cast<int>(m.width()));
+    const int my1 = std::min(dirty.bottom, sy + static_cast<int>(m.height()));
+    if (mx0 >= mx1 || my0 >= my1) return false;  // not on this monitor
+    const int lx0 = mx0 - sx;
+    const int ly0 = my0 - sy;
+    const int lx1 = std::min(mx1 - sx, static_cast<int>(dst.width()));
+    const int ly1 = std::min(my1 - sy, static_cast<int>(dst.height()));
+    if (lx0 >= lx1 || ly0 >= ly1) return false;
+    for (int y = ly0; y < ly1; ++y) {
+        const int srow = sy + y;
+        if (srow >= surface_.height()) break;
+        const uint8_t* s =
+            surface_.data() +
+            (static_cast<size_t>(srow) * surface_.width() + sx + lx0) * 4;
+        uint8_t* d = dst.data() + static_cast<size_t>(y) * dst.width() * 4 +
+                     static_cast<size_t>(lx0) * 4;
+        std::memcpy(d, s, static_cast<size_t>(lx1 - lx0) * 4);
+    }
+    if (cursor_style_ == kArrow && has_pointer_) {
+        ViewTransform vt;
+        vt.x = -sx;
+        vt.y = -sy;
+        vt.width = surface_.width();
+        vt.height = surface_.height();
+        DrawCursor(dst, vt);
+    }
+    dst_dirty = Rect{lx0, ly0, lx1, ly1};
+    return true;
+}
+
 int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
     int drawn = 0;
     // True once an update that is not rectangle-addressed changed the

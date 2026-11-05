@@ -64,52 +64,6 @@ namespace {
 
 constexpr const char* kVersion = "rtsc_gui " RTSC_VERSION_STRING;
 
-// TEMPORARY INSTRUMENTATION (interaction-batch verification): when
-// RTSC_DUMP_SURFACE is set, dump the client and view surfaces to BMP files
-// once the first frames have been composited. Removed after use.
-void DumpSurfaceBmp(const char* path, const rtsc::ui::Surface& s) {
-    FILE* f = nullptr;
-    if (fopen_s(&f, path, "wb") != 0 || f == nullptr) {
-        std::printf("surface dump failed: %s\n", path);
-        return;
-    }
-    const uint32_t w = s.width();
-    const uint32_t h = s.height();
-    const uint32_t row = w * 4;
-    const uint32_t data_size = row * h;
-    uint8_t hdr[54] = {};
-    hdr[0] = 'B';
-    hdr[1] = 'M';
-    const auto w32 = [&](size_t p, uint32_t v) {
-        hdr[p] = static_cast<uint8_t>(v & 0xFF);
-        hdr[p + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
-        hdr[p + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
-        hdr[p + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
-    };
-    w32(2, 54 + data_size);
-    w32(10, 54);
-    w32(14, 40);
-    w32(18, w);
-    w32(22, h);
-    hdr[26] = 1;
-    hdr[28] = 32;
-    w32(34, data_size);
-    std::fwrite(hdr, 1, 54, f);
-    std::vector<uint8_t> r(row);
-    for (int y = static_cast<int>(h) - 1; y >= 0; --y) {
-        const uint8_t* src = s.data() + static_cast<size_t>(y) * row;
-        for (uint32_t x = 0; x < w; ++x) {
-            r[x * 4 + 0] = src[x * 4 + 2];
-            r[x * 4 + 1] = src[x * 4 + 1];
-            r[x * 4 + 2] = src[x * 4 + 0];
-            r[x * 4 + 3] = 255;
-        }
-        std::fwrite(r.data(), 1, row, f);
-    }
-    std::fclose(f);
-    std::printf("surface dump: %s (%ux%u)\n", path, w, h);
-}
-
 // Static virtual channel ids assigned by the server in the Server Network Data
 // block ([MS-RDPBCGR] 2.2.1.4.4) and parsed by the connection driver. Captured
 // from the real peer (192.168.1.7): rdpdr=1004, cliprdr=1005, rdpsnd=1006.
@@ -1240,8 +1194,13 @@ int main(int argc, char** argv) {
                         : client.graphics().dirty_region();
                 if (multi_window) {
                     for (size_t i = 0; i < windows.size(); ++i) {
-                        client.graphics().RenderMonitorTo(i, windows[i]->surface());
-                        windows[i]->Present();
+                        rtsc::client::Rect local;
+                        if (!client.graphics().RenderMonitorTo(
+                                i, windows[i]->surface(), dirty, local)) {
+                            continue;  // this monitor saw no change
+                        }
+                        windows[i]->PresentRect(local.left, local.top,
+                                                local.width(), local.height());
                     }
                 } else {
                     client.graphics().RenderTo(windows[0]->surface(), dirty);
@@ -1254,21 +1213,6 @@ int main(int argc, char** argv) {
                 ++renders;
                 ++fps_renders;
                 client.NoteFrame();
-                if (renders == 3) {
-                    // TEMPORARY INSTRUMENTATION (interaction-batch): one-shot
-                    // surface dump for offline orientation analysis.
-                    char dump_base[MAX_PATH] = {};
-                    size_t dump_len = 0;
-                    if (getenv_s(&dump_len, dump_base, sizeof(dump_base),
-                                 "RTSC_DUMP_SURFACE") == 0 &&
-                        dump_len > 0) {
-                        const std::string base = dump_base;
-                        DumpSurfaceBmp((base + ".client.bmp").c_str(),
-                                       client.surface());
-                        DumpSurfaceBmp((base + ".view.bmp").c_str(),
-                                       windows[0]->surface());
-                    }
-                }
             }
         }
 
