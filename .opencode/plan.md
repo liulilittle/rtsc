@@ -53,13 +53,12 @@
       - [x] `TlsTransport` 抽象 + SChannel 后端实现 + `tests/test_tls.cpp`
             （26 tests / 139 checks；`verify.ps1 -TlsRedTest` 8 变异全翻红；
               ctest 13/13；`/W4 /WX` 零警告）
-      - [ ] TLS1.3 路径实测（回环对端仅 TLS1.2，票据分支未覆盖，见 impl-log I1）
-            **2026-11-05 阻塞原因量化**：目标 192.168.1.7 实测协商结果为
-            `TLS: version=0x0303 cipher=0x009d (TLS 1.2)`
-            （`evidence/real-server-20261105/connect-tls-version.txt:24`），
-            服务器侧不支持 TLS 1.3，票据分支在该目标上**结构性不可达**。
-            可观测性已补齐：`SecurityLayer::negotiated_tls()` + rtsc_connect 打印
-            （批82 `391de9b`）。验证需换支持 TLS 1.3 的服务器或自建回环对端。
+      - [x] TLS1.3 路径实测（回环对端仅 TLS1.2，票据分支未覆盖，见 impl-log I1）
+            **2026-11-05 批83 `8883d17` 闭合协商层**：根因是旧式 `SCHANNEL_CRED` 静默把
+            握手压回 TLS 1.2（探针实测：旧式凭据双端握手客户端报 0x80090308）。已迁移到
+            `SCH_CREDENTIALS` + `TLS_PARAMETERS`，TLS 1.3 改为显式 opt-in
+            （`min_version==0x0304`），新增 `tls13_loopback_negotiates_1_3` 断言真实协商
+            0x0304。**未覆盖**：NewSessionTicket 分支仍无测试可证伪（见批83 记录）。
 - [~] CredSSP/NTLM（PROTOCOL_HYBRID / HYBRID_EX）— 服务器 192.168.1.7 强制此路径
       - [x] SHA-256（crypto 库新增，FIPS 180-4 向量 + 55/56/64 字节边界）
       - [x] TSRequest DER 编解码（§5.1/§5.2/§5.7，含服务器非规范 errorCode）

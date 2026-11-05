@@ -2039,4 +2039,48 @@ Release 全量构建 0 error 0 warning；ctest **69/69**（88.73s）
 
 ### 仍未覆盖（诚实登记）
 - TLS1.3：需支持 TLS 1.3 的服务器或自建回环
-- 真机输入 UNVERIFIED：UIPI 落点、多会话归属、SAS、Pause 后 NumLock 物理状态、多屏坐标
+- 真机输入 UNVERIFIED：UIPI 落点、多会话归属、SAS、Pause 后 NumLock 物理状态、多屏坐标## 第889轮：批83 —— TLS 1.3 真正可达（SCH_CREDENTIALS 迁移，提交 8883d17）
+
+### 根因（W5 实证）
+生产代码 `tls_schannel.cpp` 用旧式 `SCHANNEL_CRED` 建凭据。仓库外探针实测：
+- 旧式凭据 mask=TLS1_2|TLS1_3，双端握手 -> 客户端 `InitializeSecurityContext` 返回
+  **0x80090308 (SEC_E_INVALID_TOKEN)**，握手失败
+- 新式 `SCH_CREDENTIALS` + `TLS_PARAMETERS` 同样配置握手成功，协商 0x0304
+- 服务端 `SP_PROT_TLS1_3_SERVER` 单独使用 -> **0x80090331 (SEC_E_NO_CREDENTIALS)**
+  （必须与 TLS1_2 同时出现）
+
+⇒ `allow_tls13 = true`（默认值）**从未真正生效**：旧式凭据静默把它压回 1.2。
+plan.md:56 的"TLS1.3 路径未实测"其实还有更深一层：该路径在原实现里根本不可达。
+
+### 实现
+1. 客户端/服务端改用 `SCH_CREDENTIALS`（`SCHANNEL_USE_BLACKLISTS` + `winternl.h`），
+   失败时回退旧式 `SCHANNEL_CRED`（旧系统仍可连，只有 1.2）
+2. **TLS 1.3 改为显式 opt-in**：仅 `min_version == 0x0304` 才 offer 1.3。
+   理由（实测）：迁移若无此门，整个产品静默切到 1.3，RDP 数据面随之失败
+   —— `server_security` 3 个用例报 `SEC_E_ILLEGAL_MESSAGE 0x80090317`
+3. `Receive` 的 `progressed` 只在产出明文时递增（ticket 等控制记录不算进展）
+
+### 测试（TDD）
+| 用例 | 断言 |
+|---|---|
+| `tls13_loopback_negotiates_1_3` | 真实双端握手，`tls_version == 0x0304` |
+| `tls13_receive_without_data_needs_more_input` | 空输入必须 `kNeedMoreInput` |
+
+测试设施改动：`RawServer`/`Loopback` 增加协议掩码参数；握手循环改为要求**双端**
+`SEC_E_OK`（TLS 1.3 下客户端先完成，服务端仍需客户端 Finished —— 只等客户端会让
+服务端 `STREAM_SIZES` 失败于 `SEC_E_INTERNAL_ERROR 0x80090304`）。
+
+### 变异（第16条）
+| 变异 | 结果 |
+|---|---|
+| 只删客户端 opt-in 门 | 存活（服务端门仍在，两端一致） |
+| 同时删两端 opt-in 门 | **`server_security` 3 用例红**（0x80090317） |
+| 恢复 | 8/72 + 45/217 全绿 |
+
+### C0
+Release 全量 0 error 0 warning；ctest **69/69**（77.43s）
+
+### 诚实登记（未验证，禁止声称已覆盖）
+`Receive` 的 `progressed` 修复逻辑正确，但**无测试可证伪**：TLS 1.3 回环无法产出
+一个能发 ticket 的服务端上下文（`RawServer` 的 `STREAM_SIZES` 在手动 SSPI 握手后
+返回 `SEC_E_INTERNAL_ERROR`）。已在代码注释中标注 UNVERIFIED，并说明可证伪条件。
