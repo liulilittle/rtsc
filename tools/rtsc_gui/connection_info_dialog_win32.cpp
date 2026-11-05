@@ -84,7 +84,9 @@ class ConnInfoDialog {
         hwnd_ = CreateWindowExW(WS_EX_DLGMODALFRAME, kClassName, kTitle, kStyle,
                                 CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                                 r.bottom - r.top, parent_, nullptr, inst, this);
-        if (hwnd_ == nullptr) return false;
+        if (hwnd_ == nullptr) {
+            return false;
+        }
 
         CreateControls();
         ApplyInfo(collect_());
@@ -123,10 +125,10 @@ class ConnInfoDialog {
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         }
         if (self == nullptr) return DefWindowProcW(hwnd, msg, wp, lp);
-        return self->Handle(msg, wp, lp);
+        return self->Handle(hwnd, msg, wp, lp);
     }
 
-    LRESULT Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    LRESULT Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (msg) {
             case WM_COMMAND:
                 if (HandleCommand(LOWORD(wp))) return 0;
@@ -146,7 +148,7 @@ class ConnInfoDialog {
             default:
                 break;
         }
-        return DefWindowProcW(hwnd_, msg, wp, lp);
+        return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
     bool HandleCommand(int id) {
@@ -286,7 +288,9 @@ class ConnInfoDialog {
 void ShowConnectionInfoDialog(
     void* parent, const std::function<rtsc::client::SessionInfo()>& collect) {
     ConnInfoDialog dlg;
-    if (!dlg.Create(parent, collect)) return;
+    if (!dlg.Create(parent, collect)) {
+        return;
+    }
     dlg.RunModal();
 }
 

@@ -1530,4 +1530,37 @@ RTSC_TEST(gui_dispatch_explicitly_consumes_connection_info_command) {
     CHECK(call < cont);  // the dialog/send path is skipped with a continue
 }
 
+RTSC_TEST(conninfo_dialog_wndproc_passes_real_hwnd_to_defwindowproc) {
+    // Regression for a window that never appeared: the connection-information
+    // dialog's WndProc forwarded messages to DefWindowProcW using the *member*
+    // hwnd_, which is still nullptr while WM_NCCREATE is being handled (the
+    // assignment only happens after CreateWindowExW returns). DefWindowProcW
+    // with a null HWND returns FALSE for WM_NCCREATE, which aborts creation,
+    // so CreateWindowExW returned nullptr with ERROR_INVALID_WINDOW_HANDLE
+    // (1400) and the "连接信息(C)" menu item looked like a no-op.
+    //
+    // The dialog cannot be linked into this suite (it lives in the rtsc_gui
+    // executable), so the guard is structural: the message handler must take
+    // the HWND it was given and forward THAT to DefWindowProcW. Both properties
+    // are checked because either alone can regress silently.
+    std::ifstream in(RTSC_SOURCE_DIR
+                     "/tools/rtsc_gui/connection_info_dialog_win32.cpp");
+    if (!in) {
+        SkipTest("conninfo_dialog_wndproc_passes_real_hwnd_to_defwindowproc",
+                 "cannot open connection_info_dialog_win32.cpp");
+        return;
+    }
+    const std::string src((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    // The handler must accept the window handle as a parameter...
+    CHECK(src.find("Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)") !=
+          std::string::npos);
+    // ...and that parameter (not the member) must reach DefWindowProcW.
+    CHECK(src.find("DefWindowProcW(hwnd, msg, wp, lp)") !=
+          std::string::npos);
+    CHECK(src.find("DefWindowProcW(hwnd_, msg, wp, lp)") == std::string::npos);
+    // The WndProc above it must forward the handle it received.
+    CHECK(src.find("self->Handle(hwnd, msg, wp, lp)") != std::string::npos);
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }
