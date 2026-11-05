@@ -88,6 +88,16 @@ ViewTransform ComputeViewTransform(int src_w, int src_h, int dst_w, int dst_h,
 void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
                   const ViewTransform& vt);
 
+// Same transform, but only the destination pixels inside `clip` are
+// written. This is what makes a partial repaint possible: when the
+// server sent a small rectangle, the client re-renders just the affected
+// part of the viewport instead of the whole frame (mstsc does the same --
+// it paints only the update rectangle). The result for the covered pixels
+// is bit-identical to ScaleSurface over the whole destination.
+void ScaleSurfaceClipped(const ui::Surface& src, ui::Surface& dst,
+                         const ViewTransform& vt, int clip_x0, int clip_y0,
+                         int clip_x1, int clip_y1);
+
 // Maps a viewport point (vx, vy) back to the source image coordinate that
 // ScaleSurface sampled there. Points in a letterbox bar (outside the image) are
 // clamped to the image bounds. This is the inverse of the scale transform and

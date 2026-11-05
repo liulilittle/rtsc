@@ -20,6 +20,33 @@
 
 namespace rtsc::client {
 
+// A half-open rectangle in surface coordinates: [left, right) x [top, bottom).
+// `empty()` is true when nothing is covered, which is how the pipeline says
+// "no pixel changed since the last clear_dirty()".
+struct Rect {
+    int left = 0;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+
+    bool empty() const noexcept { return right <= left || bottom <= top; }
+    int width() const noexcept { return right - left; }
+    int height() const noexcept { return bottom - top; }
+
+    // Smallest rectangle covering both operands. An empty operand is the
+    // identity, so unioning into a cleared region starts the region there.
+    static Rect Union(const Rect& a, const Rect& b) noexcept {
+        if (a.empty()) return b;
+        if (b.empty()) return a;
+        Rect r;
+        r.left = a.left < b.left ? a.left : b.left;
+        r.top = a.top < b.top ? a.top : b.top;
+        r.right = a.right > b.right ? a.right : b.right;
+        r.bottom = a.bottom > b.bottom ? a.bottom : b.bottom;
+        return r;
+    }
+};
+
 class GraphicsPipeline {
  public:
     GraphicsPipeline(uint16_t width, uint16_t height);
@@ -62,12 +89,24 @@ class GraphicsPipeline {
     // Connect(), before the desktop has been painted.
     void Resize(uint16_t width, uint16_t height);
 
-    // True when an inbound update changed the surface since the last
-    // clear_dirty(). The render loop uses this to skip the whole clear/scale/
-    // present cycle on an idle session, which is what keeps an idle remote
-    // desktop from pinning a core.
-    bool dirty() const noexcept { return dirty_; }
-    void clear_dirty() noexcept { dirty_ = false; }
+    // The bounding box of every surface pixel changed by an inbound update
+    // since the last clear_dirty(), clipped to the surface. It starts as the
+    // whole surface because the first frame must always be painted.
+    //
+    // A remote desktop is idle most of the time, and when it is not, the
+    // server sends small rectangles (a caret, a highlight, one window being
+    // dragged). Repainting and re-uploading the entire surface for each of
+    // those is what makes a naive client flicker while mstsc does not: the
+    // window only needs the changed rectangle, and a frame that changes
+    // nothing needs no paint at all.
+    const Rect& dirty_region() const noexcept { return dirty_region_; }
+    bool dirty() const noexcept { return !dirty_region_.empty(); }
+    void clear_dirty() noexcept { dirty_region_ = Rect(); }
+
+    // Marks the whole surface dirty (a fresh surface has unknown contents).
+    void mark_all_dirty() noexcept {
+        dirty_region_ = Rect{0, 0, surface_.width(), surface_.height()};
+    }
 
     // Applies one parsed fast-path output PDU (bitmap / palette / synchronize /
     // pointer / orders updates). Returns the number of drawing orders applied
@@ -109,7 +148,20 @@ class GraphicsPipeline {
     // current zoom / fit state. Letterbox bars are black.
     void RenderTo(ui::Surface& dst) const;
 
+    // Same compositing, restricted to the destination pixels that the given
+    // surface rectangle maps onto. Callers pass dirty_region() so a caret or a
+    // dragged window repaints only its own area instead of the whole viewport.
+    // Pixels outside the mapped area are left untouched (including the
+    // letterbox bars, which only change when the view geometry changes).
+    void RenderTo(ui::Surface& dst, const Rect& dirty) const;
+
  private:
+    // Records that a source rectangle landed at (dst_x, dst_y) on the
+    // surface, clipped to the surface bounds. Marking only the landed pixels
+    // is what lets the render loop repaint a window drag without touching
+    // the rest of the desktop.
+    void MarkSurfaceRectDirty(int dst_x, int dst_y, int w, int h);
+
     // Decodes one TS_BITMAP_DATA rectangle and blits it onto the surface.
     bool ApplyBitmapRect(const proto::BitmapData& rect);
 
@@ -129,7 +181,9 @@ class GraphicsPipeline {
     int origin_x_ = 0;
     int origin_y_ = 0;
     std::vector<uint8_t> palette_;
-    bool dirty_ = true;  // the first frame must always be rendered
+    // Bounding box of pixels changed since clear_dirty(). Empty == idle.
+    // The constructor marks the whole surface (see GraphicsPipeline::GraphicsPipeline).
+    Rect dirty_region_;
     bool has_pointer_ = false;
     uint16_t pointer_x_ = 0;
     uint16_t pointer_y_ = 0;

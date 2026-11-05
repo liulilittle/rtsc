@@ -246,14 +246,41 @@ class Win32Window final : public Window {
     }
 
     void Present() override {
+        PresentRect(0, 0, surface_.width(), surface_.height());
+    }
+
+    void PresentRect(int x, int y, int w, int h) override {
         if (hwnd_ == nullptr || bits_ == nullptr) return;
+        // Clip to the surface; an empty result means nothing changed.
+        const int x0 = x > 0 ? x : 0;
+        const int y0 = y > 0 ? y : 0;
+        const int x1 = (x + w) < surface_.width() ? (x + w)
+                                                 : surface_.width();
+        const int y1 = (y + h) < surface_.height() ? (y + h)
+                                                   : surface_.height();
+        if (x0 >= x1 || y0 >= y1) return;
+
         // Surface is RGBA; the DIB wants BGRA. RgbaToBgra runs the per-pixel
         // byte swap vectorised (two pixels per 64-bit word) so a full-screen
         // 1280x1024 Present measures ~0.35-0.45 ms instead of ~0.9-1.2 ms for
         // the old per-byte loop.
-        RgbaToBgra(static_cast<uint8_t*>(bits_), surface_.data(),
-                   surface_.size() / 4);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        // Convert and invalidate only the changed rows: the DIB is top-down, so
+        // row `y` starts at y * width. A full-screen frame converts and blits
+        // the whole surface (x0 == 0 and y0 == 0 with the full extent).
+        const size_t row_bytes = static_cast<size_t>(surface_.width()) * 4;
+        for (int row = y0; row < y1; ++row) {
+            const size_t offset = static_cast<size_t>(row) * row_bytes;
+            RgbaToBgra(static_cast<uint8_t*>(bits_) + offset +
+                           static_cast<size_t>(x0) * 4,
+                       surface_.data() + offset + static_cast<size_t>(x0) * 4,
+                       static_cast<size_t>(x1 - x0));
+        }
+        RECT r{};
+        r.left = x0;
+        r.top = y0;
+        r.right = x1;
+        r.bottom = y1;
+        InvalidateRect(hwnd_, &r, FALSE);
         UpdateWindow(hwnd_);
         ++present_count_;
     }

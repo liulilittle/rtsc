@@ -1215,14 +1215,26 @@ int main(int argc, char** argv) {
         if (view_dirty || client.graphics().dirty()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - last_render >= kMinFrameInterval) {
+                // Only the changed part of the remote surface is re-composited
+                // and re-uploaded. A full repaint (first frame, resize, zoom or
+                // fit change) passes the whole viewport. The 16 ms gate above
+                // stays in force either way: an update is never painted the
+                // instant it arrives, only on the next frame boundary.
+                const rtsc::client::Rect dirty =
+                    view_dirty
+                        ? rtsc::client::Rect{0, 0,
+                                             static_cast<int>(windows[0]->surface().width()),
+                                             static_cast<int>(windows[0]->surface().height())}
+                        : client.graphics().dirty_region();
                 if (multi_window) {
                     for (size_t i = 0; i < windows.size(); ++i) {
                         client.graphics().RenderMonitorTo(i, windows[i]->surface());
                         windows[i]->Present();
                     }
                 } else {
-                    client.graphics().RenderTo(windows[0]->surface());
-                    windows[0]->Present();
+                    client.graphics().RenderTo(windows[0]->surface(), dirty);
+                    windows[0]->PresentRect(dirty.left, dirty.top,
+                                            dirty.width(), dirty.height());
                 }
                 client.graphics().clear_dirty();
                 view_dirty = false;

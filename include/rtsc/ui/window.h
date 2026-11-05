@@ -274,6 +274,17 @@ class Window {
     virtual Surface& surface() = 0;
     virtual void Present() = 0;
 
+    // Presents only the given client-area rectangle. A remote desktop
+    // session is idle most of the time and, when it is not, the server sends
+    // small rectangles (a caret, a highlight, a window being dragged), so a
+    // backend that can upload a sub-rectangle must do that instead of
+    // re-uploading the whole surface for every update. The default forwards
+    // to Present() so backends without partial upload (X11, Wayland, the
+    // headless stub) stay correct.
+    virtual void PresentRect(int /*x*/, int /*y*/, int /*w*/, int /*h*/) {
+        Present();
+    }
+
     // Dequeues one pending input event. Returns false when the queue is empty.
     virtual bool PollEvent(InputEvent& out) = 0;
 

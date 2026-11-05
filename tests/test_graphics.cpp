@@ -50,6 +50,19 @@ std::vector<uint8_t> FastPathBitmapPdu(
     return w.take();
 }
 
+// A filled rectangle of one BGRA colour, for the dirty-region tests.
+std::vector<uint8_t> SolidRect(int dst_x, int dst_y, uint16_t w, uint16_t h,
+                               uint32_t bgra) {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+        px[i * 4 + 0] = static_cast<uint8_t>(bgra & 0xFF);
+        px[i * 4 + 1] = static_cast<uint8_t>((bgra >> 8) & 0xFF);
+        px[i * 4 + 2] = static_cast<uint8_t>((bgra >> 16) & 0xFF);
+        px[i * 4 + 3] = 0xFF;
+    }
+    return RawRect(dst_x, dst_y, w, h, px);
+}
+
 }  // namespace
 
 RTSC_TEST(graphics_applies_raw_fastpath_bitmap) {
@@ -628,6 +641,118 @@ RTSC_TEST(graphics_still_strips_cd_header_for_24bpp_interleaved) {
     CHECK_EQ(gg, static_cast<uint8_t>(0x20));
     CHECK_EQ(b, static_cast<uint8_t>(0x10));
     CHECK_EQ(a, static_cast<uint8_t>(0xFF));
+}
+
+// ---- Dirty-region tracking ------------------------------------------------
+//
+// A remote desktop session is overwhelmingly idle locally: the server sends a
+// small bitmap for a menu highlight or a caret blink, and the client must not
+// re-render and re-upload the whole surface for it. Microsoft's client paints
+// only the changed rectangle (the update itself carries destLeft/destTop/
+// width/height). The pipeline therefore has to remember WHICH rectangle
+// changed, not merely that something did.
+
+RTSC_TEST(graphics_dirty_region_starts_as_the_whole_surface) {
+    // The first frame must be painted in full: nothing has been presented yet,
+    // so every pixel is unknown to the window.
+    GraphicsPipeline g(64, 48);
+    const Rect d = g.dirty_region();
+    CHECK(d.left == 0);
+    CHECK(d.top == 0);
+    CHECK(d.right == 64);
+    CHECK(d.bottom == 48);
+    CHECK(g.dirty());
+}
+
+RTSC_TEST(graphics_dirty_region_is_cleared_and_tracks_the_update_rect) {
+    GraphicsPipeline g(64, 48);
+    g.clear_dirty();
+    CHECK(!g.dirty());
+    CHECK(g.dirty_region().empty());
+
+    const auto pdu = FastPathBitmapPdu({SolidRect(10, 12, 4, 4, 0xFF00CCCC)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    CHECK(g.ApplyFastPathOutput(parsed) > 0);
+
+    CHECK(g.dirty());
+    const Rect d = g.dirty_region();
+    CHECK(d.left == 10);
+    CHECK(d.top == 12);
+    CHECK(d.right == 14);
+    CHECK(d.bottom == 16);
+}
+
+RTSC_TEST(graphics_dirty_region_unions_multiple_updates) {
+    GraphicsPipeline g(64, 48);
+    g.clear_dirty();
+
+    const auto pa = FastPathBitmapPdu({SolidRect(4, 4, 4, 4, 0xFFAAAAAA)});
+    const auto pb = FastPathBitmapPdu({SolidRect(30, 20, 4, 4, 0xFFBBBBBB)});
+    FastPathOutputPdu a;
+    FastPathOutputPdu b;
+    CHECK(FastPathOutputPdu::parse(pa.data(), pa.size(), a) == Status::Ok);
+    CHECK(FastPathOutputPdu::parse(pb.data(), pb.size(), b) == Status::Ok);
+    g.ApplyFastPathOutput(a);
+    g.ApplyFastPathOutput(b);
+
+    const Rect d = g.dirty_region();
+    CHECK(d.left == 4);
+    CHECK(d.top == 4);
+    CHECK(d.right == 34);
+    CHECK(d.bottom == 24);
+    // The union of two small rects must not degenerate into the whole surface.
+    CHECK(!(d.left == 0 && d.top == 0 && d.right == 64 && d.bottom == 48));
+}
+
+RTSC_TEST(graphics_dirty_region_ignores_a_fully_clipped_bitmap) {
+    // A bitmap whose destination lies entirely outside the surface blits
+    // nothing, so it must not force a repaint.
+    GraphicsPipeline g(64, 48);
+    g.clear_dirty();
+    const auto pdu = FastPathBitmapPdu({SolidRect(200, 200, 4, 4, 0xFFDDDDDD)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    g.ApplyFastPathOutput(parsed);
+    CHECK(!g.dirty());
+    CHECK(g.dirty_region().empty());
+}
+
+RTSC_TEST(graphics_dirty_region_clips_at_the_surface_edges) {
+    // A bitmap straddling the right/bottom edge must widen the dirty region
+    // only to the surface edge, exactly like Surface::Blit drops the pixels
+    // that fell outside. Reporting the unclipped rectangle would ask the
+    // window to repaint (and possibly reallocate) area that does not exist.
+    GraphicsPipeline g(64, 48);
+    g.clear_dirty();
+    const auto pdu = FastPathBitmapPdu({SolidRect(62, 46, 4, 4, 0xFF123456)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    g.ApplyFastPathOutput(parsed);
+
+    const Rect d = g.dirty_region();
+    CHECK(d.left == 62);
+    CHECK(d.top == 46);
+    CHECK(d.right == 64);   // clipped, NOT 66
+    CHECK(d.bottom == 48);  // clipped, NOT 50
+}
+
+RTSC_TEST(graphics_dirty_region_clips_a_negative_origin) {
+    // In a multi-monitor session a monitor left of or above the primary has a
+    // negative origin, so an update can start at a negative destination. The
+    // dirty region must start at zero and still cover the visible part.
+    GraphicsPipeline g(64, 48);
+    g.clear_dirty();
+    const auto pdu = FastPathBitmapPdu({SolidRect(-2, -2, 4, 4, 0xFF654321)});
+    FastPathOutputPdu parsed;
+    CHECK(FastPathOutputPdu::parse(pdu.data(), pdu.size(), parsed) == Status::Ok);
+    g.ApplyFastPathOutput(parsed);
+
+    const Rect d = g.dirty_region();
+    CHECK(d.left == 0);
+    CHECK(d.top == 0);
+    CHECK(d.right == 2);
+    CHECK(d.bottom == 2);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_graphics_tests"); }

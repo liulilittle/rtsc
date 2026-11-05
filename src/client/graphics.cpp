@@ -26,13 +26,17 @@ std::vector<uint8_t> DefaultPalette() {
 }  // namespace
 
 GraphicsPipeline::GraphicsPipeline(uint16_t width, uint16_t height)
-    : surface_(width, height), palette_(DefaultPalette()) {}
+    : surface_(width, height), palette_(DefaultPalette()) {
+    // The first frame has no presented predecessor, so every pixel counts as
+    // changed and the window paints the whole surface once.
+    mark_all_dirty();
+}
 
 void GraphicsPipeline::Resize(uint16_t width, uint16_t height) {
     if (width == 0 || height == 0) return;
     if (width == surface_.width() && height == surface_.height()) return;
     surface_ = ui::Surface(width, height);
-    dirty_ = true;  // the fresh surface must be painted
+    mark_all_dirty();  // the fresh surface has unknown contents
 }
 
 void GraphicsPipeline::set_monitor_layout(
@@ -81,7 +85,7 @@ void GraphicsPipeline::set_monitor_layout(
         monitor_surfaces_.emplace_back(static_cast<uint16_t>(m.width()),
                                        static_cast<uint16_t>(m.height()));
     }
-    dirty_ = true;  // the fresh virtual desktop must be painted
+    mark_all_dirty();  // the fresh virtual desktop must be painted
 }
 
 const proto::MonitorDef* GraphicsPipeline::monitor(size_t index) const {
@@ -138,6 +142,9 @@ void GraphicsPipeline::RenderMonitorTo(size_t index, ui::Surface& dst) const {
 
 int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
     int drawn = 0;
+    // True once an update that is not rectangle-addressed changed the
+    // surface; only those need the whole-surface fallback.
+    bool coarse_dirty = false;
     for (const auto& update : pdu.updates) {
         switch (update.code) {
             case proto::FastPathUpdateCode::kBitmap: {
@@ -163,6 +170,7 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
                         proto::Status::Ok &&
                     pal.entries.size() == 768) {
                     palette_ = pal.entries;
+                    coarse_dirty = true;
                     ++drawn;  // a new palette repaints palette-indexed bitmaps
                 }
                 break;
@@ -180,6 +188,7 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
             case proto::FastPathUpdateCode::kPtrDefault: {
                 // TS_PTR_DEFAULT_ATTR (0x6, no payload): show the system arrow.
                 cursor_style_ = kArrow;
+                coarse_dirty = true;
                 ++drawn;  // the style change must repaint
                 break;
             }
@@ -187,6 +196,7 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
                 // TS_PTR_NULL_ATTR (0x5, no payload): the server hides the
                 // pointer (e.g. over a hidden-cursor surface).
                 cursor_style_ = kHidden;
+                coarse_dirty = true;
                 ++drawn;
                 break;
             }
@@ -195,7 +205,10 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
                 if (render::ParseOrdersUpdate(update.data.data(),
                                               update.data.size(),
                                               orders) == proto::Status::Ok) {
-                    drawn += order_engine_.Apply(orders, surface_).applied;
+                    const int applied =
+                        order_engine_.Apply(orders, surface_).applied;
+                    drawn += applied;
+                    if (applied > 0) coarse_dirty = true;
                 }
                 break;
             }
@@ -205,7 +218,15 @@ int GraphicsPipeline::ApplyFastPathOutput(const proto::FastPathOutputPdu& pdu) {
                 break;
         }
     }
-    if (drawn > 0) dirty_ = true;
+    if (coarse_dirty) {
+        // Orders are not rectangle-addressed (a PatBlt can cover the screen,
+        // a saved bitmap can be recalled anywhere), a palette change can
+        // affect any palette-indexed pixel, and pointer style/position affect
+        // the composited overlay. Those fall back to the whole surface. A
+        // plain bitmap update does NOT: it already unioned its own landed
+        // destination rectangle through ApplyBitmapRect.
+        mark_all_dirty();
+    }
     return drawn;
 }
 
@@ -223,7 +244,10 @@ int GraphicsPipeline::ApplySlowPathUpdate(
             for (const auto& rect : bm.rectangles) {
                 if (ApplyBitmapRect(rect)) ++drawn;
             }
-            if (drawn > 0) dirty_ = true;
+            if (drawn > 0) {
+                // ApplyBitmapRect already unioned each landed rectangle; the
+                // slow path needs nothing further here (unlike orders).
+            }
             return drawn;
         }
         case proto::kUpdateOrders: {
@@ -240,13 +264,29 @@ int GraphicsPipeline::ApplySlowPathUpdate(
                 return 0;
             }
             const int applied = order_engine_.Apply(orders, surface_).applied;
-            if (applied > 0) dirty_ = true;
+            if (applied > 0) mark_all_dirty();  // orders are not rect-addressed
             return applied;
         }
         default:
             // Unimplemented update types (palette, synchronize, ...) are dropped.
             return 0;
     }
+}
+
+void GraphicsPipeline::MarkSurfaceRectDirty(int dst_x, int dst_y, int w,
+                                            int h) {
+    if (w <= 0 || h <= 0) return;
+    // Clip exactly like Surface::Blit so a bitmap that falls off the edge
+    // (or entirely outside) does not widen the dirty region past the pixels
+    // that actually changed.
+    const int x0 = dst_x > 0 ? dst_x : 0;
+    const int y0 = dst_y > 0 ? dst_y : 0;
+    const int x1 = dst_x + w < surface_.width() ? dst_x + w
+                                               : surface_.width();
+    const int y1 = dst_y + h < surface_.height() ? dst_y + h
+                                                : surface_.height();
+    if (x0 >= x1 || y0 >= y1) return;  // nothing landed
+    dirty_region_ = Rect::Union(dirty_region_, Rect{x0, y0, x1, y1});
 }
 
 bool GraphicsPipeline::ApplyBitmapRect(const proto::BitmapData& rect) {
@@ -289,8 +329,11 @@ bool GraphicsPipeline::ApplyBitmapRect(const proto::BitmapData& rect) {
     // destLeft/destTop are virtual-desktop coordinates (relative to the primary
     // monitor's top-left), so they are translated by the union origin before the
     // blit. With no monitor layout the origin is (0,0) and this is a no-op.
-    surface_.Blit(decoded.pixels.data(), decoded.width, decoded.height,
-                  rect.dest_left - origin_x_, rect.dest_top - origin_y_);
+    const int dst_x = rect.dest_left - origin_x_;
+    const int dst_y = rect.dest_top - origin_y_;
+    surface_.Blit(decoded.pixels.data(), decoded.width, decoded.height, dst_x,
+                  dst_y);
+    MarkSurfaceRectDirty(dst_x, dst_y, decoded.width, decoded.height);
     return true;
 }
 
@@ -300,12 +343,24 @@ ViewTransform GraphicsPipeline::view_transform(int view_w, int view_h) const {
 }
 
 void GraphicsPipeline::RenderTo(ui::Surface& dst) const {
+    RenderTo(dst, Rect{0, 0, dst.width(), dst.height()});
+}
+
+void GraphicsPipeline::RenderTo(ui::Surface& dst, const Rect& dirty) const {
     if (dst.width() == 0 || dst.height() == 0) return;
     const ViewTransform vt = view_transform(dst.width(), dst.height());
     if (vt.width <= 0 || vt.height <= 0) {
         dst.Fill(0, 0, 0, 255);
         return;
     }
+    // The caller may pass the whole destination (full repaint) or the
+    // bounding box of what actually changed. Clip the work to it.
+    const int cx0 = dirty.left;
+    const int cy0 = dirty.top;
+    const int cx1 = dirty.right;
+    const int cy1 = dirty.bottom;
+    if (cx0 >= cx1 || cy0 >= cy1) return;  // nothing to repaint
+
     // Clear only the letterbox bars outside the scaled image. When the image
     // covers the whole viewport (the default 1:1 case) nothing is cleared, so a
     // frame costs one blit instead of a full-screen fill plus a blit.
@@ -313,15 +368,29 @@ void GraphicsPipeline::RenderTo(ui::Surface& dst) const {
     const int iy0 = std::max(0, vt.y);
     const int ix1 = std::min<int>(dst.width(), vt.x + vt.width);
     const int iy1 = std::min<int>(dst.height(), vt.y + vt.height);
-    if (ix0 > 0) dst.FillRect(0, 0, ix0, dst.height(), 0, 0, 0, 255);
+    // A letterbox bar only changes when the view geometry changes, which a
+    // full repaint always covers. Clearing them is still clipped to the
+    // dirty rectangle so a partial frame does not repaint the bars.
+    const auto clear_if_hit = [&](int bx, int by, int bw, int bh) {
+        const int x0 = std::max(bx, cx0);
+        const int y0 = std::max(by, cy0);
+        const int x1 = std::min(bx + bw, cx1);
+        const int y1 = std::min(by + bh, cy1);
+        if (x0 < x1 && y0 < y1) {
+            dst.FillRect(x0, y0, x1 - x0, y1 - y0, 0, 0, 0, 255);
+        }
+    };
+    if (ix0 > 0) clear_if_hit(0, 0, ix0, dst.height());
     if (ix1 < dst.width()) {
-        dst.FillRect(ix1, 0, dst.width() - ix1, dst.height(), 0, 0, 0, 255);
+        clear_if_hit(ix1, 0, dst.width() - ix1, dst.height());
     }
-    if (iy0 > 0) dst.FillRect(ix0, 0, ix1 - ix0, iy0, 0, 0, 0, 255);
+    if (iy0 > 0) clear_if_hit(ix0, 0, ix1 - ix0, iy0);
     if (iy1 < dst.height()) {
-        dst.FillRect(ix0, iy1, ix1 - ix0, dst.height() - iy1, 0, 0, 0, 255);
+        clear_if_hit(ix0, iy1, ix1 - ix0, dst.height() - iy1);
     }
-    ScaleSurface(surface_, dst, vt);
+    ScaleSurfaceClipped(surface_, dst, vt, cx0, cy0, cx1, cy1);
+    // The pointer is an overlay: it must be redrawn whenever any part of
+    // the frame is, because it sits on top of whatever was just painted.
     DrawCursor(dst, vt);
 }
 

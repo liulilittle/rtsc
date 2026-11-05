@@ -100,15 +100,26 @@ Resample ChooseResample(const ViewTransform& vt, int sw, int sh) {
 
 void ScaleSurface(const ui::Surface& src, ui::Surface& dst,
                   const ViewTransform& vt) {
+    ScaleSurfaceClipped(src, dst, vt, 0, 0, dst.width(), dst.height());
+}
+
+void ScaleSurfaceClipped(const ui::Surface& src, ui::Surface& dst,
+                         const ViewTransform& vt, int clip_x0,
+                         int clip_y0, int clip_x1, int clip_y1) {
     if (vt.width <= 0 || vt.height <= 0) return;
     const int src_w = src.width();
     const int src_h = src.height();
     if (src_w <= 0 || src_h <= 0) return;
 
-    const int x0 = std::max(0, vt.x);
-    const int y0 = std::max(0, vt.y);
-    const int x1 = std::min<int>(dst.width(), vt.x + vt.width);
-    const int y1 = std::min<int>(dst.height(), vt.y + vt.height);
+    // Intersect the viewport, the destination and the caller's dirty
+    // rectangle. Everything below then works on a sub-rectangle of the
+    // destination, so the resamplers only touch the pixels that changed.
+    const int x0 = std::max(std::max(0, vt.x), clip_x0);
+    const int y0 = std::max(std::max(0, vt.y), clip_y0);
+    const int x1 = std::min(std::min<int>(dst.width(), vt.x + vt.width),
+                            clip_x1);
+    const int y1 = std::min(std::min<int>(dst.height(), vt.y + vt.height),
+                            clip_y1);
     if (x0 >= x1 || y0 >= y1) return;
 
     detail::ScaleRect r;
