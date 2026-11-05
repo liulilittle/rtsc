@@ -121,12 +121,112 @@ std::string ExecuteGuiCommand(const DebugSnapshot& s, const std::string& json_bo
         return r;
     }
 
+    if (op == "screenshot") {
+        // The library never writes the file itself (no platform API); it only
+        // reports what main() should write. An empty path means "skip".
+        if (s.screenshot_path.empty()) {
+            return "\"ok\":true,\"skipped\":true";
+        }
+        std::string r = "\"ok\":true";
+        r += ",\"path\":\"" + JsonEscape(s.screenshot_path) + "\"";
+        return r;
+    }
+
     return "\"ok\":false,\"error\":\"unknown op: " + JsonEscape(op) + "\"";
 }
 
 bool CommandRequestsSurface(const std::string& json_body) {
     std::string op;
     return FieldValue(json_body, "op", op) && op == "surface";
+}
+
+bool CommandRequestsScreenshot(const std::string& json_body) {
+    std::string op;
+    return FieldValue(json_body, "op", op) && op == "screenshot";
+}
+
+bool ScreenshotPath(const std::string& json_body, std::string& path) {
+    return FieldValue(json_body, "path", path);
+}
+
+std::string EncodeBmp32(const uint8_t* rgba, uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0 || rgba == nullptr) return std::string();
+    const uint32_t row_bytes = width * 4;
+    const uint32_t pixel_bytes = row_bytes * height;
+    const uint32_t file_size = 14 + 40 + pixel_bytes;
+
+    std::string bmp;
+    bmp.reserve(file_size);
+
+    // BITMAPFILEHEADER (14 bytes)
+    bmp += 'B';
+    bmp += 'M';
+    // bfSize
+    bmp += static_cast<char>(file_size & 0xFF);
+    bmp += static_cast<char>((file_size >> 8) & 0xFF);
+    bmp += static_cast<char>((file_size >> 16) & 0xFF);
+    bmp += static_cast<char>((file_size >> 24) & 0xFF);
+    // bfReserved1 + bfReserved2 = 0
+    bmp.append(4, '\0');
+    // bfOffBits = 14 + 40 = 54
+    bmp += static_cast<char>(54 & 0xFF);
+    bmp += static_cast<char>((54 >> 8) & 0xFF);
+    bmp += static_cast<char>((54 >> 16) & 0xFF);
+    bmp += static_cast<char>((54 >> 24) & 0xFF);
+
+    // BITMAPINFOHEADER (40 bytes)
+    // biSize = 40
+    bmp += static_cast<char>(40 & 0xFF);
+    bmp += static_cast<char>((40 >> 8) & 0xFF);
+    bmp += static_cast<char>((40 >> 16) & 0xFF);
+    bmp += static_cast<char>((40 >> 24) & 0xFF);
+    // biWidth (signed)
+    int32_t w = static_cast<int32_t>(width);
+    bmp += static_cast<char>(w & 0xFF);
+    bmp += static_cast<char>((w >> 8) & 0xFF);
+    bmp += static_cast<char>((w >> 16) & 0xFF);
+    bmp += static_cast<char>((w >> 24) & 0xFF);
+    // biHeight = -height (top-down)
+    int32_t h = -static_cast<int32_t>(height);
+    bmp += static_cast<char>(h & 0xFF);
+    bmp += static_cast<char>((h >> 8) & 0xFF);
+    bmp += static_cast<char>((h >> 16) & 0xFF);
+    bmp += static_cast<char>((h >> 24) & 0xFF);
+    // biPlanes = 1
+    bmp += static_cast<char>(1);
+    bmp += static_cast<char>(0);
+    // biBitCount = 32
+    bmp += static_cast<char>(32);
+    bmp += static_cast<char>(0);
+    // biCompression = BI_RGB (0)
+    bmp.append(4, '\0');
+    // biSizeImage = pixel_bytes
+    bmp += static_cast<char>(pixel_bytes & 0xFF);
+    bmp += static_cast<char>((pixel_bytes >> 8) & 0xFF);
+    bmp += static_cast<char>((pixel_bytes >> 16) & 0xFF);
+    bmp += static_cast<char>((pixel_bytes >> 24) & 0xFF);
+    // biXPelsPerMeter = 0
+    bmp.append(4, '\0');
+    // biYPelsPerMeter = 0
+    bmp.append(4, '\0');
+    // biClrUsed = 0
+    bmp.append(4, '\0');
+    // biClrImportant = 0
+    bmp.append(4, '\0');
+
+    // Pixel data: RGBA -> BGRA, top-down (row 0 first)
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* row = rgba + y * row_bytes;
+        for (uint32_t x = 0; x < width; ++x) {
+            // RGBA in source -> BGRA in BMP
+            bmp += static_cast<char>(row[2]); // B
+            bmp += static_cast<char>(row[1]); // G
+            bmp += static_cast<char>(row[0]); // R
+            bmp += static_cast<char>(row[3]); // A
+            row += 4;
+        }
+    }
+    return bmp;
 }
 
 }  // namespace rtsc::debug

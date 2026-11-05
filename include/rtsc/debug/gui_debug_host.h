@@ -33,6 +33,9 @@ struct DebugSnapshot {
     int dirty_top = 0;
     int dirty_right = 0;
     int dirty_bottom = 0;
+    // Command-line value for the "screenshot" command. When non-empty the
+    // handler writes a BMP of the current view and reports "\"path\":<path>".
+    std::string screenshot_path;
     bool session_active = false;
     std::string host;
     std::string backend;
@@ -53,5 +56,15 @@ std::string ExecuteGuiCommand(const DebugSnapshot& snapshot, const std::string& 
 
 // Returns true if the command body is asking for the pixel-statistics command.
 bool CommandRequestsSurface(const std::string& json_body);
+
+// Returns true if the command body is asking for the screenshot command.
+bool CommandRequestsScreenshot(const std::string& json_body);
+
+// Extracts the "path" field from a screenshot command body.
+bool ScreenshotPath(const std::string& json_body, std::string& path);
+
+// Encodes a top-down RGBA pixel buffer as a 32bpp BMP (BGRA, negative height).
+// Returns empty on invalid dimensions.
+std::string EncodeBmp32(const uint8_t* rgba, uint32_t width, uint32_t height);
 
 }  // namespace rtsc::debug

@@ -1043,35 +1043,57 @@ int main(int argc, char** argv) {
              snap.session_active = true;
              snap.host = host;
              snap.backend = windows[0]->backend_name();
-             // The pixel walk is O(width*height) with a hash set, so it runs only
-             // when the command actually asked for it. A "state" or "ping" query
-             // must not cost a full-surface scan.
-             if (rtsc::debug::CommandRequestsSurface(cmd.body)) {
-                 const rtsc::ui::Surface& srv = windows[0]->surface();
-                 const size_t px_count =
-                     static_cast<size_t>(srv.width()) * srv.height();
-                 snap.total_pixels = static_cast<unsigned>(px_count);
-                 if (px_count > 0) {
-                     const uint8_t* p = srv.data();
-                     unsigned non_black = 0;
-                     std::unordered_set<std::uint64_t> colours;
-                     colours.reserve(px_count);
-                     for (size_t i = 0; i < px_count; ++i) {
-                         const std::uint64_t rgba =
-                             static_cast<std::uint64_t>(p[0]) |
-                             (static_cast<std::uint64_t>(p[1]) << 8) |
-                             (static_cast<std::uint64_t>(p[2]) << 16) |
-                             (static_cast<std::uint64_t>(p[3]) << 24);
-                         if ((rgba & 0x00FFFFFFu) != 0) ++non_black;
-                         colours.insert(rgba);
-                         p += 4;
-                     }
-                     snap.non_black_pixels = non_black;
-                     snap.distinct_colours =
-                         static_cast<unsigned>(colours.size());
-                 }
-             }
-             dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
+// The pixel walk is O(width*height) with a hash set, so it runs only
+              // when the command actually asked for it. A "state" or "ping" query
+              // must not cost a full-surface scan.
+              if (rtsc::debug::CommandRequestsSurface(cmd.body)) {
+                  const rtsc::ui::Surface& srv = windows[0]->surface();
+                  const size_t px_count =
+                      static_cast<size_t>(srv.width()) * srv.height();
+                  snap.total_pixels = static_cast<unsigned>(px_count);
+                  if (px_count > 0) {
+                      const uint8_t* p = srv.data();
+                      unsigned non_black = 0;
+                      std::unordered_set<std::uint64_t> colours;
+                      colours.reserve(px_count);
+                      for (size_t i = 0; i < px_count; ++i) {
+                          const std::uint64_t rgba =
+                              static_cast<std::uint64_t>(p[0]) |
+                              (static_cast<std::uint64_t>(p[1]) << 8) |
+                              (static_cast<std::uint64_t>(p[2]) << 16) |
+                              (static_cast<std::uint64_t>(p[3]) << 24);
+                          if ((rgba & 0x00FFFFFFu) != 0) ++non_black;
+                          colours.insert(rgba);
+                          p += 4;
+                      }
+                      snap.non_black_pixels = non_black;
+                      snap.distinct_colours =
+                          static_cast<unsigned>(colours.size());
+                  }
+              }
+
+              if (rtsc::debug::CommandRequestsScreenshot(cmd.body)) {
+                  std::string path;
+                  if (rtsc::debug::ScreenshotPath(cmd.body, path) && !path.empty()) {
+                      const rtsc::ui::Surface& srv = windows[0]->surface();
+                      std::string bmp = rtsc::debug::EncodeBmp32(srv.data(), srv.width(), srv.height());
+                      bool ok = false;
+                      if (!bmp.empty()) {
+                          FILE* f = nullptr;
+                          errno_t err = fopen_s(&f, path.c_str(), "wb");
+                          if (err == 0 && f) {
+                              size_t written = fwrite(bmp.data(), 1, bmp.size(), f);
+                              ok = (written == bmp.size());
+                              fclose(f);
+                          }
+                      }
+                      snap.screenshot_path = ok ? path : "";
+                  } else {
+                      snap.screenshot_path.clear();
+                  }
+              }
+
+              dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
          }
 
         if (!client.Pump(*transport, error)) {
