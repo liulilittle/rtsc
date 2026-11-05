@@ -4927,4 +4927,44 @@ RTSC_TEST(server_restart_after_stop_rebinds) {
     CHECK_EQ(server.session_count(), 0);
 }
 
+// The test-pattern source paints a gradient with a bright border. A real
+// client must therefore see MANY distinct colours, not one flat fill: a
+// single-colour surface means the server frame was mangled on the wire (the
+// user-visible symptom was "the window opens as a mosaic"). This drives the
+// real RdpServer and decodes the bitmap it pushes.
+RTSC_TEST(test_pattern_frame_reaches_the_client_with_many_colours) {
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    HandshakeResult r = DriveToActive(server.bound_port(), /*send_input=*/false);
+    CHECK(r.reached_active);
+    CHECK(r.got_bitmap);
+    CHECK(!r.bitmap_pixels.empty());
+
+    // The frame is 32bpp BGRA. Count distinct RGB triples.
+    std::set<uint32_t> colours;
+    for (size_t i = 0; i + 3 < r.bitmap_pixels.size(); i += 4) {
+        const uint32_t c = static_cast<uint32_t>(r.bitmap_pixels[i]) |
+                           (static_cast<uint32_t>(r.bitmap_pixels[i + 1]) << 8) |
+                           (static_cast<uint32_t>(r.bitmap_pixels[i + 2]) << 16);
+        colours.insert(c);
+    }
+    if (colours.size() < 8) {
+        std::printf("  distinct colours = %zu (want >= 8); bytes=%zu w=%u h=%u\n",
+                    colours.size(), r.bitmap_pixels.size(),
+                    (unsigned)r.bitmap_width, (unsigned)r.bitmap_height);
+    }
+    CHECK(colours.size() >= 8);
+
+    server.Stop();
+    runner.join();
+}
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

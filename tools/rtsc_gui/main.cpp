@@ -1284,13 +1284,19 @@ int main(int argc, char** argv) {
             const size_t n = static_cast<size_t>(s.width()) * s.height();
             size_t non_black = 0;
             std::vector<uint32_t> colours;
-            colours.reserve(1024);
+            // Sample the WHOLE surface. The previous version pushed only the
+            // first 1024 pixels (one row of a 1280-wide desktop), so a surface
+            // whose first row was uniform reported 1 distinct colour even though
+            // the rest of it was a full gradient. That made the only diagnostic
+            // an operator has for 'is the desktop actually painted?' blind to
+            // everything below row 0.
+            colours.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 const uint32_t v = static_cast<uint32_t>(p[i * 4]) |
                                     (static_cast<uint32_t>(p[i * 4 + 1]) << 8) |
                                     (static_cast<uint32_t>(p[i * 4 + 2]) << 16);
                 if (v != 0) ++non_black;
-                if (colours.size() < 1024) colours.push_back(v);
+                colours.push_back(v);
             }
             std::sort(colours.begin(), colours.end());
             const size_t distinct = static_cast<size_t>(
