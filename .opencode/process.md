@@ -2083,4 +2083,48 @@ Release 全量 0 error 0 warning；ctest **69/69**（77.43s）
 ### 诚实登记（未验证，禁止声称已覆盖）
 `Receive` 的 `progressed` 修复逻辑正确，但**无测试可证伪**：TLS 1.3 回环无法产出
 一个能发 ticket 的服务端上下文（`RawServer` 的 `STREAM_SIZES` 在手动 SSPI 握手后
-返回 `SEC_E_INTERNAL_ERROR`）。已在代码注释中标注 UNVERIFIED，并说明可证伪条件。
+返回 `SEC_E_INTERNAL_ERROR`）。已在代码注释中标注 UNVERIFIED，并说明可证伪条件。## 第890轮：批84 —— 用户报告"打开直接马赛克"的排查（提交 7ca14f3）
+
+### 用户报告
+GUI 打开后画面是马赛克。
+
+### 排查路径（全部实测，非推断）
+1. `TestPatternSource::Capture` 在 64x48 与 1280x1024 下生成上千种颜色 →
+   探针断言 `1280x1024 top40 distinct=9985`，源正确
+2. 真实 `RdpServer` 推送的 bitmap：`diag bitmap w=64 h=48 bytes=12288`（尺寸精确），
+   新增测试断言 `colours >= 8` 通过 → 服务端帧内容正确
+3. GUI 侧对每个 rect 打印：`w=1280 h=3 bpp=32 flags=0x0000 len=15360 colours=769`，
+   1024 行被切成 342 个 3 行 band，每个 band 有 769 种颜色 → 传输与解码正确
+4. **矛盾点**：band 有 769 色，但汇总统计显示 `1 distinct colours`
+
+### 根因
+`tools/rtsc_gui/main.cpp` 的 `count_non_black` 只采样前 1024 个像素：
+```
+if (colours.size() < 1024) colours.push_back(v);
+```
+1280 宽桌面的首行正好是 `TestPatternSource` 的白色边框 → 1024 个像素全同色 →
+`distinct` 恒为 1。**这是诊断盲区，不是渲染缺陷**：
+- 修复前实测 `1 distinct colours`
+- 修复后实测 `65537 distinct colours`
+
+### 修复
+`colours.reserve(n)` + 全部 push，采样整幅 surface。
+
+### 新增测试（`tests/test_server.cpp`）
+`test_pattern_frame_reaches_the_client_with_many_colours`：驱动真实 `RdpServer`
+（`DriveToActive`），断言推送的 test-pattern 帧颜色数 >= 8。
+该测试锁住"服务端帧内容正确"这一半；统计口径本身靠变异验证。
+
+### 变异（第16条）
+| 变异 | 结果 |
+|---|---|
+| 采样退回 1024 上限 | GUI 实测回到 `1 distinct colours`（红） |
+| 恢复 | `65537 distinct colours`（绿） |
+
+### C0
+Release 全量 0 error 0 warning；ctest **69/69**（90.71s）；server_tests 60/686
+
+### 教训（待写入 discover）
+"能观测"不等于"观测覆盖了全样本"：抽样上限 = 1024 让唯一的画面诊断对
+第 0 行以下全部失明，且这个盲区正好落在最常被问的问题上
+（"远程桌面到底画出来了吗"）。诊断口径必须与它声称的范围一致。
