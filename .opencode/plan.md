@@ -65,6 +65,9 @@
 - [x] 接入 ConnectMachine（新增 rtsc_security：SecurityLayer + ConnectionDriver，scripted TLS 驱动全流程测试全绿）
       - [x] 接收方向签名校验：CredSSP OpenReceive 校验 HMAC_MD5 与序列号（测试 tampered_signature_checksum_is_rejected 为证；impl-log C5 已过时）
       - [ ] 数据面签名（TS_SECURITY_HEADER，属 Standard RDP Security 路径，见下）
+            **2026-11-05 负证**：目标 192.168.1.7 在 X.224 阶段直接回 RDP_NEG_FAILURE 拒绝
+            PROTOCOL_RDP（`evidence/real-server-20261105/connect-rdp-run.txt`），该路径
+            在本目标上结构性不可达。验证需换允许 PROTOCOL_RDP 的服务器或自建 rtsc_server 回环。
 - [~] Standard RDP Security（RC4 + 密钥交换，PROTOCOL_RDP 兼容路径）
       - [x] 原始 RSA 原语 `RdpRsaEncryptClientRandom`（[MS-RDPBCGR] 5.3.4.1，Windows BCrypt）
             — 2 用例 / 271 检查，含往返验证
@@ -73,6 +76,7 @@
       - [x] 数据面 `RdpSecurityContext`：RC4 双向流 + MAC + 每 4096 包密钥更新（5.3.6/5.3.6.1）
             — 9 用例 / 26 检查，含 9000 包跨 2 次密钥更新边界同步
       - [ ] Security Exchange PDU 接入连接流程（目标服务器用 HYBRID_EX，此路径不触发）
+            **2026-11-05 负证**：同上，PROTOCOL_RDP 被服务器拒绝，Security Exchange 路径不触发。
 - 验证方式：与 192.168.1.7 完成到 Client Info 的真实连接
   - [x] 实测（无凭据）：X.224 协商 + 真实 TLS 握手（3 轮，846/51 字节）+ CredSSP step 1 发送成功
         （`rtsc_connect 192.168.1.7 3389`；失败点在 NTLMv2 空凭据护栏）
@@ -134,8 +138,12 @@
 
 - [x] P7 端到端集成：`Client`（driver+graphics+input）、`rtsc_gui` 工具、
       `test_client.cpp`——Windows 36/36，Linux 门禁 35/35
-- [ ] 真机联调到 active session（需用户提供凭据；无凭据止于 CredSSP/NTLM）
+- [x] 真机联调到 active session（需用户提供凭据；无凭据止于 CredSSP/NTLM）
+      2026-11-05 实测：`rtsc_connect --tls-insecure` EXIT=0（Client Info PDU sent）；
+      `rtsc_gui --tls-insecure --seconds 12` EXIT=0，1280x1024 表面 1299466/1310720 非黑（99.14%）、
+      826 色、bit-exact 1:1（5242880 字节）。证据 `evidence/real-server-20261105/`。
 - [ ] 真实服务器抓包比对 RDP6/NSCodec 解码（当前仅自造流验证）
+      （2026-11-05 已确认位图路径真实可用：`gui-run.txt:28` bit-exact 1:1；抓包逐帧比对仍未做）
 
 - [x] 门禁目录累积（甲第7点）：`scripts/linux-build-gate.sh` 唯一化后 `.tmp/linux-gate.<pid>` 无界累积。
       已修：`cleanup()`→`rotate_logs()`（保留最近 5 个、不删目录）+ `trap cleanup EXIT`；`BUILD_DIR` 整体清。
@@ -208,6 +216,10 @@
   （原直接等 EUAR → 死锁 → 服务器关闭）。
 - **BitmapCacheRev2 修复（双审盖章）**：`BitmapCacheRev2CapabilitySet` 固定 **40 字节**（原 19 字节，漏 `Pad2`/`Pad3`）。
 - **真机现象**：active 后服务器发 `SetErrorInfo(ERRINFO_NONE=0)` → `SaveSessionInfo` → VC PDU → **关闭**，**从不发位图**（表面全黑）。
+  - **2026-11-05 复测推翻**：同一目标、同一凭据，`rtsc_gui --tls-insecure --seconds 12` 渲染成功
+    1299466/1310720 非黑像素（99.14%）、826 色、bit-exact 1:1。当时"全黑"的根因正是本条目
+    紧接着记录的静态 VC 未按 `channel_id` 分派（已修），非服务器侧问题。
+    证据 `evidence/real-server-20261105/gui-run.txt` + `SUMMARY.md`。
   - 审计结论：**post-active 断连在服务器侧**（客户端已正确到达 active；疑 **Windows 11 Home 不支持 RDP 宿主**）。
   - 客户端真实缺口（已修）：**静态 VC（rdpdr/cliprdr/rdpsnd）未按 `channel_id` 分派**（原被图形层吞掉）；
     已加 `SetChannelHandler` + 按 `McsSendData::channel_id` 分派，且 handler **收 `sd.user_data`**（`channelPduHeader` 在其内）。

@@ -1,0 +1,5 @@
+﻿connecting to 192.168.1.7:3389 (external security)
+sent X.224 Connection Request (42 bytes)
+round 1: recv 19, send 147, phase=await-external-security, protocol=0x00000008
+round 2: recv 846, send 318, phase=await-external-security, protocol=0x00000008
+FAILED: security handshake failed: TLS handshake failed: certificate chain rejected: dwChainErrorStatus=0x00000020 hrVerifyChainStatus=0x800B0109

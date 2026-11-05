@@ -1976,4 +1976,31 @@ plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实
 无代码改动；脚本语法 PASS；文档一致性已修正。
 
 ### 当前剩余未完成项
-不可自动化（需真机/凭据）：plan.md:56 TLS1.3 ticket、:75 Security Exchange PDU、:67 数据面签名、:137-138 真机联调、:603 真机输入注入清单。
+不可自动化（需真机/凭据）：plan.md:56 TLS1.3 ticket、:75 Security Exchange PDU、:67 数据面签名、:137-138 真机联调、:603 真机输入注入清单。## 第887轮：真机联调复测（用户提供凭据）—— 推翻"表面全黑"旧结论
+
+### 实质动作
+以 `192.168.1.7:3389` 实测四条路径，证据落盘 `evidence/real-server-20261105/`：
+
+| 路径 | 命令 | 结果 |
+|---|---|---|
+| TLS+CredSSP kInsecure | `rtsc_connect --tls-insecure` | **EXIT=0，Client Info PDU sent** |
+| TLS+CredSSP kStrict | `rtsc_connect` | EXIT=1，CERT_E_UNTRUSTEDROOT 0x800B0109 |
+| GUI 端到端 | `rtsc_gui --tls-insecure --seconds 12` | **EXIT=0，1299466/1310720 非黑（99.14%），826 色，bit-exact 1:1（5242880B）** |
+| Standard RDP Security | `rtsc_connect --rdp` | EXIT=1，服务器 RDP_NEG_FAILURE |
+
+### 关键判定（W5 证据）
+- gui-run.txt:26-28 三行实测输出：surface/pixels/non-black/colours + "lossless 1:1: bit-exact (5242880 bytes compared)"。
+- plan.md:209 旧结论"从不发位图（表面全黑）"**被推翻**：根因是当时静态 VC 未按 channel_id 分派（已修），非服务器侧问题。
+- plan.md:67/75 Standard RDP Security 路径在本目标**结构性不可达**（服务器 X.224 直接拒绝 PROTOCOL_RDP）。这是负证，不是代码缺陷；验证需换服务器或自建回环。
+- kStrict 拒绝自签证书证明 `fce4ac4` 证书策略真实生效。
+
+### 文档更新
+- plan.md:141 [ ] → [x] 真机联调到 active session（附实测数字）
+- plan.md:146 抓包比对项补注：位图路径真实可用已确认，逐帧抓包比对仍未做
+- plan.md:67/75 补负证说明
+- plan.md:209 补复测推翻记录
+- 新增 evidence/real-server-20261105/SUMMARY.md（含复现命令）
+
+### 未覆盖（诚实登记）
+- TLS1.3 ticket 分支（服务器协商 TLS1.2）
+- 真机输入注入清单（headless 模式 input=0，UIPI/多会话/SAS/Pause/多屏 UNVERIFIED）
