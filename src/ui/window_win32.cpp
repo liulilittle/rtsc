@@ -561,8 +561,22 @@ class Win32Window final : public Window {
                 PAINTSTRUCT ps;
                 HDC dc = BeginPaint(hwnd_, &ps);
                 if (mem_dc_ != nullptr) {
-                    BitBlt(dc, 0, 0, surface_.width(), surface_.height(),
-                           mem_dc_, 0, 0, SRCCOPY);
+                    // Paint only the update region Windows computed for this
+                    // message. The DIB already acts as a full-surface back
+                    // buffer, so the remaining flicker came from blitting all
+                    // of it for a caret-sized invalidation. An empty update
+                    // region (some messages carry one) falls back to the whole
+                    // surface.
+                    RECT rc = ps.rcPaint;
+                    if (rc.right <= rc.left || rc.bottom <= rc.top) {
+                        rc.left = 0;
+                        rc.top = 0;
+                        rc.right = surface_.width();
+                        rc.bottom = surface_.height();
+                    }
+                    BitBlt(dc, rc.left, rc.top, rc.right - rc.left,
+                           rc.bottom - rc.top, mem_dc_, rc.left, rc.top,
+                           SRCCOPY);
                 }
                 EndPaint(hwnd_, &ps);
                 return false;

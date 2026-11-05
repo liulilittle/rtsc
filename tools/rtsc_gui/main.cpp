@@ -529,12 +529,24 @@ int main(int argc, char** argv) {
         args.size() >= 7 ? static_cast<uint16_t>(std::atoi(args[6].c_str()))
                          : default_desktop_h;
     const std::string backend = args.size() >= 8 ? args[7] : "";
-    // View options: zoom (1.0 = 1:1) and fit. The default is 1:1 lossless
-    // (zoom 100%, fit off); an explicit fit=1 switches to smart sizing.
+    // View options: zoom (1.0 = 1:1) and fit. The default is FIT: the remote
+    // desktop is scaled to the application window (what mstsc calls "smart
+    // sizing"), which is what a remote-desktop window is expected to do -- a
+    // 1280x1024 session in a smaller window must be visible whole, not cropped.
+    // Passing fit=0 explicitly selects the 1:1 lossless mode. Fit never enlarges
+    // past 100%, so a window at least as large as the remote desktop still shows
+    // a pixel-exact copy.
+    // The pipeline/ZoomState defaults stay 1:1 (a library caller that asks for a
+    // surface-sized frame keeps getting a pixel-exact copy); only this front-end
+    // picks smart sizing.
     const bool has_zoom = args.size() >= 9 && std::atof(args[8].c_str()) > 0.0;
     const double zoom_arg = has_zoom ? std::atof(args[8].c_str()) : 1.0;
-    const bool fit_arg =
-        args.size() >= 10 ? std::atoi(args[9].c_str()) != 0 : false;
+    bool fit_arg = args.size() >= 10 ? std::atoi(args[9].c_str()) != 0 : true;
+    if (fit_arg && has_zoom) {
+        // An explicit zoom means the caller asked for that scale; fit would
+        // silently override it, so keep the requested zoom.
+        fit_arg = false;
+    }
     const uint16_t viewport_w =
         args.size() >= 11 ? static_cast<uint16_t>(std::atoi(args[10].c_str())) : 0;
     const uint16_t viewport_h =
