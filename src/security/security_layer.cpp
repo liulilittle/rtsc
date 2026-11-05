@@ -451,4 +451,27 @@ std::vector<std::vector<uint8_t>> SecurityLayer::ReceivePdu(const uint8_t* in,
     return frames;
 }
 
+// TLS 1.3 observability (plan.md:56). The version is whatever the backend
+// negotiated during Handshake; before the TLS handshake there is nothing to
+// report. The accessor exists so rtsc_connect and the GUI log can print the
+// version and a real-server run can prove whether the TLS 1.3 ticket branch was
+// exercised.
+//
+// "TLS done" is NOT Phase::kDone: that phase means the whole TLS + CredSSP +
+// EUAR sequence finished, and the version is already fixed once the TLS
+// handshake alone completes. The ClientHello phase is the only state where the
+// version is still unknown.
+bool SecurityLayer::negotiated_tls(tls::NegotiatedInfo& out) const {
+    out = tls::NegotiatedInfo{};
+    if (!tls_ || phase_ == Phase::kTlsHandshake || phase_ == Phase::kFailed) {
+        return false;
+    }
+    const tls::Error err = tls_->negotiated(out);
+    if (!err.ok()) {
+        out = tls::NegotiatedInfo{};
+        return false;
+    }
+    return true;
+}
+
 }  // namespace rtsc::security

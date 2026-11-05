@@ -1,0 +1,25 @@
+﻿connecting to 192.168.1.7:3389 (external security)
+sent X.224 Connection Request (42 bytes)
+round 1: recv 19, send 147, phase=await-external-security, protocol=0x00000008
+round 2: recv 846, send 318, phase=await-external-security, protocol=0x00000008
+round 3: recv 51, send 86, phase=await-external-security, protocol=0x00000008
+round 4: recv 291, send 614, phase=await-external-security, protocol=0x00000008
+F:\rtsc\build\Release\rtsc_connect.exe : [GCC] static channels: 1004 1005 1006
+所在位置 行:1 字符: 39
++ ... rtsc\.tmp"; F:\rtsc\build\Release\rtsc_connect.exe --tls-insecure 192 ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([GCC] static channels: 1004 1005 1006:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[GCC] server security data len=8: 00 00 00 00 00 00 00 00
+round 5: recv 88, send 174, phase=await-external-security, protocol=0x00000008
+round 6: recv 33, send 433, phase=await-connect-response, protocol=0x00000008
+round 7: recv 141, send 49, phase=await-attach-user, protocol=0x00000008
+round 8: recv 40, send 41, phase=await-channel-join, protocol=0x00000008
+round 9: recv 44, send 41, phase=await-channel-join, protocol=0x00000008
+round 10: recv 44, send 41, phase=await-channel-join, protocol=0x00000008
+round 11: recv 44, send 41, phase=await-channel-join, protocol=0x00000008
+round 12: recv 44, send 41, phase=await-channel-join, protocol=0x00000008
+round 13: recv 44, send 356, phase=await-client-info-ack, protocol=0x00000008
+TLS: version=0x0303 cipher=0x009d (TLS 1.2)
+DONE: Client Info PDU sent

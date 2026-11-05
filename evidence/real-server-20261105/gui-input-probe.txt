@@ -1,0 +1,40 @@
+﻿rtsc_gui: connecting to 192.168.1.7:3389 (1280x1024, external security)
+window backend: win32
+rdpdr: no drives redirected (set RTSC_REDIRECT_DRIVES=C,E or ALL)
+F:\rtsc\build\Release\rtsc_gui.exe : [GCC] static channels: 1004 1005 1006
+所在位置 行:1 字符: 39
++ ... rtsc\.tmp"; F:\rtsc\build\Release\rtsc_gui.exe --tls-insecure --input ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([GCC] static channels: 1004 1005 1006:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[GCC] server security data len=8: 00 00 00 00 00 00 00 00
+monitor layout: 1 monitor(s)
+  monitor 0: 1280x1024 at (0,0) primary
+input probe queued: key 0x1E, mouse (11,13)
+session active; desktop 1280x1024; entering the render loop
+fps: 92.8 loop, 11.0 rendered over 1.0 s (10.8 ms/frame)
+fps: 67.1 loop, 0.0 rendered over 1.0 s (14.9 ms/frame)
+fps: 68.3 loop, 2.0 rendered over 1.0 s (14.6 ms/frame)
+fps: 189.2 loop, 9.9 rendered over 1.0 s (5.3 ms/frame)
+fps: 66.0 loop, 1.0 rendered over 1.0 s (15.2 ms/frame)
+fps: 64.1 loop, 0.0 rendered over 1.0 s (15.6 ms/frame)
+fps: 64.9 loop, 1.0 rendered over 1.0 s (15.4 ms/frame)
+fps: 64.7 loop, 1.0 rendered over 1.0 s (15.5 ms/frame)
+fps: 65.1 loop, 1.0 rendered over 1.0 s (15.4 ms/frame)
+fps: 66.4 loop, 2.0 rendered over 1.0 s (15.1 ms/frame)
+fps: 65.3 loop, 1.0 rendered over 1.0 s (15.3 ms/frame)
+fps: 65.2 loop, 1.0 rendered over 1.0 s (15.3 ms/frame)
+fps: 65.3 loop, 1.0 rendered over 1.0 s (15.3 ms/frame)
+fps: 64.2 loop, 0.0 rendered over 1.0 s (15.6 ms/frame)
+surface: 1280x1024, 1310720 pixels, 1299460 non-black, 826 distinct colours
+view: 1280x1024 -> 1280x1024 at (0,0), scale 1.000 (zoom), 1299460 non-black
+lossless 1:1: bit-exact (5242880 bytes compared)
+virtual channel chunks: rdpdr=2 cliprdr=3 rail=0
+rdpusb: off, devices added=0 skipped=0
+application sends: input=2 channel=7
+rail: pdus=0 window_moves=0 minmax=0 taskbar=0 langbar=0 exec=0 exec_results=0 appid_req=0 appid_resp=0 incomplete=0 sent=0
+clipboard: long_names=yes remote_formats=0 caps_sent=1 server_caps=1 remote_lists=0 local_lists=1 responses=0 data_req=0 data_resp_sent=0 data_resp=0 temp_dir= locks=0/0
+audio: server_formats=0 client_formats=0 quality_mode=0 wave2=0 confirms=0 training=0 close=0 played=0 received=no
+audio: backend unavailable, server version 0, selected format 0 Hz 0 ch 0-bit PCM
+rtsc_gui: 1136 loop frames, 33 rendered (75.6 fps loop)

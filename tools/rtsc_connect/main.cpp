@@ -181,6 +181,20 @@ int main(int argc, char** argv) {
             rtsc::proto::kProtocolRdp;
         if (step.done && !done_printed) {
             done_printed = true;
+            // Plan.md:56 — print the TLS version the backend actually negotiated
+            // so a real-server run can prove whether the TLS 1.3 ticket branch
+            // was exercised (0x0304 = TLS 1.3, 0x0303 = TLS 1.2). A Standard RDP
+            // Security run has no TLS transport, so the line is omitted there.
+            if (auto* sec = driver.security()) {
+                rtsc::tls::NegotiatedInfo info;
+                if (sec->negotiated_tls(info)) {
+                    std::printf("TLS: version=0x%04x cipher=0x%04x %s\n",
+                                static_cast<unsigned>(info.tls_version),
+                                static_cast<unsigned>(info.cipher_suite),
+                                info.tls_version == 0x0304 ? "(TLS 1.3)"
+                                                           : "(TLS 1.2)");
+                }
+            }
             std::printf("DONE: Client Info PDU sent\n");
             if (!negotiated_rdp) {
                 // Historical behaviour for the external-security path: the

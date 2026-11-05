@@ -1048,4 +1048,27 @@ RTSC_TEST(connection_driver_sends_application_and_channel_pdus_over_tls) {
     CHECK(sd.user_data == channel_message);
 }
 
+// TLS 1.3 observability (plan.md:56). The negotiated version is decided by the
+// backend during Handshake, but before this test there was no way for a caller
+// (rtsc_connect, the GUI log) to observe it, so the TLS 1.3 ticket branch could
+// never be proven from a real-server run. The accessor must report exactly what
+// the backend negotiated, and must be safe to call before the handshake (0).
+RTSC_TEST(security_layer_exposes_negotiated_tls_version) {
+    auto layer = MakeLayer();
+    CHECK(layer != nullptr);
+    // Before the TLS handshake the version is unknown.
+    rtsc::tls::NegotiatedInfo before;
+    CHECK(!layer->negotiated_tls(before));
+    CHECK_EQ(before.tls_version, static_cast<uint16_t>(0));
+
+    layer->Step(nullptr, 0);  // client hello
+    const uint8_t server_hello[] = {0x16, 0x03, 0x03, 0x00, 0x01, 0x02};
+    layer->Step(server_hello, sizeof(server_hello));  // TLS done, CredSSP step 1
+
+    rtsc::tls::NegotiatedInfo after;
+    CHECK(layer->negotiated_tls(after));
+    // The scripted transport reports 0x0304 (TLS 1.3); the accessor must pass
+    // the backend value through unchanged, never a compiled-in constant.
+    CHECK_EQ(after.tls_version, static_cast<uint16_t>(0x0304));
+}
 int main() { return ::rtsc::test::run_all("rtsc_security_tests"); }

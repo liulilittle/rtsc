@@ -90,6 +90,13 @@ class SecurityLayer {
     bool failed() const noexcept { return phase_ == Phase::kFailed; }
     const std::string& error() const noexcept { return error_; }
 
+    // Reports what the TLS backend negotiated (plan.md:56 — the TLS 1.3 ticket
+    // branch is only observable if the caller can see the version). Returns
+    // false and leaves `out` cleared before the TLS handshake has completed or
+    // when the backend cannot report it; the value is always the backend's, never
+    // a compiled-in constant.
+    bool negotiated_tls(tls::NegotiatedInfo& out) const;
+
     // ---- test hooks ---------------------------------------------------------
     // Replace the platform TLS transport with a scripted one. Must be called
     // before the first Step(); Create() installs the platform transport.
