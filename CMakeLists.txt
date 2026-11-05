@@ -101,6 +101,16 @@ add_library(rtsc_rdpdr STATIC
 target_include_directories(rtsc_rdpdr PUBLIC include)
 target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto)
 
+# Smart card redirection backend ([MS-RDPESC] 3.1.4). Platform neutral seam
+# plus a null backend; the Win32 implementation binds winscard.dll at runtime
+# (no link-time dependency), so it is a separate archive that only rtsc_gui
+# pulls in.
+add_library(rtsc_smartcard STATIC
+    src/smartcard/backend_null.cpp
+    src/smartcard/backend_win32.cpp)
+target_include_directories(rtsc_smartcard PUBLIC include)
+target_link_libraries(rtsc_smartcard PUBLIC rtsc_proto rtsc_rdpdr)
+
 # waveOut audio backend (Windows only).
 if(WIN32)
     add_library(rtsc_audio STATIC src/audio/audio_win32.cpp)
@@ -323,6 +333,15 @@ add_executable(rtsc_rop_tests tests/test_rop.cpp)
 target_link_libraries(rtsc_rop_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rop_tests PRIVATE tests)
 
+# UI debug channel (loopback HTTP + JSON) used by rtsc_gui when launched
+# with --ui-debug-port. Platform code is confined to the socket layer.
+add_library(rtsc_debug STATIC
+    src/debug/ui_debug_server.cpp)
+target_include_directories(rtsc_debug PUBLIC include)
+if(WIN32)
+    target_link_libraries(rtsc_debug PUBLIC ws2_32)
+endif()
+
 add_executable(rtsc_ui_tests tests/test_ui.cpp)
 target_link_libraries(rtsc_ui_tests PRIVATE rtsc_ui rtsc_util)
 target_include_directories(rtsc_ui_tests PRIVATE tests)
@@ -332,6 +351,10 @@ target_include_directories(rtsc_ui_tests PRIVATE tests)
 # slashes, so the definition is directly usable as a C++ string literal.
 target_compile_definitions(rtsc_ui_tests PRIVATE
                            "RTSC_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+
+add_executable(rtsc_ui_debug_tests tests/test_ui_debug.cpp)
+target_link_libraries(rtsc_ui_debug_tests PRIVATE rtsc_debug rtsc_util)
+target_include_directories(rtsc_ui_debug_tests PRIVATE tests)
 
 add_executable(rtsc_graphics_tests tests/test_graphics.cpp)
 target_link_libraries(rtsc_graphics_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
@@ -816,6 +839,7 @@ add_test(NAME nsc COMMAND rtsc_nsc_tests)
 add_test(NAME orders COMMAND rtsc_orders_tests)
 add_test(NAME rop COMMAND rtsc_rop_tests)
 add_test(NAME ui COMMAND rtsc_ui_tests)
+add_test(NAME ui_debug COMMAND rtsc_ui_debug_tests)
 add_test(NAME graphics COMMAND rtsc_graphics_tests)
 add_test(NAME view COMMAND rtsc_view_tests)
 add_test(NAME session_info COMMAND rtsc_session_info_tests)
