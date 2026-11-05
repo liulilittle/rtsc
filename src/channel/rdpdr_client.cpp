@@ -7,6 +7,8 @@
 #include <cstring>
 #include <filesystem>
 
+#include "rtsc/smartcard/backend.h"
+
 namespace rtsc::channel {
 
 using rtsc::rdpdr::ResolvePathUnderRoot;
@@ -123,6 +125,23 @@ RdpdrClient::RdpdrClient(rdpdr::IFileSystem* fs, std::vector<Device> devices,
 }
 
 RdpdrClient::~RdpdrClient() = default;
+
+void RdpdrClient::EnableSmartCard(::rtsc::smartcard::ISmartCardBackend* backend) {
+    if (backend == nullptr) {
+        scard_ = nullptr;
+        scard_device_id_ = 0;
+        return;
+    }
+    scard_ = backend;
+    // [MS-RDPEFS] 2.2.1.3: DeviceId is chosen by the client and must be unique
+    // within the announce. Reuse the drive numbering space and pick one past
+    // the highest id already in use.
+    uint32_t next = 1;
+    for (const auto& device : devices_) {
+        next = std::max(next, device.device_id + 1);
+    }
+    scard_device_id_ = next;
+}
 
 void RdpdrClient::OnChannelData(const uint8_t* data, size_t size) {
     if (data == nullptr || size < rtsc::proto::ChannelPduHeader::kSize) return;
@@ -450,8 +469,216 @@ void RdpdrClient::OnControl(const std::vector<uint8_t>& body) {
         rtsc::proto::Status::Ok) {
         return;
     }
+    if (scard_ != nullptr && req.request.device_id == scard_device_id_) {
+        OnSmartCardControl(req);
+        return;
+    }
     SendIoCompletion(req.request, rtsc::proto::kStatusUnsuccessful);
     ++control_count_;
+}
+
+// [MS-RDPESC] 3.1.4: the server drives every smart card operation through
+// IRP_MJ_DEVICE_CONTROL on the SCARD device. The InputBuffer is an NDR-encoded
+// SCARD_IOCTL_* call; the OutputBuffer is the matching *_Return structure.
+//
+// A malformed payload never reaches the backend: the handler answers
+// STATUS_UNSUCCESSFUL with an empty OutputBuffer, matching FreeRDP
+// smartcard_main.c (decode failure -> irp->IoStatus = STATUS_UNSUCCESSFUL and
+// no output). A status the backend returns is carried in ReturnCode with
+// IoStatus STATUS_SUCCESS, as [MS-RDPESC] 2.2.3 requires.
+void RdpdrClient::OnSmartCardControl(const proto::RdpdrControlReq& req) {
+    const uint32_t code = req.io_control_code;
+    last_scard_ioctl_name_ = proto::ScardIoctlName(code);
+
+    proto::ScardCall call;
+    if (proto::ParseScardCall(code, req.input_buffer.data(),
+                              req.input_buffer.size(), call) !=
+        proto::Status::Ok) {
+        ++smartcard_reject_count_;
+        SendControlCompletion(req.request, proto::kStatusUnsuccessful, {});
+        return;
+    }
+
+    ++smartcard_count_;
+    const auto scard = static_cast<proto::ScardIoctl>(call.code);
+    proto::ScardReturn ret;
+    uint32_t output_limit = req.output_buffer_length;
+
+    switch (scard) {
+        case proto::ScardIoctl::kEstablishContext: {
+            ret.return_code = scard_->EstablishContext(call.scope,
+                                                       ret.context.bytes);
+            break;
+        }
+        case proto::ScardIoctl::kReleaseContext: {
+            ret.return_code = scard_->ReleaseContext(call.context.bytes);
+            break;
+        }
+        case proto::ScardIoctl::kListReaderGroupsA: {
+            std::vector<uint8_t> groups;
+            ret.return_code =
+                scard_->ListReaderGroups(call.context.bytes, groups);
+            if (ret.return_code == 0) ret.multi_string = std::move(groups);
+            break;
+        }
+        case proto::ScardIoctl::kListReadersA: {
+            std::vector<uint8_t> readers;
+            ret.return_code = scard_->ListReaders(call.context.bytes,
+                                                  call.groups_msz, readers);
+            if (ret.return_code == 0) ret.multi_string = std::move(readers);
+            break;
+        }
+        case proto::ScardIoctl::kGetStatusChangeA: {
+            std::vector<smartcard::ScardReaderState> states;
+            states.reserve(call.reader_states.size());
+            for (const auto& st : call.reader_states) {
+                smartcard::ScardReaderState out;
+                out.reader = st.reader;
+                out.current_state = st.current_state;
+                states.push_back(std::move(out));
+            }
+            ret.return_code = scard_->GetStatusChange(
+                call.context.bytes, call.timeout, states);
+            // Like FreeRDP smartcard_GetStatusChangeA_Call, a timeout still
+            // returns the readers it watched (with their unchanged state).
+            if (ret.return_code == 0 ||
+                ret.return_code == smartcard::kScardETimeout) {
+                ret.reader_states.clear();
+                for (const auto& st : states) {
+                    proto::ScardReaderStateReturn out;
+                    out.current_state = st.current_state;
+                    out.event_state = st.event_state;
+                    out.atr = st.atr;
+                    ret.reader_states.push_back(std::move(out));
+                }
+            }
+            break;
+        }
+        case proto::ScardIoctl::kConnectA: {
+            std::vector<uint8_t> handle;
+            uint32_t active = 0;
+            ret.return_code = scard_->Connect(
+                call.context.bytes, call.reader, call.share_mode,
+                call.preferred_protocols, handle, active);
+            if (ret.return_code == 0) {
+                ret.handle.context = call.context;
+                ret.handle.bytes = std::move(handle);
+                ret.active_protocol = active;
+            }
+            break;
+        }
+        case proto::ScardIoctl::kDisconnect: {
+            ret.return_code = scard_->Disconnect(
+                call.handle.context.bytes, call.handle.bytes, call.disposition);
+            break;
+        }
+        case proto::ScardIoctl::kBeginTransaction: {
+            ret.return_code = scard_->BeginTransaction(
+                call.handle.context.bytes, call.handle.bytes);
+            break;
+        }
+        case proto::ScardIoctl::kEndTransaction: {
+            ret.return_code = scard_->EndTransaction(
+                call.handle.context.bytes, call.handle.bytes, call.disposition);
+            break;
+        }
+        case proto::ScardIoctl::kStatusA: {
+            std::vector<uint8_t> names;
+            uint32_t state = 0;
+            uint32_t protocol = 0;
+            std::vector<uint8_t> atr;
+            ret.return_code = scard_->Status(call.handle.context.bytes,
+                                             call.handle.bytes, names, state,
+                                             protocol, atr);
+            if (ret.return_code == 0) {
+                ret.reader_names = std::move(names);
+                ret.state = state;
+                ret.protocol = protocol;
+                ret.atr = std::move(atr);
+            }
+            break;
+        }
+        case proto::ScardIoctl::kTransmit: {
+            smartcard::ScardPci send_pci;
+            send_pci.protocol = call.send_pci.protocol;
+            send_pci.extra = call.send_pci.extra;
+            smartcard::ScardPci recv_pci;
+            std::vector<uint8_t> recv;
+            ret.return_code = scard_->Transmit(
+                call.handle.context.bytes, call.handle.bytes, send_pci,
+                call.send_buffer, call.recv_pci.has_value(), call.recv_length,
+                recv_pci, recv);
+            if (ret.return_code == 0) {
+                if (call.recv_pci.has_value()) {
+                    proto::ScardIoRequest out_pci;
+                    out_pci.protocol = recv_pci.protocol;
+                    out_pci.extra = recv_pci.extra;
+                    ret.recv_pci = std::move(out_pci);
+                }
+                if (!call.recv_buffer_is_null) ret.recv_buffer = std::move(recv);
+            }
+            break;
+        }
+        case proto::ScardIoctl::kControl: {
+            std::vector<uint8_t> out;
+            ret.return_code = scard_->Control(
+                call.handle.context.bytes, call.handle.bytes, call.control_code,
+                call.in_buffer, call.out_buffer_size, out);
+            if (ret.return_code == 0 && !call.out_buffer_is_null) {
+                ret.out_buffer = std::move(out);
+            }
+            break;
+        }
+        default:
+            // IsSupportedScardIoctl is the parser's gate, so this is
+            // unreachable; fail closed instead of guessing a return shape.
+            ++smartcard_reject_count_;
+            SendControlCompletion(req.request, proto::kStatusUnsuccessful, {});
+            return;
+    }
+
+    SendScardCompletion(req.request, ret, scard, output_limit);
+}
+
+void RdpdrClient::SendControlCompletion(
+    const proto::RdpdrDeviceIoRequest& request, uint32_t status,
+    const std::vector<uint8_t>& output) {
+    // DR_CONTROL_RSP ([MS-RDPEFS] 2.2.1.5.5): the DeviceIoReply (12 bytes:
+    // DeviceId + CompletionId + IoStatus) followed by OutputBufferLength and
+    // the OutputBuffer bytes.
+    rtsc::proto::ByteWriter w;
+    w.u32le(request.device_id);
+    w.u32le(request.completion_id);
+    w.u32le(status);
+    w.u32le(static_cast<uint32_t>(output.size()));
+    w.bytes(output.data(), output.size());
+    SendRaw(rtsc::proto::BuildRdpdrPdu(
+        rtsc::proto::kPakidCoreDeviceIocompletion, w.take()));
+}
+
+// [MS-RDPESC] 3.2.5.2 / FreeRDP smartcard_call.c: when the encoded return does
+// not fit the server's OutputBufferLength, the IOCTL is completed with
+// STATUS_BUFFER_TOO_SMALL and an empty OutputBuffer so the server retries with
+// a larger one. Smart card errors themselves stay IoStatus = STATUS_SUCCESS.
+void RdpdrClient::SendScardCompletion(
+    const proto::RdpdrDeviceIoRequest& request, const proto::ScardReturn& ret,
+    proto::ScardIoctl code, uint32_t output_limit) {
+    const std::vector<uint8_t> encoded = proto::EncodeScardReturn(code, ret);
+    if (encoded.empty()) {
+        // A range violation inside the return: the backend handed us fields
+        // the wire format cannot carry. Fail closed.
+        ++smartcard_reject_count_;
+        SendControlCompletion(request, proto::kStatusUnsuccessful, {});
+        return;
+    }
+    // FreeRDP smartcard_call.c compares the encoded size against the server's
+    // OutputBufferLength with no zero exemption: a probe (length 0) also gets
+    // STATUS_BUFFER_TOO_SMALL so the server retries with a real buffer.
+    if (encoded.size() > output_limit) {
+        SendControlCompletion(request, proto::kStatusBufferTooSmall, {});
+        return;
+    }
+    SendControlCompletion(request, proto::kStatusSuccess, encoded);
 }
 
 const RdpdrClient::Device* RdpdrClient::FindDevice(uint32_t device_id) const {
@@ -460,7 +687,6 @@ const RdpdrClient::Device* RdpdrClient::FindDevice(uint32_t device_id) const {
     }
     return nullptr;
 }
-
 std::string RdpdrClient::MapRemotePath(const std::string& remote,
                                        uint32_t device_id) const {
     const Device* device = FindDevice(device_id);
@@ -508,7 +734,10 @@ void RdpdrClient::SendIoCompletion(
 
 std::vector<uint8_t> RdpdrClient::BuildClientCapabilities() const {
     rtsc::proto::RdpdrCoreCapability caps;
-    caps.num_capabilities = 2;
+    // General + drive, plus smart card when redirection is enabled
+    // ([MS-RDPEFS] 2.2.2.7.5 SMARTCARD_CAPS_SET: an empty body, so the header
+    // alone at CapabilityLength 8).
+    caps.num_capabilities = scard_ != nullptr ? 3 : 2;
 
     rtsc::proto::RdpdrGeneralCapsSet general_body;
     general_body.os_type = 0;
@@ -536,12 +765,22 @@ std::vector<uint8_t> RdpdrClient::BuildClientCapabilities() const {
 
     caps.capabilities.push_back(general);
     caps.capabilities.push_back(drive);
+    if (scard_ != nullptr) {
+        rtsc::proto::RdpdrCapabilitySet smartcard;
+        smartcard.header.capability_type = rtsc::proto::kCapSmartcardType;
+        smartcard.header.version =
+            rtsc::proto::kSmartcardCapabilityVersion01;
+        smartcard.header.capability_length =
+            static_cast<uint16_t>(rtsc::proto::RdpdrCapabilityHeader::kSize);
+        caps.capabilities.push_back(smartcard);
+    }
     return caps.encode();
 }
 
 std::vector<uint8_t> RdpdrClient::BuildDeviceListAnnounce() const {
     rtsc::proto::RdpdrDeviceListAnnounce list;
-    list.device_count = static_cast<uint32_t>(devices_.size());
+    list.device_count = static_cast<uint32_t>(devices_.size()) +
+                        (scard_ != nullptr ? 1u : 0u);
     for (const auto& device : devices_) {
         rtsc::proto::RdpdrDeviceAnnounce announce;
         announce.device_type = rtsc::proto::kRdpdrDtypFilesystem;
@@ -552,6 +791,18 @@ std::vector<uint8_t> RdpdrClient::BuildDeviceListAnnounce() const {
                          rtsc::proto::RdpdrDeviceAnnounce::kDosNameSize));
         std::memcpy(announce.preferred_dos_name.data(), device.dos_name.data(),
                     name_len);
+        announce.device_data_length = 0;
+        list.devices.push_back(announce);
+    }
+    if (scard_ != nullptr) {
+        // [MS-RDPEFS] 2.2.1.3: a smart card device announcement carries the
+        // PreferredDosName "SCARD" and a zero-length DeviceData field.
+        rtsc::proto::RdpdrDeviceAnnounce announce;
+        announce.device_type = rtsc::proto::kRdpdrDtypSmartcard;
+        announce.device_id = scard_device_id_;
+        static constexpr char kScardDosName[] = "SCARD";
+        std::memcpy(announce.preferred_dos_name.data(), kScardDosName,
+                    sizeof(kScardDosName) - 1);
         announce.device_data_length = 0;
         list.devices.push_back(announce);
     }

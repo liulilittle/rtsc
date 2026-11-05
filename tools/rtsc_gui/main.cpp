@@ -52,6 +52,7 @@
 #include "rtsc/rdpdr/drive_enum.h"
 #include "rtsc/rdpdr/file_system.h"
 #include "rtsc/security/connection_driver.h"
+#include "rtsc/smartcard/backend.h"
 #include "rtsc/ui/clipboard_bind.h"
 #include "rtsc/ui/window.h"
 #include "rtsc/usb/usb_device.h"
@@ -706,6 +707,45 @@ int main(int argc, char** argv) {
     };
     rtsc::channel::RdpdrClient rdpdr(host_fs.get(), std::move(devices), "RTSC",
                                      send_rdpdr);
+
+    // Smart card redirection ([MS-RDPESC]) is opt-in like the drive and USB
+    // redirection paths: RTSC_REDIRECT_SMARTCARD=1 announces the SCARD device
+    // over rdpdr and answers its SCARD_IOCTL_* requests from the local Smart
+    // Cards for Windows stack. The backend lives for the whole session
+    // (RdpdrClient only borrows it). The device list is sent once, when the
+    // server confirms the client id ([MS-RDPEFS] 2.2.2.9), so this must be
+    // enabled before the first inbound message - the menu item below reports
+    // that a reconnect is needed instead of pretending to hot-plug a device.
+    std::unique_ptr<rtsc::smartcard::ISmartCardBackend> scard_backend;
+    {
+        char* scard_env = nullptr;
+        size_t scard_env_len = 0;
+        const bool requested =
+            _dupenv_s(&scard_env, &scard_env_len, "RTSC_REDIRECT_SMARTCARD") == 0 &&
+            scard_env != nullptr && scard_env[0] != '\0' && scard_env[0] != '0';
+        std::free(scard_env);
+        if (requested) {
+            scard_backend = rtsc::smartcard::MakeSmartCardBackend();
+            if (scard_backend != nullptr && scard_backend->available()) {
+                rdpdr.EnableSmartCard(scard_backend.get());
+                std::printf(
+                    "rdpdr: smart card redirection enabled; the local smart card "
+                    "readers are shared with the remote session\n");
+            } else {
+                scard_backend.reset();
+                std::printf(
+                    "rdpdr: RTSC_REDIRECT_SMARTCARD is set but the Smart Card "
+                    "service (winscard.dll) is unavailable; no local smart card "
+                    "is shared\n");
+            }
+        } else {
+            std::printf(
+                "rdpdr: smart card redirection off (set "
+                "RTSC_REDIRECT_SMARTCARD=1 to share local readers)\n");
+        }
+        menu_state.smart_card = scard_backend != nullptr;
+    }
+    if (!windows.empty()) windows[0]->SetViewMenuState(menu_state);
     client.RegisterChannel(kChannelRdpdr,
                            [&](const uint8_t* data, size_t size) {
                                ++vc_rdpdr;
@@ -1052,6 +1092,22 @@ int main(int argc, char** argv) {
                     ev.command == rtsc::ui::kCmdHelp) {
                     rtsc::gui::ShowHelpDialog(windows[0]->native_handle(),
                                               kVersion);
+                    continue;
+                }
+                // Smart card redirection is a session-level decision: the SCARD
+                // device is announced once in the device list ([MS-RDPEFS]
+                // 2.2.2.9) and that list was already sent. Report the actual
+                // state instead of faking a hot-plug that the protocol cannot
+                // express, and leave the menu tick alone.
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdToggleSmartCard) {
+                    std::printf(
+                        "smartcard: redirection is %s for this session; "
+                        "restart with RTSC_REDIRECT_SMARTCARD=1 to share local "
+                        "readers\n",
+                        scard_backend != nullptr ? "enabled" : "disabled");
+                    menu_state.smart_card = scard_backend != nullptr;
+                    windows[wi]->SetViewMenuState(menu_state);
                     continue;
                 }
                 if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&

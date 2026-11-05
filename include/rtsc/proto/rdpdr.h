@@ -82,6 +82,10 @@ enum RdpdrStatus : uint32_t {
     kStatusInvalidParameter = 0xC000000D,
     kStatusNotADirectory = 0xC0000103,
     kStatusUnsuccessful = 0xC0000001,
+    // [MS-ERREF] 2.3 STATUS_BUFFER_TOO_SMALL: the client's output buffer is
+    // smaller than the encoded smart card return; the server retries with a
+    // larger OutputBufferLength ([MS-RDPESC] 3.2.5.2).
+    kStatusBufferTooSmall = 0xC0000023,
     kStatusNoMoreFiles = 0x80000006,
 };
 
@@ -100,6 +104,9 @@ enum RdpdrCapabilityVersion : uint32_t {
     kGeneralCapabilityVersion02 = 0x00000002,
     kDriveCapabilityVersion01 = 0x00000001,
     kDriveCapabilityVersion02 = 0x00000002,
+    // SMARTCARD_CAPABILITY_VERSION_01 ([MS-RDPEFS] 2.2.2.7.5; FreeRDP
+    // include/freerdp/channels/rdpdr.h: SMARTCARD_CAPABILITY_VERSION_01).
+    kSmartcardCapabilityVersion01 = 0x00000001,
 };
 
 // GENERAL_CAPS_SET.ioCode1 ([MS-RDPEFS] 2.2.2.7.1).

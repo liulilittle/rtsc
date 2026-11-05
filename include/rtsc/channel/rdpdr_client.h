@@ -20,8 +20,13 @@
 
 #include "rtsc/proto/channel.h"
 #include "rtsc/proto/rdpdr.h"
+#include "rtsc/proto/smartcard.h"
 #include "rtsc/rdpdr/file_system.h"
 #include "rtsc/rdpdr/path_guard.h"
+
+namespace rtsc::smartcard {
+class ISmartCardBackend;
+}  // namespace rtsc::smartcard
 
 namespace rtsc::channel {
 
@@ -56,6 +61,15 @@ class RdpdrClient {
                 std::string client_name, SendFn send);
     ~RdpdrClient();
 
+    // Enables smart card redirection ([MS-RDPESC] 3.1.4). `backend` must
+    // outlive this handler (rtsc_gui owns it for the whole session). Passing
+    // nullptr disables the feature and the SCARD device is not announced.
+    //
+    // Must be called before the first inbound message: the device list is sent
+    // when the server confirms the client id, and [MS-RDPEFS] 2.2.2.9 has no
+    // "add device later" form for a device that was never announced.
+    void EnableSmartCard(::rtsc::smartcard::ISmartCardBackend* backend);
+
     RdpdrClient(const RdpdrClient&) = delete;
     RdpdrClient& operator=(const RdpdrClient&) = delete;
 
@@ -88,6 +102,13 @@ class RdpdrClient {
     unsigned close_count() const { return close_count_; }
     unsigned query_directory_count() const { return query_directory_count_; }
     unsigned control_count() const { return control_count_; }
+    // SCARD_IOCTL_* requests answered through the smart card backend.
+    unsigned smartcard_count() const { return smartcard_count_; }
+    // Requests whose decoded packet or IOCTL was rejected (fail closed).
+    unsigned smartcard_reject_count() const { return smartcard_reject_count_; }
+    const std::string& last_scard_ioctl_name() const {
+        return last_scard_ioctl_name_;
+    }
     const std::string& last_remote_path() const { return last_remote_path_; }
     const std::string& last_local_path() const { return last_local_path_; }
     // Devices whose configured local_root does not exist / is not a directory.
@@ -110,6 +131,7 @@ class RdpdrClient {
     void OnClose(const std::vector<uint8_t>& body);
     void OnQueryDirectory(const std::vector<uint8_t>& body);
     void OnControl(const std::vector<uint8_t>& message);
+    void OnSmartCardControl(const proto::RdpdrControlReq& req);
 
     const Device* FindDevice(uint32_t device_id) const;
     std::string MapRemotePath(const std::string& remote,
@@ -118,12 +140,24 @@ class RdpdrClient {
     void SendRaw(const std::vector<uint8_t>& pdu);
     void SendIoCompletion(const proto::RdpdrDeviceIoRequest& request,
                           uint32_t status);
+    // DR_CONTROL_RSP ([MS-RDPEFS] 2.2.1.5.5): DeviceIoReply + OutputBufferLength
+    // + OutputBuffer. `output` is the NDR-encoded *_Return structure.
+    void SendControlCompletion(const proto::RdpdrDeviceIoRequest& request,
+                               uint32_t status,
+                               const std::vector<uint8_t>& output);
+    // Answers a SCARD_IOCTL with `status` and the matching [MS-RDPESC] 2.2.3.x
+    // return (already NDR framed), honouring the server's OutputBufferLength.
+    void SendScardCompletion(const proto::RdpdrDeviceIoRequest& request,
+                             const proto::ScardReturn& ret,
+                             proto::ScardIoctl code, uint32_t output_limit);
     std::vector<uint8_t> BuildClientCapabilities() const;
     std::vector<uint8_t> BuildDeviceListAnnounce() const;
 
     rdpdr::IFileSystem* fs_;
     SendFn send_;
     rtsc::proto::ChannelReassembler reassembler_;
+    ::rtsc::smartcard::ISmartCardBackend* scard_ = nullptr;
+    uint32_t scard_device_id_ = 0;
 
     Phase phase_ = Phase::kAwaitServerAnnounce;
     std::vector<Device> devices_;
@@ -155,6 +189,9 @@ class RdpdrClient {
     unsigned close_count_ = 0;
     unsigned query_directory_count_ = 0;
     unsigned control_count_ = 0;
+    unsigned smartcard_count_ = 0;
+    unsigned smartcard_reject_count_ = 0;
+    std::string last_scard_ioctl_name_;
 };
 
 }  // namespace rtsc::channel
