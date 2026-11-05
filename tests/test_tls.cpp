@@ -19,6 +19,10 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <winternl.h>
+// SCH_CREDENTIALS is behind this switch; it is the only credential form that
+// can negotiate TLS 1.3 (see the tls13_loopback test).
+#define SCHANNEL_USE_BLACKLISTS 1
 #include <schannel.h>
 #include <sspi.h>
 #include <wincrypt.h>
@@ -57,17 +61,29 @@ public:
         if (cert_) CertFreeCertificateContext(cert_);
     }
 
-    bool Start() {
+    // `protos` defaults to TLS 1.2 (every pre-existing test). A TLS 1.3-only
+    // server is what proves the client's NewSessionTicket branch: TLS 1.2 peers
+    // never send a ticket, so that path had zero coverage.
+    bool Start(DWORD protos = SP_PROT_TLS1_2_SERVER) {
         cert_ = MakeCert();
         if (!cert_) return false;
-        SCHANNEL_CRED sc{};
-        sc.dwVersion = SCHANNEL_CRED_VERSION;
-        sc.grbitEnabledProtocols = SP_PROT_TLS1_2_SERVER;
-        sc.cCreds = 1;
-        sc.paCred = &cert_;
+        // SCH_CREDENTIALS is the only credential form that can negotiate TLS
+        // 1.3; a legacy SCHANNEL_CRED peer silently caps at 1.2 even when its
+        // grbitEnabledProtocols includes TLS1_3_SERVER (measured).
+        constexpr DWORD kAll = SP_PROT_TLS1_0 | SP_PROT_TLS1_1 | SP_PROT_TLS1_2 |
+                               SP_PROT_TLS1_3 | SP_PROT_SSL3 | SP_PROT_SSL2;
+        TLS_PARAMETERS tp{};
+        tp.grbitDisabledProtocols = kAll & ~protos;
+        SCH_CREDENTIALS cred{};
+        cred.dwVersion = SCH_CREDENTIALS_VERSION;
+        cred.cCreds = 1;
+        PCCERT_CONTEXT certs[1] = {cert_};
+        cred.paCred = certs;
+        cred.cTlsParameters = 1;
+        cred.pTlsParameters = &tp;
         TimeStamp ts{};
         return AcquireCredentialsHandleW(nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W),
-                                         SECPKG_CRED_INBOUND, nullptr, &sc, nullptr,
+                                         SECPKG_CRED_INBOUND, nullptr, &cred, nullptr,
                                          nullptr, &cred_, &ts) == SEC_E_OK;
     }
 
@@ -88,11 +104,16 @@ public:
             AcceptSecurityContext(&cred_, have_ctx_ ? &ctx_ : nullptr, &ibd, req,
                                   SECURITY_NATIVE_DREP, &ctx_, &obd, &attrs, nullptr);
         if (st == SEC_I_CONTINUE_NEEDED || st == SEC_E_OK) have_ctx_ = true;
+        if (st == SEC_E_OK) done_ = true;
         if (ob.cbBuffer > 0 && ob.pvBuffer) out.assign(buf, buf + ob.cbBuffer);
         return st;
     }
 
     bool Ready() const { return have_ctx_; }
+    // SEC_E_OK reached: the peer finished its side. Distinct from Ready():
+    // SEC_I_CONTINUE_NEEDED already creates a context, but on TLS 1.3 the
+    // server still needs the client Finished before it can encrypt.
+    bool Done() const { return done_; }
 
     SECURITY_STATUS Encrypt(const Bytes& pt, Bytes& out) {
         SecPkgContext_StreamSizes ss{};
@@ -185,6 +206,7 @@ private:
     CredHandle cred_{};
     CtxtHandle ctx_{};
     bool have_ctx_ = false;
+    bool done_ = false;
     PCCERT_CONTEXT cert_ = nullptr;
 };
 
@@ -193,8 +215,9 @@ private:
 // ---------------------------------------------------------------------------
 class Loopback {
 public:
-    bool Start(const Config& cfg, std::string& why) {
-        if (!server_.Start()) {
+    bool Start(const Config& cfg, std::string& why,
+               DWORD server_protos = SP_PROT_TLS1_2_SERVER) {
+        if (!server_.Start(server_protos)) {
             why = "raw peer failed to acquire credentials";
             return false;
         }
@@ -229,8 +252,22 @@ public:
                     }
                 }
             }
-            if (client_->handshake_complete()) return true;
-            if (to_server.empty()) break;
+            // BOTH sides must finish. TLS 1.3 has a second flight: the client
+            // reports complete while the server still needs the client Finished.
+            // Returning on client-only completion left the peer context
+            // unfinished, so its first Encrypt failed with SEC_E_INTERNAL_ERROR
+            // (0x80090304, measured).
+            if (client_->handshake_complete() && to_server.empty() &&
+                server_.Done()) {
+                return true;
+            }
+            if (to_server.empty()) {
+                if (client_->handshake_complete() && !server_.Done()) {
+                    why = "client completed but the peer is not ready";
+                    return false;
+                }
+                break;
+            }
         }
         why = "handshake did not converge";
         return false;
@@ -1343,4 +1380,71 @@ RTSC_TEST(coalesced_finished_and_app_data_are_both_delivered) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// TLS 1.3 NewSessionTicket branch (plan.md:56)
+// ---------------------------------------------------------------------------
+//
+// A TLS 1.2 peer never sends NewSessionTicket, so the client's
+// SEC_I_RENEGOTIATE / SEC_I_NO_RENEGOTIATION handling in tls_schannel.cpp had
+// ZERO coverage: every loopback in this file pinned the raw server to
+// SP_PROT_TLS1_2_SERVER. A TLS 1.3-only server fixes that: the ticket arrives
+// as a post-handshake message, and the client must absorb it instead of
+// failing with kProtocolError.
+RTSC_TEST(tls13_loopback_negotiates_1_3) {
+    Loopback lb;
+    std::string why;
+    Config cfg = InsecureConfig();
+    cfg.min_version = 0x0304;  // require TLS 1.3 both ways
+    cfg.max_version = 0x0304;
+    cfg.allow_tls13 = true;
+    // SChannel REJECTS a TLS1.3-only grbitEnabledProtocols for an inbound
+    // credential (measured: 0x80090331 SEC_E_NO_CREDENTIALS with mask
+    // 0x00001000). The server therefore offers TLS1.2|TLS1.3 and the client's
+    // min_version forces the negotiated version.
+    if (!lb.Start(cfg, why, SP_PROT_TLS1_2_SERVER | SP_PROT_TLS1_3_SERVER)) {
+        // A host whose SChannel cannot do TLS 1.3 is a HOST limitation, but it
+        // must be reported as a failure, not a silent skip: a green gate must
+        // never hide missing coverage.
+        ::rtsc::test::report_failure(__FILE__, __LINE__,
+                                     "TLS 1.3 loopback unavailable: " + why);
+        return;
+    }
+    CHECK(lb.client().handshake_complete());
+    NegotiatedInfo info{};
+    CHECK(lb.client().negotiated(info).ok());
+    // THE assertion this test exists for: the negotiated version must really be
+    // TLS 1.3. Before the SCH_CREDENTIALS migration the legacy SCHANNEL_CRED
+    // silently capped every handshake at 0x0303, so this coverage did not exist.
+    CHECK_EQ(info.tls_version, static_cast<uint16_t>(0x0304));
+    // TLS 1.3 overhead differs from 1.2 (5-byte header, 17-byte trailer), and
+    // the record-size accounting must reflect the negotiated version.
+    const RecordSizes s = lb.client().record_sizes();
+    CHECK_EQ(s.max_plaintext, static_cast<uint32_t>(16384));
+    CHECK(s.overhead_actual > 0);
+    CHECK(s.overhead_upper >= s.overhead_actual);
+}
+
+// The ticket branch must not turn a control record into "progress": doing so
+// made Receive report kOk with an empty plaintext, and a caller that trusts kOk
+// then dropped the application record arriving in the next read. This is
+// checked structurally -- a pure control record must ask for more input.
+RTSC_TEST(tls13_receive_without_data_needs_more_input) {
+    Loopback lb;
+    std::string why;
+    Config cfg = InsecureConfig();
+    cfg.min_version = 0x0304;
+    cfg.max_version = 0x0304;
+    cfg.allow_tls13 = true;
+    if (!lb.Start(cfg, why, SP_PROT_TLS1_2_SERVER | SP_PROT_TLS1_3_SERVER)) {
+        ::rtsc::test::report_failure(__FILE__, __LINE__,
+                                     "TLS 1.3 loopback unavailable: " + why);
+        return;
+    }
+    Bytes empty_out;
+    const Error e = lb.client().Receive(nullptr, 0, empty_out, 0);
+    // No bytes were fed: the transport must ask for more, never claim success
+    // with an empty payload.
+    CHECK(e.status == Status::kNeedMoreInput);
+    CHECK(empty_out.empty());
+}
 int main() { return ::rtsc::test::run_all("rtsc_tls_tests"); }

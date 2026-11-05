@@ -28,6 +28,14 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <winternl.h>
+// SCH_CREDENTIALS / TLS_PARAMETERS (the only SChannel credential form that can
+// enable TLS 1.3) live behind this switch in schannel.h. Without it the header
+// only exposes the legacy SCHANNEL_CRED, which silently caps the handshake at
+// TLS 1.2 no matter what grbitEnabledProtocols says -- measured on Windows 11
+// 26200: legacy mask TLS1_2|TLS1_3 still negotiated 0x0303, while the
+// SCH_CREDENTIALS form negotiated 0x0304.
+#define SCHANNEL_USE_BLACKLISTS 1
 #include <schannel.h>
 #include <sspi.h>
 #include <wincrypt.h>
@@ -623,7 +631,6 @@ public:
                                             static_cast<ptrdiff_t>(record_size));
             rx_buffer_.erase(rx_buffer_.begin(),
                              rx_buffer_.begin() + static_cast<ptrdiff_t>(record_size));
-            ++progressed;
 
             tmp.clear();
             size_t extra_len = 0;
@@ -639,6 +646,15 @@ public:
                 if (NegotiatedVersion() == kTls13) {
                     // TLS 1.3 NewSessionTicket: feed EXTRA back once and drop
                     // whatever comes out. RDP does not allow renegotiation.
+                    //
+                    // A ticket is a CONTROL record: it produces no plaintext, so
+                    // it must NOT count as progress. Counting it would make the
+                    // loop report kOk with an empty plaintext once the buffer
+                    // runs dry, and the caller (which trusts kOk to mean "here
+                    // is data") would drop the application record that arrives
+                    // in the next read. Measured before the fix: a TLS 1.3
+                    // loopback handshaked, then the first Server-to-Client read
+                    // returned kOk with 0 bytes and the payload was lost.
                     std::vector<uint8_t> discarded;
                     FeedExtraOnce(extra_len, record, discarded);
                     continue;
@@ -647,6 +663,8 @@ public:
             }
             if (st == SEC_I_NO_RENEGOTIATION) {
                 if (NegotiatedVersion() == kTls13) {
+                    // Same reasoning as SEC_I_RENEGOTIATE: no plaintext, so it
+                    // is not progress.
                     continue;
                 }
                 return Fail(Status::kProtocolError, st);
@@ -686,6 +704,21 @@ public:
 
             plaintext.insert(plaintext.end(), tmp.begin(), tmp.end());
             produced += tmp.size();
+            // Progress means "this call produced something the caller can use".
+            // Control records (TLS 1.3 tickets) consume bytes without producing
+            // plaintext and therefore do NOT count (see the SEC_I_RENEGOTIATE
+            // branch): counting them made Receive answer kOk with an empty
+            // payload, and a caller that trusts kOk then dropped the real
+            // record arriving in the next read.
+            //
+            // COVERAGE: UNVERIFIED. A TLS 1.3 loopback that reaches this branch
+            // needs a peer context that survives the post-handshake ticket
+            // flight; the in-repo RawServer fixture cannot build one (its
+            // STREAM_SIZES query fails with SEC_E_INTERNAL_ERROR before any
+            // ticket is emitted), so no test currently fails if this line is
+            // reverted to "count every record". The TLS 1.3 negotiation itself
+            // IS covered (tls13_loopback_negotiates_1_3).
+            ++progressed;
             if (max_out != 0 && produced >= max_out) {
                 // Soft threshold: the caller must keep calling until
                 // buffered_input() == 0, otherwise records stay stranded.
@@ -817,14 +850,48 @@ private:
         if (config_.role == Role::kServer) {
             return AcquireServerCredentials(why);
         }
+        // Tier 1: the modern SCH_CREDENTIALS form. It is the ONLY credential
+        // form that can enable TLS 1.3: the legacy SCHANNEL_CRED silently caps
+        // the handshake at TLS 1.2 (measured on Win11 26200 — legacy mask
+        // TLS1_2|TLS1_3 negotiated 0x0303; SCH_CREDENTIALS negotiated 0x0304).
+        // Protocols are expressed as a DENY list here, so the deny mask is
+        // exactly the complement of the allow mask ProtocolMask() computes.
+        {
+            TLS_PARAMETERS tp{};
+            const DWORD deny = DeniedProtocolsForClient();
+            tp.grbitDisabledProtocols = deny;
+
+            SCH_CREDENTIALS cred{};
+            cred.dwVersion = SCH_CREDENTIALS_VERSION;
+            cred.cTlsParameters = 1;
+            cred.pTlsParameters = &tp;
+            // The context-level ISC_REQ_DEFERRED_CRED_VALIDATION value is 64-bit
+            // (0x0000000200000000) and fContextReq is a 32-bit unsigned long, so
+            // it truncates to zero if OR-ed into the handshake flags. The
+            // credential flag is the usable switch: SChannel then builds the
+            // chain, records the result, and does not fail the handshake.
+            if (config_.cert_policy != CertPolicy::kInsecure) {
+                cred.dwFlags |= SCH_CRED_DEFERRED_CRED_VALIDATION;
+            }
+
+            TimeStamp ts{};
+            SECURITY_STATUS st = AcquireCredentialsHandleW(
+                nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W),
+                SECPKG_CRED_OUTBOUND, nullptr, &cred, nullptr, nullptr, &cred_, &ts);
+            if (st == SEC_E_OK) {
+                have_cred_ = true;
+                return true;
+            }
+            // Fall through to the legacy form so an OS without the modern
+            // entry point still connects (TLS 1.2 only). Record nothing: the
+            // post-handshake version window check still enforces the contract.
+            why = "SCH_CREDENTIALS(outbound) failed: " + FormatCode(st) +
+                  "; falling back to legacy SCHANNEL_CRED (TLS 1.2 only)";
+        }
+
         SCHANNEL_CRED legacy{};
         legacy.dwVersion = SCHANNEL_CRED_VERSION;
         legacy.grbitEnabledProtocols = ProtocolMask();
-        // The context-level ISC_REQ_DEFERRED_CRED_VALIDATION value is 64-bit
-        // (0x0000000200000000) and fContextReq is a 32-bit unsigned long, so it
-        // truncates to zero if OR-ed into the handshake flags. The credential
-        // flag is the usable switch: SChannel then builds the chain, records
-        // the result, and does not fail the handshake (verified by probe).
         if (config_.cert_policy != CertPolicy::kInsecure) {
             legacy.dwFlags |= SCH_CRED_DEFERRED_CRED_VALIDATION;
         }
@@ -839,6 +906,35 @@ private:
         }
         have_cred_ = true;
         return true;
+    }
+
+    // The deny mask for SCH_CREDENTIALS: every protocol this configuration is
+    // NOT allowed to negotiate. It must agree with ProtocolMask() (the legacy
+    // allow list) or the two credential paths would honour different windows.
+    //
+    // TLS 1.3 is only OFFERED when the caller explicitly asks for it
+    // (min_version == 0x0304). Rationale: the legacy SCHANNEL_CRED path that
+    // every existing caller used silently capped the handshake at TLS 1.2, so
+    // "allow_tls13 = true" never actually produced 1.3. Migrating to
+    // SCH_CREDENTIALS without this guard would silently switch the whole
+    // product to TLS 1.3, and the RDP data plane then fails against the
+    // in-tree server (measured: SEC_E_ILLEGAL_MESSAGE 0x80090317 in
+    // server_security). Opt-in keeps every existing configuration byte-for-byte
+    // identical while making 1.3 reachable.
+    DWORD DeniedProtocolsForClient() const {
+        constexpr DWORD kAll = SP_PROT_TLS1_0 | SP_PROT_TLS1_1 | SP_PROT_TLS1_2 |
+                               SP_PROT_TLS1_3 | SP_PROT_SSL3 | SP_PROT_SSL2;
+        DWORD allow = ProtocolMask();
+        if (config_.min_version < kTls13) allow &= ~SP_PROT_TLS1_3_CLIENT;
+        return kAll & ~allow;
+    }
+
+    DWORD DeniedProtocolsForServer() const {
+        constexpr DWORD kAll = SP_PROT_TLS1_0 | SP_PROT_TLS1_1 | SP_PROT_TLS1_2 |
+                               SP_PROT_TLS1_3 | SP_PROT_SSL3 | SP_PROT_SSL2;
+        DWORD allow = ServerProtocolMask();
+        if (config_.min_version < kTls13) allow &= ~SP_PROT_TLS1_3_SERVER;
+        return kAll & ~allow;
     }
 
     // Creates an ephemeral self-signed certificate in the default CSP. The
@@ -871,6 +967,33 @@ private:
 
     bool AcquireServerCredentials(std::string& why) {
         if (!MakeSelfSignedCert(why)) return false;
+
+        // Tier 1: SCH_CREDENTIALS, the only form that can offer TLS 1.3.
+        // Measured on Win11 26200: the legacy form with mask TLS1_2|TLS1_3
+        // negotiated 0x0303, the modern form 0x0304.
+        {
+            TLS_PARAMETERS tp{};
+            tp.grbitDisabledProtocols = DeniedProtocolsForServer();
+
+            SCH_CREDENTIALS cred{};
+            cred.dwVersion = SCH_CREDENTIALS_VERSION;
+            cred.cCreds = 1;
+            PCCERT_CONTEXT certs[1] = {server_cert_};
+            cred.paCred = certs;
+            cred.cTlsParameters = 1;
+            cred.pTlsParameters = &tp;
+
+            TimeStamp ts{};
+            const SECURITY_STATUS st = AcquireCredentialsHandleW(
+                nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W), SECPKG_CRED_INBOUND,
+                nullptr, &cred, nullptr, nullptr, &cred_, &ts);
+            if (st == SEC_E_OK) {
+                have_cred_ = true;
+                return true;
+            }
+            why = "SCH_CREDENTIALS(inbound) failed: " + FormatCode(st) +
+                  "; falling back to legacy SCHANNEL_CRED (TLS 1.2 only)";
+        }
 
         SCHANNEL_CRED legacy{};
         legacy.dwVersion = SCHANNEL_CRED_VERSION;
