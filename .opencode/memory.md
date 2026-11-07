@@ -2053,9 +2053,7 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
   bool + refused_data_count_）。
 - 关闭通道后的通知与发送禁止双路径分叉：关闭只做本地状态迁移，发送必须校验
   同一状态集合，二者共用 open_channels_/pending_ 口径（D1-D3）。
-- printer WRITE 完成报文长度必须为实际成功写入的字节数，禁止回填请求大小
-  （[MS-RDPEPC] 3.2.5.1.10）：spooler 短写属“成功但部分”，后端返回
-  written 出参，客户端据此填 DR_WRITE_RSP.Length（批188，M105）。
+- 完成报文长度必须是实际成功量，禁止回填请求大小（[MS-RDPEPC] 3.2.5.1.10，批188）。
 - RDP8 bulk 解压（[MS-RDPEGFX] 3.1.9.1 / [MS-RDPEDYC] 2.2.3.3）：SINGLE=0xE0、MULTIPART=0xE1；
   段头 = PACKET_COMPRESSED(0x20) | 类型(低4位)，RDP8=0x04、Lite=0x06（Lite 单段、历史与段上限均 8192）。
   压缩段：末字节低 3 位=未用位数；40 项前缀码令牌表；长度=连续 N 个 1 + 0 + (N+1) 位值
