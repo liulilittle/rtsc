@@ -731,6 +731,30 @@ RTSC_TEST(cliprdr_client_short_format_list_sent_when_not_negotiated) {
     CHECK_EQ(list.data.size(), static_cast<size_t>(36));
 }
 
+RTSC_TEST(cliprdr_client_maps_bitmap_and_drops_handle_formats) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfBitmap, rtsc::clipboard::kCfPalette, kCfUnicodeText,
+                     rtsc::clipboard::kCfMetafilepict};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
+    FeedServerCaps(client, 0);
+    client.Start();
+    FeedMonitorReady(client);
+    const CliprdrPdu list = DecodeChunk(sent.back());
+    CHECK(list.header.msg_type == CliprdrMsgType::kFormatList);
+    // Two 36-byte short entries: CF_DIB (mapped from CF_BITMAP) and
+    // CF_UNICODETEXT. CF_PALETTE / CF_METAFILEPICT have no byte form and are
+    // not promised to the peer.
+    CHECK_EQ(list.data.size(), static_cast<size_t>(72));
+    if (list.data.size() < 72) return;
+    CHECK_EQ(ReadU32Le(list.data), static_cast<uint32_t>(kCfDib));
+    CHECK_EQ(ReadU32Le(std::vector<uint8_t>(list.data.begin() + 36,
+                                            list.data.end())),
+             static_cast<uint32_t>(kCfUnicodeText));
+}
+
 // ---- file contents structures ([MS-RDPECLIP] 2.2.4) ------------------------
 
 namespace {
@@ -2762,6 +2786,83 @@ RTSC_TEST(cliprdr_take_stale_file_list_response_dropped) {
     CHECK_EQ(client->remote_file_list_received(), static_cast<unsigned>(0));
     CHECK_EQ(client->have_remote_file_list(), false);
     CHECK_EQ(client->remote_file_list().size(), static_cast<size_t>(0));
+}
+
+// After a reconnect the server re-runs the clipboard protocol from Monitor
+// Ready. Reset() must drop the old session's negotiated state so Start() can
+// answer the new Monitor Ready with a fresh initialization sequence, while the
+// configuration (temporary directory override) survives.
+RTSC_TEST(cliprdr_client_reset_allows_a_second_initialization_sequence) {
+    FakeClipboard clip;
+    clip.formats_ = {kCfUnicodeText};
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.SetTemporaryDirectory("C:\\temp\\clipdata");
+
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
+    client.Start();
+    FeedMonitorReady(client);
+    CHECK_EQ(client.clip_caps_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(1));
+
+    client.Reset();
+    CHECK_EQ(client.clip_caps_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(0));
+    sent.clear();  // only the new session's PDUs are inspected below
+
+    // The new session repeats the handshake: capabilities, Monitor Ready.
+    FeedServerCaps(client, rtsc::channel::kClipCapsUseLongFormatNames);
+    client.Start();
+    FeedMonitorReady(client);
+    CHECK_EQ(client.clip_caps_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.monitor_ready_received_count(), static_cast<unsigned>(1));
+    const std::vector<CliprdrMsgType> want = {CliprdrMsgType::kClipCaps,
+                                              CliprdrMsgType::kTempDirectory,
+                                              CliprdrMsgType::kFormatList};
+    CHECK(SentTypes(sent) == want);
+}
+
+// Reset() completes an in-flight file download as a failure instead of
+// silently dropping the caller's callback.
+RTSC_TEST(cliprdr_client_reset_cancels_in_flight_transfers) {
+    FakeClipboard clip;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::CliprdrClient client(
+        &clip, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableFileClip();
+    FeedServerCaps(client, rtsc::channel::kClipCapsStreamFileClip |
+                               rtsc::channel::kClipCapsUseLongFormatNames);
+    client.Start();
+    FeedMonitorReady(client);
+    FeedFileOnlyFormatList(client, 0x0F00);
+    client.RequestRemoteFileList();
+
+    // A remote FILELIST with one file makes RequestRemoteFile() possible.
+    CliprdrFileList list;
+    CliprdrFileDescriptor file;
+    file.file_attributes = 0x80;  // FILE_ATTRIBUTE_NORMAL
+    file.file_size = 16;
+    file.file_name = u"a.txt";
+    list.files.push_back(file);
+    FeedPdu(client, CliprdrMsgType::kFormatDataResponse,
+            kClipResponseOk, list.encode());
+    CHECK(client.have_remote_file_list());
+
+    bool done_called = false;
+    bool done_ok = true;
+    CHECK(client.RequestRemoteFile(
+        0, [&](uint32_t, std::u16string, uint64_t,
+               const std::vector<uint8_t>&, bool ok) {
+            done_called = true;
+            done_ok = ok;
+        }));
+    CHECK_EQ(client.in_flight_file_ops(), static_cast<size_t>(1));
+
+    client.Reset();
+    CHECK(done_called);
+    CHECK(!done_ok);
+    CHECK_EQ(client.in_flight_file_ops(), static_cast<size_t>(0));
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_cliprdr_tests"); }

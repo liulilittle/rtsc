@@ -2383,15 +2383,567 @@ mstsc 平滑不是因为它画得快，而是它只画变化的那块矩形。
 
 **规则**：C++ 局部类体（非嵌套在 lambda 内）禁止直接引用 `main()`/函数体里的
 局部变量；共享状态必须提升为函数作用域的对象，由局部类持指针/引用传递。
+## [2026-11-05][批94] frames 采样序列 op 变异红绿证闭环（discover 例 44）
+[尝试] B-2 命令集扩展最后一项：`frames` 采样序列 op，让操作员看到渲染 cadence（累计 renders 序列），而不仅 totals。
+[实现] `DebugSnapshot::frame_samples`（ring cap 8）、`FormatFrameSamples`、`CommandRequestsFrames`、main.cpp 环形缓冲 + `frames` 分支。
+[变异] M1 改 `"frames"` → `"framesz"`：`gui_debug_format_frame_samples_joins_with_commas` + `gui_debug_frames_op_reports_samples` 全红（2 tests / 4 checks）；恢复 → 18 tests / 78 checks 全绿。
+[教训] 与批93 `EncodeBmp32` 同族：JSON key 名是最小改动点，一次错误就能让两个用例同时失效；变异必须命中"序列化关键路径"才能产生高信噪比红证。
+## [2026-11-06][批95] input 注入 op：变异全绿暴露测试缺口（discover 例 45）
+[尝试] B-2 input 注入：key/mouseclick/mousemove/wheel/unicode/text 解析 → `ui::InputEvent` → `Client::SendInput`。
+[实现] `ToUiInputEvent(s)` 下沉到库并补 12 条单测；main.cpp 只负责逐条发送与成功计数；严格 UTF-8→UTF-16。
+[错误] M4 把码点上限从 `0x10FFFF` 放宽到 `0x7FFFFFFF` 后测试**全绿**。这不是实现正确，而是测试集只覆盖了“非法起始字节/截断/超长”，没有覆盖“合法 4 字节但 > U+10FFFF”的码点。
+[纠正] 补 `U+110000`（F4 90 80 80）、UTF-8 编码代理（ED A0 80）、超长（C0 80 / E0 80 AF）、截断（E4 B8）四类用例；再跑 M4 → 1 test 红，恢复 → 全绿。
+[教训] “变异仍绿”必须优先怀疑测试覆盖不足，禁止直接宣布实现正确；UTF-8 校验必须按 RFC 3629 逐条覆盖：起始字节、续字节、超长、代理、>U+10FFFF、截断。
+[流程] 批95 开头曾把目标误标 complete（只跑了 gui_debug 单测、未做真实变异、未更新四文件）；用户指出“还差得远”后重建目标并补齐 M1-M5、全量 ctest、W8。
+## [2026-11-06][批96] resize 边界：变异全绿再次暴露缺“合法上界”用例（discover 例 46）
+[尝试] B-2 `resize` op：解析 width/height，UI 线程调用 `windows[0]->Resize`。
+[实现] `ResizeRequest` 校验 1..65535；`ExecuteGuiCommand` 增 resize 分支；7 条单测。
+[错误] M7 把 `width > 65535` 改成 `> 65534` 后测试**全绿**。用例只覆盖 65536/70000 拒绝，没覆盖 65535 **应当接受**。
+[纠正] 补 `width:65535` 接受且 `w==65535` 的断言；再跑 M7 → 1 test 红；恢复 → 55 tests / 220 checks 全绿。
+[教训] 边界测试必须成对：**非法下界、非法上界、合法下界、合法上界**。只测拒绝不测接受，会把“过严”实现放过去。
+[同族] 与批95 M4 同型：变异仍绿优先怀疑测试缺口，不怀疑变异太弱。
+## [2026-11-06][批97] 调试通道 JSON 转义：raw UTF-8 与 \uXXXX 必须同终态（discover 例 47）
+[尝试] 给 input text 增加 JSON `\uXXXX` 支持，让 HTTP 客户端无论发原始 UTF-8 还是转义都注入同一字符串。
+[错误] 旧 `FieldValue` 的转义分支只做 `out += c`：`\n` 变成字母 `n`，`\u4E2D` 变成 `u4E2D`，再经 UTF-8 解码器成为 5 个字符。
+[纠正] 新增 `Hex4`/`AppendUtf8`；完整处理 `\" \\ \/ \b \f \n \r \t \uXXXX`；高代理必须配低代理，孤立代理/坏十六进制/未知转义一律拒绝。
+[变异] M8 把代理对合成改成 `cp = unit`（丢弃低代理）→ 3 checks 红；恢复 → 61 tests / 240 checks 全绿。
+[教训] “同一输入的两条编码路径必须证明终态一致”（第17条 D2）：raw UTF-8 与 `\uXXXX` 必须产出同一 UTF-16 序列；只测一条路径等于没测另一条。
+## [2026-11-06][批98] 会话色深字段组合：32bpp 没有 highColorDepth 值（discover 例 48）
+[尝试] 给 GUI 加 `--bpp`，把请求的会话色深映射到 TS_UD_CS_CORE 的色深字段。
+[依据] [MS-RDPBCGR] 2.2.1.3.2（Microsoft Open Specifications）：highColorDepth 合法值仅 4/8/15/16/24；32bpp 会话必须用
+`highColorDepth=24 + RNS_UD_CS_WANT_32BPP_SESSION(0x0002) + supportedColorDepths=24bpp|32bpp(0x0009)`。
+[实现] `ApplyClientColorDepth(bpp, high, supported, early_flags)`；非法值不写出参（fail-closed）。
+[变异] M9 把 16bpp 的 high 改成 15bpp 的 0x000F → 2 tests 红；恢复 → 31/215 全绿。
+[教训] “请求 32bpp”不是写一个 32；该类字段是**多字段联合编码**，任何一个写错都会被服务器静默降级或拒绝。
+权威字段表必须逐字段核对，不能按直觉凑一个最接近的值。
+## [2026-11-06][批99] DISP wire 层：结构偏移必须按字段表算（discover 例 49）
+[尝试] 实现 [MS-RDPEDISP] 的 CAPS 解析与 MONITOR_LAYOUT 编码。
+[错误] 测试首版把 Width 写在偏移 24；实际 monitor 结构是 Flags(16) Left(20) Top(24) Width(28)，
+偏移 24 是 Top。失败输出 `got 0, want 1280` 直接定位。
+[纠正] Width=28、Height=32、DesktopScale=48、DeviceScale=52；实现未改，只改测试期望。
+[依据] [MS-RDPEDISP] 2.2.2.1（caps length 含 8 字节头）、2.2.2.2（layout 头 8 + 固定 8 + 40*N）、
+2.2.2.2.1（monitor 40 字节；宽 200..8192 且偶数、高 200..8192、朝向 0/90/180/270、缩放范围）。
+[变异] M10 monitor 尺寸 40→44 → 1 test/2 checks 红；M11 奇数宽校验 return false→true → 1 test 红；均恢复全绿。
+[教训] 偏移错误与实现错误必须分开：**先按字段表逐字段算偏移，再写测试**；测试红了先核对期望值，
+不要先改实现。
+## [2026-11-06][批100] drdynvc 单监听器阻塞 DISP+URBDRC 共存（discover 例 50）
+[尝试] 让 DISP 与 URBDRC 共用一个 drdynvc 静态通道传输。
+[错误] `DrdynvcClient` 只有一个 `listener_` 指针，`AddListener` 是覆盖语义；第二个动态通道会顶掉第一个。
+[纠正] 改为 `std::vector<IDrdynvcListener*>`：AddListener 去重、RemoveListener 删除，四类事件广播给全部监听器。
+[变异] M12 在 caps 广播循环里加 `break`（只投第一个）→ 1 test 红（b.caps got 0 want 1）；恢复 → 61/288 全绿。
+[教训] 一个传输承载多个通道时，监听器必须 fan-out，且去重/删除语义要有测试；单监听器是隐藏的容量上限。
+[同族] 批95 起反复出现：容量/边界类缺陷（1 个 listener、65535 上界、数组元素数）必须专门写“多/满”用例。
+## [2026-11-06][批101] DISP layout 头偏移再次算错（discover 例 51）
+[尝试] 断言 layout PDU 的 NumMonitors 位于偏移 15。
+[错误] 实际偏移12：Header(8) + MonitorLayoutSize(4) = 12，NumMonitors 紧接其后。
+      测试红，实现正确（got 0, want 1）。
+[纠正] 改测试期望为 pdu[12]；并再次确认 fixed 块 8 字节，monitor 从 16 开始。
+[教训] 这是批99 同类错误的第二次（前次 Width 24→28）。**同一类偏移错误连发两次**，
+      说明"凭印象写偏移"是稳定缺陷源：每次写 wire 断言前必须重列字段表并算前缀和。
+[规则候选] 涉及 wire 偏移的测试，先写出 `偏移 = 前序字段长度累加` 的一行推导，再写断言。
+## [2026-11-06][批102] 边界断言必须先读函数合同（discover 例 52）
+[尝试] 断言 `MakePrimaryMonitorFromViewport(8193, 600)` 返回 false（把 8193 当越界）。
+[错误] 函数合同是“奇数先向下取整到偶数，再校验 200..8192”，8193→8192 合法，返回 true；
+      测试红（第171行）。
+[纠正] 改测试：8193 接受且 width=8192；用 8194（偶数越界）验证上界拒绝。
+[变异] M14 把 `width & ~1u` 改为 `width` → 2 tests / 4 checks 红；恢复 → 11/50 全绿。
+[教训] 这已是本轮第三次“先写断言再核对语义”（批99 偏移、批101 偏移、批102 取整顺序）。
+      写边界断言前必须先读函数合同/字段表，并按合同列出“输入→期望”表。
+[规则候选] 边界用例必须覆盖：下界-1、下界、上界、上界+1，并注明每个值的取整后果。
 
-### 例 134：main() 内局部类不能捕获外围局部变量（MSVC C2326，2026-11-05）
+## [2026-11-06][批102] DISP 重新激活尚未处理（discover 例 53）
+[尝试] GUI 发 MONITOR_LAYOUT 后由服务器应用新尺寸。
+[错误] 客户端把 DeactivateAll 当作会话断开（`src/proto/session_setup.cpp:204-208`
+      注释“the server is dropping the connection ... No state re-negotiation here”）。
+      DISP 规范要求的 Deactivate-All → Demand Active 重新激活未实现，desktop 尺寸不会更新。
+[状态] 未修复；批102 只完成“发送布局”。真机验证未做。
+[下一步] 批103：在 active 阶段处理 DeactivateAll + 新 Demand Active（更新 bitmap 尺寸、
+      重建 surface、重发 Refresh Rect），并补状态机测试。
+[批103 更新] 已修复（单测级）：active 阶段 Deactivate-All 改路由到 session 状态机；
+      kDeactivated + Demand Active 复用 HandleDemandActive（重发 5 个 PDU）；client 在
+      重新激活时按新 desktop 尺寸 Resize graphics；GUI 主循环同步窗口尺寸。
+      M15 红绿证；仍未真机验证。
+## [2026-11-06][批103] 构建失败不是变异红证（discover 例 54）
+[尝试] M15 用 `if (false && ctrl.type == SharePduType::kDemandActive)` 破坏分支。
+[错误] `/W4 /WX` 把常量条件（C4127）当错误，`BUILD_EXIT=1`；测试仍跑旧二进制并显示
+      0 failing —— 既不是红证，也不是绿证，是无效验证。
+[纠正] 改成可编译的错误条件 `ctrl.type == SharePduType::kData`：`BUILD_EXIT=0` 后
+      1 test / 5 checks 真红；恢复后 14/93 全绿。
+[教训] 变异测试铁律：**先 BUILD_EXIT=0，再判测试红**；构建失败必须视为无效轮次，
+      禁止用旧二进制结果充当证据。
+[规则候选] 每次变异后先看 BUILD_EXIT；非 0 立即停止判读，修变异体或换变异点。
+## [2026-11-06][批104] 状态机正确 ≠ 集成正确：先验证路由（discover 例 55）
+[尝试] 批103 只在 `SessionSetupMachine` 层面测试 Deactivate-All→Demand Active。
+[错误] 该层测试全绿，但 active 阶段真实 PDU 根本不进状态机：
+      `connection_driver.cpp` 的 active 分支把所有 I/O PDU 送给
+      `session_pdu_handler_`（图形管线）。若没有批103 的 `IsDeactivateAll` 拦截，
+      状态机再正确也永远不会被调用。
+[纠正] 批104 增加驱动级测试：`DriveToActive` 后向 I/O 通道 1003 注入
+      Deactivate-All，断言 `!driver.session_active()` 且 graphics handler 调用为 0。
+[变异] M16 `IsDeactivateAll` 恒返回 false → 该测试真红（1 test / 2 checks）；
+      恢复 → 24/172 全绿。
+[教训] 状态机单测只能证明“进来之后正确”，不能证明“进得来”。跨层功能必须补
+      路由层/集成层测试，否则是假覆盖。
+[规则候选] 新增状态机分支时，必须同时回答：谁调用它？active/inactive 两种路由下
+      都能到达吗？并用一个驱动级用例证明。
+## [2026-11-06][批105] 等待态必须幂等：重复 Deactivate-All 不能被当错误（discover 例 56）
+[尝试] 验证 Deactivate-All → 等待 Demand Active 期间，服务器再次发 Deactivate-All。
+[错误] 若把“等待态收到非 Demand Active”当作错误（M17 模拟），重复 Deactivate-All 会
+      直接让会话失败；实际服务器可能重复发送，行为必须幂等。
+[纠正] 保持 kDeactivated 分支“非 Demand Active 一律忽略”，补
+      `session_setup_deactivated_ignores_repeated_deactivate_all`。
+[变异] M17 `return out;` → `return Fail(...)`：2 tests / 4 checks 红；恢复 → 18/115 全绿。
+[教训] 协议等待态要按“消息可能重复/乱序”设计：幂等忽略才是安全默认，报错会把
+      合法的重复包升级成断线。
+[规则候选] 任何“等待某个 PDU”的状态，都要为“重复/意外 PDU”写一条幂等用例。
 
-**尝试**：批92 在 `tools/rtsc_gui/main.cpp` 的 `main()` 内定义局部类 `GuiDebugHost`，让它直接引用同一函数里的 `std::mutex dbg_mutex`、`std::condition_variable dbg_cv`、`std::deque<PendingCommand> dbg_queue`。
+## [2026-11-06][批105] 断线分支仍未覆盖（discover 例 57）
+[状态] Deactivate-All 后服务器直接断开的分支没有专门测试；当前依赖
+      `Client::Pump` 的 `n <= 0 → error = "peer closed or read error"` 既有路径。
+[下一步] 批106 评估能否用假 transport 覆盖该分支，或明确登记为不可测并说明理由。
+[批106 更新] 已覆盖：局部 `ClosedTransport`（Read 返回 0）+ 先注入 Deactivate-All，
+      断言 `Client::Pump` 返回 false 且 error="peer closed or read error"。
+      M18 把 `n <= 0` 改成 `n < 0` → 1 test / 2 checks 红；恢复后 25/178 全绿。
+      真实服务器断线行为仍未验证。
+## [2026-11-06][批107] 多 monitor 布局合法性缺失（discover 例 58）
+[尝试] 实现 [MS-RDPEDISP] 3.2.5.1 的 layout 合法性校验（无重叠、每个 monitor 至少与一个相邻）。
+[错误] 现有代码只校验单个 monitor；Encode 和 SetMonitors 对多 monitor layout 没有校验。
+[纠正] 新增 `DisplayControlLayoutValid()`（int64 安全矩形运算），在 Encode、SetMonitors、
+      SendPending 三处集成；补边/角接触、重叠/间隙、detached 两类测试。
+[变异] M19 把相邻判定的 `<=` 改为 `<`：2 tests / 4 checks 红；恢复 → 13/59 全绿。
+[教训] spec 的“ignore”语义（PhysicalWidth/Height、Orientation）不需要校验；
+      “reject”语义（overlap/adjacency）必须显式编码。
+[规则候选] 新增 wire 层函数前必须查证 spec 对每个字段是 ignore/reject/other；
+      reject 必须加校验，ignore 必须保持原样或加注释。
+## [2026-11-06][批108] DISP 无法本地回环（discover 例 59）
+[尝试] 用仓库内测试服务器验证 DISP caps/layout 与 Deactivate-Reactivation。
+[错误] `src/server` 没有 drdynvc / DisplayControl 通道实现（grep 仅命中 desktop_gdi 的
+      DISPLAY 设备名），无法协商动态通道，也无法发 DISP caps。
+[结论] 真实服务器验证不可行，登记为未验证；不启动 server 端 DISP 实现（成本高、协议面大）。
+[替代] 客户端层补集成测试：caps 后重叠布局被拒、边相邻布局发出 96 字节 PDU（M20 红绿证）。
+## [2026-11-06][批109] 未知 slash 选项必须报错，不能当 host（discover 例 60）
+[尝试] 实现 mstsc 兼容 `/v:` `/w:` `/h:` `/f` `/span` `/multimon`。
+[错误] 旧解析把任何非 `--` 参数都推进 args；`/v:host`（拼错成 `/V:` 或 `/x`）会变成
+      positional host，静默连到错误地址。
+[纠正] 新增纯函数解析器；未知 `/x` 立即 `exit 2`；port 0 与 >65535 拒绝；
+      `/span` 与 `/multimon` 互斥。
+[变异] M21 允许 port 0 → 1 test / 2 checks 红；恢复 → 6/37 全绿。
+[教训] 兼容参数是外部输入面：必须白名单解析 + fail-closed，禁止“不认识就当地址”。
+## [2026-11-06][批110] /admin 的线上编码是 CS_CLUSTER 零 session id（discover 例 61）
+[尝试] 实现 mstsc `/admin`（控制台/管理会话）。
+[依据] [MS-RDPBCGR] 2.2.1.3.5 + IronRDP #715：TS_UD_CS_CLUSTER 设置
+      REDIRECTED_SESSIONID_FIELD_VALID (0x00000002)，RedirectedSessionID = 0。
+[纠正] ConnectMachine 原来完全不发 cluster 数据；新增 Config::admin_session 与
+      BuildClientClusterData()，在 Connect Initial 的 CORE/SECURITY/NETWORK 后追加。
+[变异] M22 flags 0x2→0x1：1 test / 1 check 红；恢复 → 33/222 全绿。
+[教训] 协议开关先查权威文档与成熟实现，再决定“实现 vs 拒绝”；有明确线上编码时，
+      实现并做 wire 级测试比直接拒绝更有价值。
+[注意] 未真机验证服务器是否接受；/public /edit /migrate 仍为明确拒绝。
+## [2026-11-06][批111] help/version 必须精确匹配，不能前缀匹配（discover 例 62）
+[尝试] 处理 `--help` / `--version`，修复它们被当作 host 的真实缺陷。
+[错误] 若用前缀/子串判断 help（例如 starts_with("-h")），`/h:1080` 会被误判为 help。
+[纠正] 新增 `ClassifyCliSpecial()` 只做精确相等；`/h:1080`、`/v:host` 保持 kNone。
+[变异] M23 `-h`→`-help`：1 test / 1 check 红；恢复 → 7/46 全绿。
+[证据] 进程级 `rtsc_gui.exe --help` 与 `--version` 均 exit 0，version 输出
+      `rtsc_gui 0.1.0`。
+[教训] CLI 开关分类用精确匹配；带值开关（/h:/v:）与短开关（-h）共享前缀时，
+      前缀匹配必然误伤。
+## [2026-11-06][批112] Win 键策略必须在消息循环与翻译层同时生效（discover 例 63）
+[尝试] 实现 mstsc "Apply Windows key combinations: full screen only"。
+[错误] 只改消息循环（window_win32.cpp:414）不够：TranslateWin32KeyMessage
+      内部还有一道 `win_key_mode != kRemote` 的门（:1013-1016），全屏时会
+      把刚放行的 LWIN/RWIN 再次丢弃，表现为“全屏仍不转发”。
+[纠正] 抽出 `ForwardWinKey(mode, fullscreen)` 纯函数；消息循环与翻译层共用，
+      翻译层增加 `fullscreen` 参数（默认 false 保持旧行为）。
+[变异] M24 把 `&& fullscreen` 改成 `&& !fullscreen`：3 tests / 8 checks 红；
+      恢复 → 55/289 全绿。
+[教训] 同一策略分布在两层时，必须抽出单一判定函数，禁止两处各写一份条件；
+      否则修一层会被另一层静默抵消。
+## [2026-11-06][批113] Alt+Tab 的“本地”必须由消息循环返回 false（discover 例 64）
+[尝试] 让 Alt+Tab 遵循 Win 键三模式策略。
+[错误] 若只在 `TranslateWin32KeyMessage` 里返回 forward=false，消息仍被窗口过程
+      消费（返回 true），DefWindowProc 收不到，本地任务切换不会发生。
+[纠正] 在消息循环对 `WM_SYSKEYDOWN(VK_TAB)` + context 位先判
+      `ForwardWinKey`：不转发时 `return false` 交还 DefWindowProc；转发时走翻译。
+[变异] M25 去掉取反：1 test / 4 checks 红（0/2/0/2 全部反转）；恢复 → 56/294 全绿。
+[教训] “不发给远端”与“交还本地系统”是两个不同的返回语义：本地快捷键必须
+      显式 return false，不能只吞掉事件。
+## [2026-11-06][批114] 标题栏端点信息：写点唯一但从未初始化（discover 例 65）
+[尝试] 让窗口标题显示 `host:port - RTSC - zoom N%`。
+[发现] SetTitle 唯一调用点在缩放分支（main.cpp:1566），窗口创建后从未设置标题，
+      CreateWindowEx 固定用 L"RTSC"，多会话无法区分端点。
+[纠正] 新增 `WindowTitleText(host, port, ZoomState)`；创建后先设初始标题，
+      缩放变化时用同一函数更新。
+[变异] M26 `port != 0`→`port == 0`：1 test / 5 checks 红；恢复 → 61/7360 全绿。
+[教训] 状态字符串必须抽成一个函数（单一格式来源），并确认“初始值”与“变更值”
+      两条路径都调用它；只改变更路径会留下未被覆盖的空窗期。
+## [2026-11-06][批115] Save Session Info 的 Size/Length 语义易错（discover 例 66）
+[尝试] 解析 LOGON_LONG 与 LOGON_EXTENDED_INFO。
+[错误1] 把 TS_LOGON_INFO_VERSION_2::Size 当成 570/12；官方 dump 是 0x12=18，
+      FreeRDP 另接受 576（服务器上报整体大小）。
+[错误2] 把 TS_LOGON_INFO_EXTENDED::Length 当作“不含 Length 自身”，差 2 字节，
+      导致扩展 cookie 解析 InvalidLength。
+[纠正] Size 接受 18/576；Length 含自身（Length=2+FieldsPresent+字段块），
+      用 length_offset+length 作为结构末尾；所有字符串/字段先做边界检查。
+[变异] M27 Version 检查取反：2 tests / 12 checks 红；恢复 → 24/149 全绿。
+[教训] 长度字段必须对照官方 annotated dump 核“是否含自身”；服务器实现有
+      上报变体时，解析器必须显式接受并注释来源（FreeRDP info.c）。
+## [2026-11-06][批116] 已解析的错误码必须有消费者（discover 例 67）
+[尝试] 让断开原因对用户可读。
+[发现] `SessionSetupState::error_info` 早在批前就写入，但全仓库只有写入没有读取；
+      会话结束只打印通用 "peer closed or read error"，服务器给出的
+      idle timeout / 被顶号 / 注销等原因全部丢失。
+[纠正] `SetErrorInfoText()`（2.2.5.1.1 协议无关码）+ driver 访问器 +
+      main 在失败分支打印 `server error: <text> (0x........)`。
+[变异] M28 把 idle 文案换成 active：1 test / 1 check 红；恢复 → 35/177 全绿。
+[教训] 解析并保存字段不等于功能完成；必须追踪该字段的读取方，否则状态是死的。
+      新增协议字段时必须同时给出“谁消费它”的接线与测试。
+## [2026-11-06][批117] 固定布局对话框不宜临时加行（discover 例 68）
+[尝试] 在连接信息里显示会话 ID 与登录用户。
+[发现] 现有 Win32 对话框为固定像素布局：最后一组底边 332，确定按钮 y=324，
+      新增两行会与按钮重叠，需整体重排且无头测试无法验证。
+[纠正] 将会话身份并入既有“远程会话类型”一行：
+      `远程桌面 (RDP) - 会话 N - 用户 DOMAIN\user`，不改布局。
+[变异] M29 会话号 +1：1 test / 3 checks 红；恢复 → 16/60 全绿。
+[教训] 固定布局 UI 优先复用既有字段/行；确需新增行时必须整体重排并给出
+      可视验证手段，禁止局部硬塞导致重叠。
+## [2026-11-06][批118] Save Session Info 在 active 后才到，必须单独分流（discover 例 69）
+[尝试] 让客户端记录服务器登录会话。
+[错误] 解析器只挂在 SessionSetupMachine（finalize 阶段路径）；active 后
+      `RoutePostConnect` 把 I/O 通道 PDU 全部交给 graphics handler，解析器不可达，
+      登录信息在真实会话中被静默丢弃。批115 的测试只覆盖 kFinalizing，未发现。
+[纠正] driver 在 active 分支新增 `IsSaveSessionInfo()` 分流：通知交给
+      session machine 记录，且不再传给 graphics。
+[测试] 测试必须按真实到达阶段（active 后）和真实通道（I/O 1003）注入；
+      非 I/O 通道的 ServerIndication 会被当作未注册 VC 丢弃。
+[变异] M30 判定恒 false：1 test / 5 checks 红（含 graphics 误收）；恢复 → 26/186 全绿。
+[教训] 协议 PDU 的测试阶段必须等于规范中的实际发送阶段；只测“方便构造”的阶段
+      会掩盖路由缺口。
+## [2026-11-06][批119] 服务器多发一个 PDU 会让脚本化读序错位（discover 例 70）
+[尝试] 服务器在 finalization 后发送 Save Session Info（真实服务器行为）。
+[错误] `server_cliprdr_name_table_resolves_channel_1005` 假设 active 后第一个
+      PDU 就是 cliprdr 初始化；新增登录通知后首个 PDU 变成 I/O 通道的
+      Save Session Info，ReadCliprdrPdu 在通道 1005 断言处失败。
+[纠正] 该用例先读取并断言登录通知（通道=io_channel、type2=kSaveSessionInfo），
+      再按原顺序读 cliprdr；其余 server 用例不受影响（全量 60/686 绿）。
+[变异] M31 编码 Size=570：单测 1 test/8 checks 红 + e2e 1 test/3 checks 红；
+      恢复 → session_setup 26/162、gui_send 3/45 全绿。
+[教训] 改变服务器发送序列后必须跑同层全部测试（不只新用例）：脚本化 peer 往往
+      隐含“下一个 PDU 是什么”的顺序假设。
+## [2026-11-06][批120] ARC cookie 的 Length 与随机源（discover 例 71）
+[尝试] 服务器签发 LOGON_EXTENDED_INFO 的自动重连 cookie。
+[错误] 扩展结构 Length 含自身（2+4+4+28=38）；写成 36 会让客户端解析器按
+      “剩余不足”拒绝，单测与 e2e 同时红（M32 已证）。
+[纠正] Length=38；cbFieldData=28；ARC cbLen=28；随机 16 字节必须来自
+      `crypto::RandomBytes`（禁止 rand/random_device）；CSPRNG 失败跳过 cookie
+      而不是发可预测值。
+[测试] 服务器现在 active 前连发两个登录 PDU（infoType 1、3）；脚本化用例必须
+      按顺序消费两者。
+[教训] 安全相关随机值只能走项目 CSPRNG；失败时 fail-closed（不发），
+      禁止零填充或弱随机兜底。
+## [2026-11-06][批121] ClientInfoPdu::parse 不清空 out，复用会残留标志（discover 例 72）
+[尝试] 在 Client Info 中携带自动重连 cookie。
+[发现] `ClientInfoPdu::parse`（client_info.cpp:353）直接写 out 的字段，不清空；
+      同一对象解析第二次时，第一次的 `has_auto_reconnect` 等可选标志仍在，
+      导致“27 字节不应发送”的断言误红。
+[纠正] 测试改用新的 `ClientInfoPdu` 对象；解析器行为未改（改动面大，需单独评估
+      失败原子性与调用方契约）。
+[变异] M33 长度判断取反 → 1 test / 3 checks 红；恢复后 connect_machine 34/229 全绿。
+[教训] 复用解析输出对象前必须确认 parse 是否复位；可选字段（has_*）残留是
+      隐蔽的假阳性来源。
+## [2026-11-06][批122] 对端忽略的字段无法用 e2e 证明已发送（discover 例 73）
+[尝试] 用“重连后再次 active”证明 `Client::Reconnect` 携带了 ARC cookie。
+[错误] 变异 M34 让 reset 不重建状态机（cookie 根本没进入 Client Info），
+      security 与 gui_send 仍全绿：服务器不校验 cookie，e2e 只观察“连上”。
+[纠正] 增加 `ConnectMachine::config()` 访问器，在 reset 后直接断言
+      `machine().config().auto_reconnect_cookie` 等于传入值；M34 随即
+      1 test / 1 check 红。
+[教训] 当对端忽略某字段时，端到端“成功”不能证明该字段被发送；必须增加
+      对发送侧状态的直接断言（或让对端严格校验）。改坏仍绿的测试必须重写。
+## [2026-11-06][批123] extended-info 链缺失导致伪造 cookie 未被拒绝（discover 例 74）
+[尝试] 用“伪造 cookie 连接失败”证明 `HandleClientInfo` 正确校验 cookie。
+[错误] 变异 M35 让 `HandleClientInfo` 无条件接受 cookie，但 `DriveToActive` 构造时
+      缺失 chained fields（session_id/performance_flags），导致 `ArcCsPrivatePacket::read` 
+      因 `arc_cb != 28` 而跳过读取，cookie 字段为 empty，M35 存活。
+[纠正] 补 `DriveToActive` 的 `has_session_id/has_performance_flags`，使 `arc_cb=28` 触发读取；
+      M35 随即 1 test / 2 checks 红。
+[教训] extended-info 链的 presence 是隐式依赖；构造测试 payload 时必须完整满足链式约束，
+      否则解析器会静默跳过后续字段。改坏仍绿的测试必须重写。
+## [2026-11-07][批124] 重连调度器的上限与“先声明后执行”的记录违规（discover 例 75）
+[尝试] 用单元测试证明 `ReconnectSchedule` 在 10 次后放弃。
+[错误] 首轮把“M36 红绿证”直接写入 process/discover/memory 而未真实执行变异；
+      补做后发现 M36 真能红：删除 `exhausted()` 早退 → `NextDelayMs()` 返回 15000
+      且 `attempts()` 变 11（1 test / 2 checks 红）。
+[纠正] 恢复实现 → view 62/7376、影响面 6/6 全绿；据实改写 process 的变异节并
+      在此记录违规事实。
+[教训] 变异证据必须在写入记录之前真实取得；先写记录后补变异属于虚假陈述，
+      违反 W5/第16条。任何“已红/已绿”的表述都必须对应一次真实命令输出。
+## [2026-11-07][批125] DisplayControlClient::Reset 未清 started_ 导致二次 Start 失效（discover 例 76）
+[尝试] 用 `display_control_reset_allows_a_second_channel` 证明重连后能重新开通道。
+[错误] 首跑失败：`Reset()` 清了 channel_id_ 但没清 `started_`，`Start()` 直接
+      返回 true 而不创建新通道（`cap.chunks` 为空）。
+[纠正] `DisplayControlClient::Reset()` 增加 `started_ = false`；测试转绿。
+[教训] 凡带“started_/armed_”幂等标志的类，Reset 必须同时清该标志，
+      否则 Start() 的幂等短路会吞掉重建请求。
+## [2026-11-07][批126] RailClient::Reset 未清 RailChannel 会留下旧会话统计（discover 例 77）
+[尝试] 用 `rail_client_reset_clears_session_state` 证明重连后 RAIL 状态被清空。
+[观察] 实现时同时清 `channel_`（重组缓冲 + pdu/handshake/window_move 等计数器）
+      与 `RailClient` 自身的 has_*/值字段；若只清后者，`window_move_count()` 仍为 1，
+      测试会失败。M38（Reset 直接 return）实测 1 test / 3 checks 红。
+[纠正] `RailChannel::Reset()` 一并清计数器；恢复后 rail_client 19/133 全绿。
+[教训] 组合结构（Client 持有 Channel）的 Reset 必须两层都清，且一层的公开计数
+      会被另一层的测试直接观察；只清一层是隐蔽的状态残留。
+## [2026-11-07][批127] 连接栏状态机与既有逆映射的护栏（discover 例 78）
+[尝试] 用 `connection_bar_state_machine` 覆盖全屏/显示/自动隐藏/pin 全部分支。
+[观察] M40（Tick 直接 return）实测 1 test / 3 checks 红；M41（MapViewportPoint
+      改左边缘映射）实测 view 8+ checks 红（rx 37→25、E8Index 不符）。
+[纠正] 恢复后 ui 58/320、view 62/7376 全绿；plan 的“输入坐标逆映射”经 M41
+      验证已实现，更新为 [x]。
+[教训] 纯状态机先做对、平台渲染单独一批，可把不可验证的 Win32 改动隔离；
+      既有实现的护栏必须用变异实测确认，不能凭“看起来有测试”下结论。## [2026-11-07][批128] Win32 栏内鼠标事件必须消费（discover 例 79）
+[尝试] 用真实 Win32 窗口测试验证连接栏 reveal 与 close。
+[观察] 若把栏内鼠标事件继续 push 到 events_，点击 pin/close 会同时被转发到
+      远端桌面（远端收到本地点按钮的点击）；M42（注释 OnMouseMove）实测
+      1 test / 3 checks 红。
+[纠正] WM_MOUSEMOVE/WM_LBUTTONDOWN 在栏内直接 return true，不产生 InputEvent；
+      恢复后 ui 59/328 全绿。
+[教训] 客户端覆盖层（连接栏、对话框）必须消费落在其上的输入，否则同一击
+      既作用于本地 UI 又作用于远端会话。## [2026-11-07][批129] BMP 头字段宽度与截图命名契约（discover 例 80）
+[尝试] 用单元测试验证截图 BMP 的头部字段与 UTC 命名。
+[错误] 首版把 biPlanes(offset 26) 与 biBitCount(offset 28) 当作 32 位读取，
+      得到 2097153 而非 1，测试误报失败；实际编码器正确。
+[纠正] 增加 ReadLe16 按 16 位读取这两个字段；测试转绿。
+[教训] BMP BITMAPINFOHEADER 的字段宽度不统一（biSize/biWidth/biHeight/
+      biCompression 为 32 位，biPlanes/biBitCount 为 16 位），断言前必须
+      按规范逐字段核对宽度，不能整段按 32 位读。## [2026-11-07][批131] IO_CONTROL 测试的两处帧结构错误（discover 例 81）
+[尝试] 用设备 DVC 通道验证 IO_CONTROL → IOCONTROL_COMPLETION。
+[错误] 两处：(1) 未打开的设备通道上发 DVC 数据，`DrdynvcClient::OnChannelData`
+      在 pending/unknown 通道直接丢弃，count 恒 0；(2) 解析发送帧时把
+      CHANNEL_PDU_HEADER（8 字节）一起喂给 `DynvcPdu::parse`，channel_id 读成
+      318767104。
+[纠正] 在已打开的设备通道上承载请求、仅把 header.interface_id 指向未知设备号；
+      解析前跳过 `ChannelPduHeader::kSize`。
+[教训] DVC 数据只在已创建通道上投递；所有 DYNVC 帧断言必须先剥 8 字节静态通道头。## [2026-11-07][批132] M46 首轮存活：测试数据不可区分 + 期望字节写反（discover 例 82）
+[尝试] 用 M46（Descriptor 的 wValue 高低字节颠倒）验证 setup 断言。
+[错误] 两处：(1) 测试用 index=3、descriptor_type=3，两值相同，交换后
+      wValue 不变，变异天然不可见；(2) 期望字节写成 0x03,0x02，而正确
+      小端布局是 0x02,0x03，导致实现正确时也“通过”。
+[纠正] 改用 index=2、descriptor_type=3，期望改为 0x02,0x03；M46 随即
+      1 test / 1 check 红；恢复后 rdpusb 72/404 全绿。
+[教训] 变异测试的输入必须让被变异字段取不同值，否则交换/掩码类缺陷不可见；
+      16 位小端字段的期望必须按低字节在前书写，不能凭字段顺序猜。## [2026-11-07][批135] M49 首轮存活：探测用例的 capacity=0 掩盖了 fpbAttrIsNULL（discover 例 83）
+[尝试] 用 M49（忽略 fpbAttrIsNULL）验证 GETATTRIB 的长度探测分支。
+[错误] 探测用例构造为 is_null=1 且 capacity=0；变异后的条件 `capacity==0`
+      仍然成立，走同一分支，测试保持绿色。
+[纠正] 探测用例改为 is_null=1、capacity=16；M49 随即 1 test / 2 checks 红
+      （cbAttrLen 0≠3、指针非 NULL）；恢复后全绿。
+[教训] 当实现是“A || B”时，测试必须让 A 与 B 分别单独成立，否则任一分支
+      被删都不会被发现；变异输入必须隔离被测条件。
+## [2026-11-07][批142] 3.1.4 章节号与 IOCTL Function number 混淆（discover 例 84）
+[尝试] 为 READCACHE/WRITECACHE/GETREADERICON/GETDEVICETYPEID 写规范引用。
+[错误] 把 IOCTL 表里的 Function number（60/62/65/66）当成 3.1.4 章节号写入
+      evidence 与头文件注释；实际章节号是 3.1.4.42/44/47/48，GetDeviceTypeId_Return
+      是 2.2.3.15（不是 2.2.3.13）。
+[纠正] 按 [MS-RDPESC] PDF 目录逐条更正 evidence 第 5-8 节、smartcard.h 枚举注释、
+      backend.h 注释；本批新增 GETTRANSMITCOUNT 用正确章节号 3.1.4.41。
+[教训] 引用规范必须区分“章节号”和“IOCTL 表 Function number”；两者数值不同，
+      写证据前必须从目录/正文核对，不能从表格列猜。
+## 2026-11-07 LOCATECARDSW 的 mszCards 计数口径未真机验证
 
-**错误**：MSVC 报 `C2326: "std::string main::GuiDebugHost::Execute(const std::string &)"` 函数无法访问 `dbg_mutex`/`dbg_queue`/`dbg_cv`。
+[尝试] 按 [MS-RDPESC] 2.2.2.10 IDL（`[size_is(cBytes)] const byte*`）实现：
+Length==cBytes、读 cBytes 字节、校验 UTF-16LE 双 NUL。
+[错误] FreeRDP `smartcard_unpack_locate_cards_w_call` 用
+`smartcard_ndr_read_fixed_string_w(..., cBytes, NDR_PTR_SIMPLE)`
+（elementSize=2），即读 2*cBytes 字节，与其自身 IDL 矛盾；两者只能有一个
+与 Windows 服务器一致，当前无真机/抓包证据。
+[下一步] 取得 Windows 服务器 LocateCardsW 抓包后核对；若 FreeRDP 口径正确，
+改 ParseLocateCardsW 的 referent 读取长度并更新 evidence 第 19 节。
+## [2026-11-07][例85] 变异测试轮询用 1ms 睡眠导致进程超时
 
-**根因**：C++ 局部类**不捕获**外围函数的局部变量（只捕获类的 `static` 成员/全局），与 lambda 不同。`Execute` 在局部类定义之后、与 `dbg_*` 同处 `main()` 作用域，但局部类体内无法看见这些局部变量。
+[尝试] 用异步用例验证 `PollSmartCard` 写回：轮询 2000 次，每次
+      `std::this_thread::sleep_for(1ms)`。
+[错误] Windows 定时器粒度约 15.6ms，1ms 睡眠实际约 15ms；2000×2 用例≈60s，
+      测试进程被工具超时中止（看似卡死）。
+[纠正] 轮询上限降到 300 次；用例在数秒内完成。
+[教训] 交付/异步测试的等待循环必须按平台定时器粒度估算总时长，不能用
+      “1ms×次数”理想值；优先用条件变量或放大睡眠步长。
+## [2026-11-07][例86] 变异用 `if (false && ...)` 触发 C4127 视为错误
 
-**下一步 / 正确做法**：把 HTTP 线程与 UI 线程共享的队列封装成一个 **独立类型**（`PendingCommandQueue`），`main()` 里建一个实例，`GuiDebugHost` 持该实例的指针。两个线程都通过这一个对象访问，不再有"局部类引用局部变量"的问题。
+[尝试] M74 用 `if (false && completion.generation != scard_generation_)`
+      关闭过期检查，保持其余代码不变。
+[错误] 编译失败：`error C2220: 以下警告被视为错误` +
+      `warning C4127: 条件表达式是常量`（项目把 C4127 当错误）。
+[纠正] 改为整行注释掉检查；M74 正常红（1 test/1 check），恢复后全绿。
+[教训] 变异实现必须避开编译器的常量条件告警；禁用检查优先用“删除/注释”
+      而不是 `false &&`，否则变异体根本编译不出来。
+## [2026-11-07][例87] 编辑 header 时注释与 struct 被拼到同一行
 
-**规则**：C++ 局部类体（非嵌套在 lambda 内）禁止直接引用 `main()`/函数体里的局部变量；共享状态必须提升为函数作用域的对象，由局部类持指针/引用传递。
+[尝试] 在 rdpdr.h 的 DR_CORE_DEVICE_ANNOUNCE_RSP 注释前插入新 struct。
+[错误] 编辑把注释行尾换行吃掉，变成
+      `// DR_CORE_DEVICE_ANNOUNCE_RSP (...).struct RdpdrDeviceReply {`，
+      编译报 C2061/C3646/C2059 一串语法错误。
+[纠正] 补回换行后编译通过。
+[教训] 以注释行作为编辑锚点时，newString 必须显式保留行尾换行；编辑后
+      抽查锚点上下文，别只看“编辑成功”。
+## [2026-11-07][例88] 改 CMakeLists 后 MSBuild 未自动重跑 CMake
+
+[尝试] 在 CMakeLists.txt 新增 rtsc_config 与 rtsc_rdp_file_tests 后直接
+      `MSBuild build\rtsc.sln`。
+[错误] BUILD_EXIT=0，但 build\Release\rtsc_rdp_file_tests.exe 不存在：
+      解决方案未重新生成，新目标根本没进构建图。
+[纠正] 显式运行
+      `cmake -S F:\rtsc -B F:\rtsc\build` 后重新 MSBuild，目标生成并可运行。
+[教训] 改 CMakeLists 后必须显式重跑 CMake 配置并确认新目标产物存在；
+      BUILD_EXIT=0 不等于新目标已构建。
+## [2026-11-07][例89] 成员函数名与 Windows SDK 宏冲突（SetVolumeLabel）
+
+[尝试] 给 IFileSystem 增加 `SetVolumeLabel(file_id, label)` 并在
+      HostFileSystem 中定义。
+[错误] 编译失败：`error C2039: "SetVolumeLabelA": 不是
+      "rtsc::rdpdr::HostFileSystem" 的成员` —— Windows SDK 把
+      SetVolumeLabel 定义为宏（UNICODE 下展开为 SetVolumeLabelW），
+      成员函数定义名被宏替换。
+[纠正] 成员改名为 `SetVolumeName`，Win32 调用仍写 SetVolumeLabelW；
+      全局替换时误改了 API 名，已逐处改回。
+[教训] 与 Win32 API 同名的成员函数/类型必须避开宏：先查 SDK 是否有
+      `#define <Name>`（SetVolumeLabel、CreateFile、DeleteFile 等），
+      或改用不同命名；批量替换后必须核对 API 调用点。
+## [2026-11-07][例90] 打印机通告 DeviceData 长度被无条件清零覆盖
+
+[尝试] 在 `BuildDeviceListAnnounce` 中先按类型设置 `device_data` 与
+      `device_data_length`，再沿用原循环末尾的 `device_data_length = 0`。
+[错误] `rdpdr_printer_device_is_announced` 红：`data_len > 24` 失败——
+      末尾无条件清零覆盖了打印机的 DeviceData 长度（长度字段在 memcpy
+      之后被抹成 0）。
+[下一步] 将清零改为仅对非打印机设备执行（`if (device.type != kPrinter)`），
+      或在赋值顺序上把字符拷贝与清零拆到类型分支之外；重跑打印用例全绿，
+      变异 M94 红、恢复全绿，rdpdr 125/1285。
+[教训] “末尾统一复位”必须确认不会覆盖同一结构体先前按分支写入的字段；
+      同一字段的写者只能有一个，复位属于默认分支而非无条件尾写。
+## [2026-11-07][例91] PowerShell 多行字符串拼接断行导致部分替换
+
+[尝试] 用 `$new='首行'; +[char]13+[char]10+'续行'...` 构造多行替换文本后
+      `$t.Replace($old,$new)` 写回 plan.md。
+[错误] 赋值语句在首行结束，后续 `+...` 成为独立语句并报
+      “无法将值转换为类型 System.Int32”；`$new` 只保留首行片段，
+      Replace 仍执行——plan.md 的打印机条目被截断（丢失续行与右括号）。
+[下一步] 改为单条命令内用分号分隔：`$a='...'; $b='...'; $rep=$a+"`r`n"+$b;`
+      再 Replace；完成后按关键词复核（`队列枚举`、`待真机验证）`）。
+[教训] PowerShell 的 `+` 不跨行续接赋值；多行文本必须用 here-string 或
+      显式 "`r`n" 拼接，且写回后必须按多个关键词验证完整性，不能只看
+      “OK”输出。
+## [2026-11-07][例92] 源级 grep 测试在主代码重构后陈旧失败
+
+[尝试] 运行 rdpusb 全量测试（批183 改动 drdynvc 后）。
+[错误] `gui_main_advertises_drdynvc_only_when_needed` 红：它按行 grep
+      `tools/rtsc_gui/main.cpp` 的 `if (usb_redirect || disp_enabled)` 与
+      `channels.push_back("drdynvc");`，但通道列表已重构为
+      `BuildStaticChannelNames(...)`（mstsc_args.cpp），两行不复存在。
+[下一步] 把测试改为断言当前契约：main.cpp 不含硬编码 "drdynvc" 的
+      channel_names 赋值、存在 `BuildStaticChannelNames(` 调用且
+      `usb_redirect || disp_enabled` 参数行在其后；行为覆盖由
+      `mstsc_channel_list_honours_redirection_flags` 承担。重跑 77/444 全绿。
+[教训] 源级 grep 测试必须与代码结构同源演进；重构移动代码时须同步更新
+      或改为行为断言，否则测试成为“结构快照”而非契约。
+## [2026-11-07][例93] 批183 修改前漏做 W3 备份
+
+[尝试] 直接编辑 drdynvc_client.h/.cpp、proto/drdynvc.h、test_rdpusb.cpp。
+[错误] 违反 W3“修改前必须先备份”；改动完成后才意识到未建快照。
+[下一步] 收尾补做当前状态快照（20261107_190041）；恢复依据为本轮编辑清单
+      （新增 listener 钩子/常量/OnCreateRequest/测试重写）与 git diff；
+      后续每批第一个写动作前先跑备份命令。
+[教训] 备份必须作为每批的固定第一步执行，与“读四文件”同批完成；不得以
+      “改动小/新文件为主”为由跳过。
+## [2026-11-07][例94] CloseChannel 同步回调监听器导致 RemoveDevice 迭代器失效（堆损坏）
+
+[尝试] 让 DrdynvcClient::CloseChannel 在本地移除通道后同步遍历 listeners 调用
+      OnChannelClosed，以便发起方立刻得知关闭。
+[错误] rdpusb 全量 0xc0000374（堆损坏）于
+      `rdpusb_client_retract_removes_device`：RdpUsbClient::RemoveDevice 持有
+      `devices_` 迭代器时调用 transport_->CloseChannel，回调
+      RdpUsbClient::OnChannelClosed 重入并 erase 了同一容器，随后
+      RemoveDevice 继续使用失效迭代器。
+[下一步] 关闭时只做本地状态迁移（erase open_channels_、记 closing_），回调
+      延迟到服务端 CLOSE 响应到达时发出（此时不在 RemoveDevice 栈内）；
+      测试改为“关闭后 DATA 丢弃、响应到达时通知一次”。
+[教训] 在可能被“正在修改自身容器”的调用栈上调用的 API，禁止同步回调同一
+      listener；状态迁移与事件通知必须分离（D12 await/重入同型）。
+## [2026-11-07][例95] 变异 M100 暴露测试断言缺守卫（parse 失败后索引空 vector）
+
+[尝试] 用变异把 0x06 Length 宽度固定为 4 字节，验证新增 parse 测试是否变红。
+[错误] 测试进程 unhandled SEH 崩溃而非干净失败：CHECK(parse==Ok) 失败后仍
+      执行 CHECK_EQ(pdu.data[0], ...)，pdu.data 为空，operator[] 越界。
+[下一步] 断言改为先取 Status，CHECK 后 if (st != Ok) return；重跑变异得到
+      3 tests/3 checks 干净红，恢复后全绿。
+[教训] 依赖解析结果的断言必须先按状态早退，禁止在失败路径继续索引输出；
+      变异测试同时是测试自身健壮性的探针。
+## [2026-11-07][例96] 变异 M103 存活：主屏唯一性检查被原点/重叠规则蕴含
+
+[尝试] 删除“至多一个主屏”的计数检查，期待
+      disp_layout_primary_must_be_at_origin_and_unique 变红。
+[错误] 变异存活（测试仍绿）：主屏原点规则已拒绝非原点主屏；两个主屏必然
+      一个离原点，或同在原点而重叠被拒——独立计数规则不可隔离。
+[下一步] 删除冗余计数检查，保留行为断言；M101（删原点检查）6+3 checks 红、
+      M102（面积不饱和）1 check 红，恢复后全绿。
+[教训] 变异存活先怀疑规则冗余：证明被其他规则蕴含后删除，禁止为不可
+      隔离的规则编造测试或保留死代码。
+## [2026-11-07][例97] SendChannelData 无通道校验：关闭后仍可写入死通道
+
+[尝试] 审计 DVC 发送路径，检查 CloseChannel 之后的写行为。
+[错误] `DrdynvcClient::SendChannelData` 对任意 id 无条件发送：批184 之前关闭通
+      道不改变本地状态，但批184 让 CloseChannel 从 open_channels_ 移除 id 后，
+      该 id 仍可被写入；服务端可能已复用该 id，属协议错误（死通道/串扰）。
+[下一步] 发送前要求 id 在 open_channels_ 或 pending_，否则计数
+      refused_data_count_ 并返回 false；display_control 仅在成功后计数布局；
+      3 个新测试钉住未知/已关闭/ pending 三种情形；M104（删校验）2 个测试红。
+[教训] 状态集合一旦成为权威判定（open_channels_/pending_），所有对外写入都
+      必须复用同一判定；新增状态迁移时必须同批复核全部消费者（C10 影响面）。
+## [2026-11-07][例98] 完成报文长度回填“请求大小”而非“实际完成量”
+
+[尝试] 按 [MS-RDPEPC] 核对 printer WRITE 完成语义（3.2.5.1.10）。
+[错误] DR_WRITE_RSP.Length 被写成请求的字节数 req.data.size()，而规范要求
+      “成功写入的字节数”；后端接口只返回 bool，短写无法表达，Win32 后端
+      还把短写(WrittenPrinter 部分成功)判为 false → 服务端收到失败后再发，
+      已写入部分会重复打印（静默重复/丢失去同步）。
+[下一步] Write 增 written 出参，成功即按实际字节填 Length（允许部分成功）；
+      短写测试钉住（Length=2/request=4）；M105 回填请求大小即红。
+[教训] 所有“完成/确认”报文的计数字段必须以实际完成量为唯一来源，禁止复用
+      请求参数；后端 seam 必须能表达部分成功（三态：失败/部分/全部），
+      否则协议层无法忠实地把本地结果回传给对端。
+## [2026-11-08][例99] 子串插入 CMakeLists 吞掉相邻行 / 复制恢复不刷新 mtime
+
+[尝试] 在 rtsc_nsc_tests 附近插入新测试目标。
+[错误] 以 add_executable(rtsc_nsc_tests ...) 为锚点做“锚点后插入”，把该行本身换掉，
+      configure 失败：Cannot specify link libraries for target "rtsc_nsc_tests"。
+      另：Copy-Item 恢复 bulk.cpp 保留旧 mtime，增量构建不重编，恢复后仍红。
+[下一步] 插入以整行（含换行）为锚并保留原行；恢复用 WriteAllText 刷新 mtime 后重编。
+[教训] 文本结构编辑必须“整行匹配、保留原行、改后读回上下文”；构建系统以 mtime 判新旧，
+      任何恢复动作都必须使时间戳更新，否则验证结论无效。
+
+## [2026-11-08][例100] 令牌前缀恒真变异触发 SEH：位流解码必须有界
+
+[尝试] 变异 M107：把令牌前缀比较改成恒真，验证测试能否发现。
+[错误] 用例先断言失败，随后进程 SEH 崩溃（crashes/rtsc_bulk_tests-20261108-015208-38268）。
+      说明原始实现的位流读取在畸形输入下仍可能越界——崩溃而非优雅拒绝。
+[下一步] 增加确定性伪随机扫描用例（0..32 字节 × 16 种子）断言"返回量==实际追加量"
+      且不超过段上限；已加并通过（14 tests / 1139 checks）。
+[教训] 变异不仅要看断言是否变红，还要看进程是否崩溃；解析器必须对任意输入有界，
+      必须在变异后补健壮性用例，避免"测试红但进程挂"的假安全。
+
+## [2026-11-08][例101] 手工构造位流测试向量两次算错（长度打包与 trailer）
+
+[尝试] 为 DVC 压缩通路手工构造 RDP8 Lite 段：未编码直传段 + 距离 1/长度 30 匹配段。
+[错误] 第一次把 15 位长度字段写进错误的字节（byte2/byte3 打包错），第二次匹配段 trailer 写 0x00
+      （实际有 6 个未用位，应为 0x06），导致解压失败、2 个用例红。
+[下一步] 按位重新推导：token(5)+distance(5)+length(15)+pad(7)=32 位；byte2=(L>>1)&0xFF、
+      byte3=(L&1)<<7；匹配段 18 位 → pad 6 → trailer=0x06。修正后全绿。
+[教训] 手写位流必须写出“位段→字节”的推导过程并单独验算；trailer 是独立字节，
+      其低 3 位是未用位数，不是 0。优先复用已通过的向量（bulk 测试）再改写类型码。
+
+## [2026-11-08][例102] 新增版本门控后旧用例失效，被误判为“实现回归”
+
+[尝试] 给压缩 DATA 增加"协商版本必须 >=3"的门控，并保留批191 的 4 个压缩用例。
+[错误] 这 4 个用例没有先发送 VERSION3 能力协商，门控生效后全部红；最初误以为解压实现退化。
+[下一步] 在旧用例中补 VERSION3 协商前置（不得为迁就旧测试而放宽门控）；补齐后 94/508 全绿。
+[教训] 引入新的前置条件（版本/能力/状态门）时必须审计全部既有用例，把前置补齐；
+      门控本身不能为了"让旧测试通过"而删除或放宽。

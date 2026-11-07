@@ -212,4 +212,31 @@ RTSC_TEST(client_rtt_closes_on_inbound_data) {
     CHECK(c.rtt_ms() == first);
 }
 
+RTSC_TEST(session_info_session_type_includes_logon_identity) {
+    SessionInfoInput in;
+    const SessionInfo plain = CollectSessionInfo(in, 0);
+    CHECK(plain.remote_session_type == "远程桌面 (RDP)");
+
+    in.has_logon = true;
+    in.session_id = 2;
+    in.logon_domain = "CONTOSO";
+    in.logon_user = "carol";
+    const SessionInfo named = CollectSessionInfo(in, 0);
+    CHECK(named.remote_session_type ==
+          "远程桌面 (RDP) - 会话 2 - 用户 CONTOSO\\carol");
+
+    // A user without a domain is still named, without a stray backslash.
+    in.logon_domain.clear();
+    const SessionInfo user_only = CollectSessionInfo(in, 0);
+    CHECK(user_only.remote_session_type ==
+          "远程桌面 (RDP) - 会话 2 - 用户 carol");
+
+    // A logon notification without a name reports the session id only.
+    in.has_logon = true;
+    in.logon_domain.clear();
+    in.logon_user.clear();
+    const SessionInfo id_only = CollectSessionInfo(in, 0);
+    CHECK(id_only.remote_session_type == "远程桌面 (RDP) - 会话 2");
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_session_info_tests"); }

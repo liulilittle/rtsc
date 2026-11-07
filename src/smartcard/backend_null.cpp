@@ -19,8 +19,16 @@ class NullSmartCardBackend final : public ISmartCardBackend {
     uint32_t ReleaseContext(const std::vector<uint8_t>&) override {
         return kScardENoService;
     }
+    uint32_t IsValidContext(const std::vector<uint8_t>&) override {
+        // No context can exist without the service.
+        return kScardEInvalidHandle;
+    }
     uint32_t ListReaderGroups(const std::vector<uint8_t>&,
                               std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t ListReaderGroupsW(const std::vector<uint8_t>&,
+                               std::vector<uint8_t>&) override {
         return kScardENoService;
     }
     uint32_t ListReaders(const std::vector<uint8_t>&,
@@ -28,13 +36,47 @@ class NullSmartCardBackend final : public ISmartCardBackend {
                          std::vector<uint8_t>&) override {
         return kScardENoService;
     }
+    uint32_t ListReadersW(const std::vector<uint8_t>&,
+                          const std::vector<uint8_t>&,
+                          std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
     uint32_t GetStatusChange(const std::vector<uint8_t>&, uint32_t,
                              std::vector<ScardReaderState>&) override {
+        return kScardENoService;
+    }
+    uint32_t GetStatusChangeW(const std::vector<uint8_t>&, uint32_t,
+                              std::vector<ScardReaderStateW>&) override {
+        return kScardENoService;
+    }
+    uint32_t LocateCards(const std::vector<uint8_t>&,
+                         const std::vector<uint8_t>&,
+                         std::vector<ScardReaderState>&) override {
+        return kScardENoService;
+    }
+    uint32_t LocateCardsW(const std::vector<uint8_t>&,
+                          const std::vector<uint8_t>&,
+                          std::vector<ScardReaderStateW>&) override {
+        return kScardENoService;
+    }
+    uint32_t LocateCardsByAtr(const std::vector<uint8_t>&,
+                              const std::vector<ScardAtrMask>&,
+                              std::vector<ScardReaderState>&) override {
+        return kScardENoService;
+    }
+    uint32_t LocateCardsByAtrW(const std::vector<uint8_t>&,
+                               const std::vector<ScardAtrMask>&,
+                               std::vector<ScardReaderStateW>&) override {
         return kScardENoService;
     }
     uint32_t Connect(const std::vector<uint8_t>&, const std::string&, uint32_t,
                      uint32_t, std::vector<uint8_t>&,
                      uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t ConnectW(const std::vector<uint8_t>&, const std::u16string&,
+                      uint32_t, uint32_t, std::vector<uint8_t>&,
+                      uint32_t&) override {
         return kScardENoService;
     }
     uint32_t Disconnect(const std::vector<uint8_t>&,
@@ -54,6 +96,11 @@ class NullSmartCardBackend final : public ISmartCardBackend {
                     std::vector<uint8_t>&) override {
         return kScardENoService;
     }
+    uint32_t StatusW(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                     std::vector<uint8_t>&, uint32_t&, uint32_t&,
+                     std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
     uint32_t Transmit(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
                       const ScardPci&, const std::vector<uint8_t>&, bool,
                       uint32_t, ScardPci&, std::vector<uint8_t>&) override {
@@ -62,6 +109,63 @@ class NullSmartCardBackend final : public ISmartCardBackend {
     uint32_t Control(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
                      uint32_t, const std::vector<uint8_t>&, uint32_t,
                      std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t GetAttrib(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                       uint32_t, bool, uint32_t, std::vector<uint8_t>&,
+                       uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t SetAttrib(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                       uint32_t, const std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t ReadCache(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                       uint32_t, const std::string&, bool, uint32_t,
+                       std::vector<uint8_t>&, uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t ReadCacheW(const std::vector<uint8_t>&,
+                        const std::vector<uint8_t>&, uint32_t,
+                        const std::u16string&, bool, uint32_t,
+                        std::vector<uint8_t>&, uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t WriteCache(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                        uint32_t, const std::string&,
+                        const std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t WriteCacheW(const std::vector<uint8_t>&,
+                         const std::vector<uint8_t>&, uint32_t,
+                         const std::u16string&,
+                         const std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t GetReaderIcon(const std::vector<uint8_t>&, const std::u16string&,
+                           std::vector<uint8_t>&, uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t GetDeviceTypeId(const std::vector<uint8_t>&, const std::u16string&,
+                             uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t GetTransmitCount(const std::vector<uint8_t>&,
+                              const std::vector<uint8_t>&,
+                              uint32_t&) override {
+        return kScardENoService;
+    }
+    uint32_t AccessStartedEvent() override { return kScardENoService; }
+    uint32_t Cancel(const std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t State(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
+                   uint32_t&, uint32_t&, std::vector<uint8_t>&) override {
+        return kScardENoService;
+    }
+    uint32_t Reconnect(const std::vector<uint8_t>&,
+                       const std::vector<uint8_t>&, uint32_t, uint32_t,
+                       uint32_t, uint32_t&) override {
         return kScardENoService;
     }
 };

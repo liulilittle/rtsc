@@ -187,3 +187,36 @@ C++ 接口：proto 层 CliprdrFileContentsRequest/Response + CliprdrFileDescript
 - [ ] capset 字节（CLIP_CAPS payload）抓包
 - [ ] rdpdr 文件操作
 - [ ] rdpsnd server version 0 根因（A5 缺陷候选）
+
+## 8. 位图格式的可序列化映射（批161，2026-11-07）
+
+**问题**：`SendFormatList` 直接广播 `Clipboard::formats()`。CF_BITMAP 是
+HBITMAP 句柄，Win32 后端的通用 `GetClipboardData + GlobalSize` 复制对它无效；
+CF_PALETTE / CF_METAFILEPICT / CF_ENHMETAFILE 同样只有 GDI 句柄形态。把它们
+广播出去等于承诺了无法提供的数据。
+
+**修复**（[MS-RDPECLIP] 1.3.1.2 标准格式语义）：
+- 新增平台无关 `rtsc::clipboard::MapAdvertisedFormat`：
+  - CF_BITMAP → CF_DIB（字节形态）；
+  - CF_PALETTE / CF_METAFILEPICT / CF_ENHMETAFILE → 丢弃（返回 0）；
+  - 其余原样。
+- `CliprdrClient::SendFormatList` 先映射再按映射结果去重，避免
+  CF_BITMAP + CF_DIB 同时存在时重复广播。
+- Win32 后端 `read`：
+  - `read(CF_BITMAP)` 用 `GetDIBits` 合成 packed CF_DIB
+    （BITMAPINFOHEADER + 32bpp BI_RGB，bottom-up）；
+  - `read(CF_DIB/CF_DIBV5)` 在剪贴板没有 DIB 时回退到 CF_BITMAP 转换，
+    保证广播出去的 CF_DIB 可被数据请求满足。
+- 失败路径 fail-closed：GetObject/GetDIBits 失败返回 false，不产生半截 DIB。
+
+**测试**：
+- `cliprdr_client_maps_bitmap_and_drops_handle_formats`：本地格式
+  {CF_BITMAP, CF_PALETTE, CF_UNICODETEXT, CF_METAFILEPICT} → 广播
+  {CF_DIB, CF_UNICODETEXT}（2×36 字节短名）。
+- 变异 M75（CF_BITMAP 原样广播）→ 1 test / 1 check 红；恢复后全绿。
+
+**验收**：C0 零错误零警告；影响面 ctest 5/5；cliprdr 109/578、
+clipboard 30/93。
+
+**未验证**：Win32 的 HBITMAP→DIB 转换需真实剪贴板/GDI，未在单元测试覆盖；
+远端位图粘贴的 wire 行为未真机验证。

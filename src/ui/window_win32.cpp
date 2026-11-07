@@ -15,6 +15,7 @@
 // the tick marks and the "缩放(Z)(N%)" label always reflect the live view.
 
 #include "rtsc/ui/window.h"
+#include "rtsc/ui/connection_bar.h"
 
 #if defined(_WIN32)
 
@@ -45,6 +46,8 @@ enum : UINT {
     kMenuConnInfo = 1103,
     kMenuSmartCard = 1104,
     kMenuHelp = 1105,
+    kMenuSaveScreenshot = 1106,
+    kMenuSaveConnectionFile = 1107,
 };
 
 // UTF-8 (the codebase's string encoding) to UTF-16.
@@ -234,9 +237,12 @@ class Win32Window final : public Window {
                          SWP_FRAMECHANGED | SWP_NOZORDER);
         }
         fullscreen_ = on;
+        bar_.SetFullscreen(on, ConnectionBar::Clock::now());
     }
 
     bool fullscreen() const override { return fullscreen_; }
+
+    bool connection_bar_visible() const override { return bar_.visible(); }
 
     void SetWinKeyMode(WinKeyMode mode) override { win_key_mode_ = mode; }
     WinKeyMode win_key_mode() const override { return win_key_mode_; }
@@ -294,6 +300,11 @@ class Win32Window final : public Window {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // The connection bar's auto-hide runs on the poll cycle, which the
+        // render loop drives. Repaint the strip when visibility changed.
+        const bool was_visible = bar_.visible();
+        bar_.Tick(ConnectionBar::Clock::now());
+        if (was_visible != bar_.visible()) InvalidateBar();
         if (events_.empty()) return false;
         out = events_.front();
         events_.pop_front();
@@ -407,17 +418,29 @@ class Win32Window final : public Window {
                     }
                     return true;
                 }
+                // Alt+Tab (and Alt+Shift+Tab) follows the same policy as the
+                // Windows key: kLocal and windowed kFullscreenOnly leave the
+                // chord to the local shell (returning false lets DefWindowProc
+                // run the local task switch); kRemote and fullscreen
+                // kFullscreenOnly forward it to the remote.
+                const bool alt_tab =
+                    vk == VK_TAB && ((lp & (1LL << 29)) != 0);
+                if (alt_tab && !ForwardWinKey(win_key_mode_, fullscreen_)) {
+                    return false;
+                }
                 // kLocal keeps the Windows key for the local shell. Return
                 // false so DefWindowProc still sees the message; it is never
-                // forwarded to the remote. kFullscreenOnly is the same for now
-                // (TODO: gate on fullscreen_ once that policy is decided).
+                // forwarded to the remote. kFullscreenOnly forwards only while
+                // the window is fullscreen (mstsc "Apply Windows key
+                // combinations: only when using the full screen").
                 const bool win_key = vk == VK_LWIN || vk == VK_RWIN;
-                if (win_key && win_key_mode_ != WinKeyMode::kRemote) {
+                if (win_key && !ForwardWinKey(win_key_mode_, fullscreen_)) {
                     return false;
                 }
                 const KeyTranslation key = TranslateWin32KeyMessage(
                     static_cast<uint32_t>(msg), vk,
-                    static_cast<uint32_t>(lp), nullptr, win_key_mode_);
+                    static_cast<uint32_t>(lp), nullptr, win_key_mode_,
+                    fullscreen_);
                 switch (key_state_.Process(key)) {
                     case Win32KeyAction::kForward: {
                         InputEvent e;
@@ -443,14 +466,25 @@ class Win32Window final : public Window {
                 return !alt_f4;
             }
             case WM_MOUSEMOVE: {
-                InputEvent e;
-                e.kind = InputEvent::Kind::kMouseMove;
-                // lParam position is signed 16-bit; at the left/upper screen
-                // edge it can go negative and LOWORD/HIWORD wrap it to ~65535.
                 const int mx = GET_X_LPARAM(lp);
                 const int my = GET_Y_LPARAM(lp);
                 last_mouse_x_ = mx;
                 last_mouse_y_ = my;
+                // The fullscreen connection bar reveals at the top edge and
+                // keeps itself up while the pointer is over it. A pointer over
+                // the bar is not forwarded to the remote desktop: it is our
+                // overlay, not part of the remote surface.
+                bar_.OnMouseMove(mx, my, ConnectionBar::Clock::now());
+                if (bar_.visible() && my >= 0 && my < bar_.height()) {
+                    InvalidateBar();
+                    return true;
+                }
+                if (bar_.visible()) InvalidateBar();
+
+                InputEvent e;
+                e.kind = InputEvent::Kind::kMouseMove;
+                // lParam position is signed 16-bit; at the left/upper screen
+                // edge it can go negative and LOWORD/HIWORD wrap it to ~65535.
                 e.x = static_cast<uint16_t>(mx < 0 ? 0 : mx);
                 e.y = static_cast<uint16_t>(my < 0 ? 0 : my);
                 events_.push_back(e);
@@ -464,13 +498,39 @@ class Win32Window final : public Window {
             case WM_MBUTTONUP:
             case WM_XBUTTONDOWN:
             case WM_XBUTTONUP: {
-                InputEvent e;
-                e.kind = InputEvent::Kind::kMouseButton;
                 // Same signed-position handling as WM_MOUSEMOVE.
                 const int bx = GET_X_LPARAM(lp);
                 const int by = GET_Y_LPARAM(lp);
                 last_mouse_x_ = bx;
                 last_mouse_y_ = by;
+                // A click on the fullscreen connection bar belongs to the
+                // overlay: run its button action and never forward it.
+                if (bar_.visible() && by >= 0 && by < bar_.height()) {
+                    if (msg == WM_LBUTTONDOWN) {
+                        const ConnectionBarButton hit =
+                            bar_.HitTest(bx, by, surface_.width());
+                        switch (hit) {
+                            case ConnectionBarButton::kPin:
+                                bar_.SetPinned(!bar_.pinned(),
+                                               ConnectionBar::Clock::now());
+                                break;
+                            case ConnectionBarButton::kMinimize:
+                                ShowWindow(hwnd_, SW_MINIMIZE);
+                                break;
+                            case ConnectionBarButton::kClose:
+                                PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+                                break;
+                            case ConnectionBarButton::kNone:
+                                // Clicking the bar background only restarts
+                                // the auto-hide timer.
+                                bar_.OnActivity(ConnectionBar::Clock::now());
+                                break;
+                        }
+                    }
+                    return true;
+                }
+                InputEvent e;
+                e.kind = InputEvent::Kind::kMouseButton;
                 e.x = static_cast<uint16_t>(bx < 0 ? 0 : bx);
                 e.y = static_cast<uint16_t>(by < 0 ? 0 : by);
                 if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP) {
@@ -578,6 +638,7 @@ class Win32Window final : public Window {
                            rc.bottom - rc.top, mem_dc_, rc.left, rc.top,
                            SRCCOPY);
                 }
+                PaintConnectionBar(dc);
                 EndPaint(hwnd_, &ps);
                 return false;
             }
@@ -629,6 +690,9 @@ class Win32Window final : public Window {
         AppendMenuW(menu, MF_STRING, kMenuFullscreen, L"全屏(F)");
         AppendMenuW(menu, MF_STRING, kMenuSmartSizing, L"智能调整大小(A)");
         AppendMenuW(menu, MF_STRING, kMenuConnInfo, L"连接信息(C)");
+        AppendMenuW(menu, MF_STRING, kMenuSaveScreenshot, L"保存截图(S)...");
+        AppendMenuW(menu, MF_STRING, kMenuSaveConnectionFile,
+                    L"保存连接文件(C)...");
         AppendMenuW(menu, MF_STRING, kMenuSmartCard, L"重定向智能卡(D)");
     }
 
@@ -720,6 +784,12 @@ class Win32Window final : public Window {
             case kMenuConnInfo:
                 PushCommand(kCmdConnectionInfo);
                 return true;
+            case kMenuSaveScreenshot:
+                PushCommand(kCmdSaveScreenshot);
+                return true;
+            case kMenuSaveConnectionFile:
+                PushCommand(kCmdSaveConnectionFile);
+                return true;
             case kMenuSmartCard:
                 PushCommand(kCmdToggleSmartCard);
                 return true;
@@ -797,6 +867,50 @@ class Win32Window final : public Window {
         }
     }
 
+    // Repaints the fullscreen connection bar strip (or the surface rows it
+    // covered, after it hides).
+    void InvalidateBar() {
+        if (hwnd_ == nullptr) return;
+        RECT r{};
+        r.left = 0;
+        r.top = 0;
+        r.right = surface_.width();
+        r.bottom = bar_.height();
+        InvalidateRect(hwnd_, &r, FALSE);
+    }
+
+    // Draws the connection bar over the client area. The bar is a client-side
+    // overlay (mstsc's fullscreen bar): a dark strip with the three buttons.
+    void PaintConnectionBar(HDC dc) {
+        if (!bar_.visible()) return;
+        const int w = surface_.width();
+        const int h = bar_.height();
+        if (w <= 0 || h <= 0) return;
+        HBRUSH background = CreateSolidBrush(RGB(32, 32, 32));
+        RECT strip{0, 0, w, h};
+        FillRect(dc, &strip, background);
+        DeleteObject(background);
+
+        const auto paint_button = [&](ConnectionBarButton button,
+                                      const wchar_t* glyph) {
+            const ConnectionBar::ButtonRect r =
+                bar_.ButtonRectFor(button, w);
+            if (r.w <= 0 || r.h <= 0) return;
+            RECT br{r.x, r.y, r.x + r.w, r.y + r.h};
+            HBRUSH fill = CreateSolidBrush(RGB(64, 64, 64));
+            FillRect(dc, &br, fill);
+            DeleteObject(fill);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(235, 235, 235));
+            DrawTextW(dc, glyph, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        };
+        // Pinned shows a filled pin, unpinned an outline.
+        paint_button(ConnectionBarButton::kPin,
+                     bar_.pinned() ? L"\u25C9" : L"\u25CB");
+        paint_button(ConnectionBarButton::kMinimize, L"\u2013");
+        paint_button(ConnectionBarButton::kClose, L"\u2715");
+    }
+
     // Recreates the 32-bit top-down DIB at the current surface size. Called at
     // startup and on every Resize so the DIB always matches the client area.
     void RecreateBitmap() {
@@ -852,6 +966,7 @@ class Win32Window final : public Window {
     int wheel_accum_h_ = 0;
     bool pause_down_ = false;
     bool fullscreen_ = false;
+    ConnectionBar bar_;
     RECT saved_rect_{};
     LONG_PTR saved_style_ = 0;
 };
@@ -941,7 +1056,8 @@ std::vector<InputEvent> Win32KeyState::ReleaseAll() {
 KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
                                         uint32_t lparam,
                                         uint32_t (*vk_to_scancode)(uint32_t),
-                                        WinKeyMode win_key_mode) {
+                                        WinKeyMode win_key_mode,
+                                        bool fullscreen) {
     KeyTranslation out;
 
     // Only the four keyboard transitions are keys. Anything else (WM_CHAR,
@@ -1007,11 +1123,10 @@ KeyTranslation TranslateWin32KeyMessage(uint32_t msg, uint32_t vk,
         extended = true;
     }
 
-    // Windows key policy. kRemote (the mstsc-compatible default) forwards;
-    // kLocal keeps LWIN/RWIN for the local shell; kFullscreenOnly is treated as
-    // kLocal for now (TODO: decide the fullscreen policy).
+    // Windows key policy. kRemote always forwards; kLocal keeps LWIN/RWIN for
+    // the local shell; kFullscreenOnly forwards only while fullscreen.
     if ((scancode == 0x5B || scancode == 0x5C) &&
-        win_key_mode != WinKeyMode::kRemote) {
+        !ForwardWinKey(win_key_mode, fullscreen)) {
         return out;
     }
 

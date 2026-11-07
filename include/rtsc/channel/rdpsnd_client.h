@@ -48,6 +48,13 @@ class RdpsndClient {
     // A message may be split across calls.
     void OnChannelData(const uint8_t* data, size_t size);
 
+    // Drops the per-session protocol state after the transport was replaced
+    // (auto-reconnect, [MS-RDPBCGR] 1.3.5). The configuration (audio sink,
+    // send function) is kept; every negotiated format and the reassembly
+    // buffer are not. The server re-runs the format exchange in the new
+    // session, which repopulates them.
+    void Reset();
+
     // ---- diagnostics -------------------------------------------------------
     unsigned server_formats_count() const { return server_formats_count_; }
     unsigned client_formats_count() const { return client_formats_count_; }

@@ -48,6 +48,13 @@ class RdpUsbClient : public IDrdynvcListener {
     // Creates the "URBDRC" control channel and starts the capability exchange.
     void Start();
 
+    // Drops the per-session state after the transport was replaced
+    // (auto-reconnect, [MS-RDPBCGR] 1.3.5). The configuration (enumerator,
+    // transport, provider) is kept; the capability state, every dynamic
+    // channel id and the announced devices are not. A later Start() re-runs
+    // the capability exchange; devices must be announced again.
+    void Reset();
+
     // Announces a device: sends ADD_VIRTUAL_CHANNEL on the control channel,
     // opens a per-device dynamic channel and sends ADD_DEVICE on it.
     bool AddDevice(const usb::UsbDeviceInfo& info);
@@ -77,6 +84,18 @@ class RdpUsbClient : public IDrdynvcListener {
     unsigned transfer_in_count() const { return transfer_in_count_; }
     unsigned transfer_out_count() const { return transfer_out_count_; }
     unsigned urb_completion_count() const { return urb_completion_count_; }
+    // TRANSFER_OUT_REQUESTs whose TS_URB_HEADER.NoAck bit suppressed the
+    // completion ([MS-RDPEUSB] 2.2.9.1.1).
+    unsigned no_ack_urb_count() const { return no_ack_urb_count_; }
+    unsigned io_control_count() const { return io_control_count_; }
+    unsigned io_control_completion_count() const {
+        return io_control_completion_count_;
+    }
+    // IO_CONTROL requests whose backend output exceeded OutputBufferSize; the
+    // dynamic virtual channel is terminated per [MS-RDPEUSB] 2.2.6.3.
+    unsigned io_control_overflow_count() const {
+        return io_control_overflow_count_;
+    }
     unsigned retract_device_count() const { return retract_device_count_; }
     uint16_t version() const { return version_; }
 
@@ -101,6 +120,8 @@ class RdpUsbClient : public IDrdynvcListener {
     void HandleTransferOut(
         uint32_t channel_id, uint32_t usb_device,
         const rtsc::proto::RdpUsbTransferOutRequest& req);
+    void HandleIoControl(uint32_t channel_id, uint32_t usb_device,
+                         const rtsc::proto::RdpUsbIoControl& req);
     void ExecuteUrb(Device& device, const rtsc::proto::RdpUsbTsUrb& urb,
                     uint32_t output_buffer_size,
                     const std::vector<uint8_t>& output,
@@ -135,6 +156,10 @@ class RdpUsbClient : public IDrdynvcListener {
     unsigned transfer_in_count_ = 0;
     unsigned transfer_out_count_ = 0;
     unsigned urb_completion_count_ = 0;
+    unsigned no_ack_urb_count_ = 0;
+    unsigned io_control_count_ = 0;
+    unsigned io_control_completion_count_ = 0;
+    unsigned io_control_overflow_count_ = 0;
     unsigned retract_device_count_ = 0;
 };
 

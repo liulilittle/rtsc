@@ -89,6 +89,7 @@
 
 ### P4 能力交换与核心数据 [x]
 - [x] Client/Server Core Data、Security Data、Network Data、Client Info
+- [x] Client Info 自动重连 cookie：`ConnectMachine::Config::auto_reconnect_cookie`（28 字节）写入扩展块链尾（批121，M33）；重连流程设置该字段待办
 - [x] 共享 PDU 头（TS_SHARECONTROLHEADER / TS_SHAREDATAHEADER / TS_SECURITY_HEADER 三态）
       — 规范 `docs/spec/share-data.md` 已就绪
 - [x] Fast-Path 头与长度编码（action 低 2 位、length1/length2 大端）+ 7 种输入事件尺寸
@@ -97,6 +98,7 @@
 - [x] 会话建立状态机 SessionSetupMachine（capabilities.md §12 的 S0-S6）— 7 用例
       官方 4.1.12 Demand Active dump 驱动；Confirm Active + 最终化批 + Font Map 激活 + Deactivate All
 - [x] 会话建立状态机 + 许可状态机接入 ConnectionDriver（全链路 scripted TLS 测试到 active）
+- [x] Save Session Info（2.2.10.1.1.1/2/4）：客户端 LOGON_LONG 会话 ID/域/用户 + 扩展 ARC cookie 解析（批115，M27）；active 后路由（批118，M30）；服务器端发送 LOGON_LONG（批119，M31）并在 finalization 后签发 ARC cookie（批120，M32），客户端 e2e 捕获 16 字节随机数；v1 未解码、cookie 重连消费待办
 ### P5 图形与输入 [x]
 - [x] FastPath 输入事件编码（键盘/Unicode/鼠标/扩展鼠标/相对鼠标/Sync/QoE）
       + `EncodeFastPathInputPdu`（fpInputHeader + length + 事件）— 10 用例 / 35 检查
@@ -261,6 +263,13 @@
 
 ### A. 连接与安全
 - [ ] 主机/端口/域/用户；**保存凭据**（等价 cmdkey / RDP 文件）；**RDP 文件导入/导出**
+  - [x] .rdp 编解码（批163：Parse/Write + 9 tests/54 checks + M77；见 docs/spec/rdp-file-evidence.md）
+  - [x] GUI 导入接线（批164：--rdp-file + ResolveEndpoint 优先级 + M78；手工验证非法地址退出 2）
+  - [x] 导出（批165：--save-rdp + FormatFullAddress + M79；导入→导出往返手工验证）
+  - [x] 重定向属性映射（批166：redirectclipboard/audiomode → 静态通道列表；M80）
+  - [x] drivestoredirect → rdpdr 设备（批167：DriveRedirectToSpec + M81；本机 rtsc_server 端到端验证）
+  - [x] GUI 菜单“保存连接文件”（批168：BuildSessionRdpFile + 菜单命令 + M82；菜单点击未交互验证）
+  - [x] 保存凭据（批169：CredentialStore + TERMSRV/<host> + --save-credential/--use-credential + M83；本机 cmdkey 端到端验证）
 - [ ] NLA（CredSSP/NTLM）、TLS（SChannel/OpenSSL）、Standard RDP Security、许可（自建）
 - [ ] **RD Gateway（TS Gateway）**、服务器身份验证级别、证书校验（当前 kInsecure，应可配）
 - [~] 智能卡 / Kerberos（域）
@@ -270,15 +279,85 @@
             空后端、rdpdr 设备声明（DTYP=0x20/SCARD）+ IRP_MJ_DEVICE_CONTROL 分派
       - 测试：`test_smartcard` 59/151、`test_smartcard_channel` 18/111；变异 6 组全红
       - GUI：`RTSC_REDIRECT_SMARTCARD` 开关；`kCmdToggleSmartCard` 改为报告状态
-      - [ ] **仅 ANSI(A) 变体**；W 变体（0x24/0x2C/0xA4/0xB0/0xCC）返回 InvalidType
+      - [x] **全部 W 变体已实现**（批148-156）：LISTREADERSW、CONNECTW、
+            STATUSW、GETSTATUSCHANGEW、LOCATECARDSW、READCACHEW、
+            WRITECACHEW、LISTREADERGROUPSW、LOCATECARDSBYATRW；
+            服务端→客户端 [MS-RDPESC] IOCTL 已全部实现
       - [ ] **未做真实 Windows 服务端互操作**（本机无卡片/服务）。winscard 动态加载
             实测 EstablishContext=0x8010001D(SCARD_E_NO_SERVICE)：绑定成功、服务缺失
             时正确降级，非空壳
-      - [ ] 未实现 ISVALIDCONTEXT/GETATTRIB/SETATTRIB/LOCATECARDS/READCACHE/
-            WRITECACHE/GETREADERICON，均 fail closed
-      - [ ] 待审计三问：OutputBufferLength=0 是否豁免 STATUS_BUFFER_TOO_SMALL；
-            GetStatusChange 超时回填 reader_states 是否符合 2.2.3.5；
-            kStatusChangeStepMs=1000 在单线程 Pump 下最多阻塞 UI 1 秒/步
+      - [x] ISVALIDCONTEXT（批134：`IsValidContext` 后端 + proto Long_Return +
+            rdpdr 分派；M48 红绿证）
+      - [x] GETATTRIB（批135：`GetAttrib` 后端 + proto GetAttrib_Call/Return +
+            rdpdr 分派，长度探测/超容量语义；M49 红绿证）
+      - [x] SETATTRIB（批136：`SetAttrib` 后端 + proto SetAttrib_Call（NDR 长度
+            一致性校验）+ rdpdr 分派；M50 红绿证）
+      - [x] LOCATECARDSA（批137：`LocateCards` 后端 + proto LocateCardsA_Call
+            （复用 ReaderStateA 数组解析）+ LocateCards_Return 编码 + rdpdr
+            分派；M51 红绿证）
+      - [x] READCACHEA（批138：`ReadCache` 后端 + proto ReadCacheA_Call
+            （UUID 16 字节）+ ReadCache_Return 编码 + rdpdr 分派；M52 红绿证）
+      - [x] WRITECACHEA（批139：`WriteCache` 后端 + proto WriteCacheA_Call
+            （UUID 16 字节、pbData 长度一致性）+ Long_Return + rdpdr 分派；
+            M53 红绿证）
+      - [x] GETREADERICON（批140：`GetReaderIcon` 后端 + proto
+            GetReaderIcon_Call（WCHAR [string]）+ GetReaderIcon_Return 编码
+            （上限 4 MiB）+ rdpdr 分派；M54 红绿证）
+      - [x] GETDEVICETYPEID（批141：`GetDeviceTypeId` 后端 + proto
+            GetDeviceTypeId_Call（复用 Context+WCHAR）+ Return 编码
+            （失败也写 dwDeviceId）+ rdpdr 分派；M55 红绿证）
+      - [x] GETTRANSMITCOUNT（批142：`GetTransmitCount` 后端 + proto
+            GetTransmitCount_Call（REDIR_SCARDHANDLE）+ Return 编码
+            （失败也写 cTransmitCount）+ rdpdr 分派；M56 红绿证；同批更正
+            3.1.4 章节号引用）
+      - [x] LOCATECARDSBYATRA（批143：`LocateCardsByAtr` 后端 + proto
+            LocateCardsByAtrA_Call（ATR mask 数组 + ReaderStateA）+ Return
+            编码复用 + rdpdr 分派；M57 红绿证）
+      - [x] ACCESSSTARTEDEVENT（批144：`AccessStartedEvent` 后端 + proto
+            4 字节裸载荷特判 + Long_Return + rdpdr 分派；M58 红绿证）
+      - [x] CANCEL（批145：`Cancel` 后端 + proto 复用 Context_Call +
+            Long_Return + rdpdr 分派；M59 红绿证）
+      - [x] STATE（批146：`State` 后端 + proto State_Call/State_Return
+            （三态：探测/空容量/超容量，cbAtrLen≤36）+ rdpdr 分派；
+            M60 红绿证）
+      - [x] RECONNECT（批147：`Reconnect` 后端 + proto Reconnect_Call/
+            Reconnect_Return（失败也写 dwActiveProtocol）+ rdpdr 分派；
+            M61 红绿证）
+      - [x] LISTREADERSW（批148：`ListReadersW` 后端 + proto 复用
+            ListReaders_Call + 宽字符多字符串返回校验；M62 红绿证）
+      - [x] CONNECTW（批149：`ConnectW` 后端 + proto ConnectW_Call 宽字符
+            reader + 返回复用 Connect_Return；M63 红绿证）
+      - [x] STATUSW（批150：`StatusW` 后端 + proto 复用 Status_Call +
+            宽字符返回校验；M64 红绿证）
+      - [x] GETSTATUSCHANGEW（批151：`GetStatusChangeW` 后端 +
+            ScardReaderStateW/ReadReaderStateArrayW + 返回复用 A；
+            M65 红绿证）
+      - [x] LOCATECARDSW（批152：`LocateCardsW` 后端 + proto
+            ParseLocateCardsW（宽字符 cards/reader）+ 返回复用 A；
+            M66 红绿证）
+      - [x] READCACHEW（批153：`ReadCacheW` 后端 + proto ParseReadCacheW
+            （宽字符 lookup name）+ 返回复用 A；M67 红绿证）
+      - [x] WRITECACHEW（批154：`WriteCacheW` 后端 + proto ParseWriteCacheW
+            （宽字符 lookup name）+ Long_Return 复用 A；M68 红绿证）
+      - [x] LISTREADERGROUPSW（批155：`ListReaderGroupsW` 后端 + proto 复用
+            ListReaderGroups_Call + 宽字符返回复用；M69 红绿证）
+      - [x] LOCATECARDSBYATRW（批156：`LocateCardsByAtrW` 后端 + proto
+            ParseLocateCardsByAtrW（ATR mask 复用 A + 宽 reader 数组）；
+            M70 红绿证）
+      - 服务端→客户端 [MS-RDPESC] IOCTL 已全部实现（含全部 W 变体）；
+        客户端→服务端 Introduce/Forget/Add/Remove 不在本端处理范围。
+      - [x] 待审计三问（批157）：Q1 输出缓冲 0 不豁免（与 FreeRDP 一致）；
+            Q2 超时保留 reader_states（修复编码器，M71）；Q3 实际阻塞为完整
+            超时（可能 INFINITE），已记后续项
+      - [ ] 智能卡 IOCTL 异步化（工作线程 + 按 CompletionId 回包），
+            消除 GetStatusChange 长超时对 UI 线程的阻塞（Q3 后续）
+            - [x] 前置重构（批158）：`BuildSmartCardCompletion` 与发送解耦，
+                  可在工作线程运行；OutputBufferLength 边界测试 + M72
+            - [x] 工作线程 + 完成队列 + `PollSmartCard`（批159，M73；
+                  同步模式默认不变）
+            - [x] rtsc_gui 接线（批160）：开启异步 + 每帧轮询 + backend
+                  先于 rdpdr 声明；Reset 递增 generation 丢弃旧会话在途响应
+                  （M74）
       - [ ] Kerberos（域）未开始
       - 历史：批91 之前该项为"完全未实现"（`kCmdToggleSmartCard` 只有常量定义与
             窗口投递，GUI 无消费者，协议侧无 MS-RDPESC 代码）
@@ -323,7 +402,11 @@
       loop_iterations 663 / input_events_sent 0 / session_active true / host 192.168.1.7 /
       backend win32；`dirty` = left0 top0 right0 bottom0 empty true；`ping` = pong true；
       `bad op` = ok false error "unknown op: zzz"；`/health` = 200 {"ok":true}。
-- [ ] 命令集扩展：input 注入（click/type/key）、screenshot、resize、frames 采样序列
+- [x] 命令集扩展：**frames 采样序列（批94 `94b`，2026-11-05）已落地**——`DebugSnapshot::frame_samples` + `FormatFrameSamples` + `CommandRequestsFrames` + main.cpp 环形缓冲（cap 8）；变异红绿证 + C0 全量 0/0/69/69。
+- [x] **input 注入（批95，2026-11-06）已落地**：key/mouseclick/mousemove/wheel/unicode/text；`ToUiInputEvent(s)` 下沉到库；main.cpp 用 `client.SendInput` 逐条发送并只统计成功数；严格 UTF-8→UTF-16（拒绝超 U+10FFFF/超长/截断/代理）；M1-M5 变异红绿证；ctest 73/73。
+- [x] **resize（批96，2026-11-06）已落地**：`CommandRequestsResize`/`ResizeRequest`/`FormatResizeReply`；1..65535 校验；main.cpp 调 `windows[0]->Resize`；M7 红绿证；ctest 73/73。
+- [x] **JSON \uXXXX 解码（批97，2026-11-06）已落地**：`FieldValue` 支持 `\" \\ \/ \b \f \n \r \t` 与 `\uXXXX`（含代理对）；`\u4E2D`/`\uD83D\uDE00`/`\n`/坏十六进制/孤立代理 全覆盖；M8 红绿证；ctest gui_debug/ui_debug 全绿。
+  余下待办：动态分辨率（DISP）。
 
 ### B. 显示
 - [x] 分辨率、全屏、**智能缩放（smart sizing）**、**多显示器（/multimon、span）**、缩放（连续）
@@ -335,28 +418,58 @@
       - 连续缩放：Ctrl+滚轮 / 菜单 13 档（`ApplyZoomInput`）
       - 未验证：真机只有 1 个显示器（`monitor layout: 1 monitor(s)`），
         多屏路径目前只有单元测试覆盖，**未做真机双屏实测**
-- [ ] 色深（8/15/16/24/32）、字体平滑、桌面合成、视觉样式
+- [x] 色深（8/15/16/24/32）：批98 `--bpp` + `ApplyClientColorDepth`（按 [MS-RDPBCGR] 2.2.1.3.2；M9 红绿证）
+- [ ] 字体平滑、桌面合成、视觉样式
 - [ ] 帧率/画质（连接质量自适应）、持久位图缓存
+- [~] 动态分辨率（DISP）：wire 层、drdynvc 通道、GUI `--disp`、重激活、断线分支、
+  多 monitor 布局合法性均已完成（批99-108）；真实服务器验证不可行（测试服务器无
+  drdynvc/DisplayControl），登记为未验证
 
 ### C. 本地资源（虚拟通道）
-- [ ] **剪贴板（cliprdr）**：文本/文件/位图
-- [ ] **驱动器重定向（rdpdr）**：磁盘/打印机/串口/智能卡
+- [x] **剪贴板（cliprdr）**：文本/文件/位图（批161：CF_BITMAP→CF_DIB
+      映射 + GDI 句柄格式不广播 + Win32 HBITMAP→DIB 转换；M75 红绿证。
+      远端 wire 行为仍 UNVERIFIED）
+- [~] **驱动器重定向（rdpdr）**：磁盘/打印机/串口/智能卡
+      - [x] 磁盘：Create/Read/Write/Close/QueryDirectory/DeviceControl +
+            QUERY_VOLUME_INFORMATION（批170：Size/FullSize 空间信息 + M84）
+      - [x] 卷信息补全（批171：Volume/Attribute/DeviceInformation 编码 + M85）
+      - [x] SET_INFORMATION（批172：FileDispositionInformation 删除、
+            FileRenameInformation 重命名，均延迟到 Close 应用 + M86）
+      - [x] 目录控制 minor 分发 + NotifyChange fail-closed（批173 + M87）
+      - [x] QUERY_INFORMATION（批174：Basic/Standard/AttributeTag + M88）
+      - [x] LOCK_CONTROL（批175：内存字节范围锁 + M89）
+      - [x] SET_VOLUME_INFORMATION（批176：FileFsLabelInformation + M90；
+            全部已通告 drive IRP 均有处理路径）
+      - [~] 串口（批177：PORT caps + SERIAL 通告 + create/read/write/close/
+            control 路由 + M91；批178：Win32 COM 后端 + 枚举 + M92；批179：
+            `--redirect-com`/`RTSC_REDIRECT_COM`/`.rdp redirectcomports`
+            接线 + M93；待真机验证）
+      - [~] 打印机（批180：PRINTER caps + PRINT 通告/EncodePrinterAnnounce +
+            create/write/close/control 路由 + M94；批181：Win32 spooler 后端
+            （RAW）+ 队列枚举 + `--redirect-printers`/`.rdp redirectprinters`
+            接线 + M95；待真机验证）；批188：printer WRITE 完成长度=实际写入字节数（M105）；批189：RDP8 bulk 解压第一阶段（M106）；批190：RDP8 bulk 解压第二阶段——令牌表+位流+未编码直传+匹配/重叠复制（14 测试/1139 检查，M107，影响面 11/11）；已接线 drdynvc（每通道上下文 + 失败关闭，M108，影响面 9/9）；已启用 VERSION3 协商 + CAPS_RSP 应答（M109，94/508 全绿）；Soft-Sync 经规范核实仅用于多传输隧道，本客户端不启用隧道故不实现；待补 4.2.1.1 其余样本
+      - [x] FileId 复用（批182：[MS-RDPEFS] 2.2.1.5.1，drive/serial/printer + M96）
 - [ ] **音频（rdpsnd）**：远程播放/本地播放/重定向；麦克风；摄像头；**USB 重定向**
 - [ ] 动态虚拟通道（drdynvc）
+- [~] drdynvc 多监听器（批100）：DISP 与 URBDRC 可共存（M12 红绿证）；DISP 通道层批101 完成（M13 红绿证）；GUI 接入批102 完成（M14 红绿证）；重新激活批103 完成（M15 红绿证）；单元/驱动级验证批104 完成（M16 红绿证）；等待态幂等批105 完成（M17 红绿证）；断线分支批106 完成（M18 红绿证）；批183：服务端发起 DYNVC_CREATE_REQ（listener 接受/拒绝 + M97）；批184：CloseChannel 本地关闭 + 响应单次通知（M98）；批185：压缩 DATA 变长 Length + 计数丢弃（M99/M100）；批187：DVC 数据发送通道校验（M104）
+- [~] DisplayControlClient（批101）：caps 前缓存、caps 后补发、超 caps/非法 monitor 拒绝、close 复位；批102 接入 `--disp` 与 resize→SetMonitors；批103 处理 Deactivate-All→Demand Active；批104 补驱动级路由与 kDeactivated 分支测试；批105 补重复 Deactivate-All 幂等测试；批106 补断线分支测试；批186：主屏原点与面积上限饱和（M101/M102）
 
 ### D. 输入与快捷键
 - [ ] 键盘（含布局）、鼠标、相对鼠标、滚轮、触摸
-- [ ] **快捷键**：Ctrl+Alt+End（等价 Ctrl+Alt+Del）、Alt+Tab、Win 键、全屏切换、连接栏
-- [ ] 输入坐标**逆映射**（缩放/平移后仍命中正确远程坐标）
+- [~] **快捷键**：Ctrl+Alt+End（等价 Ctrl+Alt+Del，已有）；Win 键三模式（批112，M24）；Alt+Tab 本地/远端策略批113 完成（M25 红绿证）；全屏切换已有；连接栏状态机批127（`ui::ConnectionBar`，M40 红绿证）；Win32 渲染/接线批128（reveal/点击/绘制，M42 红绿证）；真机视觉验证待办
+- [x] 输入坐标**逆映射**（缩放/平移后仍命中正确远程坐标）：`MapViewportPoint` 中心相位反算 + `MapMonitorPointToDesktop`，test_view 的 `view_map_viewport_point_uses_render_phase_3_to_5` 覆盖（M41 变异红证）
 
 ### E. 会话
 - [ ] **多会话/多用户**（独立或共享桌面）
 - [ ] 会话影子（shadow）、管理员模式（/admin）、span 模式
-- [ ] **断线重连**、网络自动检测
+- [~] **断线重连**、网络自动检测：客户端重连能力批122（`ConnectionDriver::ResetForReconnect` + `Client::Reconnect`，携带 ARC cookie，M34 红绿证）；服务器 cookie 校验与续接批123（`ArcCookieStore` + `HandleClientInfo` resume，M35 红绿证）；GUI 自动重连批124（`ReconnectSchedule` + `main.cpp` reconnect loop，M36 红绿证）；虚拟通道状态重置批125（cliprdr/drdynvc/rdpdr/rdpsnd/display control 的 `Reset()` + GUI 接线，M37 红绿证）；rail/rdpusb 重置批126（`RailClient::Reset`/`RdpUsbClient::Reset` + GUI 接线，M38/M39 红绿证）；真机断线验证待办
 
 ### F. 命令行与易用性
-- [ ] `mstsc` 等价参数：`/v:` `/admin` `/f` `/w` `/h` `/span` `/multimon` `/public` `/edit` `/migrate`
-- [ ] **连接栏**（全屏时悬浮）、**截图**、状态显示、错误提示可读
+- [~] mstsc 等价参数：`/v:host[:port]` `/w:N` `/h:N` `/f` `/span` `/multimon` `/admin`（CS_CLUSTER，批110，M22 红绿证）已实现；`/public` `/edit` `/migrate` 明确拒绝（不支持）
+- [x] `--help` / `--version`（批111，M23 红绿证）：精确匹配，避免 `/h:1080` 误判；进程级 exit 0
+- [~] **连接栏**（全屏时悬浮）、**截图**、状态显示（标题栏 `host:port - RTSC - zoom N%` 批114，M26；连接信息显示会话 ID/用户批117，M29）、错误提示可读（Set Error Info 文案 + 会话结束打印，批116，M28）
+  - 连接栏：状态机批127（M40）、Win32 渲染/接线批128（M42）完成；真机视觉验证待办
+  - 截图：批129 完成（View 菜单“保存截图(S)...”→ 标准保存对话框 → `rtsc::gui::SaveScreenshotBmp` 写 32bpp BMP；命名 `rtsc-screenshot-YYYYMMDD-HHMMSS.bmp` UTC；M43 红绿证）
 - [ ] 音频/画质/带宽自适应；**性能基准**（吞吐/延迟）
 
 ### G. 服务器模式（开源解禁）
@@ -408,6 +521,7 @@
 组A（甲 ses_e8150e480ffeaYVZn590wi4msC / 乙 ses_e814fe0b5ffeuO6b2N44YXBEL5）3 轮互审收敛，乙章 v3 为最终口径：
 - **S6 剪贴板 阻断**：src/channel/cliprdr_client.cpp:309-316 Start() 发送 kMonitorReady（[MS-RDPECLIP] 2.2.2.2 明写 Monitor Ready 是 server→client）→ 方向+时序双反；1.3.2.1 序列应为 ①server CAPS ②server MONITOR_READY ③client CAPS ④client TEMP_DIR ⑤client FORMAT_LIST ⑥server FORMAT_LIST_RESPONSE；OnPdu(:91-117) 缺 kMonitorReady/kFormatListResponse 分支 → 裁决不可观测；客户端从不发 TEMP_DIRECTORY。
 - **S3 rdpdr 高危（安全）**：S3-7 路径穿越 src/channel/rdpdr_client.cpp:333-363（无 .. 消解/越界校验）；S3-8 读缓冲无上限 src/rdpdr/file_system.cpp:171（服务器可控 4GiB）；S3-9 覆盖不截断 file_system.cpp:149-156 + rdpdr_client.cpp:214-215；另 S3-7' DR_CREATE 忽略 DesiredAccess（rdpdr_client.cpp:213-215）；S3-2 初始化顺序偏离 MS-RDPEFS（Capability Response 推迟到 :153-167）；S3-4 Device List Remove(0x444D) 未实现。
+  - 状态更新（2026-11-07，批162）：S3-4 已实现（RemoveDevice + DR_DEVICELIST_REMOVE 编码/解析 + M76）；S3-7/8/9/7' 已由前序批次修复（path_guard、kMaxReadLength、truncate、file_writable_）。
 - **S2 rdpusb 阻断**：drdynvc 未请求(main.cpp:161,163)、rtsc_urbrdc/rtsc_usb_win32 未链接、URB 数据通路双向丢数据(rdpusb_client.cpp:350/468-500)、S2-11 drdynvc 串包(drdynvc_client.cpp:113-119)、S2-10 QI/IFACE_RELEASE 缺失、CompleteUrb 恒 hresult=0 且设备未知不发 URBCOMPLETION(:509-542)。
 - **S1 Gateway 阻断**：零接线 + 现有实现是 HTTP CONNECT 代理而非 [MS-TSGU] 3.3.5.1 的 RDGSP(401 挑战/TLS/RDG_OUT_DATA)；Host 头写死路径(gateway.cpp:197)；cookie 硬编码(main.cpp:144)。
 - **可盖章**：S4 扫描码本体（window_win32.cpp:321-329）✅（后续项：AltGr 修法=抑制伪 Ctrl+转发右 Alt 0x38 extended；MapVirtualKeyW 返回 0 无守卫；test_ui.cpp:215-220 early-return 空跑）；S5 RDP6 planar 镜像修复 ✅（不改实现，只补奇数高度+2x2 子采样向量测试）。
@@ -503,13 +617,18 @@
 
 ### P3（功能完整度，非阻断）
 - 复合设备：`usb_win32.cpp:158` 只 `WinUsb_Initialize` 绑 interface 0，缺 `WinUsb_GetAssociatedInterface`
-- `kIoControl`/`kInternalIoControl` 无 case（`rdpusb_client.cpp` default break）→ 无 IO_CONTROL_COMPLETION
-- 控制类 URB 合成 setup packet（Descriptor/Feature/GetStatus），当前全返 kInvalidUrbFunction
+- [x] `kIoControl`/`kInternalIoControl` 完成帧（批131：`usb::UsbDevice::IoControl`
+      + `RdpUsbClient::HandleIoControl`，按 [MS-RDPEUSB] 2.2.6.3/2.2.7.1 回
+      IOCONTROL_COMPLETION，超限终止 DVC；M45 红绿证）
+- [x] 控制类 URB 合成 setup packet（批132：Descriptor/GetStatus/GetConfiguration/
+      GetInterface；批133：SET_FEATURE_TO_DEVICE + VendorOrClass 方向位；
+      按 [MS-RDPEUSB] 2.2.9.9-2.2.9.14 + FreeRDP 交叉依据；M46/M47 红绿证）
 - 热插拔 RemoveDevice 未监测
 - 同步 WinUSB 阻塞消息泵
 - Isoch 传输无实现
 - `hresult` 恒 0（status 已在 ts_urb_result.usbd_status）
-- NoAck 未抑制补全帧
+- [x] NoAck 抑制补全帧（批130：[MS-RDPEUSB] 2.2.9.1.1，`HandleTransferOut` 检查
+      `ts_urb.header.no_ack`，`no_ack_urb_count()` 诊断；M44 红绿证）
 - `SelectInterface` 服务器请求 alt-setting 不在表内 → kInvalidParameter
 
 ### W5 未验证（需真机）

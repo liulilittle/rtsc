@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "rtsc/ui/window.h"
+
 namespace rtsc::debug {
 
 // One point-in-time view of what the GUI knows. main() fills this from the live
@@ -46,14 +48,44 @@ struct DebugSnapshot {
     unsigned total_pixels = 0;
     // Sampled render frames for the "frames" command (filled by main()).
     std::vector<unsigned> frame_samples;
+    // Number of input events main() successfully sent when it processed this
+    // "input" command; the reply reports it so an operator sees the effect.
+    int input_injected = 0;
+    // Set by main() when an input command fails to parse or to send; the
+    // handler reports ok:false with this reason instead of a silent zero.
+    std::string input_error;
+};
+
+// One decoded input event from an "input" command body. Coordinates are in
+// REMOTE-DESKTOP space: the channel is a diagnostic tool, so it must not
+// silently reinterpret operator-supplied pixels through the view transform.
+struct InputEventSpec {
+    enum class Kind : uint8_t {
+        kKey,
+        kMouseClick,
+        kMouseMove,
+        kMouseWheel,
+        kUnicode,
+    };
+    Kind kind = Kind::kKey;
+    uint8_t scancode = 0;
+    bool release = false;
+    bool extended = false;
+    int x = 0;
+    int y = 0;
+    uint8_t button = 0;
+    bool down = false;
+    int wheel_delta = 0;
+    bool horizontal = false;
+    uint16_t unicode_code = 0;
 };
 
 // Executes one command and returns a JSON object body (no enclosing braces),
 // exactly as UiDebugHost::Execute promises.
 //
-// Recognised ops: "ping", "state", "dirty", "surface", "screenshot", "frames".
-// Anything else -- including a missing "op" -- answers ok=false with an error
-// naming the offending value. That is deliberate: a debugger that silently
+// Recognised ops: "ping", "state", "dirty", "surface", "screenshot", "frames",
+// "input". Anything else -- including a missing "op" -- answers ok=false with an
+// error naming the offending value. That is deliberate: a debugger that silently
 // answers "fine" to a typo turns a broken query into a false pass.
 std::string ExecuteGuiCommand(const DebugSnapshot& snapshot, const std::string& json_body);
 
@@ -75,5 +107,45 @@ std::string FormatFrameSamples(const std::vector<unsigned>& samples);
 
 // Returns true if the command body is asking for the frame-sample command.
 bool CommandRequestsFrames(const std::string& json_body);
+
+// Returns true if the command body is asking for the input-injection command.
+bool CommandRequestsInput(const std::string& json_body);
+
+// Decodes the "events" array of an input command. Returns false with `error`
+// set when any element is malformed, when a mouse coordinate falls outside the
+// remote desktop, or when the array is empty -- a channel that accepted a typo
+// would inject the wrong keystroke into a live session.
+bool ParseInputEvents(const std::string& json_body, int desktop_width,
+                      int desktop_height,
+                      std::vector<InputEventSpec>& out, std::string& error);
+
+// Builds the "input" reply body from the number of events the caller injected.
+std::string FormatInputReply(int injected);
+
+// Returns true if the command body is asking for the resize command.
+bool CommandRequestsResize(const std::string& json_body);
+
+// Extracts "width" and "height" from a resize command. Returns false with
+// `error` set when either is missing, zero, negative, or above 65535 -- the
+// window surface dimensions are uint16_t, and silently truncating a requested
+// 70000 to 4464 would resize to a size the operator never asked for.
+bool ResizeRequest(const std::string& json_body, int& width, int& height,
+                   std::string& error);
+
+// Builds the "resize" reply body from the dimensions the caller applied.
+std::string FormatResizeReply(int width, int height);
+
+// Translates one decoded channel event into the front-end input shape. Returns
+// false for a kind the front-end cannot carry. Kept in the library (rather than
+// main.cpp) so the mapping -- especially the mouseclick -> kMouseButton rename,
+// the button numbering, and the coordinate carry-through -- is covered by the
+// unit suite: a channel that silently mapped left to right would inject the
+// wrong click into a live session.
+bool ToUiInputEvent(const InputEventSpec& spec, rtsc::ui::InputEvent& out);
+
+// Translates a whole decoded array in order. Returns false if any element was
+// untranslatable, so the caller never sends a silently truncated sequence.
+bool ToUiInputEvents(const std::vector<InputEventSpec>& specs,
+                     std::vector<rtsc::ui::InputEvent>& out);
 
 }  // namespace rtsc::debug

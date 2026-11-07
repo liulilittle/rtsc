@@ -205,7 +205,8 @@ struct HandshakeResult {
 HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
                               uint16_t client_width = 64,
                               uint16_t client_height = 48,
-                              bool expect_frame = true) {
+                              bool expect_frame = true,
+                              const std::vector<uint8_t>& arc_cookie = {}) {
     HandshakeResult r;
     std::string error;
     auto transport = rtsc::net::ConnectTcp("127.0.0.1", port, error);
@@ -315,6 +316,17 @@ HandshakeResult DriveToActive(uint16_t port, bool send_input = false,
     info.info.domain = "NTDEV";
     info.info.user_name = "rtsc";
     info.info.password = "";
+    if (!arc_cookie.empty()) {
+        // The extended-info chain is inferred from the remaining length, so the
+        // earlier chained fields (session id, performance flags) must be present
+        // for the cookie to be unambiguous (the real client does the same).
+        info.info.has_extended_info = true;
+        info.info.extended_info.has_time_zone = true;
+        info.info.extended_info.has_session_id = true;
+        info.info.extended_info.has_performance_flags = true;
+        info.info.extended_info.has_auto_reconnect = true;
+        info.info.extended_info.auto_reconnect_cookie.bytes = arc_cookie;
+    }
     const auto info_user = info.build();
     if (!WriteAll(*transport, McsSendData::build_request(r.user_channel, r.io_channel,
                                                          info_user))) {
@@ -4073,6 +4085,30 @@ RTSC_TEST(server_cliprdr_name_table_resolves_channel_1005) {
                                       64, 48, /*expect_frame=*/false);
     CHECK(r.reached_active);
 
+    // The server sends two logon PDUs (Save Session Info,
+    // [MS-RDPBCGR] 2.2.10.1.1.2 then 2.2.10.1.1.4.1) on the I/O channel right
+    // after finalization. Consume them before the clipboard initialization.
+    for (uint32_t want_info_type : {1u, 3u}) {
+        std::vector<uint8_t> frame;
+        CHECK(r.reader->Read(frame));
+        McsSendData logon_sd;
+        CHECK(McsSendData::parse(frame.data(), frame.size(), logon_sd) ==
+              Status::Ok);
+        CHECK_EQ(logon_sd.channel_id, r.io_channel);
+        ShareDataHeader logon_hdr;
+        CHECK(ShareDataHeader::parse(logon_sd.user_data.data(),
+                                     logon_sd.user_data.size(),
+                                     logon_hdr) == Status::Ok);
+        CHECK(logon_hdr.pdu_type2 == ShareDataPduType::kSaveSessionInfo);
+        CHECK(logon_sd.user_data.size() >= ShareDataHeader::kSize + 4);
+        const uint8_t* body = logon_sd.user_data.data() + ShareDataHeader::kSize;
+        const uint32_t info_type = static_cast<uint32_t>(body[0]) |
+                                   (static_cast<uint32_t>(body[1]) << 8) |
+                                   (static_cast<uint32_t>(body[2]) << 16) |
+                                   (static_cast<uint32_t>(body[3]) << 24);
+        CHECK_EQ(info_type, want_info_type);
+    }
+
     // Clipboard Capabilities, Monitor Ready, Format List, in order, all on the
     // cliprdr channel (1005), never on 1004 (rdpdr) or 1006 (rdpsnd).
     CliprdrPdu pdu;
@@ -4967,4 +5003,34 @@ RTSC_TEST(test_pattern_frame_reaches_the_client_with_many_colours) {
     server.Stop();
     runner.join();
 }
+RTSC_TEST(server_rejects_unknown_reconnect_cookie) {
+    ServerConfig cfg;
+    cfg.port = 0;
+    cfg.desktop_width = 64;
+    cfg.desktop_height = 48;
+    auto pattern = rtsc::server::MakeTestPatternSource();
+    RdpServer server(cfg);
+    server.SetDesktopSource(pattern.get());
+    std::string error;
+    CHECK(server.Start(error));
+    std::thread runner([&server]() { server.Run(); });
+
+    // A syntactically valid ARC_CS_PRIVATE_PACKET that this server never
+    // issued (cbLen 28, version 1, logonId 1, 16 random bytes). The server
+    // must refuse the connection instead of silently accepting the resume.
+    std::vector<uint8_t> forged(28, 0);
+    forged[0] = 28;
+    forged[4] = 1;
+    forged[8] = 1;
+    for (size_t i = 12; i < forged.size(); ++i) forged[i] = 0xAB;
+
+    const HandshakeResult r =
+        DriveToActive(server.bound_port(), false, 64, 48, true, forged);
+    CHECK(!r.reached_active);
+    CHECK(!r.error.empty());
+
+    server.Stop();
+    runner.join();
+}
+
 int main() { return rtsc::test::run_all("rtsc_server_tests"); }

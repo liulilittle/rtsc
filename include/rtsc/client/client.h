@@ -77,6 +77,13 @@ class Client {
     // Drives the connection sequence to the active session. Blocking.
     bool Connect(net::Transport& transport, std::string& error);
 
+    // Drops the previous session's protocol state and re-runs the connection
+    // sequence on `transport`, carrying the auto-reconnect cookie captured from
+    // the previous session's Save Session Info PDU (if any). The window-facing
+    // objects (graphics surface, statistics) are preserved; virtual channel
+    // handlers stay registered. Returns like Connect().
+    bool Reconnect(net::Transport& transport, std::string& error);
+
     // One read/process/write cycle after Connect(). Blocking. Returns false on
     // disconnect or a protocol failure.
     bool Pump(net::Transport& transport, std::string& error);
@@ -91,9 +98,12 @@ class Client {
 
     // Sends an input event through the post-active application data plane
     // (TLS or Standard RDP Security). Returns false with `error` set on a
-    // write failure.
+    // write failure. `encoded`, when non-null, reports whether the event
+    // produced a PDU at all: a horizontal wheel the server did not advertise
+    // is deliberately dropped by EncodeInput, and callers that report "sent"
+    // counts must not treat that as a successful injection.
     bool SendInput(net::Transport& transport, const ui::InputEvent& ev,
-                   std::string& error);
+                   std::string& error, bool* encoded = nullptr);
 
     // Sends a static virtual channel message (CHANNEL_PDU_HEADER + channel PDU)
     // through the post-active application data plane. Returns false with

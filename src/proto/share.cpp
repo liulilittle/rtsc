@@ -357,4 +357,39 @@ Status SuppressOutputPdu::parse(const uint8_t* data, size_t size,
     return Status::Ok;
 }
 
+const char* SetErrorInfoText(uint32_t error_info) {
+    // [MS-RDPBCGR] 2.2.5.1.1 protocol-independent codes. ERRINFO_NONE is
+    // defined but "SHOULD be ignored"; reporting it as an error would be wrong.
+    switch (error_info) {
+        case 0x00000000: return "no error";
+        case 0x00000001:
+            return "disconnected by an administrative tool in another session";
+        case 0x00000002:
+            return "logged off by an administrative tool in another session";
+        case 0x00000003: return "disconnected after the idle session limit";
+        case 0x00000004: return "disconnected after the active session limit";
+        case 0x00000005:
+            return "disconnected because another user connected to the session";
+        case 0x00000006: return "the server ran out of memory";
+        case 0x00000007: return "the server denied the connection";
+        case 0x00000009:
+            return "insufficient privileges to connect to the server";
+        case 0x0000000A:
+            return "the server requires fresh credentials for every connection";
+        case 0x0000000B:
+            return "disconnected by an administrative tool in the user session";
+        case 0x0000000C: return "the user logged off";
+        case 0x0000000F:
+            return "the remote display driver did not report status in time";
+        case 0x00000010: return "the remote DWM process crashed";
+        case 0x00000011: return "the remote display driver failed to start";
+        case 0x00000012: return "the remote display driver interface failed";
+        case 0x00000017: return "the remote Winlogon process crashed";
+        case 0x00000018: return "the remote CSRSS process crashed";
+        case 0x00000019: return "the remote server is shutting down";
+        case 0x0000001A: return "the remote server is rebooting";
+        default: return "unknown error";
+    }
+}
+
 }  // namespace rtsc::proto

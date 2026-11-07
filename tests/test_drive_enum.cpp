@@ -97,4 +97,17 @@ RTSC_TEST(drive_enum_names_and_roots_are_canonical) {
     }
 }
 
+RTSC_TEST(drive_redirect_rdp_value_maps_to_spec) {
+    using rtsc::rdpdr::DriveRedirectToSpec;
+    CHECK(DriveRedirectToSpec("").empty());
+    CHECK(DriveRedirectToSpec("*") == "ALL");
+    CHECK(DriveRedirectToSpec("C:\\;E:\\;") == "C,E");
+    CHECK(DriveRedirectToSpec("c:\\") == "C");
+    CHECK(DriveRedirectToSpec("DynamicDrives") == "ALL");
+    CHECK(DriveRedirectToSpec("C:\\;DynamicDrives") == "ALL");
+    // Unknown tokens are ignored; a non-drive token never widens the set.
+    CHECK(DriveRedirectToSpec("Zebra").empty());
+    CHECK(DriveRedirectToSpec("C:\\;bogus") == "C");
+}
+
 int main() { return rtsc::test::run_all("rtsc_drive_enum_tests"); }

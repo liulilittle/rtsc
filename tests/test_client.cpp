@@ -164,6 +164,82 @@ RTSC_TEST(client_encodes_mouse_move) {
     CHECK_EQ(pdu[4], static_cast<uint8_t>(0x08));  // PTRFLAGS_MOVE high byte
 }
 
+RTSC_TEST(client_encodes_unicode_keyboard_input) {
+    // TS_FP_UNICODE_KEYBOARD_EVENT ([MS-RDPBCGR] 2.2.8.1.2.2.2): eventHeader(1)
+    // with eventCode 4 (UNICODE), then unicodeCode(2) little-endian. U+4E2D is
+    // 0x4E2D -> wire bytes 2D 4E.
+    Client c(MakeDriver(), 16, 16);
+    InputEvent u;
+    u.kind = InputEvent::Kind::kUnicode;
+    u.unicode_code = 0x4E2D;
+    const auto pdu = c.EncodeInput(u);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(5));  // header + length + 3-byte event
+    CHECK_EQ(static_cast<uint8_t>(pdu[0] & 0x03), static_cast<uint8_t>(0));
+    CHECK_EQ(static_cast<uint8_t>((pdu[0] >> 2) & 0x0F),
+             static_cast<uint8_t>(1));       // one event
+    CHECK_EQ(pdu[2], static_cast<uint8_t>(0x80));  // eventHeader: code 4 << 5
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x2D));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x4E));
+}
+
+RTSC_TEST(client_encodes_unicode_release_flag) {
+    Client c(MakeDriver(), 16, 16);
+    InputEvent u;
+    u.kind = InputEvent::Kind::kUnicode;
+    u.unicode_code = 0x0041;
+    u.key_release = true;
+    const auto pdu = c.EncodeInput(u);
+    CHECK_EQ(pdu.size(), static_cast<size_t>(5));
+    // eventHeader = (4 << 5) | FASTPATH_INPUT_KBDFLAGS_RELEASE(0x01) = 0x81.
+    CHECK_EQ(pdu[2], static_cast<uint8_t>(0x81));
+    CHECK_EQ(pdu[3], static_cast<uint8_t>(0x41));
+    CHECK_EQ(pdu[4], static_cast<uint8_t>(0x00));
+}
+
+RTSC_TEST(client_send_input_reports_encoded_flag) {
+    Client c(MakeDriver(), 16, 16);
+    ScriptedTransport t;
+    InputEvent k;
+    k.kind = InputEvent::Kind::kKey;
+    k.scancode = 0x1E;
+    std::string error;
+    bool encoded = false;
+    CHECK(c.SendInput(t, k, error, &encoded));
+    CHECK(encoded);
+    CHECK_EQ(t.writes, 1);
+    CHECK(!t.last_write.empty());
+}
+
+RTSC_TEST(client_send_input_reports_dropped_horizontal_wheel) {
+    // The test client never negotiated Input Capability Set support for
+    // PTRFLAGS_HWHEEL, so EncodeInput drops a horizontal wheel. SendInput
+    // returns true (nothing failed) but must report encoded=false: a caller
+    // that counted this as an injection would claim a scroll that never went
+    // on the wire.
+    Client c(MakeDriver(), 16, 16);
+    ScriptedTransport t;
+    InputEvent w;
+    w.kind = InputEvent::Kind::kMouseWheel;
+    w.horizontal = true;
+    w.wheel_delta = 1;
+    std::string error;
+    bool encoded = true;
+    CHECK(c.SendInput(t, w, error, &encoded));
+    CHECK(!encoded);
+    CHECK_EQ(t.writes, 0);
+}
+
+RTSC_TEST(client_send_input_without_flag_keeps_old_contract) {
+    Client c(MakeDriver(), 16, 16);
+    ScriptedTransport t;
+    InputEvent k;
+    k.kind = InputEvent::Kind::kKey;
+    k.scancode = 0x1E;
+    std::string error;
+    CHECK(c.SendInput(t, k, error));
+    CHECK_EQ(t.writes, 1);
+}
+
 RTSC_TEST(client_encodes_mouse_button) {
     Client c(MakeDriver(), 16, 16);
     InputEvent b;

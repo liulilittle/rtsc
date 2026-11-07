@@ -45,6 +45,15 @@ struct DriveInfo {
 std::vector<DriveInfo> SelectDrives(
     const std::vector<std::pair<char, int>>& candidates, const char* spec);
 
+// Converts an .rdp "drivestoredirect" value into the RTSC_REDIRECT_DRIVES
+// spec accepted by SelectDrives:
+//   * ""                         -> "" (nothing)
+//   * "*" or any DynamicDrives   -> "ALL"
+//   * "C:\;E:\;"                 -> "C,E"
+// Unknown tokens are ignored; a token that is not a drive root never widens
+// the selection. The result is uppercase and comma separated.
+std::string DriveRedirectToSpec(const std::string& value);
+
 // Enumerates the host's local drives and applies SelectDrives. Windows uses
 // GetLogicalDrives() + GetDriveTypeW(); any other platform returns an empty
 // list (there is no redirectable local-drive concept there yet).

@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <ctime>
 #include <string>
 
@@ -44,6 +45,13 @@ struct SessionInfoInput {
     double rtt_ms = 0.0;
     double bandwidth_mbps = 0.0;  // 0 == not measured yet
     bool smart_card = true;
+    // Logon identity from the server's Save Session Info PDU ([MS-RDPBCGR]
+    // 2.2.10.1.1.2), filled from ConnectionDriver::logon_info(). When
+    // has_logon is false the dialog shows the plain session type.
+    bool has_logon = false;
+    uint32_t session_id = 0;
+    std::string logon_domain;
+    std::string logon_user;
 };
 
 // Every field of the dialog, already formatted as text.

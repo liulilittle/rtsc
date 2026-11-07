@@ -56,6 +56,12 @@ class RailClient {
     // message may be split across calls.
     void OnChannelData(const uint8_t* data, size_t size);
 
+    // Drops the per-session state after the transport was replaced
+    // (auto-reconnect, [MS-RDPBCGR] 1.3.5). The configuration (send function,
+    // order handler, AppUserModelID map) is kept; the server-reported window
+    // state and the reassembly buffer are not.
+    void Reset();
+
     void SetHandler(OrderHandler handler) { handler_ = std::move(handler); }
 
     // Sends the client's opening orders: the Handshake (a response to the

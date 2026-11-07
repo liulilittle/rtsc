@@ -74,6 +74,15 @@ class CliprdrClient {
     // arrived before Start(), the answer is sent now.
     void Start();
 
+    // Drops the per-session protocol state after the transport was replaced
+    // (auto-reconnect, [MS-RDPBCGR] 1.3.5). The configuration (clipboard, file
+    // clip flags, temporary directory override) is kept; every negotiated
+    // flag, the reassembly buffer and the in-flight file transfers are not.
+    // A later Start() re-runs the initialization sequence against the new
+    // session. In-flight transfers are completed as failures so a caller
+    // waiting on a callback is never left hanging.
+    void Reset();
+
     // Overrides the temporary directory advertised to the server in the
     // Temporary Directory PDU. The path MUST be absolute on the local client
     // system ([MS-RDPECLIP] 2.2.2.3). When it is not set the handler falls back

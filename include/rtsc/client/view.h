@@ -149,4 +149,41 @@ double ZoomCommandZoom(uint8_t command);
 // Human-readable status for the window title / status line.
 std::string ZoomStatusText(const ZoomState& state);
 
+// Window title for a session: "<host>:<port> - <ZoomStatusText>". The port is
+// omitted when it is 0 (no explicit port); mstsc shows the endpoint in the
+// title bar so the user can tell multiple sessions apart.
+std::string WindowTitleText(const std::string& host, uint16_t port,
+                            const ZoomState& state);
+
+// A bounded retry schedule for auto-reconnect ([MS-RDPBCGR] 1.3.1.5). mstsc
+// silently retries a dropped session; an unbounded loop would spin forever
+// against a permanently dead host, so the schedule caps both the attempt count
+// and the wait between attempts.
+//
+//   * Each call to NextDelayMs() returns the wait before the next attempt:
+//     the first attempt is immediate (0), then 1 s, 2 s, 4 s, 8 s, then a
+//     flat 15 s.
+//   * After kMaxAttempts attempts it reports exhausted and the caller gives up.
+//   * A successful reconnect calls Reset() so a later drop starts over.
+class ReconnectSchedule {
+ public:
+    static constexpr unsigned kMaxAttempts = 10;
+    static constexpr int kMaxDelayMs = 15000;
+
+    // True when no further attempt may be made.
+    bool exhausted() const { return attempts_ >= kMaxAttempts; }
+
+    // Consumes one attempt and returns the delay in milliseconds to wait before
+    // it. Returns -1 when exhausted (no attempt is consumed).
+    int NextDelayMs();
+
+    // Attempts made so far (the counter Reset() clears).
+    unsigned attempts() const { return attempts_; }
+
+    void Reset() { attempts_ = 0; }
+
+ private:
+    unsigned attempts_ = 0;
+};
+
 }  // namespace rtsc::client

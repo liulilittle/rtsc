@@ -100,6 +100,24 @@ class UsbDevice {
     // TS_URB_PIPE_REQUEST ([MS-RDPEUSB] 2.2.9.4): reset or cancel a pipe.
     virtual bool ResetPipe(uint32_t pipe_handle) = 0;
     virtual bool CancelRequest(uint32_t request_id) = 0;
+
+    // IO_CONTROL / INTERNAL_IO_CONTROL ([MS-RDPEUSB] 2.2.6.3 / 2.2.6.4):
+    // forward a device IOCTL to the physical device. `output` receives the
+    // result (at most `output_buffer_size` bytes); `information` is the byte
+    // count reported by the device; `hresult` is S_OK (0) on success or an
+    // HRESULT error. The default reports E_NOTIMPL so a backend that does not
+    // implement device IOCTLs still lets the channel answer the server instead
+    // of leaving it waiting for a completion.
+    virtual bool IoControl(uint32_t /*io_control_code*/,
+                           const std::vector<uint8_t>& /*input*/,
+                           uint32_t /*output_buffer_size*/,
+                           std::vector<uint8_t>& output, uint32_t& information,
+                           uint32_t& hresult) {
+        output.clear();
+        information = 0;
+        hresult = 0x80004001u;  // E_NOTIMPL
+        return false;
+    }
 };
 
 // Enumerates the redirectable USB devices and opens them by instance id.

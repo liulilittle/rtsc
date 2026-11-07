@@ -30,6 +30,45 @@ size_t TpktFrameLength(const std::vector<uint8_t>& buf, size_t start) {
     return len;
 }
 
+// True when the full MCS Send Data PDU carries a share-control Deactivate All
+// PDU ([MS-RDPBCGR] 2.2.3.1.1). A malformed PDU is not treated as one.
+bool IsDeactivateAll(const std::vector<uint8_t>& pdu) {
+    proto::McsSendData sd;
+    if (proto::McsSendData::parse(pdu.data(), pdu.size(), sd) !=
+        proto::Status::Ok) {
+        return false;
+    }
+    proto::ShareControlHeader ctrl;
+    if (proto::ShareControlHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                         ctrl) != proto::Status::Ok) {
+        return false;
+    }
+    return ctrl.type == proto::SharePduType::kDeactivateAll;
+}
+
+// Save Session Info is a share data PDU ([MS-RDPBCGR] 2.2.10.1.1). It is not
+// graphics data: the session-setup machine records it even when the session is
+// already active.
+bool IsSaveSessionInfo(const std::vector<uint8_t>& pdu) {
+    proto::McsSendData sd;
+    if (proto::McsSendData::parse(pdu.data(), pdu.size(), sd) !=
+        proto::Status::Ok) {
+        return false;
+    }
+    proto::ShareControlHeader ctrl;
+    if (proto::ShareControlHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                         ctrl) != proto::Status::Ok) {
+        return false;
+    }
+    if (ctrl.type != proto::SharePduType::kData) return false;
+    proto::ShareDataHeader hdr;
+    if (proto::ShareDataHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                      hdr) != proto::Status::Ok) {
+        return false;
+    }
+    return hdr.pdu_type2 == proto::ShareDataPduType::kSaveSessionInfo;
+}
+
 }  // namespace
 
 ConnectionDriver::ConnectionDriver(proto::ConnectMachine::Config machine_config,
@@ -39,6 +78,23 @@ ConnectionDriver::ConnectionDriver(proto::ConnectMachine::Config machine_config,
       machine_config_(machine_config),
       security_config_(std::move(security_config)),
       credentials_(std::move(credentials)) {}
+
+void ConnectionDriver::ResetForReconnect(std::vector<uint8_t> cookie) {
+    machine_config_.auto_reconnect_cookie = std::move(cookie);
+    machine_ = proto::ConnectMachine(machine_config_, credentials_);
+    security_.reset();
+    standard_.reset();
+    licensing_.reset();
+    session_.reset();
+    plain_buf_.clear();
+    client_info_sent_ = false;
+    standard_rdp_ = false;
+    io_channel_id_ = 0;
+    unrouted_channel_count_ = 0;
+    // channel_handlers_ and session_pdu_handler_ are intentionally kept: the
+    // static virtual channel ids follow the advertised name order and are the
+    // same after a reconnect, and the graphics handler belongs to the Client.
+}
 
 const std::string& ConnectionDriver::phase_name() const {
     if (!client_info_sent_) {
@@ -328,8 +384,34 @@ void ConnectionDriver::RoutePostConnect(const std::vector<uint8_t>& pdu,
     }
 
     // Once the session is active the I/O channel carries graphics / pointer /
-    // orders data; the static virtual channels were routed above.
+    // orders data; the static virtual channels were routed above. A share
+    // Deactivate All is the one exception: it starts the
+    // Deactivation-Reactivation Sequence ([MS-RDPBCGR] 1.3.1.3), so it must
+    // reach the session-setup machine instead of the graphics pipeline.
     if (session_ != nullptr && session_->active()) {
+        if (IsDeactivateAll(pdu)) {
+            const auto ss = session_->OnPdu(pdu.data(), pdu.size());
+            for (const auto& p : ss.to_send) {
+                AppendOutbound(p, out);
+                if (out.failed) return;
+            }
+            if (ss.failed) {
+                out.failed = true;
+                out.error = "session setup failed: " + ss.error;
+            }
+            return;
+        }
+        if (IsSaveSessionInfo(pdu)) {
+            // 2.2.10.1.1 arrives after activation on the I/O channel; hand it
+            // to the session machine for recording instead of the graphics
+            // pipeline (which would drop it as an unknown update).
+            const auto ss = session_->OnPdu(pdu.data(), pdu.size());
+            if (ss.failed) {
+                out.failed = true;
+                out.error = "session setup failed: " + ss.error;
+            }
+            return;
+        }
         if (session_pdu_handler_) session_pdu_handler_(pdu);
         return;
     }

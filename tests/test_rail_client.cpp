@@ -830,4 +830,31 @@ RTSC_TEST(client_without_rail_channel_reports_zero) {
     CHECK_EQ(client.rail().send_count(), static_cast<unsigned>(0));
 }
 
+// After a reconnect the server re-runs the RAIL handshake. Reset() must drop
+// the old session's window state and the half-assembled buffer, while the
+// order handler stays installed.
+RTSC_TEST(rail_client_reset_clears_session_state) {
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RailClient rail(
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    unsigned orders = 0;
+    rail.SetHandler([&](const RailPdu&) { ++orders; });
+
+    FeedRail(rail, RailWindowMove{5, 0, 0, 320, 240}.build());
+    CHECK(rail.has_window_move());
+    CHECK_EQ(rail.window_move_count(), static_cast<unsigned>(1));
+    CHECK_EQ(orders, static_cast<unsigned>(1));
+
+    rail.Reset();
+    CHECK(!rail.has_window_move());
+    CHECK_EQ(rail.window_move_count(), static_cast<unsigned>(0));
+    CHECK_EQ(rail.pdu_count(), static_cast<unsigned>(0));
+
+    // The handler still receives the new session's orders.
+    FeedRail(rail, RailWindowMove{6, 0, 0, 640, 480}.build());
+    CHECK_EQ(orders, static_cast<unsigned>(2));
+    CHECK(rail.has_window_move());
+    CHECK_EQ(rail.window_move().right, static_cast<int16_t>(640));
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_rail_client_tests"); }

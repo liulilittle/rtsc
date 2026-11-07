@@ -171,8 +171,8 @@ void MapViewportPoint(const ViewTransform& vt, int src_w, int src_h, int vx,
     // the user sees (viewport 1 painted source 37, but mapped to 25).
     const long long dx = static_cast<long long>(vx) - vt.x;
     const long long dy = static_cast<long long>(vy) - vt.y;
-    int sx = static_cast<int>(((2 * dx + 1) * src_w - 1) / (2LL * vt.width));
-    int sy = static_cast<int>(((2 * dy + 1) * src_h - 1) / (2LL * vt.height));
+      int sx = static_cast<int>(((2 * dx + 1) * src_w - 1) / (2LL * vt.width));
+      int sy = static_cast<int>(((2 * dy + 1) * src_h - 1) / (2LL * vt.height));
     if (sx < 0) sx = 0;
     if (sy < 0) sy = 0;
     if (sx > src_w - 1) sx = src_w - 1;
@@ -289,6 +289,30 @@ std::string ZoomStatusText(const ZoomState& state) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "RTSC - zoom %.0f%%", state.zoom * 100.0);
     return std::string(buf);
+}
+
+std::string WindowTitleText(const std::string& host, uint16_t port,
+                            const ZoomState& state) {
+    std::string title = host;
+    if (port != 0) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), ":%u", static_cast<unsigned>(port));
+        title += buf;
+    }
+    title += " - ";
+    title += ZoomStatusText(state);
+    return title;
+}
+
+int ReconnectSchedule::NextDelayMs() {
+    if (exhausted()) return -1;
+    const unsigned n = attempts_++;
+    // The first attempt is immediate (0), then exponential from 1 s, capped:
+    // 0, 1, 2, 4, 8, 15, 15, ...
+    if (n == 0) return 0;
+    int delay = 1000;
+    for (unsigned i = 0; i < n - 1 && delay < kMaxDelayMs; ++i) delay *= 2;
+    return delay > kMaxDelayMs ? kMaxDelayMs : delay;
 }
 
 }  // namespace rtsc::client

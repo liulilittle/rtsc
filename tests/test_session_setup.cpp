@@ -6,6 +6,7 @@
 // decrypted TS_DEMAND_ACTIVE_PDU), wrapped here in an MCS Send Data frame.
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -398,6 +399,176 @@ RTSC_TEST(session_setup_deactivate_all_transitions_to_deactivated) {
     CHECK(m.state().phase == SessionPhase::kDeactivated);
 }
 
+RTSC_TEST(session_setup_reactivates_after_deactivate_all) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    auto wire = ServerPdu(da);
+    auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    step = m.OnPdu(wire.data(), wire.size());
+    CHECK(step.active);
+    CHECK(m.active());
+
+    // Deactivate All ([MS-RDPBCGR] 2.2.3.1.1): type 6, 9 bytes.
+    ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    wire = ServerPdu(w.take());
+    step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+    CHECK(!m.active());
+
+    // Deactivation-Reactivation Sequence ([MS-RDPBCGR] 1.3.1.3): a new Demand
+    // Active re-runs the Capability Exchange, so the machine must emit Confirm
+    // Active plus the four Connection Finalization PDUs again.
+    wire = ServerPdu(da);
+    step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+    CHECK_EQ(step.to_send.size(), static_cast<size_t>(5));
+
+    // Font Map completes the re-activation.
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(step.active);
+    CHECK(m.active());
+}
+
+RTSC_TEST(session_setup_deactivated_ignores_non_demand_pdu) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    auto wire = ServerPdu(da);
+    m.OnPdu(wire.data(), wire.size());
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.active());
+
+    ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    wire = ServerPdu(w.take());
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+
+    // While deactivated, a non-Demand-Active PDU is ignored: no failure, no
+    // reactivation, and no reply.
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(step.to_send.empty());
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+    CHECK(!m.active());
+}
+
+RTSC_TEST(session_setup_reactivation_adopts_new_desktop_size) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    auto wire = ServerPdu(da);
+    m.OnPdu(wire.data(), wire.size());
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.active());
+
+    ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    wire = ServerPdu(w.take());
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+
+    // The replayed Demand Active grants a different desktop size; the machine
+    // must adopt it ([MS-RDPBCGR] 2.2.1.13.1 bitmap capability).
+    BitmapCapabilitySet bmp;
+    bmp.desktop_width = 1600;
+    bmp.desktop_height = 900;
+    wire = DemandActiveWithSets({bmp.encode()});
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+    CHECK_EQ(m.state().desktop_width, static_cast<uint16_t>(1600));
+    CHECK_EQ(m.state().desktop_height, static_cast<uint16_t>(900));
+}
+
+RTSC_TEST(session_setup_deactivated_rejects_malformed_share_control) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    auto wire = ServerPdu(da);
+    m.OnPdu(wire.data(), wire.size());
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.active());
+
+    ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    wire = ServerPdu(w.take());
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+
+    // Too short to hold a share control header: fail closed instead of
+    // silently staying deactivated forever.
+    const std::vector<uint8_t> tiny = {0x00, 0x00};
+    wire = ServerPdu(tiny);
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(step.failed);
+}
+
+RTSC_TEST(session_setup_deactivated_ignores_repeated_deactivate_all) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    auto wire = ServerPdu(da);
+    m.OnPdu(wire.data(), wire.size());
+    const std::vector<uint8_t> fontmap = {0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+                                          0x04, 0x00};
+    wire = ServerDataPdu(ShareDataPduType::kFontMap, fontmap);
+    m.OnPdu(wire.data(), wire.size());
+    CHECK(m.active());
+
+    ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    const std::vector<uint8_t> deactivate = ServerPdu(w.take());
+    auto step = m.OnPdu(deactivate.data(), deactivate.size());
+    CHECK(!step.failed);
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+
+    // A second Deactivate All while already deactivated must be ignored: the
+    // server has not yet said whether this is a drop or a re-exchange.
+    step = m.OnPdu(deactivate.data(), deactivate.size());
+    CHECK(!step.failed);
+    CHECK(step.to_send.empty());
+    CHECK(m.state().phase == SessionPhase::kDeactivated);
+    CHECK(!m.active());
+}
+
 RTSC_TEST(session_setup_set_error_info_is_recorded) {
     SessionSetupMachine m(MakeConfig());
     m.Start();
@@ -429,4 +600,202 @@ RTSC_TEST(session_setup_ignores_unknown_pdu) {
     CHECK(m.state().phase == SessionPhase::kFinalizing);
 }
 
+// ---- Save Session Info ([MS-RDPBCGR] 2.2.10.1.1) --------------------------
+
+namespace {
+
+void AppendUtf16Le(ByteWriter& w, const char* ascii) {
+    for (const char* p = ascii; *p != '\0'; ++p) {
+        w.u16le(static_cast<uint16_t>(static_cast<uint8_t>(*p)));
+    }
+    w.u16le(0);
+}
+
+// TS_LOGON_INFO_VERSION_2 body: infoType(4) + Version(2) + Size(4) +
+// SessionId(4) + cbDomain(4) + cbUserName(4) + Pad(558) + strings.
+std::vector<uint8_t> LogonInfoV2Body(uint32_t session_id, const char* domain,
+                                     const char* user, uint32_t size_field) {
+    ByteWriter w;
+    w.u32le(1);  // INFOTYPE_LOGON_LONG
+    w.u16le(1);  // SAVE_SESSION_PDU_VERSION_ONE
+    w.u32le(size_field);
+    w.u32le(session_id);
+    const size_t domain_bytes = (std::strlen(domain) + 1) * 2;
+    const size_t user_bytes = (std::strlen(user) + 1) * 2;
+    w.u32le(static_cast<uint32_t>(domain_bytes));
+    w.u32le(static_cast<uint32_t>(user_bytes));
+    for (int i = 0; i < 558; ++i) w.u8(0);
+    AppendUtf16Le(w, domain);
+    AppendUtf16Le(w, user);
+    return w.take();
+}
+
+// TS_LOGON_INFO_EXTENDED body with LOGON_EX_AUTORECONNECTCOOKIE only.
+std::vector<uint8_t> LogonExtendedBody(uint32_t version, uint32_t logon_id,
+                                       uint8_t seed) {
+    ByteWriter w;
+    w.u32le(3);  // INFOTYPE_LOGON_EXTENDED_INFO
+    w.u16le(38); // Length (after the Length field)
+    w.u32le(1);  // LOGON_EX_AUTORECONNECTCOOKIE
+    w.u32le(28); // cbFieldData
+    w.u32le(28); // ARC_SC_PRIVATE_PACKET::cbLen
+    w.u32le(version);
+    w.u32le(logon_id);
+    for (int i = 0; i < 16; ++i) w.u8(static_cast<uint8_t>(seed + i));
+    return w.take();
+}
+
+}  // namespace
+
+RTSC_TEST(session_setup_parses_logon_info_v2) {
+    SaveSessionInfo info;
+    const auto body = LogonInfoV2Body(7, "NTDEV", "alice", 576);
+    CHECK(ParseSaveSessionInfo(body.data(), body.size(), info) == Status::Ok);
+    CHECK(info.has_logon);
+    CHECK_EQ(info.session_id, static_cast<uint32_t>(7));
+    CHECK(info.domain == "NTDEV");
+    CHECK(info.user_name == "alice");
+    CHECK(!info.has_auto_reconnect_cookie);
+
+    // Windows Server 2019/2022 send Size = 12 (the fixed part only); both
+    // values are accepted ([FreeRDP info.c] logonInfoV2Size quirk).
+    SaveSessionInfo short_size;
+    const auto body2 = LogonInfoV2Body(9, "D", "bob", 18);
+    CHECK(ParseSaveSessionInfo(body2.data(), body2.size(), short_size) ==
+          Status::Ok);
+    CHECK(short_size.has_logon);
+    CHECK_EQ(short_size.session_id, static_cast<uint32_t>(9));
+    CHECK(short_size.user_name == "bob");
+}
+
+RTSC_TEST(session_setup_parses_auto_reconnect_cookie) {
+    SaveSessionInfo info;
+    const auto body = LogonExtendedBody(1, 2, 0xA0);
+    CHECK(ParseSaveSessionInfo(body.data(), body.size(), info) == Status::Ok);
+    CHECK(!info.has_logon);
+    CHECK(info.has_auto_reconnect_cookie);
+    CHECK_EQ(info.auto_reconnect_version, static_cast<uint32_t>(1));
+    CHECK_EQ(info.auto_reconnect_logon_id, static_cast<uint32_t>(2));
+    CHECK_EQ(info.auto_reconnect_random.size(), static_cast<size_t>(16));
+    CHECK_EQ(info.auto_reconnect_random[0], static_cast<uint8_t>(0xA0));
+    CHECK_EQ(info.auto_reconnect_random[15], static_cast<uint8_t>(0xAF));
+}
+
+RTSC_TEST(session_setup_rejects_truncated_logon_info) {
+    SaveSessionInfo info;
+    const auto body = LogonInfoV2Body(7, "NTDEV", "alice", 576);
+    // Truncate inside the fixed 558-byte pad: must fail, not read past the end.
+    CHECK(ParseSaveSessionInfo(body.data(), 300, info) != Status::Ok);
+
+    // cbDomain larger than the remaining bytes: rejected.
+    ByteWriter w;
+    w.u32le(1);
+    w.u16le(1);
+    w.u32le(576);
+    w.u32le(1);
+    w.u32le(600);  // cbDomain: far beyond the body
+    w.u32le(2);
+    for (int i = 0; i < 558; ++i) w.u8(0);
+    const auto bad = w.take();
+    SaveSessionInfo other;
+    CHECK(ParseSaveSessionInfo(bad.data(), bad.size(), other) != Status::Ok);
+    CHECK(!other.has_logon);
+}
+
+RTSC_TEST(session_setup_ignores_plain_notify) {
+    // INFOTYPE_LOGON_PLAINNOTIFY (2) carries 576 bytes of padding and no data.
+    ByteWriter w;
+    w.u32le(2);
+    for (int i = 0; i < 576; ++i) w.u8(0);
+    const auto body = w.take();
+    SaveSessionInfo info;
+    CHECK(ParseSaveSessionInfo(body.data(), body.size(), info) == Status::Ok);
+    CHECK(!info.has_logon);
+    CHECK(!info.has_auto_reconnect_cookie);
+}
+
+RTSC_TEST(session_setup_records_logon_info_from_pdu) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+
+    const auto body = LogonInfoV2Body(3, "CONTOSO", "carol", 576);
+    const auto wire = ServerDataPdu(ShareDataPduType::kSaveSessionInfo, body);
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().logon_info.has_logon);
+    CHECK_EQ(m.state().logon_info.session_id, static_cast<uint32_t>(3));
+    CHECK(m.state().logon_info.user_name == "carol");
+    // Save Session Info does not change the phase.
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+}
+
+RTSC_TEST(session_setup_records_auto_reconnect_cookie_from_pdu) {
+    SessionSetupMachine m(MakeConfig());
+    m.Start();
+    const auto da = FromHex(kDemandActiveHex);
+    m.OnPdu(ServerPdu(da).data(), ServerPdu(da).size());
+
+    const auto body = LogonExtendedBody(1, 42, 0x10);
+    const auto wire = ServerDataPdu(ShareDataPduType::kSaveSessionInfo, body);
+    const auto step = m.OnPdu(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(m.state().logon_info.has_auto_reconnect_cookie);
+    CHECK_EQ(m.state().logon_info.auto_reconnect_logon_id,
+             static_cast<uint32_t>(42));
+    CHECK_EQ(m.state().logon_info.auto_reconnect_random.size(),
+             static_cast<size_t>(16));
+    CHECK(m.state().phase == SessionPhase::kFinalizing);
+}
+
+RTSC_TEST(session_setup_encodes_logon_info_v2_round_trip) {
+    const auto body = EncodeSaveSessionInfoLogon(9, "NTDEV", "alice");
+    CHECK(!body.empty());
+    SaveSessionInfo info;
+    CHECK(ParseSaveSessionInfo(body.data(), body.size(), info) == Status::Ok);
+    CHECK(info.has_logon);
+    CHECK_EQ(info.session_id, static_cast<uint32_t>(9));
+    CHECK(info.domain == "NTDEV");
+    CHECK(info.user_name == "alice");
+
+    // Non-ASCII UTF-8 survives the round trip.
+    const auto utf8 = EncodeSaveSessionInfoLogon(1, "域", "用户");
+    CHECK(!utf8.empty());
+    SaveSessionInfo wide;
+    CHECK(ParseSaveSessionInfo(utf8.data(), utf8.size(), wide) == Status::Ok);
+    CHECK(wide.domain == "域");
+    CHECK(wide.user_name == "用户");
+}
+
+RTSC_TEST(session_setup_encode_rejects_overlong_and_invalid) {
+    // UserName is capped at 512 bytes (v1 fixed field), terminator included:
+    // 256 ASCII characters + NUL = 514 bytes, one past the limit.
+    const std::string long_user(256, 'u');
+    CHECK(EncodeSaveSessionInfoLogon(1, "D", long_user).empty());
+    const std::string max_user(255, 'u');  // 512 bytes including the terminator
+    CHECK(!EncodeSaveSessionInfoLogon(1, "D", max_user).empty());
+
+    // Invalid UTF-8 fails closed.
+    CHECK(EncodeSaveSessionInfoLogon(1, "\xC3", "u").empty());
+}
+
+RTSC_TEST(session_setup_encodes_auto_reconnect_cookie_round_trip) {
+    uint8_t random[16] = {};
+    for (int i = 0; i < 16; ++i) {
+        random[i] = static_cast<uint8_t>(0x30 + i);
+    }
+    const auto body = EncodeSaveSessionInfoCookie(1, 5, random);
+    SaveSessionInfo info;
+    CHECK(ParseSaveSessionInfo(body.data(), body.size(), info) == Status::Ok);
+    CHECK(info.has_auto_reconnect_cookie);
+    CHECK_EQ(info.auto_reconnect_version, static_cast<uint32_t>(1));
+    CHECK_EQ(info.auto_reconnect_logon_id, static_cast<uint32_t>(5));
+    CHECK_EQ(info.auto_reconnect_random.size(), static_cast<size_t>(16));
+    CHECK_EQ(info.auto_reconnect_random[0], static_cast<uint8_t>(0x30));
+    CHECK_EQ(info.auto_reconnect_random[15], static_cast<uint8_t>(0x3F));
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_session_setup_tests"); }
+
+

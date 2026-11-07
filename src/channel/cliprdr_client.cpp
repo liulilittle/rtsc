@@ -506,12 +506,25 @@ void CliprdrClient::SendFormatList() {
     const std::vector<uint32_t> formats =
         clipboard_ != nullptr ? clipboard_->formats()
                               : std::vector<uint32_t>{};
+    // Only advertise formats whose bytes this client can actually produce:
+    // CF_BITMAP becomes CF_DIB, GDI-handle-only formats are dropped, and a
+    // format that maps onto one already listed is not repeated.
+    std::vector<uint32_t> advertised;
+    for (const uint32_t format : formats) {
+        const uint32_t mapped = rtsc::clipboard::MapAdvertisedFormat(format);
+        if (mapped == 0) continue;
+        if (mapped == rtsc::proto::kDeFactoFileListFormatId) continue;
+        if (std::find(advertised.begin(), advertised.end(), mapped) !=
+            advertised.end()) {
+            continue;
+        }
+        advertised.push_back(mapped);
+    }
     rtsc::proto::ByteWriter w;
-    // Fix ④: without a provider the file-list format must not be advertised;
+    // Fix — without a provider the file-list format must not be advertised;
     // the provider itself is the only source the peer can read from, and the
     // format id is never emitted when it merely sits in the local clipboard.
-    for (const uint32_t format : formats) {
-        if (format == rtsc::proto::kDeFactoFileListFormatId) continue;
+    for (const uint32_t format : advertised) {
         w.u32le(format);
         if (long_format_names_) {
             // A nameless format is a single null UTF-16 code unit.
@@ -573,6 +586,56 @@ uint32_t CliprdrClient::PickPreferredFormat() const {
         if (!is_file_format(f)) return f;
     }
     return 0;
+}
+
+void CliprdrClient::Reset() {
+    // Complete any in-flight download as a failure first: the callbacks are
+    // owned by the caller and must not be dropped silently.
+    CancelRemoteFileContents();
+    reassembler_.Reset();
+    started_ = false;
+    caps_sent_ = false;
+    monitor_ready_received_ = false;
+    init_sequence_done_ = false;
+    long_format_names_ = false;
+    server_caps_received_ = false;
+    server_flags_ = 0;
+    remote_sync_pending_ = false;
+    pending_format_ = 0;
+    has_last_applied_ = false;
+    last_applied_format_ = 0;
+    last_applied_data_.clear();
+    last_applied_formats_.clear();
+    remote_formats_.clear();
+    remote_file_list_format_id_ = 0;
+    have_remote_file_list_ = false;
+    remote_file_list_.clear();
+    next_stream_id_ = 0;
+    // The counters are diagnostics for one session; a reconnect starts a new
+    // one, so they restart with it.
+    monitor_ready_count_ = 0;
+    monitor_ready_received_count_ = 0;
+    clip_caps_count_ = 0;
+    server_caps_count_ = 0;
+    remote_format_list_count_ = 0;
+    local_format_list_count_ = 0;
+    format_list_response_count_ = 0;
+    format_list_response_received_count_ = 0;
+    last_format_list_response_ok_ = false;
+    format_data_request_count_ = 0;
+    format_data_response_count_ = 0;
+    format_data_response_sent_count_ = 0;
+    temp_directory_count_ = 0;
+    temp_directory_sent_count_ = 0;
+    lock_clipdata_count_ = 0;
+    unlock_clipdata_count_ = 0;
+    file_contents_request_sent_ = 0;
+    file_contents_request_received_ = 0;
+    file_contents_request_rejected_ = 0;
+    file_contents_response_sent_ = 0;
+    file_contents_response_received_ = 0;
+    remote_file_list_received_ = 0;
+    transfer_timeout_count_ = 0;
 }
 
 void CliprdrClient::Start() {

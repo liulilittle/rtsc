@@ -183,6 +183,30 @@ bool Client::Connect(net::Transport& transport, std::string& error) {
     return false;
 }
 
+bool Client::Reconnect(net::Transport& transport, std::string& error) {
+    // Rebuild the ARC_CS_PRIVATE_PACKET ([MS-RDPBCGR] 2.2.1.11.1.1.1) from the
+    // server's ARC_SC_PRIVATE_PACKET before the session state is dropped.
+    std::vector<uint8_t> cookie;
+    const auto& logon = driver_.logon_info();
+    if (logon.has_auto_reconnect_cookie &&
+        logon.auto_reconnect_random.size() == 16) {
+        cookie.reserve(28);
+        const auto put32 = [&cookie](uint32_t v) {
+            cookie.push_back(static_cast<uint8_t>(v & 0xFF));
+            cookie.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+            cookie.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+            cookie.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+        };
+        put32(28);  // cbLen
+        put32(logon.auto_reconnect_version);
+        put32(logon.auto_reconnect_logon_id);
+        cookie.insert(cookie.end(), logon.auto_reconnect_random.begin(),
+                      logon.auto_reconnect_random.end());
+    }
+    driver_.ResetForReconnect(std::move(cookie));
+    return Connect(transport, error);
+}
+
 bool Client::Pump(net::Transport& transport, std::string& error) {
     uint8_t buf[kReadChunk];
     const int n = transport.Read(buf, sizeof(buf));
@@ -209,6 +233,18 @@ bool Client::Pump(net::Transport& transport, std::string& error) {
         error = "write failed";
         return false;
     }
+    // Deactivation-Reactivation ([MS-RDPBCGR] 1.3.1.3): the replayed Demand
+    // Active can grant a different desktop size, and the graphics surface must
+    // follow it or every later frame is decoded into a stale-sized bitmap.
+    if (step.active) {
+        const uint16_t w = driver_.desktop_width();
+        const uint16_t h = driver_.desktop_height();
+        if (w != 0 && h != 0 &&
+            (w != graphics_.surface().width() ||
+             h != graphics_.surface().height())) {
+            graphics_.Resize(w, h);
+        }
+    }
     return true;
 }
 
@@ -224,6 +260,13 @@ std::vector<uint8_t> Client::EncodeInput(const ui::InputEvent& ev) const {
             return EncodeFastPathInputPdu(
                 {EncodeKeyboardEvent(ev.scancode, ev.key_release,
                                      ev.key_extended)});
+        case ui::InputEvent::Kind::kUnicode:
+            // TS_FP_UNICODE_KEYBOARD_EVENT ([MS-RDPBCGR] 2.2.8.1.2.2.2): the
+            // server maps the code point through the session keyboard layout,
+            // so this is the only way to type a character the client's own
+            // layout has no scancode for. One event per UTF-16 code unit.
+            return EncodeFastPathInputPdu(
+                {proto::EncodeUnicodeEvent(ev.unicode_code, ev.key_release)});
         case ui::InputEvent::Kind::kMouseMove:
             return EncodeFastPathInputPdu(
                 {EncodeMouseEvent(proto::kPtrMove, ev.x, ev.y)});
@@ -333,8 +376,10 @@ bool Client::SendPdu(net::Transport& transport,
 }
 
 bool Client::SendInput(net::Transport& transport, const ui::InputEvent& ev,
-                       std::string& error) {
-    return SendPdu(transport, EncodeInput(ev), error);
+                       std::string& error, bool* encoded) {
+    const std::vector<uint8_t> pdu = EncodeInput(ev);
+    if (encoded != nullptr) *encoded = !pdu.empty();
+    return SendPdu(transport, pdu, error);
 }
 
 bool Client::SendChannelPdu(net::Transport& transport, uint16_t channel_id,

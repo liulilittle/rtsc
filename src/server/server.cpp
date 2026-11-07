@@ -56,6 +56,7 @@
 #include "rtsc/proto/licensing.h"
 #include "rtsc/proto/mcs.h"
 #include "rtsc/proto/rdp_neg.h"
+#include "rtsc/proto/session_setup.h"
 #include "rtsc/proto/share.h"
 #include "rtsc/proto/tpkt.h"
 #include "rtsc/proto/x224.h"
@@ -707,6 +708,57 @@ struct InputLease {
     std::shared_ptr<std::atomic<size_t>> release_failures;
 };
 
+// Auto-reconnect cookies issued by this server ([MS-RDPBCGR] 2.2.10.1.1.4.1).
+// A reconnect presents the 28-byte ARC_CS_PRIVATE_PACKET; only a cookie this
+// server issued (same 16 random bytes) is accepted, and it resumes the logon
+// id the cookie was issued for. Bounded so a long-running server cannot grow
+// without limit; the oldest entry is dropped first.
+class ArcCookieStore {
+ public:
+    static constexpr size_t kMaxEntries = 32;
+
+    void Issue(const uint8_t random[16], uint32_t logon_id) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (entries_.size() >= kMaxEntries) entries_.erase(entries_.begin());
+        Entry e;
+        std::memcpy(e.random, random, sizeof(e.random));
+        e.logon_id = logon_id;
+        entries_.push_back(e);
+    }
+
+    // Returns true and writes the resumed logon id when `cookie` is a valid
+    // ARC_CS_PRIVATE_PACKET issued by this store.
+    bool Resume(const std::vector<uint8_t>& cookie, uint32_t* logon_id) {
+        if (cookie.size() != 28) return false;
+        const auto get32 = [&cookie](size_t at) {
+            return static_cast<uint32_t>(cookie[at]) |
+                   (static_cast<uint32_t>(cookie[at + 1]) << 8) |
+                   (static_cast<uint32_t>(cookie[at + 2]) << 16) |
+                   (static_cast<uint32_t>(cookie[at + 3]) << 24);
+        };
+        if (get32(0) != 28) return false;   // cbLen
+        if (get32(4) != 1) return false;    // version
+        const uint32_t cookie_logon_id = get32(8);
+        std::lock_guard<std::mutex> lock(mu_);
+        for (const auto& e : entries_) {
+            if (e.logon_id == cookie_logon_id &&
+                std::memcmp(e.random, cookie.data() + 12, sizeof(e.random)) == 0) {
+                *logon_id = e.logon_id;
+                return true;
+            }
+        }
+        return false;
+    }
+
+ private:
+    struct Entry {
+        uint8_t random[16];
+        uint32_t logon_id;
+    };
+    std::mutex mu_;
+    std::vector<Entry> entries_;
+};
+
 // One accepted peer. Owns its transport, its X.224/MCS state, its security
 // state, its capability sets and its framebuffer. Nothing mutable is shared
 // with another session: this is the D1 single-writer-per-session model.
@@ -720,7 +772,8 @@ class RdpSession {
                clipboard::FileListProvider* file_provider,
                std::shared_ptr<std::atomic<size_t>> unknown_input_events,
                std::shared_ptr<std::atomic<size_t>> malformed_input_pdus,
-               std::shared_ptr<InputLease> input_lease)
+               std::shared_ptr<InputLease> input_lease,
+               std::shared_ptr<ArcCookieStore> arc_cookies)
         : transport_(std::move(transport)),
           config_(config),
           source_(source),
@@ -734,7 +787,8 @@ class RdpSession {
           // -Wreorder and therefore an error under -Werror on GCC/Clang.
           input_lease_(std::move(input_lease)),
           unknown_input_events_(std::move(unknown_input_events)),
-          malformed_input_pdus_(std::move(malformed_input_pdus)) {
+          malformed_input_pdus_(std::move(malformed_input_pdus)),
+          arc_cookies_(std::move(arc_cookies)) {
         // One CliprdrServer per session, all sharing the borrowed local
         // clipboard (shared-desktop semantics). It is used only from this
         // session's thread. The send lambda reads cliprdr_channel_id_ at send
@@ -1528,6 +1582,19 @@ class RdpSession {
         if (proto::ClientInfoPdu::parse(payload.data(), payload.size(), ci) != Status::Ok) {
             return false;
         }
+        // A reconnect ([MS-RDPBCGR] 1.3.1.5) presents the cookie issued at the
+        // end of the previous session. Only a cookie this server issued is
+        // accepted; it resumes the previous logon id. A forged/unknown cookie
+        // fails the connection instead of silently becoming a new session.
+        if (ci.info.has_extended_info && ci.info.extended_info.has_auto_reconnect) {
+            uint32_t resumed_id = 0;
+            if (arc_cookies_ == nullptr ||
+                !arc_cookies_->Resume(ci.info.extended_info.auto_reconnect_cookie.bytes,
+                                      &resumed_id)) {
+                return false;
+            }
+            session_id_ = resumed_id;
+        }
         credentials_.domain = ci.info.domain;
         credentials_.user_name = ci.info.user_name;
         credentials_.password = ci.info.password;
@@ -1638,6 +1705,36 @@ class RdpSession {
                 kServerChannelId, share_id_, kStreamLow,
                 proto::ShareDataPduType::kFontMap, p.take());
             if (!SendRawUserData(share)) return false;
+        }
+        // Logon notification ([MS-RDPBCGR] 2.2.10.1.1.2): after finalization
+        // the server tells the client which account and session it logged on.
+        // Anonymous connections (no user name) get no notification.
+        if (!credentials_.user_name.empty()) {
+            const auto info = proto::EncodeSaveSessionInfoLogon(
+                session_id_, credentials_.domain, credentials_.user_name);
+            if (info.empty()) {
+                return false;  // credentials cannot be represented: fail closed
+            }
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kSaveSessionInfo, info);
+            if (!SendRawUserData(share)) return false;
+        }
+        // Auto-reconnect cookie ([MS-RDPBCGR] 2.2.10.1.1.4.1): the server
+        // supplies the ARC_SC_PRIVATE_PACKET the client must return on a later
+        // reconnect. A CSPRNG failure skips the cookie (the session is still
+        // usable; only reconnection is lost) rather than killing the session.
+        uint8_t arc_random[16] = {};
+        if (rtsc::crypto::RandomBytes(arc_random, sizeof(arc_random))) {
+            const auto cookie = proto::EncodeSaveSessionInfoCookie(
+                1, session_id_, arc_random);
+            const auto share = proto::BuildSlowPathDataPdu(
+                kServerChannelId, share_id_, kStreamLow,
+                proto::ShareDataPduType::kSaveSessionInfo, cookie);
+            if (!SendRawUserData(share)) return false;
+            // Register the cookie only after it reached the wire, so a failed
+            // send cannot leave a resumable id for a session that never saw it.
+            if (arc_cookies_ != nullptr) arc_cookies_->Issue(arc_random, session_id_);
         }
         active_ = true;
         return true;
@@ -2232,6 +2329,9 @@ class RdpSession {
     // set at ActiveLoop entry).
     std::chrono::steady_clock::time_point next_clipboard_poll_{};
     Credentials credentials_;
+    // Cookies issued by this server, shared across its sessions so a reconnect
+    // accepted by another RdpSession can resume the previous logon id.
+    std::shared_ptr<ArcCookieStore> arc_cookies_;
 };
 
 }  // namespace
@@ -2349,6 +2449,12 @@ struct RdpServer::Impl {
     // Monotonic id used only to attribute injected input to a session. Starts
     // at 1 so 0 remains "no session"; it never feeds the wire shareId.
     std::atomic<uint32_t> next_input_session_id{0};
+    // Wire session ids (Demand Active sessionId / LOGON_LONG logonId) start at
+    // 1; a reconnect carrying a valid ARC cookie reuses the id it was issued
+    // for instead of consuming a new one.
+    std::atomic<uint32_t> next_session_id{0};
+    // Cookies issued by this server, shared by every session it accepts.
+    std::shared_ptr<ArcCookieStore> arc_cookies = std::make_shared<ArcCookieStore>();
     // Unknown fast-path input eventCodes, counted per server (P-11). A
     // shared_ptr so a detached session thread cannot outlive the counter.
     std::shared_ptr<std::atomic<size_t>> unknown_input_events =
@@ -2510,11 +2616,13 @@ void RdpServer::Run() {
             if (!impl_->running.load(std::memory_order_relaxed)) break;
             session = std::make_shared<RdpSession>(
                 std::move(transport), config_, source_, authenticator_,
-                input_callback_, 0, input_sink_,
-                impl_->next_input_session_id.fetch_add(
+                input_callback_,
+                impl_->next_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
+                input_sink_, impl_->next_input_session_id.fetch_add(
                     1, std::memory_order_relaxed) + 1,
                 clipboard_, file_list_provider_, impl_->unknown_input_events,
-                impl_->malformed_input_pdus, impl_->input_lease);
+                impl_->malformed_input_pdus, impl_->input_lease,
+                impl_->arc_cookies);
             registry->sessions.push_back(session);
             registry->live.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2646,10 +2754,11 @@ bool RdpServer::ServeOne() {
     if (!transport) return false;
     RdpSession session(
         std::move(transport), config_, source_, authenticator_, input_callback_,
-        0, input_sink_,
+        impl_->next_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
+        input_sink_,
         impl_->next_input_session_id.fetch_add(1, std::memory_order_relaxed) + 1,
         clipboard_, file_list_provider_, impl_->unknown_input_events,
-        impl_->malformed_input_pdus, impl_->input_lease);
+        impl_->malformed_input_pdus, impl_->input_lease, impl_->arc_cookies);
     // Same containment as the threaded path: a failing session (e.g.
     // std::bad_alloc) must not take the caller down with it. Teardown is
     // contained step by step too: Close() is not noexcept, so a throwing Stop()

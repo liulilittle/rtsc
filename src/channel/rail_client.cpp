@@ -54,6 +54,28 @@ RailClient::RailClient(SendFn send) : send_(std::move(send)) {
 
 RailClient::~RailClient() = default;
 
+void RailClient::Reset() {
+    channel_.Reset();
+    has_window_move_ = false;
+    window_move_ = {};
+    has_minmax_info_ = false;
+    minmax_info_ = {};
+    has_taskbar_info_ = false;
+    taskbar_info_ = {};
+    has_langbar_info_ = false;
+    langbar_info_ = {};
+    has_exec_result_ = false;
+    exec_result_ = {};
+    has_app_id_ = false;
+    app_id_window_ = 0;
+    app_id_.clear();
+    has_app_id_ex_ = false;
+    app_id_ex_window_ = 0;
+    app_id_ex_ = {};
+    // The configuration is kept: send_, handler_, auto_respond_get_app_id_,
+    // app_ids_.
+}
+
 void RailClient::OnChannelData(const uint8_t* data, size_t size) {
     channel_.OnChannelData(data, size);
 }

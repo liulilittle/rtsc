@@ -1,6 +1,7 @@
 // UI surface and window abstraction.
 
 #include "rtsc/ui/clipboard_bind.h"
+#include "rtsc/ui/connection_bar.h"
 #include "rtsc/ui/surface.h"
 #include "rtsc/ui/window.h"
 
@@ -439,6 +440,96 @@ RTSC_TEST(window_win32_toggle_fullscreen_flips_both_ways) {
     windows[0]->Close();
     CHECK(windows[0]->closed());
 }
+// The Win32 connection bar reveals at the top edge and its close button closes
+// the window. This is the integration guard for the state machine wiring: the
+// bar is a client-side overlay, so a click on it must never reach the remote.
+RTSC_TEST(window_win32_connection_bar_reveals_and_closes) {
+#if defined(_WIN32)
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("window_win32_connection_bar_reveals_and_closes", why);
+        return;
+    }
+    CHECK(!w->connection_bar_visible());
+    w->SetFullscreen(true);
+    CHECK(!w->connection_bar_visible());  // entering fullscreen alone is not enough
+
+    HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    if (hwnd == nullptr) {
+        w->Close();
+        return;
+    }
+    // The pointer reaching the top edge reveals the bar.
+    PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(10, 0));
+    InputEvent ev;
+    w->PollEvent(ev);  // dispatches the posted message
+    CHECK(w->connection_bar_visible());
+
+    // A move below the bar is forwarded to the remote; the bar stays up.
+    PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(10, 100));
+    CHECK(w->PollEvent(ev));
+    CHECK(ev.kind == InputEvent::Kind::kMouseMove);
+    CHECK(w->connection_bar_visible());
+
+    // Click the close button (rightmost, 20 px, 2 px margin). The click is
+    // consumed by the overlay and posts WM_CLOSE.
+    const int width = static_cast<int>(w->surface().width());
+    PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(width - 12, 10));
+    w->PollEvent(ev);
+    CHECK(w->closed());
+#endif
+}
+// The View menu's 保存截图(S)... item must raise kCmdSaveScreenshot. The id is
+// internal to the backend, so the test locates the item by its label and sends
+// the WM_COMMAND the menu itself would send.
+RTSC_TEST(window_win32_save_screenshot_menu_raises_command) {
+#if defined(_WIN32)
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("window_win32_save_screenshot_menu_raises_command", why);
+        return;
+    }
+    HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    if (hwnd == nullptr) {
+        w->Close();
+        return;
+    }
+    HMENU menu = GetMenu(hwnd);
+    CHECK(menu != nullptr);
+    HMENU view = menu != nullptr ? GetSubMenu(menu, 0) : nullptr;
+    CHECK(view != nullptr);
+    UINT id = 0;
+    if (view != nullptr) {
+        const int count = GetMenuItemCount(view);
+        for (int i = 0; i < count; ++i) {
+            wchar_t label[128] = {};
+            if (GetMenuStringW(view, i, label, 128, MF_BYPOSITION) == 0) {
+                continue;
+            }
+            if (wcsstr(label, L"保存截图") != nullptr) {
+                id = GetMenuItemID(view, i);
+                break;
+            }
+        }
+    }
+    CHECK(id != 0);
+    if (id == 0) {
+        w->Close();
+        return;
+    }
+    PostMessageW(hwnd, WM_COMMAND, id, 0);
+    InputEvent ev;
+    CHECK(w->PollEvent(ev));
+    CHECK(ev.kind == InputEvent::Kind::kUiCommand);
+    CHECK(ev.command == rtsc::ui::kCmdSaveScreenshot);
+    w->Close();
+#endif
+}
 #endif  // defined(_WIN32)
 
 #if defined(_WIN32)
@@ -783,6 +874,19 @@ RTSC_TEST(win32_ui_command_ids_are_distinct) {
     CHECK(sas != win_mode);
 }
 
+RTSC_TEST(win_key_mode_respects_fullscreen) {
+    // Pure policy matrix. volatile inputs keep the conditions out of
+    // constant-expression context (/W4 /WX C4127).
+    const volatile bool on = true;
+    const volatile bool off = false;
+    CHECK(ForwardWinKey(WinKeyMode::kRemote, off));
+    CHECK(ForwardWinKey(WinKeyMode::kRemote, on));
+    CHECK(!ForwardWinKey(WinKeyMode::kLocal, off));
+    CHECK(!ForwardWinKey(WinKeyMode::kLocal, on));
+    CHECK(!ForwardWinKey(WinKeyMode::kFullscreenOnly, off));
+    CHECK(ForwardWinKey(WinKeyMode::kFullscreenOnly, on));
+}
+
 RTSC_TEST(win32_win_key_mode_gates_forwarding) {
     std::string why;
     auto w = CreateWindow(64, 64, "win32", why);
@@ -821,6 +925,97 @@ RTSC_TEST(win32_win_key_mode_gates_forwarding) {
     }
     CHECK(down_bytes == "025b");
     CHECK(up_bytes == "035b");
+    w->Close();
+}
+
+RTSC_TEST(win32_fullscreen_only_win_key_follows_fullscreen) {
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_fullscreen_only_win_key_follows_fullscreen", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+    w->SetWinKeyMode(WinKeyMode::kFullscreenOnly);
+
+    const auto win_events = [&]() {
+        int count = 0;
+        InputEvent ev;
+        while (w->PollEvent(ev)) {
+            if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x5B) {
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    // Windowed: keep the Windows key local.
+    w->SetFullscreen(false);
+    CHECK(!w->fullscreen());
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LWIN, KeyLParam(0x5B, true, false));
+    PostMessageW(hwnd, WM_KEYUP, VK_LWIN, KeyLParam(0x5B, true, true));
+    CHECK_EQ(win_events(), 0);
+
+    // Fullscreen: forward both transitions.
+    w->SetFullscreen(true);
+    CHECK(w->fullscreen());
+    PostMessageW(hwnd, WM_KEYDOWN, VK_LWIN, KeyLParam(0x5B, true, false));
+    PostMessageW(hwnd, WM_KEYUP, VK_LWIN, KeyLParam(0x5B, true, true));
+    CHECK_EQ(win_events(), 2);
+
+    w->SetFullscreen(false);
+    w->Close();
+}
+
+RTSC_TEST(win32_alt_tab_follows_win_key_policy) {
+    // Alt+Tab is WM_SYSKEYDOWN(VK_TAB) with the context bit. The local shell
+    // owns it under kLocal (and windowed kFullscreenOnly); kRemote and
+    // fullscreen kFullscreenOnly forward it to the remote as scancode 0x0F.
+    std::string why;
+    auto w = CreateWindow(64, 64, "win32", why);
+    if (w == nullptr) {
+        SkipTest("win32_alt_tab_follows_win_key_policy", why);
+        return;
+    }
+    const HWND hwnd = static_cast<HWND>(w->native_handle());
+    CHECK(hwnd != nullptr);
+
+    const auto post_alt_tab = [&]() {
+        PostMessageW(hwnd, WM_SYSKEYDOWN, VK_TAB,
+                     KeyLParam(0x0F, false, false) | (1LL << 29));
+        PostMessageW(hwnd, WM_SYSKEYUP, VK_TAB,
+                     KeyLParam(0x0F, false, true) | (1LL << 29));
+    };
+    const auto count_tab_events = [&]() {
+        int count = 0;
+        InputEvent ev;
+        while (w->PollEvent(ev)) {
+            if (ev.kind == InputEvent::Kind::kKey && ev.scancode == 0x0F) {
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    w->SetWinKeyMode(WinKeyMode::kLocal);
+    post_alt_tab();
+    CHECK_EQ(count_tab_events(), 0);
+
+    w->SetWinKeyMode(WinKeyMode::kRemote);
+    post_alt_tab();
+    CHECK_EQ(count_tab_events(), 2);
+
+    w->SetWinKeyMode(WinKeyMode::kFullscreenOnly);
+    w->SetFullscreen(false);
+    post_alt_tab();
+    CHECK_EQ(count_tab_events(), 0);
+
+    w->SetFullscreen(true);
+    post_alt_tab();
+    CHECK_EQ(count_tab_events(), 2);
+
+    w->SetFullscreen(false);
     w->Close();
 }
 
@@ -954,6 +1149,25 @@ RTSC_TEST(win32_synthetic_win_key_is_extended) {
     CHECK(win.forward);
     CHECK_EQ(win.scancode, static_cast<uint8_t>(0x5B));
     CHECK(win.extended);
+}
+
+RTSC_TEST(win32_fullscreen_only_win_key_translation) {
+    // kFullscreenOnly gates the Win key on the current fullscreen state at the
+    // translation layer too, not only at the message-loop dispatch.
+    const volatile bool on = true;
+    const volatile bool off = false;
+    const uint32_t lparam = static_cast<uint32_t>(0x5Bu << 16) |
+                            static_cast<uint32_t>(1u << 24) | 1u;
+    const KeyTranslation fs = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_LWIN, lparam, nullptr,
+        WinKeyMode::kFullscreenOnly, on);
+    CHECK(fs.forward);
+    CHECK_EQ(fs.scancode, static_cast<uint8_t>(0x5B));
+    CHECK(fs.extended);
+    const KeyTranslation windowed = TranslateWin32KeyMessage(
+        kWin32WmKeyDown, VK_LWIN, lparam, nullptr,
+        WinKeyMode::kFullscreenOnly, off);
+    CHECK(!windowed.forward);
 }
 
 RTSC_TEST(win32_non_keyboard_messages_are_ignored) {
@@ -1593,6 +1807,100 @@ RTSC_TEST(gui_dispatch_explicitly_consumes_help_command) {
     // And it must be reachable before the send call, not after it.
     const size_t send = src.find("client.SendInput(", call);
     CHECK(send == std::string::npos || cont < send);
+}
+
+// The connection bar only exists in fullscreen, reveals when the pointer
+// reaches the top edge, auto-hides after the idle timeout, and stays up while
+// pinned.
+RTSC_TEST(connection_bar_state_machine) {
+    using Clock = rtsc::ui::ConnectionBar::Clock;
+    const Clock::time_point t0 = Clock::now();
+    const auto ms = [](int n) {
+        return std::chrono::milliseconds(n);
+    };
+
+    rtsc::ui::ConnectionBar bar;
+    CHECK(!bar.visible());
+    // Windowed: moving to the top edge must not show it.
+    bar.OnMouseMove(10, 0, t0);
+    CHECK(!bar.visible());
+
+    bar.SetFullscreen(true, t0);
+    CHECK(!bar.visible());  // entering fullscreen alone does not show it
+    bar.OnMouseMove(10, 0, t0);
+    CHECK(bar.visible());
+    bar.OnMouseMove(10, 100, t0);
+    CHECK(bar.visible());  // leaving the bar does not hide it immediately
+
+    // Auto-hide after the idle timeout.
+    bar.Tick(t0 + ms(1000));
+    CHECK(bar.visible());
+    bar.Tick(t0 + ms(3000));
+    CHECK(!bar.visible());
+
+    // Hovering the bar restarts the timer.
+    bar.OnMouseMove(10, 0, t0);
+    CHECK(bar.visible());
+    bar.OnActivity(t0 + ms(2000));
+    bar.Tick(t0 + ms(4000));  // 2 s after the activity
+    CHECK(bar.visible());
+    bar.Tick(t0 + ms(5000));  // 3 s after the activity
+    CHECK(!bar.visible());
+
+    // Pinned stays visible regardless of the timer.
+    bar.SetPinned(true, t0);
+    CHECK(bar.visible());
+    bar.Tick(t0 + ms(60000));
+    CHECK(bar.visible());
+    bar.SetPinned(false, t0);
+    bar.Tick(t0 + ms(120000));
+    CHECK(!bar.visible());
+
+    // Leaving fullscreen hides it (the pin preference survives).
+    bar.SetPinned(true, t0);
+    CHECK(bar.visible());
+    bar.SetFullscreen(false, t0);
+    CHECK(!bar.visible());
+    bar.SetFullscreen(true, t0);
+    CHECK(bar.visible());  // still pinned
+}
+
+// The buttons are right-aligned in the order pin, minimize, close, and the
+// hit test only reports a button while the bar is visible.
+RTSC_TEST(connection_bar_button_hit_test) {
+    using Clock = rtsc::ui::ConnectionBar::Clock;
+    const Clock::time_point t0 = Clock::now();
+    rtsc::ui::ConnectionBar bar;
+    const int width = 800;
+    CHECK(bar.HitTest(790, 10, width) ==
+          rtsc::ui::ConnectionBarButton::kNone);  // hidden
+
+    bar.SetFullscreen(true, t0);
+    bar.OnMouseMove(0, 0, t0);
+    CHECK(bar.visible());
+
+    const auto close = bar.ButtonRectFor(
+        rtsc::ui::ConnectionBarButton::kClose, width);
+    const auto minimize = bar.ButtonRectFor(
+        rtsc::ui::ConnectionBarButton::kMinimize, width);
+    const auto pin =
+        bar.ButtonRectFor(rtsc::ui::ConnectionBarButton::kPin, width);
+    CHECK(close.x > minimize.x);
+    CHECK(minimize.x > pin.x);
+    CHECK_EQ(close.x + close.w, width - 2);  // 2 px right margin
+
+    CHECK(bar.HitTest(close.x + 1, close.y + 1, width) ==
+          rtsc::ui::ConnectionBarButton::kClose);
+    CHECK(bar.HitTest(minimize.x + 1, minimize.y + 1, width) ==
+          rtsc::ui::ConnectionBarButton::kMinimize);
+    CHECK(bar.HitTest(pin.x + 1, pin.y + 1, width) ==
+          rtsc::ui::ConnectionBarButton::kPin);
+    // The bar background is not a button.
+    CHECK(bar.HitTest(10, 10, width) ==
+          rtsc::ui::ConnectionBarButton::kNone);
+    // Below the bar is not a button.
+    CHECK(bar.HitTest(close.x + 1, bar.height() + 1, width) ==
+          rtsc::ui::ConnectionBarButton::kNone);
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_ui_tests"); }

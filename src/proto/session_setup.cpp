@@ -28,6 +28,225 @@ std::vector<uint8_t> ControlPayload(ControlAction action) {
 
 }  // namespace
 
+namespace {
+
+constexpr uint32_t kLogonInfoV2PadSize = 558;
+// TS_LOGON_INFO_VERSION_2::Size is 18 (the fixed part) per the spec dump, but
+// some servers report the total 576; both are accepted ([FreeRDP info.c]).
+constexpr uint32_t kLogonInfoV2SizeShort = 18;
+constexpr uint32_t kLogonInfoV2SizeFull = 576;
+
+// [MS-RDPBCGR] 2.2.10.1.1.2: Domain/UserName are null-terminated UTF-16LE.
+// Limits from the fixed TS_LOGON_INFO (v1) fields, as FreeRDP does.
+constexpr uint32_t kMaxDomainBytes = 52;
+constexpr uint32_t kMaxUserNameBytes = 512;
+
+std::string DecodeUtf16Le(const uint8_t* data, size_t size) {
+    std::string out;
+    for (size_t i = 0; i + 2 <= size; i += 2) {
+        const uint32_t cp = static_cast<uint32_t>(data[i]) |
+                            (static_cast<uint32_t>(data[i + 1]) << 8);
+        if (cp == 0) break;
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
+Status ParseLogonInfoV2(ByteReader& r, SaveSessionInfo& out) {
+    uint16_t version = 0;
+    uint32_t size = 0;
+    uint32_t session_id = 0;
+    uint32_t cb_domain = 0;
+    uint32_t cb_user = 0;
+    if (!r.u16le(version) || version != 1) return Status::InvalidVersion;
+    if (!r.u32le(size)) return Status::InvalidLength;
+    // Windows Server 2019/2022 send 12 rather than 570 ([FreeRDP info.c]).
+    if (size != kLogonInfoV2SizeFull && size != kLogonInfoV2SizeShort) {
+        return Status::InvalidLength;
+    }
+    if (!r.u32le(session_id) || !r.u32le(cb_domain) || !r.u32le(cb_user)) {
+        return Status::InvalidLength;
+    }
+    if (!r.skip(kLogonInfoV2PadSize)) return Status::InvalidLength;
+    if (cb_domain > kMaxDomainBytes || cb_user > kMaxUserNameBytes) {
+        return Status::InvalidLength;
+    }
+    if ((cb_domain & 1) != 0 || (cb_user & 1) != 0) {
+        return Status::InvalidLength;
+    }
+    if (r.remaining() < static_cast<size_t>(cb_domain) + cb_user) {
+        return Status::InvalidLength;
+    }
+    const uint8_t* domain = r.cursor();
+    if (!r.skip(cb_domain)) return Status::InvalidLength;
+    const uint8_t* user = r.cursor();
+    if (!r.skip(cb_user)) return Status::InvalidLength;
+
+    out.has_logon = true;
+    out.session_id = session_id;
+    out.domain = DecodeUtf16Le(domain, cb_domain);
+    out.user_name = DecodeUtf16Le(user, cb_user);
+    return Status::Ok;
+}
+
+Status ParseLogonInfoExtended(ByteReader& r, SaveSessionInfo& out) {
+    uint16_t length = 0;
+    uint32_t fields_present = 0;
+    const size_t length_offset = r.offset();
+    if (!r.u16le(length) || !r.u32le(fields_present)) {
+        return Status::InvalidLength;
+    }
+    // Length counts itself: 2 + 4 (FieldsPresent) + the field blocks. It must
+    // fit in the remaining body.
+    if (length < 6 ||
+        r.remaining() < static_cast<size_t>(length) - 6) {
+        return Status::InvalidLength;
+    }
+    const size_t end = length_offset + length;
+    if (r.offset() > end) return Status::InvalidLength;
+    if ((fields_present & 1u) == 0) {
+        return Status::Ok;  // no LOGON_EX_AUTORECONNECTCOOKIE
+    }
+    uint32_t cb_field = 0;
+    uint32_t cb_len = 0;
+    uint32_t version = 0;
+    uint32_t logon_id = 0;
+    if (!r.u32le(cb_field) || cb_field < 28) return Status::InvalidLength;
+    if (!r.u32le(cb_len) || cb_len != 28) return Status::InvalidLength;
+    if (!r.u32le(version) || !r.u32le(logon_id)) return Status::InvalidLength;
+    uint8_t random[16] = {};
+    if (!r.bytes(random, sizeof(random))) return Status::InvalidLength;
+    if (r.offset() > end) return Status::InvalidLength;
+
+    out.has_auto_reconnect_cookie = true;
+    out.auto_reconnect_version = version;
+    out.auto_reconnect_logon_id = logon_id;
+    out.auto_reconnect_random.assign(random, random + sizeof(random));
+    return Status::Ok;
+}
+
+}  // namespace
+
+Status ParseSaveSessionInfo(const uint8_t* data, size_t size,
+                            SaveSessionInfo& out) {
+    ByteReader r(data, size);
+    uint32_t info_type = 0;
+    if (!r.u32le(info_type)) return Status::InvalidLength;
+    switch (info_type) {
+        case 0:  // INFOTYPE_LOGON (v1): not decoded
+        case 2:  // INFOTYPE_LOGON_PLAINNOTIFY: 576 bytes of padding, no data
+            return Status::Ok;
+        case 1:  // INFOTYPE_LOGON_LONG
+            return ParseLogonInfoV2(r, out);
+        case 3:  // INFOTYPE_LOGON_EXTENDED_INFO
+            return ParseLogonInfoExtended(r, out);
+        default:
+            return Status::Ok;  // forward compatibility
+    }
+}
+
+namespace {
+
+void AppendUtf16Le(std::vector<uint8_t>& out, uint32_t cp) {
+    if (cp > 0xFFFF) {
+        cp -= 0x10000;
+        const uint32_t hi = 0xD800 + (cp >> 10);
+        const uint32_t lo = 0xDC00 + (cp & 0x3FF);
+        out.push_back(static_cast<uint8_t>(hi & 0xFF));
+        out.push_back(static_cast<uint8_t>((hi >> 8) & 0xFF));
+        out.push_back(static_cast<uint8_t>(lo & 0xFF));
+        out.push_back(static_cast<uint8_t>((lo >> 8) & 0xFF));
+        return;
+    }
+    out.push_back(static_cast<uint8_t>(cp & 0xFF));
+    out.push_back(static_cast<uint8_t>((cp >> 8) & 0xFF));
+}
+
+// UTF-8 text -> null-terminated UTF-16LE. Returns false on invalid UTF-8.
+bool Utf8ToUtf16Le(const std::string& text, std::vector<uint8_t>& out) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const uint8_t b = static_cast<uint8_t>(text[i]);
+        uint32_t cp = 0;
+        size_t extra = 0;
+        if (b < 0x80) {
+            cp = b;
+        } else if ((b & 0xE0) == 0xC0) {
+            cp = b & 0x1F;
+            extra = 1;
+        } else if ((b & 0xF0) == 0xE0) {
+            cp = b & 0x0F;
+            extra = 2;
+        } else if ((b & 0xF8) == 0xF0) {
+            cp = b & 0x07;
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= text.size()) return false;
+        for (size_t k = 1; k <= extra; ++k) {
+            const uint8_t c = static_cast<uint8_t>(text[i + k]);
+            if ((c & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (c & 0x3F);
+        }
+        i += extra + 1;
+        AppendUtf16Le(out, cp);
+    }
+    out.push_back(0);
+    out.push_back(0);
+    return true;
+}
+
+}  // namespace
+
+std::vector<uint8_t> EncodeSaveSessionInfoLogon(uint32_t session_id,
+                                                const std::string& domain,
+                                                const std::string& user) {
+    std::vector<uint8_t> domain_utf16;
+    std::vector<uint8_t> user_utf16;
+    if (!Utf8ToUtf16Le(domain, domain_utf16)) return {};
+    if (!Utf8ToUtf16Le(user, user_utf16)) return {};
+    if (domain_utf16.size() > kMaxDomainBytes ||
+        user_utf16.size() > kMaxUserNameBytes) {
+        return {};
+    }
+    ByteWriter w;
+    w.u32le(1);                          // INFOTYPE_LOGON_LONG
+    w.u16le(1);                          // SAVE_SESSION_PDU_VERSION_ONE
+    w.u32le(kLogonInfoV2SizeFull);       // Size (fixed part, spec value)
+    w.u32le(session_id);
+    w.u32le(static_cast<uint32_t>(domain_utf16.size()));
+    w.u32le(static_cast<uint32_t>(user_utf16.size()));
+    for (uint32_t i = 0; i < kLogonInfoV2PadSize; ++i) w.u8(0);
+    w.bytes(domain_utf16.data(), domain_utf16.size());
+    w.bytes(user_utf16.data(), user_utf16.size());
+    return w.take();
+}
+
+std::vector<uint8_t> EncodeSaveSessionInfoCookie(uint32_t version,
+                                                 uint32_t logon_id,
+                                                 const uint8_t random[16]) {
+    ByteWriter w;
+    w.u32le(3);   // INFOTYPE_LOGON_EXTENDED_INFO
+    w.u16le(38);  // Length (includes itself: 2 + 4 + 4 + 28)
+    w.u32le(1);   // FieldsPresent = LOGON_EX_AUTORECONNECTCOOKIE
+    w.u32le(28);  // TS_LOGON_INFO_FIELD::cbFieldData
+    w.u32le(28);  // ARC_SC_PRIVATE_PACKET::cbLen
+    w.u32le(version);
+    w.u32le(logon_id);
+    w.bytes(random, 16);
+    return w.take();
+}
+
 const char* to_string(SessionPhase phase) {
     switch (phase) {
         case SessionPhase::kInit: return "init";
@@ -98,6 +317,23 @@ SessionStep SessionSetupMachine::OnPdu(const uint8_t* data, size_t size) {
             return out;  // licensing PDU: not ours to process
         }
         return HandleDemandActive(sd.user_data.data(), sd.user_data.size());
+    }
+
+    if (state_.phase == SessionPhase::kDeactivated) {
+        // Deactivation-Reactivation Sequence ([MS-RDPBCGR] 1.3.1.3): after a
+        // Deactivate All PDU the server may either drop the connection or
+        // re-run the Capability Exchange. Wait for the new Demand Active and
+        // re-enter the same path the initial activation used; any other PDU
+        // (including a repeated Deactivate All) is ignored until then.
+        ShareControlHeader ctrl;
+        if (ShareControlHeader::parse(sd.user_data.data(), sd.user_data.size(),
+                                      ctrl) != Status::Ok) {
+            return Fail("malformed share control header after Deactivate All");
+        }
+        if (ctrl.type == SharePduType::kDemandActive) {
+            return HandleDemandActive(sd.user_data.data(), sd.user_data.size());
+        }
+        return out;
     }
 
     return HandleSharePdu(sd.user_data.data(), sd.user_data.size());
@@ -202,8 +438,11 @@ SessionStep SessionSetupMachine::HandleSharePdu(const uint8_t* data,
 
     switch (ctrl.type) {
         case SharePduType::kDeactivateAll: {
-            // S4 -> S5: the server is dropping the connection; graphics and
-            // input handlers must be torn down. No state re-negotiation here.
+            // [MS-RDPBCGR] 1.3.1.3: a Deactivate All PDU means either the
+            // connection will be dropped or a Deactivation-Reactivation
+            // Sequence will re-run the Capability Exchange. Enter kDeactivated
+            // and let OnPdu decide when the next Demand Active arrives; while
+            // deactivated, other share PDUs are ignored.
             state_.phase = SessionPhase::kDeactivated;
             return out;
         }
@@ -234,6 +473,32 @@ SessionStep SessionSetupMachine::HandleSharePdu(const uint8_t* data,
                                              layout) == Status::Ok) {
                 state_.monitors = layout.monitors;
                 state_.has_monitor_layout = true;
+            }
+            return out;
+        }
+        case ShareDataPduType::kSaveSessionInfo: {
+            // Logon identity and the auto-reconnect cookie ([MS-RDPBCGR]
+            // 2.2.10.1.1). Recorded only; the phase does not change. A
+            // malformed PDU is ignored so a decoration cannot end the session.
+            SaveSessionInfo info;
+            if (ParseSaveSessionInfo(data + ShareDataHeader::kSize,
+                                     size - ShareDataHeader::kSize,
+                                     info) == Status::Ok) {
+                if (info.has_logon) {
+                    state_.logon_info.has_logon = true;
+                    state_.logon_info.session_id = info.session_id;
+                    state_.logon_info.domain = info.domain;
+                    state_.logon_info.user_name = info.user_name;
+                }
+                if (info.has_auto_reconnect_cookie) {
+                    state_.logon_info.has_auto_reconnect_cookie = true;
+                    state_.logon_info.auto_reconnect_version =
+                        info.auto_reconnect_version;
+                    state_.logon_info.auto_reconnect_logon_id =
+                        info.auto_reconnect_logon_id;
+                    state_.logon_info.auto_reconnect_random =
+                        info.auto_reconnect_random;
+                }
             }
             return out;
         }
@@ -314,3 +579,4 @@ SessionStep SessionSetupMachine::HandleSharePdu(const uint8_t* data,
 }
 
 }  // namespace rtsc::proto
+

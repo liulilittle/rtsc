@@ -407,6 +407,74 @@ RTSC_TEST(gui_send_drdynvc_hookup_reaches_urbdrc_ready) {
     server.Stop();
     runner.join();
 }
+RTSC_TEST(gui_send_server_reports_logon_identity) {
+    rtsc::server::ServerConfig scfg;
+    scfg.port = 0;  // ephemeral
+    scfg.desktop_width = 64;
+    scfg.desktop_height = 48;
+    auto source = rtsc::server::MakeTestPatternSource();
+    rtsc::server::RdpServer server(scfg);
+    server.SetDesktopSource(source.get());
+
+    std::string error;
+    CHECK(server.Start(error));
+    const uint16_t port = server.bound_port();
+    std::thread runner([&server]() { server.Run(); });
+
+    auto socket = rtsc::net::ConnectTcp("127.0.0.1", port, error);
+    CHECK(socket != nullptr);
+    if (socket != nullptr) {
+        RecordingTransport transport(std::move(socket));
+        rtsc::client::Client client(MakeGuiDriver(), 64, 48);
+        CHECK(client.Connect(transport, error));
+        CHECK(client.active());
+
+        // The server sends Save Session Info ([MS-RDPBCGR] 2.2.10.1.1.2) and
+        // the auto-reconnect cookie (2.2.10.1.1.4.1) right after finalization;
+        // they can arrive after Connect() returns, so pump until both land.
+        const auto got_all = [&client]() {
+            const auto& logon = client.driver().logon_info();
+            return logon.has_logon && logon.has_auto_reconnect_cookie;
+        };
+        for (int i = 0; i < 20 && !got_all(); ++i) {
+            if (!client.Pump(transport, error)) break;
+        }
+        const auto& logon = client.driver().logon_info();
+        CHECK(logon.has_logon);
+        CHECK(logon.domain == "NTDEV");
+        CHECK(logon.user_name == "rtsc");
+        CHECK(logon.has_auto_reconnect_cookie);
+        CHECK_EQ(logon.auto_reconnect_random.size(), static_cast<size_t>(16));
+        // The cookie is issued for this session, so resuming it must land on
+        // the same logon id.
+        CHECK(logon.session_id != 0u);
+        CHECK_EQ(logon.auto_reconnect_logon_id, logon.session_id);
+        const uint32_t first_session_id = logon.session_id;
+        transport.Close();
+
+        // Reconnect ([MS-RDPBCGR] 1.3.1.5): a fresh transport, the same Client
+        // object and the cookie captured above. The client must complete the
+        // whole sequence again on the reset driver.
+        auto socket2 = rtsc::net::ConnectTcp("127.0.0.1", port, error);
+        CHECK(socket2 != nullptr);
+        if (socket2 != nullptr) {
+            RecordingTransport transport2(std::move(socket2));
+            CHECK(client.Reconnect(transport2, error));
+            CHECK(client.active());
+            for (int i = 0; i < 20 && !client.driver().logon_info().has_logon;
+                 ++i) {
+                if (!client.Pump(transport2, error)) break;
+            }
+            CHECK(client.driver().logon_info().has_logon);
+            // The server validated the cookie and resumed the logon id.
+            CHECK_EQ(client.driver().logon_info().session_id, first_session_id);
+            transport2.Close();
+        }
+    }
+
+    server.Stop();
+    runner.join();
+}
 #endif  // _WIN32
 
 int main() { return ::rtsc::test::run_all("rtsc_gui_send_tests"); }

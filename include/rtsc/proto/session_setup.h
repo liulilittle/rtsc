@@ -38,6 +38,45 @@ enum class SessionPhase : uint8_t {
 
 const char* to_string(SessionPhase phase);
 
+// Logon information reported by the server's Save Session Info PDU
+// ([MS-RDPBCGR] 2.2.10.1.1). Only the pieces this client can use are kept:
+// the session id and the domain/user of INFOTYPE_LOGON_LONG, and the
+// auto-reconnect cookie of INFOTYPE_LOGON_EXTENDED_INFO.
+struct SaveSessionInfo {
+    bool has_logon = false;
+    uint32_t session_id = 0;
+    std::string domain;
+    std::string user_name;
+
+    bool has_auto_reconnect_cookie = false;
+    uint32_t auto_reconnect_version = 0;
+    uint32_t auto_reconnect_logon_id = 0;
+    std::vector<uint8_t> auto_reconnect_random;  // 16 bytes when present
+};
+
+// Parses the Save Session Info body, i.e. the bytes after the 18-byte share
+// data header. Unknown infoTypes are ignored (Status::Ok, nothing recorded);
+// a malformed body is rejected without touching `out`. INFOTYPE_LOGON (v1) is
+// not decoded: modern servers send LOGON_LONG or LOGON_EXTENDED_INFO.
+Status ParseSaveSessionInfo(const uint8_t* data, size_t size,
+                            SaveSessionInfo& out);
+
+// Builds the body of a LOGON_LONG Save Session Info PDU (2.2.10.1.1.2) for the
+// server role. `domain` and `user` are UTF-8; they are encoded as null-
+// terminated UTF-16LE. Returns an empty vector when a string is invalid UTF-8
+// or exceeds the v1 field limits (52 / 512 bytes).
+std::vector<uint8_t> EncodeSaveSessionInfoLogon(uint32_t session_id,
+                                                const std::string& domain,
+                                                const std::string& user);
+
+// Builds the body of a LOGON_EXTENDED_INFO Save Session Info PDU
+// (2.2.10.1.1.4) carrying LOGON_EX_AUTORECONNECTCOOKIE: the server-supplied
+// ARC_SC_PRIVATE_PACKET (cbLen 28, version, logon id, 16 random bytes). The
+// client stores it for a later reconnect.
+std::vector<uint8_t> EncodeSaveSessionInfoCookie(uint32_t version,
+                                                 uint32_t logon_id,
+                                                 const uint8_t random[16]);
+
 struct SessionSetupState {
     SessionPhase phase = SessionPhase::kInit;
     uint16_t user_channel_id = 0;
@@ -62,6 +101,9 @@ struct SessionSetupState {
     // Last Set Error Info PDU, if any (recorded but does not change the state).
     bool has_error_info = false;
     uint32_t error_info = 0;
+    // The last Save Session Info PDU (2.2.10.1.1): logon identity and the
+    // auto-reconnect cookie. Does not change the session phase.
+    SaveSessionInfo logon_info;
     std::string error;  // populated when phase == kClosed due to a failure
 };
 

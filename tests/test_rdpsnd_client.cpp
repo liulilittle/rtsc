@@ -299,4 +299,32 @@ RTSC_TEST(rdpsnd_unknown_format_is_ignored) {
     CHECK_EQ(player.plays, static_cast<unsigned>(0));
 }
 
+// After a reconnect the server re-runs the format exchange. Reset() must drop
+// the old session's formats and counters so the new Server Audio Formats PDU
+// is answered with a fresh Client Audio Formats PDU.
+RTSC_TEST(rdpsnd_reset_allows_a_second_format_exchange) {
+    MockPlayer player;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RdpsndClient client(&player, [&](const std::vector<uint8_t>& m) {
+        sent.push_back(m);
+    });
+
+    const std::vector<SndAudioFormat> formats = {PcmFormat(2, 44100)};
+    FeedPdu(client, SndMsgType::kFormats, ServerFormatsBody(formats, 8));
+    CHECK_EQ(client.server_formats_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.client_formats_count(), static_cast<unsigned>(1));
+
+    client.Reset();
+    CHECK_EQ(client.server_formats_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.client_formats_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.server_version(), static_cast<uint16_t>(0));
+    CHECK_EQ(client.selected_format().samples_per_sec, static_cast<uint32_t>(0));
+
+    sent.clear();
+    FeedPdu(client, SndMsgType::kFormats, ServerFormatsBody(formats, 8));
+    CHECK_EQ(client.server_formats_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.client_formats_count(), static_cast<unsigned>(1));
+    CHECK(FindSentBody(sent, SndMsgType::kFormats).has_value());
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_rdpsnd_client_tests"); }

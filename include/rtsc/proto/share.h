@@ -296,4 +296,9 @@ struct SuppressOutputPdu {
     static Status parse(const uint8_t* data, size_t size, SuppressOutputPdu& out);
 };
 
+// Human-readable text for a Set Error Info errorInfo code ([MS-RDPBCGR]
+// 2.2.5.1.1). Covers the protocol-independent codes (0x00..0x1A) that explain
+// an ordinary session disconnect; anything else reports "unknown error".
+const char* SetErrorInfoText(uint32_t error_info);
+
 }  // namespace rtsc::proto

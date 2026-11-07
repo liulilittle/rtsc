@@ -17,6 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cwchar>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -28,10 +31,15 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commdlg.h>
 #endif
 
 #include "connection_info_dialog_win32.h"
 #include "help_dialog_win32.h"
+#include "mstsc_args.h"
+#include "screenshot_save.h"
+#include "rtsc/ui/window.h"
+#include "rtsc/client/client.h"
 #include "rtsc/debug/gui_debug_host.h"
 #include "rtsc/debug/pending_command_queue.h"
 #include "rtsc/debug/ui_debug_server.h"
@@ -42,10 +50,13 @@
 #include <unordered_set>
 #include "rtsc/audio/audio_sink.h"
 #include "rtsc/channel/cliprdr_client.h"
+#include "rtsc/channel/display_control_client.h"
 #include "rtsc/channel/drdynvc_client.h"
 #include "rtsc/channel/rdpdr_client.h"
 #include "rtsc/channel/rdpsnd_client.h"
 #include "rtsc/channel/rdpusb_client.h"
+#include "rtsc/config/rdp_file.h"
+#include "rtsc/config/credential_store.h"
 #include "rtsc/clipboard/clipboard.h"
 #include "rtsc/clipboard/drop_files.h"
 #include "rtsc/client/client.h"
@@ -57,8 +68,11 @@
 #include "rtsc/net/tls.h"
 #include "rtsc/proto/connect_machine.h"
 #include "rtsc/proto/rdp_neg.h"
+#include "rtsc/proto/share.h"
 #include "rtsc/rdpdr/drive_enum.h"
 #include "rtsc/rdpdr/file_system.h"
+#include "rtsc/rdpdr/printer_win32.h"
+#include "rtsc/rdpdr/serial_win32.h"
 #include "rtsc/security/connection_driver.h"
 #include "rtsc/smartcard/backend.h"
 #include "rtsc/ui/clipboard_bind.h"
@@ -74,6 +88,76 @@
 namespace {
 
 constexpr const char* kVersion = "rtsc_gui " RTSC_VERSION_STRING;
+
+#if defined(_WIN32)
+// UTF-8 <-> UTF-16 for the ANSI-free Win32 dialogs. The front-end stores every
+// path as UTF-8 (std::string), while GetSaveFileNameW works in UTF-16.
+std::wstring Utf8ToWide(const std::string& text) {
+    if (text.empty()) return std::wstring();
+    const int len = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                        static_cast<int>(text.size()), nullptr,
+                                        0);
+    if (len <= 0) return std::wstring();
+    std::wstring wide(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                        static_cast<int>(text.size()), wide.data(), len);
+    return wide;
+}
+
+std::string WideToUtf8(const std::wstring& text) {
+    if (text.empty()) return std::string();
+    const int len = WideCharToMultiByte(CP_UTF8, 0, text.data(),
+                                        static_cast<int>(text.size()), nullptr,
+                                        0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string utf8(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(),
+                        static_cast<int>(text.size()), utf8.data(), len,
+                        nullptr, nullptr);
+    return utf8;
+}
+
+// Standard Save dialog for the screenshot command. Returns an empty string when
+// the operator cancels (or the dialog cannot be shown), which the caller treats
+// as "do nothing".
+std::string ShowSaveScreenshotDialog(HWND owner, const std::string& suggested) {
+    wchar_t file[MAX_PATH] = {};
+    const std::wstring wide = Utf8ToWide(suggested);
+    if (!wide.empty()) {
+        wcsncpy_s(file, MAX_PATH, wide.c_str(), _TRUNCATE);
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"BMP image (*.bmp)\0*.bmp\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"bmp";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameW(&ofn) == 0) return std::string();
+    return WideToUtf8(file);
+}
+
+// Standard Save dialog for the "save connection file" command.
+std::string ShowSaveConnectionFileDialog(HWND owner,
+                                         const std::string& suggested) {
+    wchar_t file[MAX_PATH] = {};
+    const std::wstring wide = Utf8ToWide(suggested);
+    if (!wide.empty()) {
+        wcsncpy_s(file, MAX_PATH, wide.c_str(), _TRUNCATE);
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"RDP file (*.rdp)\0*.rdp\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"rdp";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameW(&ofn) == 0) return std::string();
+    return WideToUtf8(file);
+}
+#endif  // defined(_WIN32)
 
 // Static virtual channel ids assigned by the server in the Server Network Data
 // block ([MS-RDPBCGR] 2.2.1.4.4) and parsed by the connection driver. Captured
@@ -172,6 +256,17 @@ void usage() {
         "usage: rtsc_gui <host> [port] [domain] [user] [password] "
         "[width] [height] [backend] [zoom] [fit] [viewport_w] [viewport_h] "
         "[multimon] [--rdp] [--frames N] [--seconds N] [--input-probe]\n"
+        "  --rdp-file <path>: read connection defaults from an mstsc .rdp\n"
+        "  file (full address, username, domain, desktop size, multimon,\n"
+        "  smart sizing, screen mode); explicit arguments still win.\n"
+        "  --save-rdp <path>: write the effective settings as an .rdp file\n"
+        "  --redirect-com: share every local serial port with the session\n"
+        "  and exit without connecting.\n"
+        "  --redirect-printers: share every local printer with the session\n"
+        "  and exit without connecting.\n"
+        "  --save-credential: store user/password in the Windows Credential\n"
+        "  Manager under TERMSRV/<host> and exit; --use-credential fills a\n"
+        "  missing user/password from there.\n"
         "  --rdp  request PROTOCOL_RDP (Standard RDP Security, RC4 data plane)\n"
         "  --input-probe: queue one key and one mouse event after activation\n"
         "  (automation only; headless loopback input check).\n"
@@ -180,6 +275,14 @@ void usage() {
         "  backend: headless | win32 | x11 | wayland (default: platform).\n"
         "  zoom: 1.0 = 1:1 (the default). fit: 1 = fit to window.\n"
         "  viewport_w/h: force the window surface size (drives auto-resize).\n"
+        "  --bpp=N: request 4/8/15/16/24/32-bit session color depth (default 32).\n"
+        "  --disp: enable dynamic display resize (Display Control dynamic\n"
+        "  virtual channel); a local window resize asks the server to adopt\n"
+        "  the new size.\n"
+        "  mstsc-compatible: /v:host[:port] (or [ipv6]:port), /w:N, /h:N,\n"
+        "  /f (fullscreen), /span, /multimon, /admin (console session).\n"
+        "  Slash options override the positional equivalents; /public,\n"
+        "  /edit and /migrate are rejected as unsupported.\n"
         "  multimon: 1 = one window per monitor when the server reports a\n"
         "  multi-monitor layout; 0 (default) = one span window for the union.\n"
         "  --gateway=host:port (or RTSC_GATEWAY): tunnel through an RD Gateway\n"
@@ -202,9 +305,20 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
                                             bool standard_rdp,
                                             bool rail_mode,
                                             bool usb_redirect,
-                                            bool tls_insecure) {
+                                            bool disp_enabled,
+                                            bool clipboard_redirect,
+                                            bool audio_redirect,
+                                            bool admin_session,
+                                            bool tls_insecure,
+                                            int color_bpp) {
     rtsc::proto::ConnectMachine::Config mcfg;
     mcfg.cookie = "Cookie: mstshash=rtsc";
+    mcfg.admin_session = admin_session;
+    // The caller validated the bpp; an unsupported value keeps the spec default
+    // (32bpp) rather than silently negotiating something else.
+    rtsc::proto::ApplyClientColorDepth(color_bpp, mcfg.high_color_depth,
+                                       mcfg.supported_color_depths,
+                                       mcfg.early_capability_flags);
     if (standard_rdp) {
         mcfg.requested_protocols = rtsc::proto::kProtocolRdp;
         // Advertise 40/128/56-bit Standard RDP Security. The server picks the
@@ -220,14 +334,14 @@ rtsc::security::ConnectionDriver MakeDriver(const std::string& host,
     // Static virtual channels ([MS-RDPBCGR] 2.2.1.11). The "rail" channel is
     // only advertised in RemoteApp (--rail): a desktop session claiming it
     // makes the server prepare a RemoteApp session with a black desktop.
-    // "drdynvc" (the URBDRC dynamic-virtual-channel transport) is advertised
-    // only when USB redirection is requested (RTSC_REDIRECT_USB); advertising
-    // it unconditionally wastes a static channel and widens the attack surface
-    // for no benefit.
-    std::vector<std::string> channels = {"rdpdr", "cliprdr", "rdpsnd"};
-    if (rail_mode) channels.push_back("rail");
-    if (usb_redirect) channels.push_back("drdynvc");
-    mcfg.channel_names = std::move(channels);
+    // "drdynvc" (the URBDRC and Display Control dynamic-virtual-channel
+    // transport) is advertised only when USB redirection or dynamic display
+    // resize is requested; advertising it unconditionally wastes a static
+    // channel and widens the attack surface for no benefit. Clipboard and
+    // audio follow the .rdp redirectclipboard / audiomode properties.
+    mcfg.channel_names = rtsc::gui::BuildStaticChannelNames(
+        rail_mode, usb_redirect || disp_enabled, clipboard_redirect,
+        audio_redirect);
 
     rtsc::proto::ConnectMachine::Credentials creds;
     creds.domain = domain;
@@ -376,6 +490,18 @@ int main(int argc, char** argv) {
     bool standard_rdp = false;
     bool input_probe = false;
     bool rail_mode = false;
+    bool disp_enabled = false;
+    // mstsc-compatible switches (/v:, /w:, /h:, /f, /span, /multimon). They are
+    // applied after the positional arguments below: an explicit switch wins.
+    std::string mstsc_host;
+    uint16_t mstsc_port = 0;  // 0 = not specified in /v:
+    uint16_t mstsc_width = 0;
+    uint16_t mstsc_height = 0;
+    bool have_mstsc_endpoint = false;
+    bool mstsc_fullscreen = false;
+    bool mstsc_span = false;
+    bool mstsc_multimon = false;
+    bool mstsc_admin = false;
     // TLS policy (D-A3, P0): the default on both TLS layers is STRICT. The
     // explicit switches are the only way to deregulate, for isolated labs.
     bool tls_insecure = false;
@@ -384,10 +510,143 @@ int main(int argc, char** argv) {
     std::string gateway_pinned_spki;  // "--gateway-trust=<64-hex>"
     // 0 = debug channel disabled (the default). Binds 127.0.0.1 only.
     uint16_t ui_debug_port = 0;
+    int color_bpp = 32;
+    // --save-rdp: write the effective connection settings as an .rdp file and
+    // exit without connecting (mstsc's "Save As", scriptable).
+    std::string save_rdp_path;
+    // Saved-connection credentials (Windows Credential Manager, TERMSRV/<host>).
+    bool save_credential = false;
+    bool use_credential = false;
+    // --redirect-com: share every local serial port (mstsc redirectcomports).
+    bool redirect_com_flag = false;
+    // --redirect-printers: share every local printer (mstsc redirectprinters).
+    bool redirect_printers_flag = false;
+    // --rdp-file: an mstsc connection file supplies defaults for the endpoint,
+    // the account, the desktop geometry and the view. Explicit positional
+    // arguments and mstsc switches still win, as they do in mstsc.
+    rtsc::config::RdpFileSettings rdp_file;
+    bool have_rdp_file = false;
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        const char* path = nullptr;
+        if (std::strcmp(a, "--rdp-file") == 0 && i + 1 < argc) {
+            path = argv[++i];
+        } else if (std::strncmp(a, "--rdp-file=", 11) == 0) {
+            path = a + 11;
+        } else {
+            continue;
+        }
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            std::printf("rtsc_gui: cannot open RDP file '%s'\n", path);
+            return 2;
+        }
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        rdp_file = rtsc::config::ParseRdpFile(text);
+        have_rdp_file = true;
+    }
     std::vector<std::string> args;
     args.reserve(static_cast<size_t>(argc));
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
+        if (std::strcmp(a, "--rdp-file") == 0 && i + 1 < argc) {
+            ++i;  // already consumed by the pre-pass
+            continue;
+        }
+        if (std::strncmp(a, "--rdp-file=", 11) == 0) continue;
+        if (std::strcmp(a, "--save-rdp") == 0 && i + 1 >= argc) {
+            std::printf("--save-rdp requires a path\n");
+            return 2;
+        }
+        if (std::strcmp(a, "--save-rdp") == 0 && i + 1 < argc) {
+            save_rdp_path = argv[++i];
+            continue;
+        }
+        if (std::strncmp(a, "--save-rdp=", 11) == 0) {
+            save_rdp_path = a + 11;
+            continue;
+        }
+        if (std::strcmp(a, "--save-credential") == 0) {
+            save_credential = true;
+            continue;
+        }
+        if (std::strcmp(a, "--use-credential") == 0) {
+            use_credential = true;
+            continue;
+        }
+        if (std::strcmp(a, "--redirect-com") == 0) {
+            redirect_com_flag = true;
+            continue;
+        }
+        if (std::strcmp(a, "--redirect-printers") == 0) {
+            redirect_printers_flag = true;
+            continue;
+        }
+        const rtsc::gui::CliSpecial special = rtsc::gui::ClassifyCliSpecial(a);
+        if (special == rtsc::gui::CliSpecial::kHelp) {
+            usage();
+            return 0;
+        }
+        if (special == rtsc::gui::CliSpecial::kVersion) {
+            std::printf("%s\n", kVersion);
+            return 0;
+        }
+        // mstsc-compatible switches. /v: accepts host, host:port and
+        // [ipv6]:port; /w:/h: take 1..65535; /f, /span and /multimon are
+        // booleans. Any other slash option is rejected rather than treated as
+        // a positional host, so a typo cannot silently connect elsewhere.
+        if (std::strncmp(a, "/v:", 3) == 0) {
+            rtsc::gui::MstscEndpoint ep;
+            if (!rtsc::gui::ParseMstscEndpoint(a + 3, ep)) {
+                std::printf("rtsc_gui: invalid /v: value '%s'\n", a + 3);
+                return 2;
+            }
+            mstsc_host = ep.host;
+            mstsc_port = ep.port;
+            have_mstsc_endpoint = true;
+            continue;
+        }
+        if (std::strncmp(a, "/w:", 3) == 0) {
+            if (!rtsc::gui::ParseMstscDimension(a + 3, mstsc_width)) {
+                std::printf("rtsc_gui: invalid /w: value '%s'\n", a + 3);
+                return 2;
+            }
+            continue;
+        }
+        if (std::strncmp(a, "/h:", 3) == 0) {
+            if (!rtsc::gui::ParseMstscDimension(a + 3, mstsc_height)) {
+                std::printf("rtsc_gui: invalid /h: value '%s'\n", a + 3);
+                return 2;
+            }
+            continue;
+        }
+        if (std::strcmp(a, "/f") == 0) {
+            mstsc_fullscreen = true;
+            continue;
+        }
+        if (std::strcmp(a, "/span") == 0) {
+            mstsc_span = true;
+            continue;
+        }
+        if (std::strcmp(a, "/multimon") == 0) {
+            mstsc_multimon = true;
+            continue;
+        }
+        if (std::strcmp(a, "/admin") == 0) {
+            mstsc_admin = true;
+            continue;
+        }
+        if (std::strcmp(a, "/public") == 0 ||
+            std::strcmp(a, "/edit") == 0 ||
+            std::strcmp(a, "/migrate") == 0) {
+            std::printf("rtsc_gui: %s is not supported\n", a);
+            return 2;
+        }
+        if (a[0] == '/' && a[1] != '\0') {
+            std::printf("rtsc_gui: unsupported option %s\n", a);
+            return 2;
+        }
         if (std::strcmp(a, "--rdp") == 0) {
             standard_rdp = true;
             continue;
@@ -405,6 +664,28 @@ int main(int argc, char** argv) {
         }
         if (std::strcmp(a, "--ui-debug-port") == 0 && i + 1 < argc) {
             ui_debug_port = static_cast<uint16_t>(std::atoi(argv[++i]));
+            continue;
+        }
+        if (std::strcmp(a, "--bpp") == 0 && i + 1 >= argc) {
+            std::printf("--bpp requires a value (4, 8, 15, 16, 24, or 32)\n");
+            return 2;
+        }
+        if (std::strncmp(a, "--bpp=", 6) == 0 ||
+            (std::strcmp(a, "--bpp") == 0 && i + 1 < argc)) {
+            color_bpp = (a[5] == '=') ? std::atoi(a + 6) : std::atoi(argv[++i]);
+            uint16_t probe_high = 0;
+            uint16_t probe_supported = 0;
+            uint16_t probe_flags = 0;
+            if (!rtsc::proto::ApplyClientColorDepth(
+                    color_bpp, probe_high, probe_supported, probe_flags)) {
+                std::printf("invalid --bpp %d (expected 4, 8, 15, 16, 24, or 32)\n",
+                            color_bpp);
+                return 2;
+            }
+            continue;
+        }
+        if (std::strcmp(a, "--disp") == 0) {
+            disp_enabled = true;
             continue;
         }
         if (std::strcmp(a, "--rail") == 0) {
@@ -480,7 +761,29 @@ int main(int argc, char** argv) {
                 static_cast<uint8_t>(std::strtoul(hex, nullptr, 16));
         }
     }
-    if (args.empty()) {
+    if (mstsc_span && mstsc_multimon) {
+        std::printf("rtsc_gui: /span and /multimon are mutually exclusive\n");
+        return 2;
+    }
+    // Endpoint precedence: explicit host (/v: or positional) > .rdp full
+    // address > none. An explicit port wins; 0 means "not given".
+    const std::string explicit_host =
+        have_mstsc_endpoint ? mstsc_host : (args.empty() ? "" : args[0]);
+    const uint16_t explicit_port =
+        have_mstsc_endpoint
+            ? mstsc_port
+            : (args.size() >= 2
+                   ? static_cast<uint16_t>(std::atoi(args[1].c_str()))
+                   : 0);
+    rtsc::gui::MstscEndpoint endpoint;
+    const bool have_endpoint = rtsc::gui::ResolveEndpoint(
+        explicit_host, explicit_port,
+        have_rdp_file ? rdp_file.full_address : "", endpoint);
+    if (!have_endpoint) {
+        if (have_rdp_file && !rdp_file.full_address.empty()) {
+            std::printf("rtsc_gui: invalid 'full address' in the RDP file\n");
+            return 2;
+        }
         usage();
         return 2;
     }
@@ -494,18 +797,59 @@ int main(int argc, char** argv) {
     const uint16_t default_desktop_h = static_cast<uint16_t>(
         rtsc::proto::ConnectMachine::Config{}.desktop_height);
 
-    const std::string host = args[0];
-    const uint16_t port =
-        args.size() >= 2 ? static_cast<uint16_t>(std::atoi(args[1].c_str())) : 3389;
-    const std::string domain = args.size() >= 3 ? args[2] : "";
-    const std::string user = args.size() >= 4 ? args[3] : "";
-    const std::string password = args.size() >= 5 ? args[4] : "";
+    const std::string host = endpoint.host;
+    const uint16_t port = endpoint.port;
+    const std::string domain =
+        args.size() >= 3 ? args[2] : (have_rdp_file ? rdp_file.domain : "");
+    std::string user =
+        args.size() >= 4 ? args[3] : (have_rdp_file ? rdp_file.username : "");
+    std::string password = args.size() >= 5 ? args[4] : "";
+    if (use_credential || save_credential) {
+        std::unique_ptr<rtsc::config::CredentialStore> store =
+            rtsc::config::CreatePlatformCredentialStore();
+        if (!store) {
+            std::printf("credential: no credential store on this platform\n");
+            if (save_credential) return 2;
+        } else {
+            const std::string target = rtsc::config::CredentialTargetName(host);
+            if (use_credential) {
+                rtsc::config::StoredCredential saved;
+                if (store->Load(target, saved)) {
+                    if (user.empty()) user = saved.user;
+                    if (password.empty()) password = saved.password;
+                    std::printf("credential: loaded for %s\n", host.c_str());
+                } else {
+                    std::printf("credential: none saved for %s\n",
+                                host.c_str());
+                }
+            }
+            if (save_credential) {
+                std::string cred_error;
+                if (store->Save(target, {user, password}, cred_error)) {
+                    std::printf("credential: saved for %s\n", host.c_str());
+                    return 0;
+                }
+                std::printf("credential: %s\n", cred_error.c_str());
+                return 2;
+            }
+        }
+    }
     const uint16_t width =
-        args.size() >= 6 ? static_cast<uint16_t>(std::atoi(args[5].c_str()))
-                         : default_desktop_w;
+        mstsc_width != 0
+            ? mstsc_width
+            : (args.size() >= 6
+                   ? static_cast<uint16_t>(std::atoi(args[5].c_str()))
+                   : (have_rdp_file && rdp_file.desktop_width > 0
+                          ? static_cast<uint16_t>(rdp_file.desktop_width)
+                          : default_desktop_w));
     const uint16_t height =
-        args.size() >= 7 ? static_cast<uint16_t>(std::atoi(args[6].c_str()))
-                         : default_desktop_h;
+        mstsc_height != 0
+            ? mstsc_height
+            : (args.size() >= 7
+                   ? static_cast<uint16_t>(std::atoi(args[6].c_str()))
+                   : (have_rdp_file && rdp_file.desktop_height > 0
+                          ? static_cast<uint16_t>(rdp_file.desktop_height)
+                          : default_desktop_h));
     const std::string backend = args.size() >= 8 ? args[7] : "";
     // View options: zoom (1.0 = 1:1) and fit. The default is FIT: the remote
     // desktop is scaled to the application window (what mstsc calls "smart
@@ -519,7 +863,9 @@ int main(int argc, char** argv) {
     // picks smart sizing.
     const bool has_zoom = args.size() >= 9 && std::atof(args[8].c_str()) > 0.0;
     const double zoom_arg = has_zoom ? std::atof(args[8].c_str()) : 1.0;
-    bool fit_arg = args.size() >= 10 ? std::atoi(args[9].c_str()) != 0 : true;
+    bool fit_arg = args.size() >= 10
+                       ? std::atoi(args[9].c_str()) != 0
+                       : !(have_rdp_file && rdp_file.smart_sizing == 0);
     if (fit_arg && has_zoom) {
         // An explicit zoom means the caller asked for that scale; fit would
         // silently override it, so keep the requested zoom.
@@ -532,7 +878,84 @@ int main(int argc, char** argv) {
     // Multi-monitor mode: one window per monitor. The default (0) is the
     // single-window span mode, which shows the whole virtual desktop.
     const bool multimon =
-        args.size() >= 13 ? std::atoi(args[12].c_str()) != 0 : false;
+        mstsc_multimon
+            ? true
+            : (mstsc_span
+                   ? false
+                   : (args.size() >= 13
+                          ? std::atoi(args[12].c_str()) != 0
+                          : (have_rdp_file && rdp_file.use_multimon != 0)));
+
+    const bool effective_fullscreen =
+        mstsc_fullscreen || (have_rdp_file && rdp_file.screen_mode_id == 2);
+    // .rdp redirectclipboard / audiomode. Without a file the historical
+    // defaults stay (both redirected); audiomode 0 = play on the local
+    // device, 1/2 = no local audio redirection.
+    const bool clipboard_redirect =
+        !have_rdp_file || rdp_file.redirect_clipboard != 0;
+    const bool audio_redirect = !have_rdp_file || rdp_file.audiomode == 0;
+    // Serial redirection is opt-in: --redirect-com, RTSC_REDIRECT_COM, or the
+    // .rdp redirectcomports property. An explicit flag/env wins over the file.
+    bool serial_redirect_requested = redirect_com_flag;
+    if (!serial_redirect_requested) {
+        char* com_env = nullptr;
+        size_t com_env_len = 0;
+        if (_dupenv_s(&com_env, &com_env_len, "RTSC_REDIRECT_COM") == 0 &&
+            com_env != nullptr) {
+            serial_redirect_requested =
+                com_env[0] != '\0' && com_env[0] != '0';
+        }
+        std::free(com_env);
+    }
+    if (!serial_redirect_requested && have_rdp_file) {
+        serial_redirect_requested = rdp_file.redirect_comports != 0;
+    }
+    // Printer redirection follows the same opt-in chain: --redirect-printers,
+    // RTSC_REDIRECT_PRINTERS, or the .rdp redirectprinters property. An
+    // explicit flag/env wins over the file.
+    bool printers_redirect_requested = redirect_printers_flag;
+    if (!printers_redirect_requested) {
+        char* printer_env = nullptr;
+        size_t printer_env_len = 0;
+        if (_dupenv_s(&printer_env, &printer_env_len,
+                      "RTSC_REDIRECT_PRINTERS") == 0 &&
+            printer_env != nullptr) {
+            printers_redirect_requested =
+                printer_env[0] != '\0' && printer_env[0] != '0';
+        }
+        std::free(printer_env);
+    }
+    if (!printers_redirect_requested && have_rdp_file) {
+        printers_redirect_requested = rdp_file.redirect_printers != 0;
+    }
+    if (!save_rdp_path.empty()) {
+        const rtsc::config::RdpFileSettings saved =
+            rtsc::config::BuildSessionRdpFile(
+                rtsc::gui::FormatFullAddress(host, port), user, domain, width,
+                height, multimon, fit_arg, effective_fullscreen,
+                clipboard_redirect, have_rdp_file ? rdp_file.audiomode : 0,
+                serial_redirect_requested, printers_redirect_requested);
+        const std::string text = rtsc::config::WriteRdpFile(saved);
+        if (text.empty()) {
+            std::printf("rtsc_gui: cannot encode the RDP file\n");
+            return 2;
+        }
+        std::ofstream out(save_rdp_path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            std::printf("rtsc_gui: cannot write '%s'\n",
+                        save_rdp_path.c_str());
+            return 2;
+        }
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!out) {
+            std::printf("rtsc_gui: write failed for '%s'\n",
+                        save_rdp_path.c_str());
+            return 2;
+        }
+        std::printf("rtsc_gui: saved connection file '%s'\n",
+                    save_rdp_path.c_str());
+        return 0;
+    }
 
     std::printf("rtsc_gui: connecting to %s:%u (%ux%u, %s)\n", host.c_str(),
                 static_cast<unsigned>(port), static_cast<unsigned>(width),
@@ -557,6 +980,13 @@ int main(int argc, char** argv) {
         std::printf("viewport forced to %ux%u\n",
                     static_cast<unsigned>(viewport_w),
                     static_cast<unsigned>(viewport_h));
+    }
+    if (effective_fullscreen) {
+        // /f or "screen mode id:i:2" enters fullscreen before the session
+        // starts, matching mstsc. The toggle helper also updates the window's
+        // View menu state.
+        rtsc::ui::ToggleFullscreen(windows);
+        std::printf("fullscreen: enabled at startup\n");
     }
 
     std::string error;
@@ -599,7 +1029,9 @@ int main(int argc, char** argv) {
 
     rtsc::client::Client client(
         MakeDriver(host, domain, user, password, standard_rdp, rail_mode,
-                   rtsc::usb::UsbGateEnabled(usb_spec), tls_insecure),
+                   rtsc::usb::UsbGateEnabled(usb_spec), disp_enabled,
+                   clipboard_redirect, audio_redirect, mstsc_admin,
+                   tls_insecure, color_bpp),
         width, height);
 
     // View (zoom / fit) state. The controller owns the state; the pipeline owns
@@ -617,7 +1049,11 @@ int main(int argc, char** argv) {
     rtsc::ui::ViewMenuState menu_state;
     menu_state.zoom = zs.zoom;
     menu_state.fit = zs.fit;
+    menu_state.fullscreen = windows[0]->fullscreen();
     windows[0]->SetViewMenuState(menu_state);
+    // mstsc shows the endpoint in the title bar, so several sessions stay
+    // distinguishable. The zoom status follows the same string on view changes.
+    windows[0]->SetTitle(rtsc::client::WindowTitleText(host, port, zs));
 
     // Record the static virtual channel chunks the server sends; rdpdr is not
     // decoded, cliprdr runs the clipboard protocol, and rdpsnd runs the audio
@@ -704,18 +1140,29 @@ int main(int argc, char** argv) {
             env_spec != nullptr) {
             spec = env_spec;
         }
+        // The .rdp "drivestoredirect" property is the file-based equivalent;
+        // an explicit RTSC_REDIRECT_DRIVES still wins.
+        std::string file_drive_spec;
+        if (spec == nullptr && have_rdp_file &&
+            !rdp_file.drive_redirect.empty()) {
+            file_drive_spec =
+                rtsc::rdpdr::DriveRedirectToSpec(rdp_file.drive_redirect);
+            spec = file_drive_spec.c_str();
+        }
         for (const auto& drive : rtsc::rdpdr::EnumerateLocalDrives(spec)) {
             devices.push_back(
                 {device_id++, drive.dos_name, drive.local_root});
         }
         std::free(env_spec);
-        // Drive redirection is opt-in (RTSC_REDIRECT_DRIVES), so an empty list
-        // is the normal case. Print what is actually shared - the remote peer
-        // gets read/write access to every redirected drive, and silently
-        // sharing a whole disk would be a nasty surprise.
+        // Drive redirection is opt-in (RTSC_REDIRECT_DRIVES or .rdp
+        // drivestoredirect), so an empty list is the normal case. Print what
+        // is actually shared - the remote peer gets read/write access to every
+        // redirected drive, and silently sharing a whole disk would be a nasty
+        // surprise.
         if (devices.empty()) {
             std::printf("rdpdr: no drives redirected "
-                        "(set RTSC_REDIRECT_DRIVES=C,E or ALL)\n");
+                        "(set RTSC_REDIRECT_DRIVES=C,E or ALL, or "
+                        "drivestoredirect in the .rdp file)\n");
         } else {
             std::printf("rdpdr: redirecting %zu drive(s):", devices.size());
             for (const auto& device : devices) {
@@ -724,11 +1171,77 @@ int main(int argc, char** argv) {
             std::printf(" (remote peer has read/write access)\n");
         }
     }
+    // Serial port redirection (rdpdr PORT device): opt-in like drives. Every
+    // local COM port is announced; the backend opens a port on CREATE.
+    std::unique_ptr<rtsc::rdpdr::Win32SerialBackend> serial_backend;
+    std::vector<std::string> serial_ports;
+    if (serial_redirect_requested) {
+        serial_ports = rtsc::rdpdr::EnumerateSerialPorts();
+        uint32_t next_id = static_cast<uint32_t>(devices.size()) + 1;
+        for (const auto& com_port : serial_ports) {
+            devices.push_back({next_id++, com_port, "",
+                               rtsc::channel::RdpdrClient::DeviceType::kSerial});
+        }
+        if (serial_ports.empty()) {
+            std::printf(
+                "rdpdr: serial redirection requested but no COM port was "
+                "found\n");
+        } else {
+            serial_backend =
+                std::make_unique<rtsc::rdpdr::Win32SerialBackend>();
+            std::printf("rdpdr: redirecting %zu serial port(s):",
+                        serial_ports.size());
+            for (const auto& com_port : serial_ports) {
+                std::printf(" %s", com_port.c_str());
+            }
+            std::printf("\n");
+        }
+    }
     const auto send_rdpdr = [&](const std::vector<uint8_t>& message) {
         send_channel(kChannelRdpdr, message);
     };
+    // Printer redirection (rdpdr PRINT device): opt-in like drives. Every
+    // local printer queue is announced; the backend starts a spooler job on
+    // CREATE and streams the RAW job bytes on WRITE.
+    std::unique_ptr<rtsc::rdpdr::Win32PrinterBackend> printer_backend;
+    std::vector<rtsc::rdpdr::LocalPrinter> local_printers;
+    if (printers_redirect_requested) {
+        local_printers = rtsc::rdpdr::EnumeratePrinters();
+        uint32_t next_id = static_cast<uint32_t>(devices.size()) + 1;
+        uint32_t next_dos = 1;
+        for (const auto& printer : local_printers) {
+            devices.push_back(
+                {next_id++, "PRN" + std::to_string(next_dos++), "",
+                 rtsc::channel::RdpdrClient::DeviceType::kPrinter,
+                 printer.name, printer.driver});
+        }
+        if (local_printers.empty()) {
+            std::printf(
+                "rdpdr: printer redirection requested but no printer was "
+                "found\n");
+        } else {
+            printer_backend =
+                std::make_unique<rtsc::rdpdr::Win32PrinterBackend>();
+            std::printf("rdpdr: redirecting %zu printer(s):",
+                        local_printers.size());
+            for (const auto& printer : local_printers) {
+                std::printf(" %s", printer.name.c_str());
+            }
+            std::printf("\n");
+        }
+    }
+    // The backend is declared before the handler so it outlives it: the
+    // asynchronous smart card worker is joined in ~RdpdrClient and may still
+    // be inside a backend call at that point.
+    std::unique_ptr<rtsc::smartcard::ISmartCardBackend> scard_backend;
     rtsc::channel::RdpdrClient rdpdr(host_fs.get(), std::move(devices), "RTSC",
                                      send_rdpdr);
+    if (serial_backend != nullptr) {
+        rdpdr.EnableSerial(serial_backend.get());
+    }
+    if (printer_backend != nullptr) {
+        rdpdr.EnablePrinter(printer_backend.get());
+    }
 
     // Smart card redirection ([MS-RDPESC]) is opt-in like the drive and USB
     // redirection paths: RTSC_REDIRECT_SMARTCARD=1 announces the SCARD device
@@ -738,7 +1251,6 @@ int main(int argc, char** argv) {
     // server confirms the client id ([MS-RDPEFS] 2.2.2.9), so this must be
     // enabled before the first inbound message - the menu item below reports
     // that a reconnect is needed instead of pretending to hot-plug a device.
-    std::unique_ptr<rtsc::smartcard::ISmartCardBackend> scard_backend;
     {
         char* scard_env = nullptr;
         size_t scard_env_len = 0;
@@ -750,6 +1262,11 @@ int main(int argc, char** argv) {
             scard_backend = rtsc::smartcard::MakeSmartCardBackend();
             if (scard_backend != nullptr && scard_backend->available()) {
                 rdpdr.EnableSmartCard(scard_backend.get());
+                // Run the SCARD_IOCTL calls on a worker thread: a pending
+                // SCardGetStatusChange can wait for the whole request timeout
+                // and must not freeze the event loop. Completions are written
+                // by PollSmartCard() below.
+                rdpdr.SetAsyncSmartCard(true);
                 std::printf(
                     "rdpdr: smart card redirection enabled; the local smart card "
                     "readers are shared with the remote session\n");
@@ -820,6 +1337,53 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Dynamic virtual channel transport ("drdynvc"). It is advertised only
+    // when something needs it: USB redirection (URBDRC, opt-in through
+    // RTSC_REDIRECT_USB) or dynamic display resize (--disp). The transport is
+    // created outside the Win32 gate so Display Control also works on the
+    // headless/X11 backends; only the USB enumerator is Win32-only.
+    std::unique_ptr<rtsc::channel::DrdynvcClient> drdynvc;
+    std::unique_ptr<rtsc::channel::DisplayControlClient> disp_client;
+    if (rtsc::usb::UsbGateEnabled(usb_spec) || disp_enabled) {
+        const uint16_t drdynvc_id = client.driver().ChannelIdForName("drdynvc");
+        if (drdynvc_id == 0) {
+            std::printf(
+                "drdynvc: server did not assign the static virtual channel; "
+                "USB redirection and dynamic resize are disabled\n");
+        } else {
+            const auto send_drdynvc = [&](const std::vector<uint8_t>& m) {
+                send_channel(drdynvc_id, m);
+            };
+            drdynvc = std::make_unique<rtsc::channel::DrdynvcClient>(
+                nullptr, send_drdynvc);
+            client.RegisterChannel(
+                drdynvc_id,
+                [&](const uint8_t* data, size_t size) {
+                    drdynvc->OnChannelData(data, size);
+                });
+            drdynvc->Start();
+            std::printf("drdynvc: static channel id %u\n",
+                        static_cast<unsigned>(drdynvc_id));
+        }
+    }
+
+    // Display Control ([MS-RDPEDISP]): ask the server to follow local window
+    // resizes. Requires the drdynvc transport above.
+    if (disp_enabled) {
+        if (drdynvc == nullptr) {
+            std::printf("disp: no drdynvc transport; dynamic resize disabled\n");
+        } else {
+            disp_client =
+                std::make_unique<rtsc::channel::DisplayControlClient>(*drdynvc);
+            if (disp_client->Start()) {
+                std::printf("disp: waiting for the Display Control channel\n");
+            } else {
+                std::printf("disp: channel id exhausted; dynamic resize "
+                            "disabled\n");
+            }
+        }
+    }
+
     // USB device redirection (URBDRC over the drdynvc static virtual channel)
     // is opt-in: the RTSC_REDIRECT_USB gate was read above, and the drdynvc
     // channel is only advertised when it is set. Here the URBDRC state machine
@@ -829,42 +1393,27 @@ int main(int argc, char** argv) {
     unsigned usb_devices_added_count = 0;
     unsigned usb_devices_skipped = 0;
 #if defined(_WIN32)
-    std::unique_ptr<rtsc::channel::DrdynvcClient> drdynvc;
     std::unique_ptr<rtsc::usb::UsbDeviceEnumerator> usb_enumerator;
     std::unique_ptr<rtsc::channel::RdpUsbClient> rdpusb;
     if (rtsc::usb::UsbGateEnabled(usb_spec)) {
-        const uint16_t drdynvc_id = client.driver().ChannelIdForName("drdynvc");
-        if (drdynvc_id == 0) {
+        if (drdynvc == nullptr) {
             std::printf(
-                "rdpusb: server did not assign a drdynvc static virtual "
-                "channel; USB redirection disabled\n");
+                "rdpusb: no drdynvc transport; USB redirection disabled\n");
         } else {
             usb_enumerator = rtsc::usb::CreateWin32Enumerator();
             if (usb_enumerator == nullptr) {
                 std::printf("rdpusb: no WinUSB enumerator; USB redirection "
                             "disabled\n");
             } else {
-                // drdynvc lives before rdpusb in declaration order so the
-                // RdpUsbClient destructor (which removes its listener from the
-                // transport) sees a live DrdynvcClient.
-                const auto send_drdynvc = [&](const std::vector<uint8_t>& m) {
-                    send_channel(drdynvc_id, m);
-                };
-                drdynvc = std::make_unique<rtsc::channel::DrdynvcClient>(
-                    nullptr, send_drdynvc);
-                client.RegisterChannel(
-                    drdynvc_id,
-                    [&](const uint8_t* data, size_t size) {
-                        drdynvc->OnChannelData(data, size);
-                    });
-                drdynvc->Start();
+                // drdynvc lives outside this block so the RdpUsbClient
+                // destructor (which removes its listener from the transport)
+                // sees a live DrdynvcClient.
                 rdpusb = std::make_unique<rtsc::channel::RdpUsbClient>(
                     usb_enumerator.get(), drdynvc.get());
                 rdpusb->Start();
                 std::printf(
-                    "rdpusb: drdynvc channel id %u, waiting for the URBDRC "
-                    "channel before announcing devices\n",
-                    static_cast<unsigned>(drdynvc_id));
+                    "rdpusb: waiting for the URBDRC channel before announcing "
+                    "devices\n");
             }
         }
     }
@@ -978,6 +1527,17 @@ int main(int argc, char** argv) {
     bool view_dirty = true;  // the first frame must be rendered
     int last_view_w = static_cast<int>(windows[0]->surface().width());
     int last_view_h = static_cast<int>(windows[0]->surface().height());
+    // Last viewport size handed to the Display Control channel, so a steady
+    // window does not re-send the same layout every iteration. Starts at the
+    // negotiated size: the server already has it, and only a local resize
+    // should ask for a new layout.
+    int last_disp_w = static_cast<int>(windows[0]->surface().width());
+    int last_disp_h = static_cast<int>(windows[0]->surface().height());
+    // Last desktop size the server granted. A Deactivation-Reactivation can
+    // change it after a DISP layout request; the window follows only when the
+    // server's size changes, so a local resize in flight is never fought.
+    int last_desktop_w = static_cast<int>(client.desktop_width());
+    int last_desktop_h = static_cast<int>(client.desktop_height());
     // At most ~60 FPS. A remote desktop rarely updates faster than that, and the
     // cap keeps a fast server from driving the render loop (and a core) to 100%.
     constexpr auto kMinFrameInterval = std::chrono::milliseconds(16);
@@ -1018,7 +1578,26 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Logon notification ([MS-RDPBCGR] 2.2.10.1.1): report the session id
+    // and the account the server logged on, once per session.
+    bool logon_reported = false;
+    // Reconnect state: whether the client is in a reconnect loop, and the
+    // last error that triggered it (for logging).
+    bool reconnecting = false;
+    std::string last_reconnect_error;
+    rtsc::client::ReconnectSchedule reconnect_schedule;
     while (!all_closed()) {
+        // Logon notification ([MS-RDPBCGR] 2.2.10.1.1): report the session id
+        // and the account the server logged on, once per session.
+        if (!logon_reported) {
+            const auto& logon = client.driver().logon_info();
+            if (logon.has_logon) {
+                logon_reported = true;
+                std::printf("session: logon %s\\%s id=%u\n",
+                            logon.domain.c_str(), logon.user_name.c_str(),
+                            static_cast<unsigned>(logon.session_id));
+            }
+        }
         // Pump() waits at most kReadTimeoutMs for network data, so this loop
         // iterates several times a second even when the server is silent. That
         // is what keeps the Win32 window responsive: PollEvent() below runs
@@ -1098,18 +1677,153 @@ int main(int argc, char** argv) {
                   }
               }
 
-              if (rtsc::debug::CommandRequestsFrames(cmd.body)) {
-                  snap.frame_samples = frame_ring;
-              }
+if (rtsc::debug::CommandRequestsFrames(cmd.body)) {
+                snap.frame_samples = frame_ring;
+            }
 
-              dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
+            if (rtsc::debug::CommandRequestsResize(cmd.body)) {
+                int resize_w = 0;
+                int resize_h = 0;
+                std::string resize_error;
+                if (rtsc::debug::ResizeRequest(cmd.body, resize_w, resize_h, resize_error)) {
+                    windows[0]->Resize(static_cast<uint16_t>(resize_w),
+                                       static_cast<uint16_t>(resize_h));
+                }
+            }
+
+            if (rtsc::debug::CommandRequestsInput(cmd.body)) {
+                std::vector<rtsc::debug::InputEventSpec> events;
+                std::string input_error;
+                if (rtsc::debug::ParseInputEvents(cmd.body, snap.desktop_width, snap.desktop_height, events, input_error)) {
+                    // Count only the events that actually reached the wire: a
+                    // transport failure mid-array must not be reported as a
+                    // full injection, or the operator believes the whole
+                    // sequence was delivered.
+                    std::vector<rtsc::ui::InputEvent> ui_events;
+                    if (!rtsc::debug::ToUiInputEvents(events, ui_events)) {
+                        snap.input_error = "input event kind not supported";
+                    } else {
+                        for (const auto& ui_ev : ui_events) {
+                            bool encoded = false;
+                            if (!client.SendInput(*transport, ui_ev, input_error, &encoded)) {
+                                snap.input_error = input_error;
+                                break;
+                            }
+                            if (!encoded) {
+                                // EncodeInput deliberately drops e.g. a
+                                // horizontal wheel the server did not
+                                // advertise. That is not an injection, so do
+                                // not count it or report success.
+                                snap.input_error = "input event not encodable";
+                                break;
+                            }
+                            ++input_sends;
+                            ++snap.input_injected;
+                        }
+                        snap.input_events_sent = input_sends;
+                    }
+                } else {
+                    snap.input_error = input_error;
+                }
+            }
+
+            dbg_queue.Answer(rtsc::debug::ExecuteGuiCommand(snap, cmd.body));
          }
 
         if (!client.Pump(*transport, error)) {
+            // Set Error Info ([MS-RDPBCGR] 2.2.5.1.1): name the server's
+            // reason before the generic transport error, so the user can tell
+            // an idle timeout / forced logoff from a network failure.
+            if (client.driver().has_error_info()) {
+                const uint32_t info = client.driver().error_info();
+                std::printf("server error: %s (0x%08X)\n",
+                            rtsc::proto::SetErrorInfoText(info),
+                            static_cast<unsigned>(info));
+            }
             std::printf("session ended: %s\n", error.c_str());
+            // Reconnect ([MS-RDPBCGR] 1.3.1.5): on a clean disconnect or
+            // protocol failure, attempt to reconnect with the same cookie.
+            // The client preserves its graphics surface and statistics;
+            // virtual channel handlers stay registered.
+            if (!reconnecting && !all_closed()) {
+                const int delay_ms = reconnect_schedule.NextDelayMs();
+                if (delay_ms < 0) {
+                    std::printf("reconnect: exhausted (%u attempts); giving up\n",
+                                reconnect_schedule.attempts());
+                    break;
+                }
+                std::printf("reconnect: waiting %d ms before attempt %u...\n",
+                            delay_ms, reconnect_schedule.attempts());
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                reconnecting = true;
+                last_reconnect_error = error;
+                // Close the old transport.
+                transport.reset();
+                // Rebuild the transport.
+                if (gateway_address.empty()) {
+                    transport = rtsc::net::ConnectTcp(host, port, error);
+                } else {
+                    transport = CreateGatewayTransport(gateway_address, gateway_insecure,
+                                                       gateway_pin, domain, user,
+                                                       password, error);
+                }
+                if (!transport) {
+                    std::printf("reconnect: transport rebuild failed: %s\n", error.c_str());
+                    reconnecting = false;
+                    continue;
+                }
+                // Reconnect on the same client object.
+                if (!client.Reconnect(*transport, error)) {
+                    std::printf("reconnect: failed: %s\n", error.c_str());
+                    reconnecting = false;
+                    continue;
+                }
+                std::printf("reconnect: success\n");
+                reconnecting = false;
+                reconnect_schedule.Reset();
+                // The static virtual channel handlers kept their per-session
+                // protocol state from the old connection. Drop it and re-arm
+                // the channels against the new session: cliprdr waits for the
+                // new Monitor Ready, drdynvc re-runs the capability exchange,
+                // rdpdr waits for the new Server Announce, rdpsnd waits for
+                // the new Server Audio Formats. The configuration (clipboard,
+                // drives, audio sink, listeners) is preserved.
+                cliprdr.Reset();
+                cliprdr.Start();
+                rdpdr.Reset();
+                rdpsnd.Reset();
+                client.rail().Reset();
+                if (rail_mode) {
+                    client.StartRailChannel(kRailBuildNumber, kRailClientFlags);
+                }
+                if (drdynvc != nullptr) {
+                    drdynvc->Reset();
+                    drdynvc->Start();
+                }
+                if (disp_client != nullptr) {
+                    disp_client->Reset();
+                    disp_client->Start();
+                }
+#if defined(_WIN32)
+                if (rdpusb != nullptr) {
+                    rdpusb->Reset();
+                    rdpusb->Start();
+                    usb_devices_added = false;
+                    usb_devices_added_count = 0;
+                    usb_devices_skipped = 0;
+                }
+#endif
+                // The logon notification belongs to the new session.
+                logon_reported = false;
+                file_list_requested = false;
+                continue;
+            }
             break;
         }
         cliprdr.Poll(std::chrono::steady_clock::now());
+        // Smart card IOCTLs run on the worker thread; write back whatever it
+        // finished since the last frame. Cheap when the queue is empty.
+        rdpdr.PollSmartCard();
         // USB device redirection: announce the whitelisted devices once the
         // URBDRC channel finished its capability exchange (it becomes ready
         // after the server created the "URBDRC" dynamic channel).
@@ -1237,6 +1951,81 @@ int main(int argc, char** argv) {
                 // state instead of faking a hot-plug that the protocol cannot
                 // express, and leave the menu tick alone.
                 if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdSaveScreenshot) {
+                    // The screenshot saves the exact surface the operator sees
+                    // (the render loop just composited it), so it must run
+                    // before the next frame can overwrite it and it must never
+                    // fall through to the send path.
+#if defined(_WIN32)
+                    const std::string path = ShowSaveScreenshotDialog(
+                        static_cast<HWND>(windows[wi]->native_handle()),
+                        rtsc::gui::DefaultScreenshotName(std::time(nullptr)));
+                    if (!path.empty()) {
+                        std::string shot_error;
+                        if (rtsc::gui::SaveScreenshotBmp(
+                                windows[wi]->surface(), path, shot_error)) {
+                            std::printf("screenshot: saved %s\n", path.c_str());
+                        } else {
+                            std::printf("screenshot: %s\n",
+                                        shot_error.c_str());
+                        }
+                    }
+#else
+                    std::printf("screenshot: no dialog backend on this "
+                                "platform\n");
+#endif
+                    continue;
+                }
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
+                    ev.command == rtsc::ui::kCmdSaveConnectionFile) {
+                    // Write the settings this session actually uses, so the
+                    // file can reproduce it (mstsc's "Save As").
+#if defined(_WIN32)
+                    const std::string path = ShowSaveConnectionFileDialog(
+                        static_cast<HWND>(windows[wi]->native_handle()),
+                        "rtsc-connection.rdp");
+                    if (!path.empty()) {
+                        const rtsc::config::RdpFileSettings saved =
+                            rtsc::config::BuildSessionRdpFile(
+                                rtsc::gui::FormatFullAddress(host, port), user,
+                                domain, width, height, multimon, fit_arg,
+                                effective_fullscreen, clipboard_redirect,
+                                have_rdp_file ? rdp_file.audiomode : 0,
+                                serial_redirect_requested,
+                                printers_redirect_requested);
+                        const std::string text =
+                            rtsc::config::WriteRdpFile(saved);
+                        if (text.empty()) {
+                            std::printf("rdp file: cannot encode the "
+                                        "settings\n");
+                        } else {
+                            std::ofstream out(path, std::ios::binary |
+                                                      std::ios::trunc);
+                            if (!out) {
+                                std::printf("rdp file: cannot write %s\n",
+                                            path.c_str());
+                            } else {
+                                out.write(text.data(),
+                                          static_cast<std::streamsize>(
+                                              text.size()));
+                                if (!out) {
+                                    std::printf(
+                                        "rdp file: write failed for %s\n",
+                                        path.c_str());
+                                } else {
+                                    std::printf("rdp file: saved %s\n",
+                                                path.c_str());
+                                }
+                            }
+                        }
+                    }
+#else
+                    std::printf("rdp file: no dialog backend on this "
+                                "platform\n");
+#endif
+                    continue;
+                }
+                if (ev.kind == rtsc::ui::InputEvent::Kind::kUiCommand &&
                     ev.command == rtsc::ui::kCmdToggleSmartCard) {
                     std::printf(
                         "smartcard: redirection is %s for this session; "
@@ -1264,6 +2053,11 @@ int main(int argc, char** argv) {
                             input.gateway_logon_method =
                                 "NTLM (RDGSP)";
                         }
+                        const auto& logon = client.driver().logon_info();
+                        input.has_logon = logon.has_logon;
+                        input.session_id = logon.session_id;
+                        input.logon_domain = logon.domain;
+                        input.logon_user = logon.user_name;
                         return rtsc::client::CollectSessionInfo(
                             input, std::time(nullptr));
                     };
@@ -1325,14 +2119,17 @@ int main(int argc, char** argv) {
                         client.graphics().set_zoom(zs.zoom);
                         client.graphics().set_fit(zs.fit);
                         view_dirty = true;
-                        const std::string status = rtsc::client::ZoomStatusText(zs);
-                        windows[0]->SetTitle(status);
+                        const std::string view_status =
+                            rtsc::client::ZoomStatusText(zs);
+                        const std::string title =
+                            rtsc::client::WindowTitleText(host, port, zs);
+                        windows[0]->SetTitle(title);
                         // Keep the View menu ticked in sync with the zoom/fit
                         // state (matches the title-bar status line).
                         menu_state.zoom = zs.zoom;
                         menu_state.fit = zs.fit;
                         windows[0]->SetViewMenuState(menu_state);
-                        std::printf("view: %s\n", status.c_str());
+                        std::printf("view: %s\n", view_status.c_str());
                     } else if (ev.kind == rtsc::ui::InputEvent::Kind::kMouseMove ||
                                ev.kind ==
                                    rtsc::ui::InputEvent::Kind::kMouseButton ||
@@ -1370,13 +2167,53 @@ int main(int argc, char** argv) {
         }
 
         // A window resize invalidates the current frame (the backend recreated
-        // its surface), so the next render must repaint.
+        // its surface), so the next render must repaint. With Display Control
+        // enabled, the same boundary asks the server to adopt the new size
+        // ([MS-RDPEDISP] 3.1.5.1.1); only an actual size change sends a layout,
+        // so a steady window never floods the channel.
+        // A server-granted desktop size change (Deactivation-Reactivation after
+        // a DISP request) resizes the window/surface and re-syncs DISP so the
+        // adopted size is not sent straight back.
+        if (!multi_window && client.desktop_width() != 0 &&
+            client.desktop_height() != 0 &&
+            (static_cast<int>(client.desktop_width()) != last_desktop_w ||
+             static_cast<int>(client.desktop_height()) != last_desktop_h)) {
+            last_desktop_w = static_cast<int>(client.desktop_width());
+            last_desktop_h = static_cast<int>(client.desktop_height());
+            windows[0]->Resize(static_cast<uint16_t>(last_desktop_w),
+                               static_cast<uint16_t>(last_desktop_h));
+            client.graphics().Resize(static_cast<uint16_t>(last_desktop_w),
+                                     static_cast<uint16_t>(last_desktop_h));
+            last_disp_w = last_desktop_w;
+            last_disp_h = last_desktop_h;
+            std::printf("desktop size %dx%d: window/surface resized after "
+                        "reactivation\n",
+                        last_desktop_w, last_desktop_h);
+        }
         for (const auto& w : windows) {
             if (static_cast<int>(w->surface().width()) != last_view_w ||
                 static_cast<int>(w->surface().height()) != last_view_h) {
                 last_view_w = static_cast<int>(w->surface().width());
                 last_view_h = static_cast<int>(w->surface().height());
                 view_dirty = true;
+            }
+        }
+        // Multi-window mode has no single viewport to request; send the layout
+        // only for the window the Display Control channel was opened for.
+        if (disp_client != nullptr && !multi_window &&
+            (last_view_w != last_disp_w || last_view_h != last_disp_h)) {
+            rtsc::proto::DisplayControlMonitor monitor;
+            if (rtsc::proto::MakePrimaryMonitorFromViewport(
+                    static_cast<uint32_t>(last_view_w),
+                    static_cast<uint32_t>(last_view_h), monitor)) {
+                const bool sent = disp_client->SetMonitors({monitor});
+                // Before caps arrive SetMonitors remembers the request and
+                // returns false; retry on the next iteration is unnecessary
+                // because the client flushes it when caps land.
+                if (sent || disp_client->has_pending()) {
+                    last_disp_w = last_view_w;
+                    last_disp_h = last_view_h;
+                }
             }
         }
 

@@ -22,6 +22,26 @@ RdpsndClient::RdpsndClient(AudioSink* sink, SendFn send)
 
 RdpsndClient::~RdpsndClient() = default;
 
+void RdpsndClient::Reset() {
+    reassembler_.Reset();
+    pending_wave_.reset();
+    server_formats_.clear();
+    client_formats_.clear();
+    selected_format_ = {};
+    server_version_ = 0;
+    // The counters are diagnostics for one session; a reconnect starts a new
+    // one, so they restart with it.
+    server_formats_count_ = 0;
+    client_formats_count_ = 0;
+    quality_mode_count_ = 0;
+    wave2_count_ = 0;
+    wave_confirm_count_ = 0;
+    training_confirm_count_ = 0;
+    close_count_ = 0;
+    bytes_played_ = 0;
+    audio_received_ = false;
+}
+
 void RdpsndClient::OnChannelData(const uint8_t* data, size_t size) {
     if (data == nullptr || size < rtsc::proto::ChannelPduHeader::kSize) return;
 

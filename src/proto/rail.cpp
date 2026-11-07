@@ -640,6 +640,22 @@ Status RailExecuteResult::parse(const uint8_t* data, size_t size,
 
 // ---- virtual channel ---------------------------------------------------------
 
+void RailChannel::Reset() {
+    reassembler_.Reset();
+    pdu_count_ = 0;
+    handshake_count_ = 0;
+    handshake_ex_count_ = 0;
+    syscommand_count_ = 0;
+    sysmenu_count_ = 0;
+    window_move_count_ = 0;
+    taskbar_count_ = 0;
+    langbar_count_ = 0;
+    exec_count_ = 0;
+    exec_result_count_ = 0;
+    get_app_id_resp_ex_count_ = 0;
+    incomplete_message_count_ = 0;
+}
+
 void RailChannel::OnChannelData(const uint8_t* data, size_t size) {
     if (data == nullptr || size < ChannelPduHeader::kSize) return;
 

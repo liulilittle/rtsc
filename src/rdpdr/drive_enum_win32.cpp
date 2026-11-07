@@ -100,6 +100,29 @@ std::vector<DriveInfo> SelectDrives(
     return out;
 }
 
+std::string DriveRedirectToSpec(const std::string& value) {
+    std::string letters;
+    size_t start = 0;
+    while (start <= value.size()) {
+        const size_t semi = value.find(';', start);
+        const std::string token = TrimUpper(value.substr(
+            start, semi == std::string::npos ? std::string::npos
+                                             : semi - start));
+        if (!token.empty()) {
+            if (token == "*" || token == "DYNAMICDRIVES") return "ALL";
+            // A drive root token is "X:" or "X:\".
+            if (token.size() >= 2 && token[0] >= 'A' && token[0] <= 'Z' &&
+                token[1] == ':') {
+                if (!letters.empty()) letters += ',';
+                letters += token[0];
+            }
+        }
+        if (semi == std::string::npos) break;
+        start = semi + 1;
+    }
+    return letters;
+}
+
 std::vector<DriveInfo> EnumerateLocalDrives(const char* spec) {
 #if defined(_WIN32)
     const DWORD mask = ::GetLogicalDrives();

@@ -51,6 +51,8 @@ enum ScardStatus : uint32_t {
     kScardWUnpoweredCard = 0x80100067,
     kScardWResetCard = 0x80100068,
     kScardWRemovedCard = 0x80100069,
+    kScardWCacheItemNotFound = 0x80100070,
+    kScardWCacheItemStale = 0x80100071,
 };
 
 // SCARD_SHARE_* ([MS-RDPESC] 2.2.6 / winscard.h).
@@ -101,6 +103,21 @@ struct ScardReaderState {
     std::vector<uint8_t> atr;
 };
 
+// ReaderStateW ([MS-RDPESC] 2.2.1.7): reader name is UTF-16LE.
+struct ScardReaderStateW {
+    std::u16string reader;
+    uint32_t current_state = 0;
+    uint32_t event_state = 0;
+    std::vector<uint8_t> atr;
+};
+
+// One ATR mask in a LocateCardsByATR call ([MS-RDPESC] 2.2.1.6). `atr` and
+// `mask` are the first cbAtr bytes of the fixed 36-byte arrays.
+struct ScardAtrMask {
+    std::vector<uint8_t> atr;
+    std::vector<uint8_t> mask;
+};
+
 // Result of one backend operation. Methods return the raw WinSCard status.
 class ISmartCardBackend {
  public:
@@ -118,19 +135,60 @@ class ISmartCardBackend {
 
     virtual uint32_t ReleaseContext(const std::vector<uint8_t>& context) = 0;
 
+    // SCARD_IOCTL_ISVALIDCONTEXT ([MS-RDPESC] 3.1.4.3): true when the context
+    // is still valid. Returns SCARD_S_SUCCESS or SCARD_E_INVALID_HANDLE (or
+    // SCARD_E_NO_SERVICE when the local service is unavailable).
+    virtual uint32_t IsValidContext(const std::vector<uint8_t>& context) = 0;
+
     // ANSI multistring (NUL-separated, double-NUL terminated) of reader
     // groups / readers. `groups` may be empty, meaning no group filter.
     virtual uint32_t ListReaderGroups(const std::vector<uint8_t>& context,
                                       std::vector<uint8_t>& groups) = 0;
+    // ListReaderGroupsW ([MS-RDPESC] 2.2.2.3 / 3.1.4.6): groups is a UTF-16LE
+    // multi-string.
+    virtual uint32_t ListReaderGroupsW(const std::vector<uint8_t>& context,
+                                       std::vector<uint8_t>& groups) = 0;
     virtual uint32_t ListReaders(const std::vector<uint8_t>& context,
                                  const std::vector<uint8_t>& groups,
                                  std::vector<uint8_t>& readers) = 0;
+    // ListReadersW ([MS-RDPESC] 2.2.2.7): groups and readers are UTF-16LE
+    // multi-string bytes.
+    virtual uint32_t ListReadersW(const std::vector<uint8_t>& context,
+                                  const std::vector<uint8_t>& groups,
+                                  std::vector<uint8_t>& readers) = 0;
 
     // Blocks up to `timeout_ms` (INFINITE when 0xFFFFFFFF) for a state
     // change; on return each entry has event_state/atr filled.
     virtual uint32_t GetStatusChange(const std::vector<uint8_t>& context,
                                      uint32_t timeout_ms,
                                      std::vector<ScardReaderState>& states) = 0;
+    // GetStatusChangeW ([MS-RDPESC] 2.2.2.12 / 3.1.4.24): reader names are
+    // UTF-16LE.
+    virtual uint32_t GetStatusChangeW(
+        const std::vector<uint8_t>& context, uint32_t timeout_ms,
+        std::vector<ScardReaderStateW>& states) = 0;
+
+    // SCardLocateCardsA ([MS-RDPESC] 2.2.2.9 / 3.1.4.21). `cards` is the raw
+    // ANSI multistring. On success each entry has event_state/atr filled.
+    virtual uint32_t LocateCards(const std::vector<uint8_t>& context,
+                                 const std::vector<uint8_t>& cards,
+                                 std::vector<ScardReaderState>& states) = 0;
+    // SCardLocateCardsW ([MS-RDPESC] 2.2.2.10 / 3.1.4.22): cards and reader
+    // names are UTF-16LE.
+    virtual uint32_t LocateCardsW(const std::vector<uint8_t>& context,
+                                  const std::vector<uint8_t>& cards,
+                                  std::vector<ScardReaderStateW>& states) = 0;
+
+    // SCardLocateCardsByATRA ([MS-RDPESC] 2.2.2.23 / 3.1.4.25).
+    virtual uint32_t LocateCardsByAtr(const std::vector<uint8_t>& context,
+                                      const std::vector<ScardAtrMask>& masks,
+                                      std::vector<ScardReaderState>& states) = 0;
+    // SCardLocateCardsByATRW ([MS-RDPESC] 2.2.2.24 / 3.1.4.26): reader names
+    // are UTF-16LE.
+    virtual uint32_t LocateCardsByAtrW(
+        const std::vector<uint8_t>& context,
+        const std::vector<ScardAtrMask>& masks,
+        std::vector<ScardReaderStateW>& states) = 0;
 
     // Opens a card. On success fills the opaque handle and the negotiated
     // protocol.
@@ -139,6 +197,13 @@ class ISmartCardBackend {
                              uint32_t preferred_protocols,
                              std::vector<uint8_t>& handle,
                              uint32_t& active_protocol) = 0;
+    // ConnectW ([MS-RDPESC] 2.2.2.14): reader is a UTF-16LE [string].
+    virtual uint32_t ConnectW(const std::vector<uint8_t>& context,
+                              const std::u16string& reader,
+                              uint32_t share_mode,
+                              uint32_t preferred_protocols,
+                              std::vector<uint8_t>& handle,
+                              uint32_t& active_protocol) = 0;
 
     virtual uint32_t Disconnect(const std::vector<uint8_t>& context,
                                 const std::vector<uint8_t>& handle,
@@ -154,8 +219,15 @@ class ISmartCardBackend {
     virtual uint32_t Status(const std::vector<uint8_t>& context,
                             const std::vector<uint8_t>& handle,
                             std::vector<uint8_t>& reader_names, uint32_t& state,
-                            uint32_t& protocol, std::vector<uint8_t>& atr) = 0;
-
+                            uint32_t& protocol,
+                            std::vector<uint8_t>& atr) = 0;
+    // StatusW ([MS-RDPESC] 2.2.2.18 / 3.1.4.34): reader_names is a UTF-16LE
+    // multi-string.
+    virtual uint32_t StatusW(const std::vector<uint8_t>& context,
+                             const std::vector<uint8_t>& handle,
+                             std::vector<uint8_t>& reader_names,
+                             uint32_t& state, uint32_t& protocol,
+                             std::vector<uint8_t>& atr) = 0;
     // SCardTransmit. `recv_capacity` is the buffer size the server offered.
     // On success fills `recv` with the response APDU and `recv_pci` with the
     // protocol control information the card returned.
@@ -175,6 +247,98 @@ class ISmartCardBackend {
                              const std::vector<uint8_t>& in,
                              uint32_t out_capacity,
                              std::vector<uint8_t>& out) = 0;
+
+    // SCardGetAttrib ([MS-RDPESC] 2.2.2.21 / 3.1.4.38). `attr_is_null`
+    // requests the length only; `capacity` is the server's cbAttrLen
+    // (0xFFFFFFFF = SCARD_AUTOALLOCATE). On success fills `attr` (empty when
+    // only the length is wanted) and `attr_length`. Data that does not fit
+    // `capacity` returns SCARD_E_INSUFFICIENT_BUFFER with no data.
+    virtual uint32_t GetAttrib(const std::vector<uint8_t>& context,
+                               const std::vector<uint8_t>& handle,
+                               uint32_t attr_id, bool attr_is_null,
+                               uint32_t capacity, std::vector<uint8_t>& attr,
+                               uint32_t& attr_length) = 0;
+
+    // SCardSetAttrib ([MS-RDPESC] 2.2.2.22 / 3.1.4.39).
+    virtual uint32_t SetAttrib(const std::vector<uint8_t>& context,
+                               const std::vector<uint8_t>& handle,
+                               uint32_t attr_id,
+                               const std::vector<uint8_t>& attr) = 0;
+
+    // SCardReadCacheA ([MS-RDPESC] 2.2.2.25 / 3.1.4.42). `card_id` is the
+    // 16-byte UUID. `length_only` is fPbDataIsNULL; `capacity` is cbDataLen
+    // (0xFFFFFFFF = SCARD_AUTOALLOCATE). On success fills `data` (empty when
+    // only the length is wanted) and `data_length`.
+    virtual uint32_t ReadCache(const std::vector<uint8_t>& context,
+                               const std::vector<uint8_t>& card_id,
+                               uint32_t freshness,
+                               const std::string& lookup_name,
+                               bool length_only, uint32_t capacity,
+                               std::vector<uint8_t>& data,
+                               uint32_t& data_length) = 0;
+    // SCardReadCacheW ([MS-RDPESC] 2.2.2.26 / 3.1.4.43): lookup_name is
+    // UTF-16.
+    virtual uint32_t ReadCacheW(const std::vector<uint8_t>& context,
+                                const std::vector<uint8_t>& card_id,
+                                uint32_t freshness,
+                                const std::u16string& lookup_name,
+                                bool length_only, uint32_t capacity,
+                                std::vector<uint8_t>& data,
+                                uint32_t& data_length) = 0;
+
+    // SCardWriteCacheA ([MS-RDPESC] 2.2.2.27 / 3.1.4.44).
+    virtual uint32_t WriteCache(const std::vector<uint8_t>& context,
+                                const std::vector<uint8_t>& card_id,
+                                uint32_t freshness,
+                                const std::string& lookup_name,
+                                const std::vector<uint8_t>& data) = 0;
+    // SCardWriteCacheW ([MS-RDPESC] 2.2.2.28 / 3.1.4.45): lookup_name is
+    // UTF-16.
+    virtual uint32_t WriteCacheW(const std::vector<uint8_t>& context,
+                                 const std::vector<uint8_t>& card_id,
+                                 uint32_t freshness,
+                                 const std::u16string& lookup_name,
+                                 const std::vector<uint8_t>& data) = 0;
+
+    // SCardGetReaderIconW ([MS-RDPESC] 2.2.2.31 / 3.1.4.47). `reader_name`
+    // is UTF-16. On success fills the icon bytes and their length.
+    virtual uint32_t GetReaderIcon(const std::vector<uint8_t>& context,
+                                   const std::u16string& reader_name,
+                                   std::vector<uint8_t>& icon,
+                                   uint32_t& icon_length) = 0;
+
+    // SCardGetDeviceTypeIdW ([MS-RDPESC] 2.2.2.32 / 3.1.4.48).
+    virtual uint32_t GetDeviceTypeId(const std::vector<uint8_t>& context,
+                                     const std::u16string& reader_name,
+                                     uint32_t& device_type_id) = 0;
+
+    // SCardGetTransmitCount ([MS-RDPESC] 2.2.2.29 / 3.1.4.41).
+    virtual uint32_t GetTransmitCount(const std::vector<uint8_t>& context,
+                                      const std::vector<uint8_t>& handle,
+                                      uint32_t& transmit_count) = 0;
+
+    // SCardAccessStartedEvent ([MS-RDPESC] 2.2.2.30 / 3.1.4.4). Returns
+    // SCARD_S_SUCCESS when the smart card service is running.
+    virtual uint32_t AccessStartedEvent() = 0;
+
+    // SCardCancel ([MS-RDPESC] 2.2.2.2 / 3.1.4.27): cancels pending
+    // GetStatusChange calls on the context.
+    virtual uint32_t Cancel(const std::vector<uint8_t>& context) = 0;
+
+    // SCardState ([MS-RDPESC] 2.2.2.17 / 3.1.4.40). On success fills the
+    // reader state, protocol and the full ATR (at most 36 bytes).
+    virtual uint32_t State(const std::vector<uint8_t>& context,
+                           const std::vector<uint8_t>& handle,
+                           uint32_t& state, uint32_t& protocol,
+                           std::vector<uint8_t>& atr) = 0;
+
+    // SCardReconnect ([MS-RDPESC] 2.2.2.15 / 3.1.4.36).
+    virtual uint32_t Reconnect(const std::vector<uint8_t>& context,
+                               const std::vector<uint8_t>& handle,
+                               uint32_t share_mode,
+                               uint32_t preferred_protocols,
+                               uint32_t initialization,
+                               uint32_t& active_protocol) = 0;
 };
 
 // A backend whose every call fails with SCARD_E_NO_SERVICE. Exposed for the

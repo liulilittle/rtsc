@@ -89,12 +89,32 @@ RTSC_TEST(smartcard_ioctl_codes_match_spec_3_1_4) {
     CHECK_EQ(code,  0x00090018u);
     code = static_cast<uint32_t>(ScardIoctl::kListReaderGroupsA);
     CHECK_EQ(code,  0x00090020u);
+    code = static_cast<uint32_t>(ScardIoctl::kListReaderGroupsW);
+    CHECK_EQ(code,  0x00090024u);
     code = static_cast<uint32_t>(ScardIoctl::kListReadersA);
     CHECK_EQ(code,  0x00090028u);
+    code = static_cast<uint32_t>(ScardIoctl::kListReadersW);
+    CHECK_EQ(code,  0x0009002Cu);
+    code = static_cast<uint32_t>(ScardIoctl::kLocateCardsA);
+    CHECK_EQ(code,  0x00090098u);
+    code = static_cast<uint32_t>(ScardIoctl::kLocateCardsByAtrA);
+    CHECK_EQ(code,  0x000900E8u);
+    code = static_cast<uint32_t>(ScardIoctl::kLocateCardsByAtrW);
+    CHECK_EQ(code,  0x000900ECu);
+    code = static_cast<uint32_t>(ScardIoctl::kAccessStartedEvent);
+    CHECK_EQ(code,  0x000900E0u);
     code = static_cast<uint32_t>(ScardIoctl::kGetStatusChangeA);
     CHECK_EQ(code,  0x000900A0u);
+    code = static_cast<uint32_t>(ScardIoctl::kCancel);
+    CHECK_EQ(code,  0x000900A8u);
+    code = static_cast<uint32_t>(ScardIoctl::kState);
+    CHECK_EQ(code,  0x000900C4u);
     code = static_cast<uint32_t>(ScardIoctl::kConnectA);
     CHECK_EQ(code,  0x000900ACu);
+    code = static_cast<uint32_t>(ScardIoctl::kConnectW);
+    CHECK_EQ(code,  0x000900B0u);
+    code = static_cast<uint32_t>(ScardIoctl::kReconnect);
+    CHECK_EQ(code,  0x000900B4u);
     code = static_cast<uint32_t>(ScardIoctl::kDisconnect);
     CHECK_EQ(code,  0x000900B8u);
     code = static_cast<uint32_t>(ScardIoctl::kBeginTransaction);
@@ -103,25 +123,46 @@ RTSC_TEST(smartcard_ioctl_codes_match_spec_3_1_4) {
     CHECK_EQ(code,  0x000900C0u);
     code = static_cast<uint32_t>(ScardIoctl::kStatusA);
     CHECK_EQ(code,  0x000900C8u);
+    code = static_cast<uint32_t>(ScardIoctl::kStatusW);
+    CHECK_EQ(code,  0x000900CCu);
     code = static_cast<uint32_t>(ScardIoctl::kTransmit);
     CHECK_EQ(code,  0x000900D0u);
     code = static_cast<uint32_t>(ScardIoctl::kControl);
     CHECK_EQ(code,  0x000900D4u);
+    code = static_cast<uint32_t>(ScardIoctl::kGetAttrib);
+    CHECK_EQ(code,  0x000900D8u);
+    code = static_cast<uint32_t>(ScardIoctl::kSetAttrib);
+    CHECK_EQ(code,  0x000900DCu);
+    code = static_cast<uint32_t>(ScardIoctl::kReadCacheA);
+    CHECK_EQ(code,  0x000900F0u);
+    code = static_cast<uint32_t>(ScardIoctl::kReadCacheW);
+    CHECK_EQ(code,  0x000900F4u);
+    code = static_cast<uint32_t>(ScardIoctl::kWriteCacheA);
+    CHECK_EQ(code,  0x000900F8u);
+    code = static_cast<uint32_t>(ScardIoctl::kWriteCacheW);
+    CHECK_EQ(code,  0x000900FCu);
+    code = static_cast<uint32_t>(ScardIoctl::kGetReaderIcon);
+    CHECK_EQ(code,  0x00090104u);
+    code = static_cast<uint32_t>(ScardIoctl::kGetDeviceTypeId);
+    CHECK_EQ(code,  0x00090108u);
+    code = static_cast<uint32_t>(ScardIoctl::kGetTransmitCount);
+    CHECK_EQ(code,  0x00090100u);
 }
 
 RTSC_TEST(smartcard_unsupported_ioctls_are_rejected) {
     CHECK(IsSupportedScardIoctl(0x00090014u));
     CHECK(IsSupportedScardIoctl(0x000900D0u));
-    CHECK(!IsSupportedScardIoctl(0x0009001Cu));  // ISVALIDCONTEXT
+    CHECK(IsSupportedScardIoctl(0x0009001Cu));  // ISVALIDCONTEXT (批134)
+    CHECK(!IsSupportedScardIoctl(0x000900E4u));  // RELEASESTARTEDEVENT (not used)
     CHECK(!IsSupportedScardIoctl(0x00090038u));  // not a spec IOCTL at all
     CHECK(!IsSupportedScardIoctl(0));
-    // 0x00090024 is LISTREADERGROUPSW, not LISTREADERSA: the A reader list must
-    // not be reachable through it by accident.
+    // 0x00090064 is INTRODUCEREADERW (client-to-server only): the A reader
+    // state path must not be reachable through it by accident.
     ScardCall call;
     uint8_t dummy[16] = {0};
-    CHECK(ParseScardCall(0x00090024u, dummy, sizeof(dummy), call) ==
+    CHECK(ParseScardCall(0x00090064u, dummy, sizeof(dummy), call) ==
           Status::InvalidType);
-    CHECK(ParseScardCall(0x0009001Cu, dummy, sizeof(dummy), call) ==
+    CHECK(ParseScardCall(0x000900E4u, dummy, sizeof(dummy), call) ==
           Status::InvalidType);
 }
 
@@ -346,6 +387,65 @@ RTSC_TEST(smartcard_list_readers_a_call_accepts_null_groups) {
     CHECK(call.groups_msz.empty());
 }
 
+RTSC_TEST(smartcard_list_readers_w_call_parse) {
+    // Same Context_Call wire form; mszGroups is a UTF-16LE multistring.
+    const std::vector<uint8_t> wide_groups = {
+        'R', 0, 'e', 0, 'a', 0, 'd', 0, 'e', 0, 'r', 0, 's', 0, 0, 0};
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(static_cast<uint32_t>(wide_groups.size())), Le32(0x00020004),
+        Le32(0), Le32(0xFFFFFFFFu),
+        Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD}),
+        Le32(static_cast<uint32_t>(wide_groups.size())), wide_groups,
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x0009002Cu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kListReadersW);
+    CHECK(call.groups_msz == wide_groups);
+}
+
+RTSC_TEST(smartcard_list_reader_groups_w_return_exact_bytes) {
+    ScardReturn ret;
+    ret.multi_string = std::vector<uint8_t>{'G', 0, 'r', 0, 'p', 0, 0, 0,
+                                            0, 0};
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kListReaderGroupsW, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(10), Le32(0x00020000),
+                                 Le32(10), ret.multi_string.value(),
+                                 Zeros(2)}))));
+}
+
+RTSC_TEST(smartcard_list_reader_groups_w_return_rejects_odd_length) {
+    ScardReturn ret;
+    ret.multi_string = std::vector<uint8_t>{'G', 0, 0, 0, 0};
+    CHECK(EncodeScardReturn(ScardIoctl::kListReaderGroupsW, ret).empty());
+}
+
+RTSC_TEST(smartcard_list_readers_w_return_exact_bytes) {
+    ScardReturn ret;
+    ret.multi_string = std::vector<uint8_t>{'R', 0, 0, 0, '0', 0, 0, 0, 0, 0};
+    // ReturnCode(4) + cBytes(4) + ptr(4) + referent(Length 4 + 10 + 2 pad).
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kListReadersW, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(10), Le32(0x00020000),
+                                 Le32(10), ret.multi_string.value(),
+                                 Zeros(2)}))));
+}
+
+RTSC_TEST(smartcard_list_readers_w_return_rejects_odd_length) {
+    ScardReturn ret;
+    ret.multi_string = std::vector<uint8_t>{'R', 0, 0, 0, 0};
+    CHECK(EncodeScardReturn(ScardIoctl::kListReadersW, ret).empty());
+}
+
+RTSC_TEST(smartcard_list_readers_w_return_requires_double_nul) {
+    ScardReturn ret;
+    ret.multi_string = std::vector<uint8_t>{'R', 0, 0, 0};
+    CHECK(EncodeScardReturn(ScardIoctl::kListReadersW, ret).empty());
+}
+
 RTSC_TEST(smartcard_list_readers_return_exact_bytes) {
     ScardReturn ret;
     ret.return_code = 0;
@@ -426,6 +526,37 @@ std::vector<uint8_t> OneReaderStateBody() {
 }
 
 }  // namespace
+
+RTSC_TEST(smartcard_get_status_change_w_call_parse) {
+    // GetStatusChangeW_Call ([MS-RDPESC] 2.2.2.12): Context, dwTimeOut,
+    // cReaders, rgReaderStates ptr; reader name is a UTF-16LE [string].
+    const std::vector<uint8_t> wide_reader = {'R', 0, '0', 0, 0, 0};
+    std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(500),
+        Le32(1),
+        Le32(0x00020004),
+        Le32(4), Bytes({0x0B, 0xAD, 0xF0, 0x0D}),
+        Le32(1),
+        Le32(0x00020008),
+        Le32(0), Le32(0), Le32(0),
+    });
+    for (int i = 0; i < 36; ++i) body.push_back(0);
+    body = Concat({body, Le32(3), Le32(0), Le32(3)});
+    body.insert(body.end(), wide_reader.begin(), wide_reader.end());
+    while (body.size() % 4 != 0) body.push_back(0);
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900A4u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kGetStatusChangeW);
+    CHECK_EQ(call.timeout, 500u);
+    CHECK_EQ(call.reader_states_w.size(), size_t{1});
+    if (call.reader_states_w.size() == 1) {
+        CHECK(call.reader_states_w[0].reader == u"R0");
+        CHECK_EQ(call.reader_states_w[0].current_state, 0u);
+    }
+}
 
 RTSC_TEST(smartcard_get_status_change_a_call_parse) {
     const std::vector<uint8_t> buf = Wrap(OneReaderStateBody());
@@ -513,6 +644,36 @@ RTSC_TEST(smartcard_get_status_change_return_rejects_too_many_states) {
     ret.return_code = 0;
     ret.reader_states.resize(kScardMaxReaders + 1);
     CHECK(EncodeScardReturn(ScardIoctl::kGetStatusChangeA, ret).empty());
+}
+
+RTSC_TEST(smartcard_get_status_change_return_keeps_states_on_timeout) {
+    // FreeRDP smartcard_pack_get_status_change_return keeps cReaders when the
+    // ReturnCode is SCARD_E_TIMEOUT so the server sees the updated states.
+    ScardReturn ret;
+    ret.return_code = 0x8010000Au;  // SCARD_E_TIMEOUT
+    ScardReaderStateReturn st;
+    st.current_state = 0x20;
+    st.event_state = 0x20;
+    ret.reader_states.push_back(st);
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetStatusChangeA, ret);
+    CHECK(!got.empty());
+    if (got.empty()) return;
+    // ReturnCode(4) + cReaders(4) + ptr(4) + referent MaxCount(4) ...
+    CHECK_EQ(got[20], static_cast<uint8_t>(0x01));  // cReaders little-endian
+    CHECK_EQ(got[28], static_cast<uint8_t>(0x01));  // referent MaxCount
+}
+
+RTSC_TEST(smartcard_get_status_change_return_drops_states_on_other_failure) {
+    ScardReturn ret;
+    ret.return_code = 0x80100003u;  // SCARD_E_INVALID_HANDLE
+    ret.reader_states.push_back(ScardReaderStateReturn{});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetStatusChangeA, ret);
+    CHECK(!got.empty());
+    if (got.empty()) return;
+    CHECK_EQ(got[20], static_cast<uint8_t>(0x00));  // cReaders = 0
+    CHECK_EQ(got[24], static_cast<uint8_t>(0x00));  // NULL pointer
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +790,12 @@ RTSC_TEST(smartcard_hcard_and_disposition_call_parse) {
 RTSC_TEST(smartcard_long_return_exact_bytes) {
     ScardReturn ret;
     ret.return_code = 0x80100003u;  // SCARD_E_INVALID_HANDLE
-    for (ScardIoctl code : {ScardIoctl::kReleaseContext, ScardIoctl::kDisconnect,
+    for (ScardIoctl code : {ScardIoctl::kReleaseContext,
+                            ScardIoctl::kIsValidContext,
+                            ScardIoctl::kSetAttrib,
+                            ScardIoctl::kWriteCacheA,
+                            ScardIoctl::kCancel,
+                            ScardIoctl::kDisconnect,
                             ScardIoctl::kBeginTransaction,
                             ScardIoctl::kEndTransaction}) {
         const std::vector<uint8_t> got = EncodeScardReturn(code, ret);
@@ -647,6 +813,21 @@ RTSC_TEST(smartcard_release_context_call_parse) {
     CHECK(ParseScardCall(0x00090018u, buf.data(), buf.size(), call) == Status::Ok);
     CHECK_EQ(call.context.bytes.size(), size_t{4});
     CHECK_EQ(call.context.bytes[0], 0xDE);
+}
+
+// [MS-RDPESC] 3.1.4.3: ISVALIDCONTEXT carries the same Context_Call as
+// RELEASECONTEXT and answers with Long_Return.
+RTSC_TEST(smartcard_is_valid_context_call_parse) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(8), Le32(0x00020000),
+        Le32(8), Bytes({0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x0009001Cu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK_EQ(call.context.bytes.size(), size_t{8});
+    CHECK_EQ(call.context.bytes[7], 0x80);
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +1029,923 @@ RTSC_TEST(smartcard_control_return_exact_bytes) {
     CHECK(Same(got, Wrap(body)));
 }
 
+RTSC_TEST(smartcard_get_attrib_return_exact_bytes) {
+    ScardReturn ret;
+    ret.return_code = 0;
+    ret.attr = std::vector<uint8_t>{0x10, 0x20};
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetAttrib, ret);
+    const std::vector<uint8_t> body = Concat({
+        Le32(0), Le32(2), Le32(0x00020000),
+        Le32(2), Bytes({0x10, 0x20}), Zeros(4),
+    });
+    CHECK(Same(got, Wrap(body)));
+}
+
+RTSC_TEST(smartcard_get_attrib_return_length_probe_has_null_buffer) {
+    ScardReturn ret;
+    ret.return_code = 0;
+    ret.attr_length = 7;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetAttrib, ret);
+    const std::vector<uint8_t> body = Concat({
+        Le32(0), Le32(7), Le32(0),
+    });
+    CHECK(Same(got, Wrap(body)));
+}
+
+RTSC_TEST(smartcard_get_attrib_call_parse) {
+    // GetAttrib_Call: hCard inline, dwAttrId, fpbAttrIsNULL, cbAttrLen;
+    // referents: context then handle.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00000007u),  // SCARD_ATTR_DEVICE_SYSTEM_NAME_A
+        Le32(0),            // fpbAttrIsNULL = FALSE
+        Le32(256),          // cbAttrLen
+        Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900D8u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK_EQ(call.attr_id, 0x00000007u);
+    CHECK_EQ(call.attr_is_null, 0u);
+    CHECK_EQ(call.attr_capacity, 256u);
+    CHECK_EQ(call.handle.bytes.size(), size_t{4});
+    CHECK_EQ(call.handle.bytes[3], 0x44);
+    CHECK_EQ(call.handle.context.bytes.size(), size_t{4});
+}
+
+RTSC_TEST(smartcard_set_attrib_call_parse) {
+    // SetAttrib_Call: hCard inline, dwAttrId, cbAttrLen, pbAttr pointer;
+    // referents: context, handle, pbAttr array.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00000007u),  // SCARD_ATTR_DEVICE_SYSTEM_NAME_A
+        Le32(3),            // cbAttrLen
+        Le32(0x00020008),   // pbAttr
+        Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+        Le32(3), Bytes({'A', 'B', 'C'}), Zeros(1),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900DCu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK_EQ(call.attr_id, 0x00000007u);
+    CHECK_EQ(call.set_attr_length, 3u);
+    CHECK_EQ(call.set_attr_value.size(), size_t{3});
+    CHECK_EQ(call.set_attr_value[0], static_cast<uint8_t>('A'));
+    CHECK_EQ(call.set_attr_value[2], static_cast<uint8_t>('C'));
+    CHECK_EQ(call.handle.bytes.size(), size_t{4});
+    CHECK_EQ(call.handle.bytes[3], 0x44);
+}
+
+RTSC_TEST(smartcard_set_attrib_call_rejects_ndr_length_mismatch) {
+    // cbAttrLen says 5, the NDR array carries 2: malformed (the FreeRDP
+    // 3.20.1 heap-overflow class).
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00000007u),
+        Le32(5),
+        Le32(0x00020008),
+        Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+        Le32(2), Bytes({0xAA, 0xBB}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900DCu, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_w_call_parse) {
+    // LocateCardsW_Call ([MS-RDPESC] 2.2.2.10): cBytes counts the bytes of the
+    // UTF-16LE mszCards multistring; reader names are UTF-16LE too.
+    const std::vector<uint8_t> wide_cards = {
+        'C', 0, 'a', 0, 'r', 0, 'd', 0, 'A', 0, 0, 0, 0, 0};
+    const std::vector<uint8_t> wide_reader = {'R', 0, '0', 0, 0, 0};
+    std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(static_cast<uint32_t>(wide_cards.size())), Le32(0x00020004),
+        Le32(1), Le32(0x00020008),
+        Le32(4), Bytes({0x0B, 0xAD, 0xF0, 0x0D}),
+        Le32(static_cast<uint32_t>(wide_cards.size())), wide_cards,
+    });
+    while (body.size() % 4 != 0) body.push_back(0);
+    body = Concat({body, Le32(1), Le32(0x0002000C), Le32(0), Le32(0),
+                   Le32(0)});
+    for (int i = 0; i < 36; ++i) body.push_back(0);
+    body = Concat({body, Le32(3), Le32(0), Le32(3)});
+    body.insert(body.end(), wide_reader.begin(), wide_reader.end());
+    while (body.size() % 4 != 0) body.push_back(0);
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x0009009Cu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kLocateCardsW);
+    CHECK(call.cards_msz == wide_cards);
+    CHECK_EQ(call.reader_states_w.size(), size_t{1});
+    if (call.reader_states_w.size() == 1) {
+        CHECK(call.reader_states_w[0].reader == u"R0");
+    }
+}
+
+RTSC_TEST(smartcard_locate_cards_a_call_parse) {
+    // LocateCardsA_Call: Context, cBytes, mszCards ptr, cReaders,
+    // rgReaderStates ptr; referents: context, cards multistring, array.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(7), Le32(0x00020004),
+        Le32(1), Le32(0x00020008),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(7), Bytes({'C', 'a', 'r', 'd', 'A', 0, 0}), Zeros(1),
+        Le32(1),
+        Le32(0x0002000C),
+        Le32(3), Le32(0), Le32(0), Zeros(36),
+        Le32(3), Le32(0), Le32(3),
+        Bytes({'R', '0', 0}), Zeros(1),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090098u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK(call.cards_msz ==
+          std::vector<uint8_t>({'C', 'a', 'r', 'd', 'A', 0, 0}));
+    CHECK_EQ(call.reader_states.size(), size_t{1});
+    if (call.reader_states.size() == 1) {
+        CHECK(call.reader_states[0].reader == "R0");
+        CHECK_EQ(call.reader_states[0].current_state, 3u);
+    }
+}
+
+RTSC_TEST(smartcard_locate_cards_a_call_rejects_ndr_length_mismatch) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(7), Le32(0x00020004),
+        Le32(0), Le32(0),  // cReaders = 0, NULL array
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(2), Bytes({'A', 0}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090098u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_a_call_rejects_too_many_readers) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0), Le32(0),
+        Le32(11), Le32(0),  // cReaders > 10
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090098u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_return_exact_bytes) {
+    ScardReturn ret;
+    ScardReaderStateReturn st;
+    st.current_state = 1;
+    st.event_state = 2;
+    st.atr = {0xAA};
+    ret.reader_states.push_back(st);
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kLocateCardsA, ret);
+    std::vector<uint8_t> expected = Concat({
+        Le32(0), Le32(1), Le32(0x00020000), Le32(1),
+        Le32(1), Le32(2), Le32(1),
+        Bytes({0xAA}), Zeros(35),
+    });
+    CHECK(Same(got, Wrap(expected)));
+}
+
+RTSC_TEST(smartcard_locate_cards_return_failure_drops_states) {
+    ScardReturn ret;
+    ret.return_code = 0x80100009u;  // SCARD_E_UNKNOWN_READER
+    ret.reader_states.push_back(ScardReaderStateReturn{});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kLocateCardsA, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100009u), Le32(0), Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_read_cache_a_call_parse) {
+    // ReadCacheA_Call: szLookupName ptr, Context, UUID ptr, FreshnessCounter,
+    // fPbDataIsNULL, cbDataLen; referents: name, context, 16-byte UUID.
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(7), Le32(1), Le32(16),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Bytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F0u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.lookup_name == "Key");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.card_id.size(), size_t{16});
+    if (call.card_id.size() == 16) {
+        CHECK_EQ(call.card_id[0], static_cast<uint8_t>(0x01));
+        CHECK_EQ(call.card_id[15], static_cast<uint8_t>(0x10));
+    }
+    CHECK_EQ(call.freshness, 7u);
+    CHECK_EQ(call.cache_is_null, 1u);
+    CHECK_EQ(call.cache_capacity, 16u);
+}
+
+RTSC_TEST(smartcard_read_cache_w_call_parse) {
+    // ReadCacheW_Call: same as A but szLookupName is a UTF-16LE [string].
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(7), Le32(1), Le32(16),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 0, 'e', 0, 'y', 0, 0, 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Bytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F4u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kReadCacheW);
+    CHECK(call.lookup_name_w == u"Key");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.card_id.size(), size_t{16});
+    CHECK_EQ(call.freshness, 7u);
+    CHECK_EQ(call.cache_is_null, 1u);
+    CHECK_EQ(call.cache_capacity, 16u);
+}
+
+RTSC_TEST(smartcard_read_cache_a_call_rejects_null_lookup_name) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0),  // szLookupName NULL
+        Le32(4), Le32(0x00020000),
+        Le32(0x00020004),
+        Le32(0), Le32(0), Le32(0),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Zeros(16),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F0u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_read_cache_a_call_rejects_null_uuid) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0),  // CardIdentifier NULL
+        Le32(0), Le32(0), Le32(0),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F0u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_read_cache_return_exact_bytes) {
+    ScardReturn ret;
+    ret.cache = std::vector<uint8_t>({0x10, 0x20, 0x30});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kReadCacheA, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(3), Le32(0x00020000),
+                                 Le32(3), Bytes({0x10, 0x20, 0x30}),
+                                 Zeros(1)}))));
+}
+
+RTSC_TEST(smartcard_read_cache_return_length_probe_has_null_buffer) {
+    ScardReturn ret;
+    ret.cache_length = 5;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kReadCacheA, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(5), Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_read_cache_return_failure_drops_data) {
+    ScardReturn ret;
+    ret.return_code = 0x80100070u;  // SCARD_W_CACHE_ITEM_NOT_FOUND
+    ret.cache = std::vector<uint8_t>({0xAA});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kReadCacheA, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100070u), Le32(0), Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_write_cache_a_call_parse) {
+    // WriteCacheA_Call: szLookupName ptr, Context, UUID ptr, FreshnessCounter,
+    // cbDataLen, pbData ptr; referents: name, context, UUID, data.
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(9), Le32(3), Le32(0x0002000C),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Bytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}),
+        Le32(3), Bytes({0x10, 0x20, 0x30}), Zeros(1),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F8u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.lookup_name == "Key");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.card_id.size(), size_t{16});
+    CHECK_EQ(call.freshness, 9u);
+    CHECK(call.write_cache_data ==
+          std::vector<uint8_t>({0x10, 0x20, 0x30}));
+}
+
+RTSC_TEST(smartcard_write_cache_w_call_parse) {
+    // WriteCacheW_Call: same as A but szLookupName is a UTF-16LE [string].
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(9), Le32(3), Le32(0x0002000C),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 0, 'e', 0, 'y', 0, 0, 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Bytes({0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}),
+        Le32(3), Bytes({0x10, 0x20, 0x30}), Zeros(1),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900FCu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kWriteCacheW);
+    CHECK(call.lookup_name_w == u"Key");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.card_id.size(), size_t{16});
+    CHECK_EQ(call.freshness, 9u);
+    CHECK(call.write_cache_data ==
+          std::vector<uint8_t>({0x10, 0x20, 0x30}));
+}
+
+RTSC_TEST(smartcard_write_cache_a_call_accepts_null_data) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(0), Le32(0), Le32(0),  // cbDataLen = 0, pbData NULL
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Zeros(16),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F8u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.write_cache_data.empty());
+}
+
+RTSC_TEST(smartcard_write_cache_a_call_rejects_ndr_length_mismatch) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(0), Le32(5), Le32(0x0002000C),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Zeros(16),
+        Le32(2), Bytes({0xAA, 0xBB}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_write_cache_a_call_rejects_oversized_data) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0x00020008),
+        Le32(0), Le32(65537), Le32(0),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Zeros(16),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_write_cache_a_call_rejects_null_uuid) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(0),  // CardIdentifier NULL
+        Le32(0), Le32(0), Le32(0),
+        Le32(4), Le32(0), Le32(4),
+        Bytes({'K', 'e', 'y', 0}),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900F8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_get_reader_icon_call_parse) {
+    // GetReaderIcon_Call: Context, szReaderName ptr; referents: context,
+    // UTF-16LE [string] with character-counted lengths.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0x00020004),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(3), Le32(0), Le32(3),
+        Bytes({'R', 0, '0', 0, 0, 0}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090104u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.reader_name == u"R0");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+}
+
+RTSC_TEST(smartcard_get_reader_icon_call_rejects_null_name) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0),  // szReaderName NULL
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090104u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_get_reader_icon_call_rejects_missing_nul) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0x00020004),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(2), Le32(0), Le32(2),
+        Bytes({'R', 0, '0', 0}),  // no UTF-16 NUL terminator
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090104u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_get_reader_icon_return_exact_bytes) {
+    ScardReturn ret;
+    ret.icon = std::vector<uint8_t>({0x89, 0x50, 0x4E, 0x47});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetReaderIcon, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(4), Le32(0x00020000),
+                                 Le32(4),
+                                 Bytes({0x89, 0x50, 0x4E, 0x47})}))));
+}
+
+RTSC_TEST(smartcard_get_reader_icon_return_failure_drops_data) {
+    ScardReturn ret;
+    ret.return_code = 0x80100009u;  // SCARD_E_UNKNOWN_READER
+    ret.icon = std::vector<uint8_t>({0xAA});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetReaderIcon, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100009u), Le32(0), Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_get_reader_icon_return_rejects_oversized_data) {
+    ScardReturn ret;
+    ret.icon = std::vector<uint8_t>(kScardMaxIconBytes + 1, 0x11);
+    CHECK(EncodeScardReturn(ScardIoctl::kGetReaderIcon, ret).empty());
+}
+
+RTSC_TEST(smartcard_get_device_type_id_call_parse) {
+    // Same wire form as GetReaderIcon_Call: Context + WCHAR [string].
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0x00020004),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(3), Le32(0), Le32(3),
+        Bytes({'R', 0, '0', 0, 0, 0}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090108u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.reader_name == u"R0");
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+}
+
+RTSC_TEST(smartcard_get_device_type_id_return_exact_bytes) {
+    ScardReturn ret;
+    ret.device_type_id = 0x0000000A;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetDeviceTypeId, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(0x0000000A)}))));
+}
+
+RTSC_TEST(smartcard_get_device_type_id_return_failure_keeps_device_id) {
+    ScardReturn ret;
+    ret.return_code = 0x80100009u;  // SCARD_E_UNKNOWN_READER
+    ret.device_type_id = 0x0000000A;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetDeviceTypeId, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100009u), Le32(0x0000000A)}))));
+}
+
+RTSC_TEST(smartcard_get_transmit_count_call_parse) {
+    // GetTransmitCount_Call: REDIR_SCARDHANDLE (context + handle).
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x00090100u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.handle.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK(call.handle.bytes ==
+          std::vector<uint8_t>({0x11, 0x22, 0x33, 0x44}));
+}
+
+RTSC_TEST(smartcard_get_transmit_count_return_exact_bytes) {
+    ScardReturn ret;
+    ret.transmit_count = 42;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetTransmitCount, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(42)}))));
+}
+
+RTSC_TEST(smartcard_get_transmit_count_return_failure_keeps_count) {
+    ScardReturn ret;
+    ret.return_code = 0x80100003u;  // SCARD_E_INVALID_HANDLE
+    ret.transmit_count = 42;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kGetTransmitCount, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100003u), Le32(42)}))));
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_call_parse) {
+    // LocateCardsByATRA_Call: Context, cAtrs, masks ptr, cReaders, states
+    // ptr; referents: context, mask array, ReaderStateA array.
+    std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(1), Le32(0x00020004),
+        Le32(1), Le32(0x00020008),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(1),
+        Le32(2),
+        Bytes({0x3B, 0x00}), Zeros(34),
+        Bytes({0xFF, 0xFF}), Zeros(34),
+        Le32(1),
+        Le32(0x0002000C),
+        Le32(7), Le32(0), Le32(0), Zeros(36),
+        Le32(3), Le32(0), Le32(3),
+        Bytes({'R', '0', 0}), Zeros(1),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E8u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.atr_masks.size(), size_t{1});
+    if (call.atr_masks.size() == 1) {
+        CHECK_EQ(call.atr_masks[0].cb_atr, 2u);
+        CHECK(call.atr_masks[0].atr ==
+              std::vector<uint8_t>({0x3B, 0x00}));
+        CHECK(call.atr_masks[0].mask ==
+              std::vector<uint8_t>({0xFF, 0xFF}));
+    }
+    CHECK_EQ(call.reader_states.size(), size_t{1});
+    if (call.reader_states.size() == 1) {
+        CHECK(call.reader_states[0].reader == "R0");
+        CHECK_EQ(call.reader_states[0].current_state, 7u);
+    }
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_w_call_parse) {
+    // LocateCardsByATRW_Call: same as A but reader names are UTF-16LE.
+    std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(1), Le32(0x00020004),
+        Le32(1), Le32(0x00020008),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(1),
+        Le32(2),
+        Bytes({0x3B, 0x00}), Zeros(34),
+        Bytes({0xFF, 0xFF}), Zeros(34),
+        Le32(1),
+        Le32(0x0002000C),
+        Le32(7), Le32(0), Le32(0), Zeros(36),
+        Le32(3), Le32(0), Le32(3),
+        Bytes({'R', 0, '0', 0, 0, 0}), Zeros(2),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900ECu, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kLocateCardsByAtrW);
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK_EQ(call.atr_masks.size(), size_t{1});
+    if (call.atr_masks.size() == 1) {
+        CHECK_EQ(call.atr_masks[0].cb_atr, 2u);
+        CHECK(call.atr_masks[0].atr ==
+              std::vector<uint8_t>({0x3B, 0x00}));
+        CHECK(call.atr_masks[0].mask ==
+              std::vector<uint8_t>({0xFF, 0xFF}));
+    }
+    CHECK_EQ(call.reader_states_w.size(), size_t{1});
+    if (call.reader_states_w.size() == 1) {
+        CHECK(call.reader_states_w[0].reader == u"R0");
+        CHECK_EQ(call.reader_states_w[0].current_state, 7u);
+    }
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_call_rejects_too_many_masks) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(1001), Le32(0x00020004),
+        Le32(0), Le32(0),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_call_rejects_oversized_atr) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(1), Le32(0x00020004),
+        Le32(0), Le32(0),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(1),
+        Le32(37), Zeros(36), Zeros(36),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_call_rejects_mask_count_mismatch) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(2), Le32(0x00020004),
+        Le32(0), Le32(0),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(1),  // array MaxCount != cAtrs
+        Le32(0), Zeros(36), Zeros(36),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_call_rejects_pointer_count_mismatch) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(0), Le32(0x00020004),  // cAtrs = 0 but non-NULL masks pointer
+        Le32(0), Le32(0),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E8u, buf.data(), buf.size(), call) ==
+          Status::InvalidField);
+}
+
+RTSC_TEST(smartcard_locate_cards_by_atr_a_return_exact_bytes) {
+    ScardReturn ret;
+    ScardReaderStateReturn st;
+    st.current_state = 1;
+    st.event_state = 0x40;
+    st.atr = {0x3B, 0x00};
+    ret.reader_states.push_back(st);
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kLocateCardsByAtrA, ret);
+    std::vector<uint8_t> expected = Concat({
+        Le32(0), Le32(1), Le32(0x00020000), Le32(1),
+        Le32(1), Le32(0x40), Le32(2),
+        Bytes({0x3B, 0x00}), Zeros(34),
+    });
+    CHECK(Same(got, Wrap(expected)));
+}
+
+RTSC_TEST(smartcard_access_started_event_call_is_bare_four_bytes) {
+    const uint8_t payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900E0u, payload, sizeof(payload), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kAccessStartedEvent);
+    CHECK(ParseScardCall(0x000900E0u, payload, 3, call) ==
+          Status::InvalidLength);
+    CHECK(ParseScardCall(0x000900E0u, payload, 5, call) ==
+          Status::InvalidLength);
+}
+
+RTSC_TEST(smartcard_access_started_event_return_exact_bytes) {
+    ScardReturn ret;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kAccessStartedEvent, ret);
+    CHECK(Same(got, Wrap(Le32(0))));
+    ret.return_code = 0x8010001Du;  // SCARD_E_NO_SERVICE
+    const std::vector<uint8_t> failed =
+        EncodeScardReturn(ScardIoctl::kAccessStartedEvent, ret);
+    CHECK(Same(failed, Wrap(Le32(0x8010001Du))));
+}
+
+RTSC_TEST(smartcard_cancel_call_parse) {
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900A8u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kCancel);
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+}
+
+RTSC_TEST(smartcard_state_call_parse) {
+    // State_Call: REDIR_SCARDHANDLE, fpbAtrIsNULL, cbAtrLen.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(1), Le32(36),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900C4u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.handle.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK(call.handle.bytes ==
+          std::vector<uint8_t>({0x11, 0x22, 0x33, 0x44}));
+    CHECK_EQ(call.atr_is_null, 1u);
+    CHECK_EQ(call.atr_capacity, 36u);
+}
+
+RTSC_TEST(smartcard_state_return_exact_bytes) {
+    ScardReturn ret;
+    ret.state = 0x34;
+    ret.protocol = 2;
+    ret.state_atr = std::vector<uint8_t>({0x3B, 0x00});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kState, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(0x34), Le32(2), Le32(2),
+                                 Le32(0x00020000), Le32(2),
+                                 Bytes({0x3B, 0x00}), Zeros(2)}))));
+}
+
+RTSC_TEST(smartcard_state_return_probe_has_null_atr) {
+    ScardReturn ret;
+    ret.state = 0x34;
+    ret.protocol = 2;
+    ret.state_atr_length = 2;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kState, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(0x34), Le32(2), Le32(2),
+                                 Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_state_return_failure_drops_atr) {
+    ScardReturn ret;
+    ret.return_code = 0x80100008u;  // SCARD_E_INSUFFICIENT_BUFFER
+    ret.state = 0x34;
+    ret.protocol = 2;
+    ret.state_atr = std::vector<uint8_t>({0x3B});
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kState, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100008u), Le32(0x34), Le32(2),
+                                 Le32(0), Le32(0)}))));
+}
+
+RTSC_TEST(smartcard_connect_w_call_parse) {
+    // ConnectW_Call ([MS-RDPESC] 2.2.2.14): szReader ptr, Context,
+    // ShareMode, PreferredProtocols; referents: wide reader, context.
+    const std::vector<uint8_t> reader = {
+        'R', 0, 'e', 0, 'a', 0, 'd', 0, 'e', 0, 'r', 0, 0, 0};
+    std::vector<uint8_t> body = Concat({
+        Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(2), Le32(3),
+        Le32(7), Le32(0), Le32(7),
+    });
+    body.insert(body.end(), reader.begin(), reader.end());
+    while (body.size() % 4 != 0) body.push_back(0);
+    body = Concat({body, Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD})});
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900B0u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.code == ScardIoctl::kConnectW);
+    CHECK(call.reader_name == u"Reader");
+    CHECK_EQ(call.share_mode, 2u);
+    CHECK_EQ(call.preferred_protocols, 3u);
+    CHECK(call.context.bytes ==
+          std::vector<uint8_t>({0x00, 0x00, 0x01, 0xCD}));
+}
+
+RTSC_TEST(smartcard_connect_w_return_exact_bytes) {
+    ScardReturn ret;
+    ret.handle.context.bytes = {0x00, 0x00, 0x01, 0xCD};
+    ret.handle.bytes = {0xAA, 0xBB, 0xCC, 0xDD};
+    ret.active_protocol = 2;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kConnectW, ret);
+    const std::vector<uint8_t> body = Concat({
+        Le32(0),
+        Le32(4), Le32(0x00020000), Le32(4), Le32(0x00020004),
+        Le32(2),
+        Le32(4), Bytes({0x00, 0x00, 0x01, 0xCD}),
+        Le32(4), Bytes({0xAA, 0xBB, 0xCC, 0xDD}),
+    });
+    CHECK(Same(got, Wrap(body)));
+}
+
+RTSC_TEST(smartcard_reconnect_call_parse) {
+    // Reconnect_Call: REDIR_SCARDHANDLE, share mode, preferred protocols,
+    // initialization.
+    const std::vector<uint8_t> body = Concat({
+        Le32(4), Le32(0x00020000),
+        Le32(4), Le32(0x00020004),
+        Le32(2), Le32(3), Le32(1),
+        Le32(4), Bytes({0xDE, 0xAD, 0xBE, 0xEF}),
+        Le32(4), Bytes({0x11, 0x22, 0x33, 0x44}),
+    });
+    const std::vector<uint8_t> buf = Wrap(body);
+    ScardCall call;
+    CHECK(ParseScardCall(0x000900B4u, buf.data(), buf.size(), call) ==
+          Status::Ok);
+    CHECK(call.handle.context.bytes ==
+          std::vector<uint8_t>({0xDE, 0xAD, 0xBE, 0xEF}));
+    CHECK(call.handle.bytes ==
+          std::vector<uint8_t>({0x11, 0x22, 0x33, 0x44}));
+    CHECK_EQ(call.share_mode, 2u);
+    CHECK_EQ(call.preferred_protocols, 3u);
+    CHECK_EQ(call.initialization, 1u);
+}
+
+RTSC_TEST(smartcard_reconnect_return_exact_bytes) {
+    ScardReturn ret;
+    ret.active_protocol = 3;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kReconnect, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0), Le32(3)}))));
+}
+
+RTSC_TEST(smartcard_reconnect_return_failure_keeps_protocol) {
+    ScardReturn ret;
+    ret.return_code = 0x80100003u;  // SCARD_E_INVALID_HANDLE
+    ret.active_protocol = 3;
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kReconnect, ret);
+    CHECK(Same(got, Wrap(Concat({Le32(0x80100003u), Le32(3)}))));
+}
+
 RTSC_TEST(smartcard_control_return_rejects_oversized_buffer) {
     ScardReturn ret;
     ret.out_buffer = std::vector<uint8_t>(kScardMaxTransmitBytes + 1, 0x11);
@@ -899,6 +1997,30 @@ RTSC_TEST(smartcard_status_return_rejects_oversized_atr) {
     ScardReturn ret;
     ret.atr.assign(kScardMaxStatusAtr + 1, 0);
     CHECK(EncodeScardReturn(ScardIoctl::kStatusA, ret).empty());
+}
+
+RTSC_TEST(smartcard_status_w_return_exact_bytes) {
+    ScardReturn ret;
+    ret.reader_names = std::vector<uint8_t>{'R', 0, 0, 0, 0, 0};
+    ret.state = 0x20;
+    ret.protocol = 2;
+    ret.atr = {0x3B, 0x8F};
+    const std::vector<uint8_t> got =
+        EncodeScardReturn(ScardIoctl::kStatusW, ret);
+    const std::vector<uint8_t> body = Concat({
+        Le32(0), Le32(6), Le32(0x00020000),
+        Le32(0x20), Le32(2),
+        Bytes({0x3B, 0x8F}), Zeros(30),  // pbAtr[32]
+        Le32(2),                         // cbAtrLen
+        Le32(6), Bytes({'R', 0, 0, 0, 0, 0}), Zeros(2),  // names referent
+    });
+    CHECK(Same(got, Wrap(body)));
+}
+
+RTSC_TEST(smartcard_status_w_return_rejects_odd_names) {
+    ScardReturn ret;
+    ret.reader_names = std::vector<uint8_t>{'R', 0, 0, 0, 0};
+    CHECK(EncodeScardReturn(ScardIoctl::kStatusW, ret).empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -985,8 +2107,10 @@ RTSC_TEST(smartcard_return_declares_exact_object_length) {
 
 RTSC_TEST(smartcard_return_rejects_unsupported_ioctl) {
     ScardReturn ret;
-    CHECK(EncodeScardReturn(ScardIoctl::kIsValidContext, ret).empty());
-    CHECK(EncodeScardReturn(ScardIoctl::kListReadersW, ret).empty());
+    // Client-to-server only: INTRODUCEREADERGROUPA (0x00090050) and
+    // INTRODUCEREADERW (0x00090064) are never handled by the TS client.
+    CHECK(EncodeScardReturn(static_cast<ScardIoctl>(0x00090050u), ret).empty());
+    CHECK(EncodeScardReturn(static_cast<ScardIoctl>(0x00090064u), ret).empty());
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_smartcard_tests"); }

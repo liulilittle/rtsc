@@ -978,6 +978,139 @@ RTSC_TEST(connection_driver_routes_io_channel_to_graphics) {
     CHECK_EQ(vc_calls, 0);
 }
 
+RTSC_TEST(connection_driver_records_save_session_info_after_active) {
+    auto driver = MakeDriver();
+    CHECK(DriveToActive(driver));
+    CHECK(driver.session_active());
+
+    int graphics_calls = 0;
+    driver.SetSessionPduHandler(
+        [&](const std::vector<uint8_t>&) { ++graphics_calls; });
+
+    // TS_SAVE_SESSION_INFO_PDU_DATA / INFOTYPE_LOGON_LONG
+    // ([MS-RDPBCGR] 2.2.10.1.1.2): session id 7, domain NTDEV, user alice.
+    rtsc::proto::ByteWriter w;
+    w.u32le(1);   // infoType = INFOTYPE_LOGON_LONG
+    w.u16le(1);   // Version
+    w.u32le(576); // Size
+
+    w.u32le(7);   // SessionId
+    w.u32le(12);  // cbDomain (including the null terminator)
+    w.u32le(12);  // cbUserName
+    for (int i = 0; i < 558; ++i) w.u8(0);  // Pad
+    for (const char* p = "NTDEV"; *p != '\0'; ++p) {
+        w.u16le(static_cast<uint16_t>(*p));
+    }
+    w.u16le(0);
+    for (const char* p = "alice"; *p != '\0'; ++p) {
+        w.u16le(static_cast<uint16_t>(*p));
+    }
+    w.u16le(0);
+    const auto body = w.take();
+
+    // Save Session Info arrives on the I/O channel (1003 in this capture), not
+    // on the static virtual-channel id ServerIndication() uses.
+    rtsc::proto::ByteWriter sw;
+    sw.u16le(static_cast<uint16_t>(18 + body.size()));
+    sw.u16le(0x0017);
+    sw.u16le(0x03EA);
+    sw.u32le(0x000103EA);
+    sw.u8(0);
+    sw.u8(0x01);
+    sw.u16le(static_cast<uint16_t>(body.size()));
+    sw.u8(static_cast<uint8_t>(rtsc::proto::ShareDataPduType::kSaveSessionInfo));
+    sw.u8(0);
+    sw.u16le(0);
+    sw.bytes(body.data(), body.size());
+    const auto wire =
+        rtsc::proto::McsSendData::build_indication(0x03EA, 1003, sw.take());
+    const auto step = driver.OnData(wire.data(), wire.size());
+    CHECK(!step.failed);
+    CHECK(driver.logon_info().has_logon);
+    CHECK_EQ(driver.logon_info().session_id, static_cast<uint32_t>(7));
+    CHECK(driver.logon_info().domain == "NTDEV");
+    CHECK(driver.logon_info().user_name == "alice");
+    // A logon notification is not graphics data.
+    CHECK_EQ(graphics_calls, 0);
+}
+
+RTSC_TEST(connection_driver_reconnects_after_reset) {
+    auto driver = MakeDriver();
+    CHECK(DriveToActive(driver));
+    CHECK(driver.session_active());
+
+    // A reconnect carries the 28-byte ARC_CS_PRIVATE_PACKET from the previous
+    // session (here an arbitrary value; the server does not validate it yet).
+    driver.ResetForReconnect(std::vector<uint8_t>(28, 0x5A));
+    CHECK(!driver.session_active());
+    CHECK(driver.phase_name() == "connect");
+    // The cookie must reach the machine that builds the Client Info PDU.
+    CHECK(driver.machine().config().auto_reconnect_cookie ==
+          std::vector<uint8_t>(28, 0x5A));
+
+    // A second full handshake on the same driver must reach active again.
+    driver.SetTlsTransportForTest(std::make_unique<ScriptedTls>());
+    CHECK(DriveToActive(driver));
+    CHECK(driver.session_active());
+}
+
+RTSC_TEST(connection_driver_routes_deactivate_all_to_session_setup) {
+    auto driver = MakeDriver();
+    CHECK(DriveToActive(driver));
+    CHECK(driver.session_active());
+
+    int graphics_calls = 0;
+    driver.SetSessionPduHandler(
+        [&](const std::vector<uint8_t>&) { ++graphics_calls; });
+
+    // Deactivate All on the I/O channel (1003): share control type 6, 9 bytes.
+    rtsc::proto::ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    const auto pdu = rtsc::proto::McsSendData::build_indication(
+        0x03EA, 1003, w.take());
+    auto step = driver.OnData(pdu.data(), pdu.size());
+    CHECK(!step.failed);
+    // The session machine must see it (active becomes false); the graphics
+    // handler must not.
+    CHECK(!driver.session_active());
+    CHECK_EQ(graphics_calls, 0);
+}
+
+RTSC_TEST(client_pump_reports_peer_close_after_deactivate_all) {
+    // A Deactivate All can also mean "the connection will be dropped". After
+    // the session leaves active, the transport closing must surface as a
+    // disconnect, not be mistaken for a silent timeout.
+    class ClosedTransport final : public rtsc::net::Transport {
+     public:
+        int Read(uint8_t*, size_t) override { return 0; }
+        bool Write(const uint8_t*, size_t) override { return false; }
+        void Close() override {}
+    } transport;
+
+    auto driver = MakeDriver();
+    rtsc::client::Client client(std::move(driver), 16, 16);
+    CHECK(DriveToActive(client.driver()));
+    CHECK(client.active());
+
+    rtsc::proto::ByteWriter w;
+    w.u16le(9);
+    w.u16le(0x0016);
+    w.u16le(0x03EA);
+    w.u8(0x00);
+    const auto pdu = rtsc::proto::McsSendData::build_indication(
+        0x03EA, 1003, w.take());
+    const auto step = client.driver().OnData(pdu.data(), pdu.size());
+    CHECK(!step.failed);
+    CHECK(!client.active());
+
+    std::string error;
+    CHECK(!client.Pump(transport, error));
+    CHECK(error == "peer closed or read error");
+}
+
 RTSC_TEST(connection_driver_ignores_unregistered_channel) {
     auto driver = MakeDriver();
     CHECK(DriveToActive(driver));

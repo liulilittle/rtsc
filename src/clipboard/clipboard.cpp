@@ -14,6 +14,22 @@
 #endif
 
 namespace rtsc::clipboard {
+
+uint32_t MapAdvertisedFormat(uint32_t format) {
+    switch (format) {
+        case kCfBitmap:
+            // An HBITMAP cannot be sent as bytes; the packed DIB can.
+            return kCfDib;
+        case kCfPalette:
+        case kCfMetafilepict:
+        case kCfEnhmetafile:
+            // GDI handle only: no serializable representation.
+            return 0;
+        default:
+            return format;
+    }
+}
+
 namespace {
 
 #if defined(_WIN32)
@@ -27,6 +43,44 @@ namespace {
 // is serialized by a process-level mutex; the sequence number the poll reads is
 // lock-free and intentionally outside it.
 std::mutex g_clipboard_mutex;
+
+// Converts an HBITMAP to a packed CF_DIB (BITMAPINFOHEADER + 32bpp pixels,
+// bottom-up). CF_BITMAP is a GDI handle, so it cannot be copied as a global
+// memory block; this is the byte form the peer can consume.
+bool BitmapToDib(HBITMAP bitmap, std::vector<uint8_t>& out) {
+    BITMAP bm{};
+    if (bitmap == nullptr || GetObject(bitmap, sizeof(bm), &bm) == 0) {
+        return false;
+    }
+    if (bm.bmWidth <= 0 || bm.bmHeight <= 0) return false;
+    BITMAPINFOHEADER bih{};
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = bm.bmWidth;
+    bih.biHeight = bm.bmHeight;
+    bih.biPlanes = 1;
+    bih.biBitCount = 32;
+    bih.biCompression = BI_RGB;
+    const size_t stride =
+        ((static_cast<size_t>(bm.bmWidth) * 32 + 31) / 32) * 4;
+    const size_t image = stride * static_cast<size_t>(bm.bmHeight);
+    out.assign(sizeof(BITMAPINFOHEADER) + image, 0);
+    std::memcpy(out.data(), &bih, sizeof(bih));
+    HDC dc = GetDC(nullptr);
+    if (dc == nullptr) {
+        out.clear();
+        return false;
+    }
+    const int lines = GetDIBits(
+        dc, bitmap, 0, static_cast<UINT>(bm.bmHeight),
+        out.data() + sizeof(BITMAPINFOHEADER),
+        reinterpret_cast<BITMAPINFO*>(out.data()), DIB_RGB_COLORS);
+    ReleaseDC(nullptr, dc);
+    if (lines != bm.bmHeight) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
 
 class Win32Clipboard final : public Clipboard {
  public:
@@ -47,7 +101,21 @@ class Win32Clipboard final : public Clipboard {
         std::lock_guard<std::mutex> lock(g_clipboard_mutex);
         out.clear();
         if (!OpenClipboard(nullptr)) return false;
+        if (format == kCfBitmap) {
+            const bool ok = BitmapToDib(
+                static_cast<HBITMAP>(GetClipboardData(kCfBitmap)), out);
+            CloseClipboard();
+            return ok;
+        }
         HANDLE handle = GetClipboardData(format);
+        if (handle == nullptr && (format == kCfDib || format == kCfDibV5)) {
+            // The source application published only CF_BITMAP; the advertised
+            // CF_DIB is synthesized from the bitmap handle.
+            const bool ok = BitmapToDib(
+                static_cast<HBITMAP>(GetClipboardData(kCfBitmap)), out);
+            CloseClipboard();
+            return ok;
+        }
         if (handle == nullptr) {
             CloseClipboard();
             return false;

@@ -41,19 +41,23 @@ add_library(rtsc_proto STATIC
     src/proto/surface.cpp
     src/proto/cliprdr.cpp
     src/proto/drdynvc.cpp
+    src/proto/display_control.cpp
     src/proto/rdpusb.cpp
     src/proto/rdpdr.cpp
     src/proto/smartcard.cpp
     src/proto/rdpsnd.cpp
-    src/proto/rdp6.cpp
-    src/proto/nsc.cpp
-    src/proto/orders.cpp
-    src/proto/rop.cpp
-    src/proto/secondary.cpp
-    src/proto/rail.cpp
-    src/proto/gateway.cpp
+src/proto/rdp6.cpp
+src/proto/nsc.cpp
+src/proto/orders.cpp
+src/proto/rop.cpp
+src/proto/secondary.cpp
+src/proto/rail.cpp
+src/proto/gateway.cpp
+src/proto/bulk.cpp
 )
 target_include_directories(rtsc_proto PUBLIC include)
+# RDP 8.0 bulk decompressor header.
+target_sources(rtsc_proto PRIVATE include/rtsc/proto/bulk.h)
 target_link_libraries(rtsc_proto PUBLIC rtsc_crypto)
 
 # rdpsnd (audio output) virtual channel handler. Platform neutral: it decodes
@@ -97,9 +101,12 @@ add_library(rtsc_rdpdr STATIC
     src/channel/rdpdr_client.cpp
     src/channel/rdpdr_server.cpp
     src/rdpdr/file_system.cpp
+    src/rdpdr/lock_table.cpp
+    src/rdpdr/serial_win32.cpp
+    src/rdpdr/printer_win32.cpp
     src/rdpdr/drive_enum_win32.cpp)
 target_include_directories(rtsc_rdpdr PUBLIC include)
-target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto)
+target_link_libraries(rtsc_rdpdr PUBLIC rtsc_proto winspool)
 
 # Smart card redirection backend ([MS-RDPESC] 3.1.4). Platform neutral seam
 # plus a null backend; the Win32 implementation binds winscard.dll at runtime
@@ -135,6 +142,15 @@ add_library(rtsc_util STATIC src/util/crash_guard.cpp)
 target_include_directories(rtsc_util PUBLIC include)
 if(MSVC)
     target_link_libraries(rtsc_util PUBLIC dbghelp)
+endif()
+
+# RDP connection file (.rdp) settings codec: text <-> RdpFileSettings.
+add_library(rtsc_config STATIC
+    src/config/rdp_file.cpp
+    src/config/credential_store_win32.cpp)
+target_include_directories(rtsc_config PUBLIC include)
+if(WIN32)
+    target_link_libraries(rtsc_config PUBLIC advapi32)
 endif()
 
 # TLS transport, three layers (S21 / M28).
@@ -239,18 +255,34 @@ add_executable(rtsc_clipboard_tests tests/test_drop_files.cpp)
 target_link_libraries(rtsc_clipboard_tests PRIVATE rtsc_cliprdr rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_clipboard_tests PRIVATE tests)
 
+# RDP connection file (.rdp) settings codec.
+add_executable(rtsc_rdp_file_tests tests/test_rdp_file.cpp)
+target_link_libraries(rtsc_rdp_file_tests PRIVATE rtsc_config rtsc_util)
+target_include_directories(rtsc_rdp_file_tests PRIVATE tests)
+
 add_executable(rtsc_drdynvc_tests tests/test_drdynvc.cpp)
 target_link_libraries(rtsc_drdynvc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_drdynvc_tests PRIVATE tests)
+
+add_executable(rtsc_display_control_tests tests/test_display_control.cpp)
+target_link_libraries(rtsc_display_control_tests PRIVATE rtsc_proto rtsc_util)
+target_include_directories(rtsc_display_control_tests PRIVATE tests)
 
 # URBDRC (RemoteFX USB redirection) channel handler. Platform neutral: it
 # forwards TS_URB requests to an injected rtsc::usb::UsbDevice; the WinUSB
 # backend is the platform implementation (see src/usb/usb_win32.cpp).
 add_library(rtsc_urbrdc STATIC
+    src/channel/display_control_client.cpp
     src/channel/drdynvc_client.cpp
     src/channel/rdpusb_client.cpp)
 target_include_directories(rtsc_urbrdc PUBLIC include)
 target_link_libraries(rtsc_urbrdc PUBLIC rtsc_proto)
+
+add_executable(rtsc_display_control_client_tests
+               tests/test_display_control_client.cpp)
+target_link_libraries(rtsc_display_control_client_tests
+                      PRIVATE rtsc_urbrdc rtsc_proto rtsc_util)
+target_include_directories(rtsc_display_control_client_tests PRIVATE tests)
 
 # Windows USB backend (SetupAPI enumeration + WinUSB transfers).
 if(WIN32)
@@ -329,6 +361,12 @@ add_executable(rtsc_rdp6_tests tests/test_rdp6.cpp)
 target_link_libraries(rtsc_rdp6_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_rdp6_tests PRIVATE tests)
 
+
+add_executable(rtsc_bulk_tests tests/test_bulk.cpp)
+target_link_libraries(rtsc_bulk_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
+target_include_directories(rtsc_bulk_tests PRIVATE tests)
+add_test(NAME bulk COMMAND rtsc_bulk_tests)
+
 add_executable(rtsc_nsc_tests tests/test_nsc.cpp)
 target_link_libraries(rtsc_nsc_tests PRIVATE rtsc_proto rtsc_crypto rtsc_util)
 target_include_directories(rtsc_nsc_tests PRIVATE tests)
@@ -369,6 +407,18 @@ target_include_directories(rtsc_ui_debug_tests PRIVATE tests)
 add_executable(rtsc_gui_debug_tests tests/test_gui_debug_host.cpp)
 target_link_libraries(rtsc_gui_debug_tests PRIVATE rtsc_debug rtsc_util)
 target_include_directories(rtsc_gui_debug_tests PRIVATE tests)
+
+add_executable(rtsc_mstsc_args_tests
+               tests/test_mstsc_args.cpp tools/rtsc_gui/mstsc_args.cpp)
+target_link_libraries(rtsc_mstsc_args_tests PRIVATE rtsc_util)
+target_include_directories(rtsc_mstsc_args_tests PRIVATE tests tools/rtsc_gui)
+
+# Screenshot naming and BMP save: the platform-neutral helper the GUI uses.
+add_executable(rtsc_screenshot_tests
+               tests/test_screenshot_save.cpp tools/rtsc_gui/screenshot_save.cpp)
+target_link_libraries(rtsc_screenshot_tests PRIVATE rtsc_ui rtsc_debug rtsc_util)
+target_include_directories(rtsc_screenshot_tests PRIVATE tests tools/rtsc_gui)
+add_test(NAME screenshot COMMAND rtsc_screenshot_tests)
 
 add_executable(rtsc_graphics_tests tests/test_graphics.cpp)
 target_link_libraries(rtsc_graphics_tests PRIVATE rtsc_client rtsc_proto rtsc_ui rtsc_util)
@@ -555,7 +605,7 @@ endif()
 # The security test also exercises the client's channel registration wrapper.
 target_link_libraries(rtsc_security_tests PRIVATE rtsc_client)
 
-add_library(rtsc_ui STATIC src/ui/surface.cpp src/ui/window.cpp)
+add_library(rtsc_ui STATIC src/ui/surface.cpp src/ui/window.cpp src/ui/connection_bar.cpp)
 target_include_directories(rtsc_ui PUBLIC include)
 if(WIN32)
     target_sources(rtsc_ui PRIVATE src/ui/window_win32.cpp)
@@ -629,9 +679,11 @@ target_link_libraries(rtsc_connect PRIVATE rtsc_security rtsc_net rtsc_proto rts
 # redirection path are all Win32.
 if(WIN32)
 add_executable(rtsc_gui tools/rtsc_gui/main.cpp
+               tools/rtsc_gui/mstsc_args.cpp
+               tools/rtsc_gui/screenshot_save.cpp
                tools/rtsc_gui/connection_info_dialog_win32.cpp
                tools/rtsc_gui/help_dialog_win32.cpp)
-target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util rtsc_debug)
+target_link_libraries(rtsc_gui PRIVATE rtsc_client rtsc_ui rtsc_security rtsc_net rtsc_gateway rtsc_proto rtsc_util rtsc_debug rtsc_config)
 target_link_libraries(rtsc_gui PRIVATE rtsc_rdpsnd rtsc_cliprdr rtsc_rdpdr rtsc_urbrdc rtsc_smartcard)
 if(WIN32)
     target_link_libraries(rtsc_gui PRIVATE rtsc_audio rtsc_usb_win32)
@@ -837,7 +889,11 @@ add_test(NAME surface COMMAND rtsc_surface_tests)
 add_test(NAME cliprdr COMMAND rtsc_cliprdr_tests)
 add_test(NAME cliprdr_server COMMAND rtsc_cliprdr_server_tests)
 add_test(NAME clipboard COMMAND rtsc_clipboard_tests)
+add_test(NAME rdp_file COMMAND rtsc_rdp_file_tests)
 add_test(NAME drdynvc COMMAND rtsc_drdynvc_tests)
+add_test(NAME display_control COMMAND rtsc_display_control_tests)
+add_test(NAME display_control_client
+         COMMAND rtsc_display_control_client_tests)
 add_test(NAME rdpusb COMMAND rtsc_rdpusb_tests)
 add_test(NAME rdpdr COMMAND rtsc_rdpdr_tests)
 add_test(NAME smartcard COMMAND rtsc_smartcard_tests)
@@ -856,6 +912,7 @@ add_test(NAME rop COMMAND rtsc_rop_tests)
 add_test(NAME ui COMMAND rtsc_ui_tests)
 add_test(NAME ui_debug COMMAND rtsc_ui_debug_tests)
 add_test(NAME gui_debug COMMAND rtsc_gui_debug_tests)
+add_test(NAME mstsc_args COMMAND rtsc_mstsc_args_tests)
 add_test(NAME graphics COMMAND rtsc_graphics_tests)
 add_test(NAME view COMMAND rtsc_view_tests)
 add_test(NAME session_info COMMAND rtsc_session_info_tests)
@@ -922,6 +979,8 @@ if(MSVC)
     target_compile_options(rtsc_cliprdr_server_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_clipboard_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_drdynvc_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_display_control_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_display_control_client_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_rdpusb_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_urbrdc PRIVATE /W4 /WX)
     if(WIN32)
@@ -950,6 +1009,7 @@ if(MSVC)
     target_compile_options(rtsc_rop_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_render PRIVATE /W4 /WX)
     target_compile_options(rtsc_ui_tests PRIVATE /W4 /WX)
+    target_compile_options(rtsc_screenshot_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_graphics_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_view_tests PRIVATE /W4 /WX)
     target_compile_options(rtsc_session_info_tests PRIVATE /W4 /WX)

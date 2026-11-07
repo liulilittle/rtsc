@@ -454,6 +454,10 @@ class RailChannel {
     // message may be split across calls.
     void OnChannelData(const uint8_t* data, size_t size);
 
+    // Drops the half-assembled message and the per-session counters after a
+    // reconnect; the handler is kept.
+    void Reset();
+
     // ---- diagnostics --------------------------------------------------------
     unsigned pdu_count() const { return pdu_count_; }
     unsigned handshake_count() const { return handshake_count_; }

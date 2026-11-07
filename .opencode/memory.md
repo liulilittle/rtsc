@@ -1137,6 +1137,40 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
   禁止为了让变异变红而写依赖时序的假测试。**不要声称"已完全覆盖"。**
 - **提交前检查暂存区**。`git add -A` 会把 `.opencode/` 下含未盖章表述的流程记录一并暂存。
   代码提交与流程记录必须分离：`restore --staged` 掉记忆文件，process 记录留到结论定案后写。
+
+## 教训（2026-11-06）：变异全绿≈测试缺口，不是实现正确
+
+- **变异体仍绿时必须先补测试，再宣布正确**。批95 M4 把 UTF-8 码点上限从
+  `0x10FFFF` 放宽到 `0x7FFFFFFF`，测试仍全绿——因为用例只覆盖了非法起始字节/
+  截断，没覆盖“合法 4 字节但超 U+10FFFF”。补 `U+110000` 用例后才红。
+  判据：**每个被删/被放宽的条件，都必须有一条专门让它变红的用例**。
+- **UTF-8 校验按 RFC 3629 六项逐条覆盖**：起始字节范围、续字节 `10xxxxxx`、
+  超长编码（C0 80 / E0 80 AF）、编码代理（ED A0 80）、`>U+10FFFF`、截断。
+  少一项就是一条可被利用的输入缺口。
+- **测试必须隔着可测 seam 观察“内容与顺序”**。批95 最初把 spec→UI 事件映射写在
+  `main.cpp`，而 main 不可链接测试；后来下沉到库 `ToUiInputEvent(s)`，才有
+  M1/M2 的 3+1 红证。纯计数（injected=N）证明不了发的是哪 N 个事件。
+- **变异前必须重新构建**。批95 第一次 M1 直接跑旧二进制，结果“全绿”是假的；
+  先 `BUILD_EXIT=0` 再看测试，是硬顺序。
+
+## 教训（2026-11-06）：边界测试必须成对，拒绝之外还要接受
+
+- **只测“非法值被拒绝”会放过“过严”实现**。批96 M7 把 resize 上限从 65535
+  收紧到 65534，测试仍全绿——因为用例只测 65536/70000 被拒，没测 65535
+  必须接受。补 `width:65535 -> w==65535` 后才红。
+  判据：每个 `<= max` 判断都要有 **max 接受 + max+1 拒绝** 两条用例；
+  每个 `>= min` 判断都要有 **min 接受 + min-1 拒绝** 两条用例。
+
+## 教训（2026-11-06）：同一输入的多条编码路径必须同终态
+
+- **raw UTF-8 与 JSON `\uXXXX` 是同一字符串的两条路径**（第17条 D2：禁止双路
+  分叉）。批97 旧 `FieldValue` 只做 `out += c`，`\n`→`n`、`\u4E2D`→`u4E2D`，
+  两条路径终态不同。修法：完整转义表 + `Hex4` + `AppendUtf8` + 代理对配对，
+  孤立代理/坏十六进制/未知转义 fail-closed。
+- **转义解码必须覆盖标准八种 + `\uXXXX`**：`\" \\ \/ \b \f \n \r \t`。
+  只测 `\"` 和 `\\` 会让换行/制表符静默变成字母。
+- **代理对测试要断言两端**：高代理 `D83D` 与低代理 `DE00` 都要出现且顺序正确；
+  只断言“解析成功”会放过丢弃低代理的实现（M8 红证靠两端断言）。
 - **"文件是否被 git 跟踪"只能自己查**。审计报告说"未跟踪 0 字节文件"，实际是
   `407d03e` 误提交的**已跟踪**垃圾（`git diff --numstat` 为 `0 0`）。
   `git ls-files --others` 对含 `%`/`(`/`,` 的路径会转义而漏报。
@@ -1146,3 +1180,897 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
   forget 的窗口 (a) **仍未关闭**。文档与提交消息必须写"窗口缩小 + 诚实登记为未修"，
   不得写"已修"。审计 B 三次拒绝给"已修"盖章，这个坚持是对的。
 - **批93**：调试通道实测（`--ui-debug-port` / surface 命令 / pixel 统计），变异：空：empty 恒假 -> 1 用例红；恢复全绿。
+
+## 教训（2026-11-06）：请求色深是多字段联合编码
+
+- **32bpp 会话在 TS_UD_CS_CORE 里没有 `highColorDepth=32`**（[MS-RDPBCGR]
+  2.2.1.3.2）。正确组合是 `highColorDepth=24` + `RNS_UD_CS_WANT_32BPP_SESSION
+  (0x0002)` + `supportedColorDepths=0x0009`（24|32）。写错任一字段都会静默降级。
+- **15/16/24 的 supported 位**：15→0x0004、16→0x0002、24→0x0001、32 需叠加
+  0x0008；4/8 没有对应 supported 位。
+- **可测化**：把字段组合做成纯函数 `ApplyClientColorDepth`，GUI 只负责解析参数；
+  非法 bpp 在解析期就 exit 2，不进协议层。
+
+## 教训（2026-11-06）：wire 结构偏移按字段表算，测试错了先改期望
+
+- **DISP MONITOR_LAYOUT 的 40 字节布局**（[MS-RDPEDISP] 2.2.2.2.1）：
+  Flags(16) Left(20) Top(24) Width(28) Height(32) PhysicalW(36) PhysicalH(40)
+  Orientation(44) DesktopScale(48) DeviceScale(52)，其中 16 是 monitor 起始
+  （8 头 + MonitorLayoutSize(4) + NumMonitors(4)）。
+  批99 测试首版漏了 Top，把 Width 写成 24；失败输出 `got 0, want 1280` 直接定位。
+- **先按字段表逐字段算偏移，再写断言**；测试红了先核对期望值，禁止先改实现。
+- **DISP CAPS 的 Length 含 8 字节头**，固定 PDU 20 字节；layout 的 Length =
+  8 头 + 8 固定 + 40*N。长度小于固定值或大于收到字节都必须拒绝。
+
+## 教训（2026-11-06）：一个传输多通道，监听器必须 fan-out
+
+- **单监听器是隐藏的容量上限**。批100 `DrdynvcClient` 只有一个 `listener_`，
+  第二个动态通道（DISP）会顶掉 URBDRC。修成 `vector<IDrdynvcListener*>` +
+  AddListener 去重 + RemoveListener + 四类事件广播。
+- **容量/边界缺陷要专门写“多/满”用例**：两个监听器都要收到、重复 Add 不重复投递、
+  Remove 后一个停一个继续。只测“有一个监听器能收到”会漏掉这个上限。
+- **传输层不拥有监听器**：生命周期由调用方保证，注释必须写明。
+
+## 教训（2026-11-06）：DISP 通道层必须缓存 caps 前的请求
+
+- 服务器打开动态通道后才发 `DISPLAYCONTROL_CAPS_PDU`；GUI 的 resize 可能早于此。
+  `DisplayControlClient` 在 not-ready 时**只保留最新一次**布局请求，caps 通过校验后
+  自动补发；caps 前返回 false（未发送），ready 后才返回 true。
+- **坏 caps 必须 fail-closed**：解析失败保持 not-ready，绝不拿未校验的 caps 去发布局。
+- **通道关闭要复位 ready/caps**：否则重新打开后会用旧 caps 放行非法布局。
+- 偏移教训再次出现：layout 的 `NumMonitors` 在 12（8 头 + MonitorLayoutSize 4），
+  不是 15。写 wire 断言前先算前缀和。
+
+## 教训（2026-11-06）：边界断言先读合同，再列输入→期望
+
+- 批102 把 `8193` 当越界，实际合同是“奇数先取整到偶数再校验”，8193→8192 合法。
+  这已是本轮第三次同类偏差（偏移两次 + 取整顺序一次）。
+- 写边界用例前必须读函数合同，列出：下界-1、下界、上界、上界+1，并注明取整/
+  归一化后的实际值；断言的是**归一化后**的结果。
+- DISP 只完成“发布局”；服务器重新激活（Deactivate-All → Demand Active）未处理，
+  客户端当前把 DeactivateAll 当断开。真机行为未验证。
+
+## 教训（2026-11-06）：变异测试先确认 BUILD_EXIT=0
+
+- M15 首次用 `if (false && cond)` 当变异体，`/W4 /WX` 下 C4127（常量条件）直接编译失败；
+  测试跑的是旧二进制，报了 0 failing。这是**无效验证**，不是红证也不是绿证。
+- 铁律：每个变异体先看 `BUILD_EXIT`，为 0 才判测试红；非 0 就换变异点。
+- 有效的变异应保持可编译、只改变一个关键判定；例如把 `kDemandActive` 改成 `kData`。
+
+## 教训（2026-11-06）：状态机单测证明不了“进得来”
+
+- 批103 只测 `SessionSetupMachine` 的 Deactivate-All→Demand Active，全绿；但 active
+  阶段的 PDU 实际被 `ConnectionDriver` 直接送进图形管线，状态机根本收不到。
+- 跨层功能必须同时有：①状态机分支测试（进来之后正确）；②路由/集成测试（能进来）。
+  驱动级用例：`DriveToActive` 后向 I/O 通道注入 Deactivate-All，断言 session 失活且
+  graphics handler 未被调用。
+- W8 除了追加，还要检查时间顺序与重复段：批98 曾落在批103 之后，已纠正。
+
+## 教训（2026-11-06）：协议等待态要幂等
+
+- Deactivate-All 后处于 kDeactivated 等待 Demand Active；服务器可能重复发
+  Deactivate-All。把“非 Demand Active”当错误会把合法重复包升级成断线。
+- 默认策略：等待态对未知/重复 PDU 幂等忽略（不回包、不改状态、不失败），只在
+  明确不可恢复时才 Fail。M17 证明了这条忽略路径被测试覆盖（2 tests/4 checks 红）。
+- 断线分支（服务器直接关闭连接）当前仍依赖传输层错误，未单独测试。
+
+## 教训（2026-11-06）：断线也要在正确的层验证
+
+- “服务器断开”是 `Client::Pump` 的传输层行为（Read 返回 0 → error
+  `"peer closed or read error"`），不是 session 状态机行为。
+- 用局部 `ClosedTransport : rtsc::net::Transport`（Read=0/Write=false/Close 空）
+  先注入 Deactivate-All 再喂 EOF，才能同时验证“离开 active”和“断线可见”。
+- M18（`n <= 0` → `n < 0`）证明该用例非空转：1 test/2 checks 红，恢复后 25/178 全绿。
+- 同类启示：选择测试层要看行为归属——状态机行为在状态机测，传输行为在 Client 测。
+
+## 教训（2026-11-06）：wire 字段分 ignore / reject 两类
+
+- [MS-RDPEDISP] 对 PhysicalWidth/Height、Orientation 是 **ignore**（超范围时服务器忽略，
+  客户端不必拒绝）；对 Width/Height 范围、overlap、adjacency 是 **reject**
+  （发送前必须校验，否则服务器不应用布局）。
+- 批107 新增 `DisplayControlLayoutValid`：单 monitor 恒真；多 monitor 用 int64 矩形运算
+  检查 strict overlap 与 closed-touch adjacency。
+- 三处集成点：Encode（wire 层）、SetMonitors（ready 前）、SendPending（caps 后补发）。
+- M19（`<=`→`<`）证明测试有效：2 tests/4 checks 红；恢复后 13/59 全绿。
+- 批108 证明该校验在客户端层生效：caps 后重叠布局被拒，边相邻布局发出 96 字节；
+  M20（重叠 `<`→`<=`）3 checks 红。仓库内测试服务器无 drdynvc/DISP，无法真回环。
+
+## 教训（2026-11-06）：CLI 兼容参数要 fail-closed
+
+- mstsc 兼容解析抽成纯函数 `ParseMstscEndpoint` / `ParseMstscDimension`，才能单测边界
+  （port 0、65536、裸 IPv6、CRLF/NUL、尾随垃圾）。
+- 未知 `/x` 必须报错 exit 2，禁止回退成 positional host——否则拼写错误会静默连到
+  错误的主机。
+- `/span` 与 `/multimon` 互斥；slash 选项优先于 positional。
+- M21（允许 port 0）证明测试有效：1 test/2 checks 红；恢复后 6/37 全绿。
+
+## 教训（2026-11-06）：/admin 走 CS_CLUSTER 零 session id
+
+- mstsc `/admin` 的线上编码：`TS_UD_CS_CLUSTER` Flags 设
+  `REDIRECTED_SESSIONID_FIELD_VALID (0x00000002)`，`RedirectedSessionID = 0`
+  （[MS-RDPBCGR] 2.2.1.3.5；IronRDP #715 同样实现）。
+- RTSC 原本完全不发 cluster 块；实现为 `Config::admin_session` + 8 字节 block，
+  仅在开启时追加到 Connect Initial。
+- wire 级测试断言 flags=2、session=0、默认不发；M22（0x2→0x1）1 test/1 check 红。
+- 未真机验证；`/public` `/edit` `/migrate` 仍明确拒绝。
+
+## 教训（2026-11-06）：CLI 开关分类必须精确匹配
+
+- `--help`/`-h`/`/?` 与 `/h:1080`、`/v:host` 共享前缀；前缀/子串匹配会把带值开关
+  误判为 help。`ClassifyCliSpecial` 只做精确相等。
+- help/version 必须在任何连接尝试之前处理，否则会被当成 positional host。
+- 单测覆盖正例 + `/h:1080`/`/v:host`/空串反例；M23 证明有效（1 test/1 check 红）。
+- 进程级验证：`rtsc_gui.exe --help`、`--version` 均 exit 0。
+
+## 教训（2026-11-06）：同一策略必须抽成单一判定函数
+
+- Win 键策略同时在消息循环（window_win32.cpp:414）和翻译层（:1013）出现；
+  只改一层会被另一层静默抵消。抽出 `ForwardWinKey(mode, fullscreen)` 后两处共用。
+- mstsc 三模式语义：kRemote 始终转发；kLocal 始终本地；kFullscreenOnly 仅全屏转发。
+- 测试三层：纯函数矩阵、翻译层门、真实窗口事件数（0/2）；M24 翻转条件 → 3 tests 红。
+- 偏差：本批先改后备份（W3 顺序错误），已补备份并记录，后续必须先备份。
+
+## 教训（2026-11-06）：本地快捷键必须 return false 交还 DefWindowProc
+
+- Alt+Tab 在本地生效需要窗口过程返回 false，让 DefWindowProc 执行任务切换；
+  只把事件吞掉（返回 true 且不转发）会导致本地无反应、远端也收不到。
+- 判据：`WM_SYSKEYDOWN` 且 `vk == VK_TAB` 且 lParam bit29（context）置位。
+- Alt+Tab 复用 `ForwardWinKey(mode, fullscreen)`：kLocal/窗口化 fullscreen-only 本地，
+  kRemote/全屏 fullscreen-only 远端。
+- M25（去掉取反）→ 1 test / 4 checks 红；恢复后 ui 56/294 全绿。
+
+## 教训（2026-11-06）：状态文本要有单一格式函数并覆盖初始路径
+
+- 窗口标题原来只在缩放变化时设置，初始值固定 "RTSC"，多会话不可区分。
+- `WindowTitleText(host, port, ZoomState)` 统一格式：`host:port - RTSC - zoom N%`，
+  fit 时 `fit to window`，port==0 省略端口。
+- 初始设置 + 变更更新都必须走同一函数；只改变更路径会留下空窗期。
+- M26 翻转端口条件 → 1 test / 5 checks 红；恢复后 view 61/7360 全绿。
+
+## 教训（2026-11-06）：Save Session Info 结构语义
+
+- TS_LOGON_INFO_VERSION_2::Size：官方 dump 为 0x12=18（固定部分）；FreeRDP 另
+  接受 576（服务器上报整体大小），解析器两者都要接受。
+- TS_LOGON_INFO_EXTENDED::Length 含自身：2 + FieldsPresent(4) + 字段块。
+- ARC_SC_PRIVATE_PACKET：cbLen=28、Version、LogonId、16 字节随机数；这是
+  自动重连的凭证，必须原样保存。
+- 解析通知类 PDU 失败时应忽略而不是断会话；畸形数据只拒绝本次记录。
+- PowerShell `Set-Content -Encoding UTF8` 会加 BOM；改源码后用
+  `UTF8Encoding(false)` 重写去 BOM。
+
+## 教训（2026-11-06）：写入的协议状态必须有读取方
+
+- `error_info` 解析后无人读取，导致服务器给出的断开原因被通用错误覆盖。
+  修复：`SetErrorInfoText()` + driver 访问器 + 会话结束打印。
+- 规范文本只对已核实的协议无关码（0x00..0x1A）给出；未知码统一
+  "unknown error"，禁止凭记忆编造 licensing/特定码文案。
+- M28（idle→active 文案）1 test/1 check 红；恢复后 share 35/177 全绿。
+
+## 教训（2026-11-06）：固定布局 UI 复用字段，不硬塞新行
+
+- 连接信息对话框是固定像素布局（末组底边 332、按钮 y=324）；新增行会重叠。
+- 会话身份并入既有 `remote_session_type`：`远程桌面 (RDP) - 会话 N - 用户 D\U`，
+  无域/无用户时按条件拼接，避免多余分隔符。
+- 数据来源：`ConnectionDriver::logon_info()`（批115）→ main collect → SessionInfo。
+- M29（会话号 +1）→ 1 test/3 checks 红；恢复后 session_info 16/60 全绿。
+
+## 教训（2026-11-06）：按 PDU 真实到达阶段测试
+
+- Save Session Info 在 active 之后才发；批115 只测 finalize，解析器在真实会话
+  不可达（active 分支全量交给 graphics）。
+- `ConnectionDriver` active 分支必须特判非图形共享 PDU（Deactivate All、
+  Save Session Info），其余才进 graphics。
+- 注入测试必须用 I/O 通道（本捕获 1003）；`ServerIndication` 的通道不是 I/O，
+  active 后会作为未注册 VC 丢弃。
+- M30（判定恒 false）→ 1 test/5 checks 红；恢复后 security 26/186 全绿。
+
+## 教训（2026-11-06）：新增服务器 PDU 会破坏脚本化读序
+
+- 服务器现在在 Font Map 后、active 前发送 Save Session Info LOGON_LONG
+  （`EncodeSaveSessionInfoLogon`，UTF-8→UTF-16LE，域 52/用户名 512 字节上限）。
+- 客户端 active 后由 driver 分流记录（批118），e2e 断言 `NTDEV\rtsc`。
+- 插入新 PDU 后，依赖“active 后第一个 PDU”的脚本化测试会错位；必须消费并断言
+  新 PDU 再继续，并跑同层全部用例。
+- UTF-8→UTF-16 必须处理代理对；超限/非法输入 fail-closed 返回空。
+- M31（Size=570）→ 单测 1/8 + e2e 1/3 红；恢复后 session_setup 26/162、
+  gui_send 3/45 全绿。
+
+## 教训（2026-11-06）：ARC cookie 签发
+
+- LOGON_EXTENDED_INFO：Length 含自身（2+4+4+28=38）；FieldsPresent=1；
+  cbFieldData=28；ARC_SC_PRIVATE_PACKET 的 cbLen=28。
+- 16 字节随机数必须来自 `crypto::RandomBytes`；失败时跳过 cookie（不发可预测值）。
+- 服务器在 finalization 后连发两个登录 PDU（LOGON_LONG、EXTENDED）；脚本化
+  测试必须按序消费两者。
+- M32（Length=36）→ 单测 1/5 + e2e 1/2 红；恢复后 session_setup 27/169、
+  gui_send 3/47 全绿。
+
+## 教训（2026-11-06）：Client Info 的 ARC cookie 与解析器复位
+
+- 自动重连 cookie 位于 TS_EXTENDED_INFO_PACKET 链尾（performanceFlags 之后），
+  长度必须恰好 28（ARC_CS_PRIVATE_PACKET::kWireSize）；否则整段不发。
+- ConnectMachine::Config::auto_reconnect_cookie 已接入 Client Info（批121）。
+- `ClientInfoPdu::parse` 不清空 out：可选 `has_*` 标志会残留，复用对象会误判；
+  调用方必须用新对象（或未来让 parse 先在局部构造再赋值）。
+- M33（长度判断取反）→ 1 test/3 checks 红；恢复后 connect_machine 34/229 全绿。
+
+## 教训（2026-11-06）：重连与“对端忽略字段”的测试盲区
+
+- `ConnectMachine::Start` 只重置 phase，不清 join 队列；重连必须重建整个
+  ConnectMachine（`ConnectionDriver::ResetForReconnect`）。
+- `Client::Reconnect` 从 `logon_info()` 重建 28 字节 ARC_CS_PRIVATE_PACKET。
+- 对端（在树服务器）不校验 cookie 时，“重连后 active”不能证明 cookie 被发送；
+  必须断言发送侧状态（`machine().config().auto_reconnect_cookie`）。
+- 变异存活即假测试：M34 首轮存活，补断言后 1 test/1 check 红；恢复后
+  security 27/193、gui_send 3/51 全绿。
+
+## 教训（2026-11-06）：extended-info 链的隐式依赖
+
+- `ArcCsPrivatePacket::read` 仅当 `arc_cb == 28` 时读取 cookie 字段；
+  `TsExtendedInfoPacket::read` 对 `arc_cb` 校验（0 或 28），否则跳过。
+- `DriveToActive` 构造含 cookie 的 Client Info PDU 时，必须前置 `has_session_id` 和
+  `has_performance_flags`（链式约束），否则 `arc_cb` 为 0，cookie 不被解析。
+- 变异存活即假测试：M35 首轮存活，补 chained fields 后 1 test/2 checks 红；恢复后
+  server 61/703、gui_send 3/54 全绿。
+
+## 教训（2026-11-07）：重连调度器与证据纪律
+
+- `ReconnectSchedule::NextDelayMs()` 返回 0（首次立即）、1000、2000、4000、8000、15000 封顶；
+  `exhausted()` 在 `attempts_ >= kMaxAttempts(10)` 时为 true；`NextDelayMs()` 返回 -1 且不消耗尝试。
+- `main.cpp` 必须在 `Client::Reconnect()` 成功后调用 `reconnect_schedule.Reset()`，
+  否则后续断线不会从首次立即重试开始。
+- M36（删除 `exhausted()` 早退）实测：1 test / 2 checks 红（-1→15000、10→11）；
+  恢复后 view 62/7376、影响面 6/6 全绿。
+- **证据纪律**：变异必须先真实执行并取得输出，再写入记录；本轮曾先写“M36 红绿证”
+  后补做，属虚假陈述（discover 例 75），已纠正。任何“已红/已绿”必须对应真实命令输出。
+
+## 教训（2026-11-07）：重连后虚拟通道状态重置
+
+- 五个通道客户端（cliprdr/drdynvc/rdpdr/rdpsnd/display control）新增 `Reset()`：
+  清协议状态、保留配置（剪贴板/设备/音频 sink/监听器）。
+- 关键点：`init_sequence_done_`/`monitor_ready_received_` 不清 → 新会话不会重跑初始化；
+  `open_files_` 不逐个 `fs_->Close()` → 句柄泄漏；`started_` 不清 → `Start()` 幂等短路。
+- M37（`CliprdrClient::Reset()` 直接 return）实测：2 tests / 7 checks 红；
+  恢复后 cliprdr 108/572、rdpdr 62/899、rdpsnd 8/53、display_control_client 12/75、
+  影响面 11/11 全绿。
+- 未完成：rail/rdpusb 的 Reset（批126）。
+
+## 教训（2026-11-07）：rail/rdpusb 重连重置
+
+- `RailClient` 持有 `proto::RailChannel`：Reset 必须两层都清（重组缓冲 + 计数器 +
+  服务端窗口状态），只清一层会留下可被测试直接观察的旧统计。
+- `RdpUsbClient::Reset()` 必须先 `provider_->OnDeviceRemoved()` 再清 `devices_`，
+  否则 GUI 设备视图悬空；`started_` 清空后 `Start()` 才会重新 CreateChannel。
+- M38（RailClient::Reset 直接 return）→ 1 test / 3 checks 红；
+  M39（RdpUsbClient::Reset 直接 return）→ 1 test / 7 checks 红；
+  恢复后 rail_client 19/133、rdpusb 62/301、影响面 8/8 全绿。
+## 教训（2026-11-07）：连接栏与坐标逆映射
+
+- `ui::ConnectionBar` 是纯状态机（时间注入）：全屏才可见、顶部 reveal zone 显示、
+  3s 自动隐藏、pin 常驻、离开全屏隐藏但保留 pin；按钮右对齐 close/minimize/pin。
+- M40（Tick 直接 return）→ 1 test / 3 checks 红；恢复后 ui 58/320 全绿。
+- 输入坐标逆映射已实现（`MapViewportPoint` 中心相位反算 + `MapMonitorPointToDesktop`）；
+  M41（左边缘映射）→ view 8+ checks 红，恢复后 62/7376 全绿。
+- 未完成：Win32 连接栏渲染与接线（批128）。
+## 教训（2026-11-07）：Win32 连接栏接线
+
+- 连接栏是客户端覆盖层：`WM_MOUSEMOVE`/`WM_LBUTTONDOWN` 在栏内必须消费
+  （return true，不 push InputEvent），否则同一击既操作本地 UI 又发往远端。
+- `WM_PAINT` 必须先 BitBlt 远端画面再 `PaintConnectionBar`，否则条带被覆盖。
+- 自动隐藏靠 `PollEvent` 每轮 `bar_.Tick`；可见性变化时 `InvalidateBar`。
+- M42（注释 `bar_.OnMouseMove`）→ 1 test / 3 checks 红；恢复后 ui 59/328、
+  影响面 4/4 全绿。
+## 教训（2026-11-07）：截图保存与 BMP 头
+
+- 截图命名用 UTC（`gmtime`）保证跨时区确定性；测试用 `_mkgmtime` 构造固定时刻。
+- BMP `BITMAPINFOHEADER` 字段宽度不统一：biPlanes/biBitCount 是 16 位，
+  其余常用字段 32 位；断言必须逐字段按规范宽度读取。
+- 复用既有 `rtsc::debug::EncodeBmp32`（top-down、负高度、BGRA），不新造编码器。
+- M43（gmtime→localtime）→ 1 test / 2 checks 红；恢复后 screenshot 4/31、
+  ui 60/335、影响面 6/6 全绿。
+## 教训（2026-11-07）：rdpusb NoAck
+
+- [MS-RDPEUSB] 2.2.9.1.1：NoAck 是 RequestIdAndNoAck 的 bit 31；置位时
+  客户端不得为 TRANSFER_OUT_REQUEST 发 URB_COMPLETION；IN 请求必须为 0。
+- NoAck 只抑制回复，不抑制传输：URB 仍执行，后端仍收到数据。
+- 先红做法：先只加诊断计数（无行为）取得行为红，再实现抑制；避免直接引用
+  新访问器造成编译失败而非行为失败。
+- M44（注释 no_ack 早退）→ 1 test / 3 checks 红；恢复后 rdpusb 64/316、
+  影响面 6/6 全绿。
+## 教训（2026-11-07）：rdpusb IO_CONTROL
+
+- [MS-RDPEUSB] 2.2.6.3/2.2.6.4：IO_CONTROL/INTERNAL_IO_CONTROL 必须转发设备并回
+  IOCONTROL_COMPLETION（RequestId 匹配；成功时 OutputBufferSize==Information；
+  失败时 OutputBufferSize=0；ERROR_INSUFFICIENT_BUFFER 特例；超限必须终止 DVC）。
+- `usb::UsbDevice::IoControl` 用默认 E_NOTIMPL 实现，避免后端不支持时服务器悬挂。
+- DVC 数据只在已创建通道上投递；解析发送帧必须先跳过 8 字节 CHANNEL_PDU_HEADER。
+- M45（注释完成帧发送）→ 3 tests / 14 checks 红；恢复后 rdpusb 68/368、
+  影响面 6/6 全绿。
+## 教训（2026-11-07）：控制类 URB 合成
+
+- [MS-RDPEUSB] 2.2.9.9/11/13/14 的 Descriptor/GetStatus/GetConfiguration/
+  GetInterface 都由客户端合成 8 字节 setup，再走 ControlTransfer：
+  Descriptor `80 06 (type<<8|index) langId len`；GetStatus `80 00 00 00 index len`；
+  GetConfiguration `80 08 00 00 00 00 len`；GetInterface `81 0A 00 00 iface 00 len`。
+- 16 位字段小端：`(type<<8)|index` 在字节流中是 index 在前、type 在后。
+- FreeRDP 的 URB 完成 HResult 恒为 0，真实状态在 UsbdStatus；本项目与之一致。
+- M46 首轮存活因测试值不可区分且期望写反；修正数据（index=2/type=3）后
+  1 test/1 check 红，恢复后 rdpusb 72/404、影响面 6/6 全绿。
+## 教训（2026-11-07）：Feature / VendorOrClass URB
+
+- 0x000D = SET_FEATURE_TO_DEVICE：setup `00 03 selector index len`（USB 方向
+  OUT，尽管 RDP 消息是 TRANSFER_IN 且 OutputBufferSize=0）。
+- 0x0017 = VENDOR_DEVICE：`bmRequestType = 0x40 | (TransferFlags&1 ? 0x80 : 0)`；
+  OUT 的数据阶段来自 TRANSFER_OUT_REQUEST 的 OutputBuffer；类型/接收者由
+  URB 函数码决定，request_type_reserved_bits 忽略（与 FreeRDP 一致）。
+- M47（忽略方向位）→ 1 test/1 check 红（want C0 got 40）；恢复后
+  rdpusb 75/430、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_ISVALIDCONTEXT
+
+- [MS-RDPESC] 3.1.4.3：ISVALIDCONTEXT 与 RELEASECONTEXT 共用 Context_Call
+  （2.2.2.2），返回 Long_Return（2.2.3.3，仅 Result）。
+- 后端新增纯虚方法时，三处实现（null/win32/test fake）必须同步；Null 后端
+  无服务时任何上下文都不存在 → SCARD_E_INVALID_HANDLE。
+- 功能新增会推翻既有“不支持”断言；必须把断言改到仍未支持的 IOCTL
+  （ACCESSSTARTEDEVENT/GETSTATUSCHANGEW），不得直接删除。
+- M48（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 60/156、
+  smartcard_channel 19/124、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_GETATTRIB
+
+- [MS-RDPESC] 2.2.2.21/2.2.3.12：GetAttrib_Call{hCard, dwAttrId, fpbAttrIsNULL,
+  cbAttrLen}；GetAttrib_Return{ReturnCode, cbAttrLen, [unique] pbAttr}。
+- 三态：is_null=1 或 capacity=0 → 只回长度 + NULL；数据超容量 →
+  SCARD_E_INSUFFICIENT_BUFFER；否则回数据。capacity=0xFFFFFFFF 为
+  SCARD_AUTOALLOCATE。
+- 变异输入必须隔离条件：`is_null=1 && capacity=0` 会让“忽略 is_null”的变异
+  存活；改为 `is_null=1 && capacity=16` 才能证伪。
+- M49 修正后 → 1 test/2 checks 红；恢复后 smartcard 63/166、
+  smartcard_channel 20/154、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_SETATTRIB
+
+- [MS-RDPESC] 2.2.2.22：SetAttrib_Call{hCard, dwAttrId, cbAttrLen, pbAttr}；
+  返回 Long_Return（2.2.3.3）。
+- NDR 数组长度必须等于 cbAttrLen；不一致必须拒绝（FreeRDP 3.20.1 的堆越界
+  修复即此不变量）。
+- GETATTRIB 的 capacity 与 SETATTRIB 的 cbAttrLen 语义不同，必须用独立字段。
+- `LPCBYTE` 在部分 TU 未定义，Win32 函数指针用 `const BYTE*`。
+- M50（注释分派）→ 1 test/9 checks 红；恢复后 smartcard 65/177、
+  smartcard_channel 21/167、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSA
+
+- [MS-RDPESC] 2.2.2.9：LocateCardsA_Call{Context, cBytes, mszCards, cReaders,
+  rgReaderStates}；线上只有 Context，没有 hCard（FreeRDP 的 IDL 声明
+  Handles_Call 与实现不符）。
+- mszCards 的 NDR 长度必须等于 cBytes；cReaders ≤ 10；数组 MaxCount 必须等于
+  cReaders；返回 LocateCards_Return 与 GetStatusChange_Return 同构。
+- ReaderStateA 数组解析必须共用（`ReadReaderStateArray`），避免两份知识。
+- 返回编码在 ReturnCode != 0 时写 cReaders=0 + NULL（FreeRDP 同）。
+- 测试线格式必须逐字段核对：漏写 rgbAtr[36] 会让解析在数组元素处失败；
+  小端 u32 的字节序不等于书写顺序（0x0BADF00D → 0D F0 AD 0B）。
+- M51（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 70/188、
+  smartcard_channel 22/190、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_READCACHEA
+
+- [MS-RDPESC] 2.2.2.25：ReadCacheA_Call{[string] szLookupName 在最前,
+  Context, UUID* CardIdentifier, FreshnessCounter, fPbDataIsNULL, cbDataLen}；
+  UUID referent 是 16 字节定长（无长度前缀）。
+- 返回 ReadCache_Return{ReturnCode, cbDataLen≤65536, [unique] pbData}；
+  ReturnCode != 0 时写 0 + NULL。
+- 长度探测用 SCARD_AUTOALLOCATE（规范允许 cbDataLen=0xFFFFFFFF），
+  不要依赖 NULL 缓冲区时 API 的返回码语义。
+- 非 unique 指针（[string]/UUID*）为空必须拒绝（fail closed）。
+- 测试辅助函数按文件而异：test_smartcard.cpp 有 Bytes/Zeros，
+  test_smartcard_channel.cpp 没有 Bytes，必须用 std::vector<uint8_t>{...}。
+- M52（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 76/203、
+  smartcard_channel 23/220、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_WRITECACHEA
+
+- [MS-RDPESC] 2.2.2.27：WriteCacheA_Call{[string] szLookupName 在最前,
+  Context, UUID* CardIdentifier, FreshnessCounter, cbDataLen≤65536,
+  [unique] pbData}；返回 Long_Return。
+- pbData 是 [unique]：空指针合法但 cbDataLen 必须为 0；非空时 NDR 长度必须
+  等于 cbDataLen。
+- UUID referent 仍是 16 字节定长。
+- 不要把 WriteCache 与 ReadCache 的解析合并：字段集合不同，合并会引入
+  错误条件分支。
+- M53（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 81/216、
+  smartcard_channel 24/235、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_GETREADERICON
+
+- [MS-RDPESC] 2.2.2.31：GetReaderIcon_Call{Context, [string] wchar_t*
+  szReaderName}；WCHAR [string] 的 Length/Offset/ActualCount 以字符为单位，
+  数据 UTF-16LE，按 4 字节对齐，末字符必须为 NUL。
+- 返回 GetReaderIcon_Return{ReturnCode, cbDataLen≤4194304, [unique] pbData}；
+  ReturnCode != 0 时写 0 + NULL。
+- Win32 用 SCardGetReaderIconW + SCARD_AUTOALLOCATE + SCardFreeMemory。
+- 代码库的 UTF-16 表示统一用 std::u16string（与 clipboard/file_list 一致）。
+- M54（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 87/225、
+  smartcard_channel 25/254、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_GETDEVICETYPEID
+
+- [MS-RDPESC] 2.2.2.32：GetDeviceTypeId_Call 与 GetReaderIcon_Call 线上
+  同构（Context + [string] wchar_t* szReaderName），可复用解析。
+- 返回 GetDeviceTypeId_Return{ReturnCode, dwDeviceId}；FreeRDP 在失败时
+  也写 dwDeviceId（0），编码器必须无条件写。
+- Win32 用 SCardGetDeviceTypeIdW。
+- M55（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 90/231、
+  smartcard_channel 26/268、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_GETTRANSMITCOUNT + 规范引用纪律
+
+- [MS-RDPESC] 2.2.2.29：GetTransmitCount_Call{REDIR_SCARDHANDLE hCard}；
+  返回 2.2.3.13 GetTransmitCount_Return{ReturnCode, cTransmitCount}，
+  失败也写 cTransmitCount。
+- Win32 用 SCardGetTransmitCount(hCard, &count)，参数是卡句柄。
+- 引用规范必须区分“章节号”和 IOCTL 表 Function number：READCACHEA 是
+  3.1.4.42（Function 60）、WRITECACHEA 3.1.4.44（62）、GETREADERICON
+  3.1.4.47（65）、GETDEVICETYPEID 3.1.4.48（66）、GETTRANSMITCOUNT
+  3.1.4.41（64）、GetDeviceTypeId_Return 2.2.3.15。
+- FakeBackend 字段命名必须避开既有方法字段（transmit_status 已存在）。
+- M56（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 93/237、
+  smartcard_channel 27/282、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSBYATRA
+
+- [MS-RDPESC] 2.2.2.23：LocateCardsByATRA_Call{Context, cAtrs≤1000,
+  rgAtrMasks, cReaders≤10, rgReaderStates}；返回 LocateCards_Return。
+- LocateCards_ATRMask 每元素 76 字节（cbAtr + rgbAtr[36] + rgbMask[36]）；
+  数组 NDR Length 是元素个数；cbAtr≤36 必须拒绝。
+- 掩码指针与 cAtrs 必须同时为零或同时非零（FreeRDP 同）。
+- Win32 用 SCardLocateCardsByATRA；后端把 atr/mask 截到 cbAtr 长度。
+- M57（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 99/252、
+  smartcard_channel 28/305、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_ACCESSSTARTEDEVENT
+
+- [MS-RDPESC] 2.2.2.30：ScardAccessStartedEvent_Call 不是 NDR 结构，只是
+  4 字节未初始化缓冲区；接收方必须忽略内容。返回 2.2.3.3 Long_Return
+  （3.1.4.4 正文明确）。
+- FreeRDP 对该 IOCTL 不写输出缓冲区（dispatcher 跳过 8 字节对齐），与规范
+  不一致；本项目按规范返回 NDR 包装的 Long_Return。
+- Win32 用 SCardAccessStartedEvent + SCardReleaseStartedEvent，取到句柄后
+  立即释放（1:1 配对）。
+- 非 NDR 载荷必须在 ParseScardCall 入口特判，不能走 NdrHeader::parse。
+- M58（注释分派）→ 1 test/3 checks 红；恢复后 smartcard 101/259、
+  smartcard_channel 29/315、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_CANCEL
+
+- [MS-RDPESC] 2.2.2.2 Context_Call + 2.2.3.3 Long_Return；Win32 用
+  SCardCancel(hContext)。
+- CANCEL/RELEASE/ISVALIDCONTEXT 共用 Context_Call，解析可直接复用。
+- 枚举按 IOCTL 值升序维护，追加时不要破坏可读性。
+- M59（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 102/264、
+  smartcard_channel 30/326、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_STATE
+
+- [MS-RDPESC] 2.2.2.17：State_Call{REDIR_SCARDHANDLE, fpbAtrIsNULL,
+  cbAtrLen}；返回 2.2.3.9 State_Return{ReturnCode, dwState, dwProtocol,
+  cbAtrLen≤36, [unique] rgAtr}。
+- 三态：fpbAtrIsNULL=1 或 cbAtrLen=0 → 成功 + 长度 + NULL；数据超容量 →
+  SCARD_E_INSUFFICIENT_BUFFER；否则回数据。cbAtrLen=0xFFFFFFFF 表示
+  SCARD_AUTOALLOCATE。
+- FreeRDP 忽略调用方参数、总是回 ATR，与规范不一致；本项目按规范实现。
+- Win32 用 SCardState(hCard, &state, &protocol, buf36, &len)。
+- M60（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 106/273、
+  smartcard_channel 31/360、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_RECONNECT
+
+- [MS-RDPESC] 2.2.2.15：Reconnect_Call{REDIR_SCARDHANDLE, dwShareMode,
+  dwPreferredProtocols, dwInitialization}；返回 2.2.3.7
+  Reconnect_Return{ReturnCode, dwActiveProtocol}，失败也写 dwActiveProtocol。
+- Win32 用 SCardReconnect(hCard, share, preferred, init, &active)。
+- 修改既有分支附近代码时必须先读上下文，避免误删相邻语句（本批一次误删
+  State 的 protocol 局部变量，已立即恢复）。
+- M61（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 109/282、
+  smartcard_channel 32/377、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LISTREADERSW
+
+- ListReadersW_Call 与 ListReadersA_Call 完全同构（Context_Call）；仅返回
+  msz 为 UTF-16LE 多字符串，cBytes 为字节数且必须偶数（FreeRDP 校验）。
+- 后端 W 方法返回宽字节（SCardListReadersW 的 cch 是字符数，字节数 = cch*2）。
+- NDR 简单 referent = Length(4) + 数据 + 4 字节对齐填充；写精确字节测试必须
+  计入 Length 前缀与填充（本批两处预期漏算，已修正）。
+- 新增支持会推翻既有“不支持”断言：本批把 kListReadersW 换成 kConnectW。
+- M62（注释分派）→ 1 test/3 checks 红；恢复后 smartcard 113/289、
+  smartcard_channel 33/393、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_CONNECTW
+
+- ConnectW_Call 与 ConnectA_Call 同构，仅 szReader 为 WCHAR [string]；
+  返回共用 Connect_Return（2.2.3.8）。
+- 本协议 NDR [string] 的 Length/Offset/ActualCount 口径：Length ==
+  Offset + ActualCount，且计数含 NUL（FreeRDP smartcard_ndr_read 同）；
+  测试按“ActualCount 不含 NUL”写会解析失败。
+- 宽字符 reader 在后端用 std::u16string（与 GetReaderIcon 一致），
+  Win32 可直接 reinterpret_cast<const wchar_t*>(c_str())。
+- M63（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 115/297、
+  smartcard_channel 34/400、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_STATUSW
+
+- Status_Call 2.2.2.18 对 A/W 完全相同；返回 2.2.3.10 的 mszReaderNames
+  在 W 时为 UTF-16LE，cBytes 为字节数（失败置 0、指针 NULL）。
+- 宽字符多字符串必须双 NUL 终止（4 个零字节）；单 NUL 会被
+  WideMultiStringFits 拒绝（本批 fake 初版即此错误）。
+- Win32 用 SCardStatusW（cch 字符数 × 2 字节）。
+- M64（注释分派）→ 1 test/2 checks 红（尺寸检查提前返回）；恢复后
+  smartcard 117/300、smartcard_channel 35/419、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_GETSTATUSCHANGEW
+
+- GetStatusChangeW_Call 与 A 唯一差异是 reader 名宽字符；返回 2.2.3.5
+  完全共用（不含名字），编码直接复用 A 分支。
+- Win32 宽状态结构（LPCWSTR szReader）与 A 结构不能混用；后端用
+  ScardReaderStateNativeW + SCardGetStatusChangeW。
+- 1 秒步进轮询抽成模板助手（A/W 共用），避免两套超时逻辑漂移。
+- M65（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 118/306、
+  smartcard_channel 36/429、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSW
+
+- LocateCardsW_Call 与 A 同形，差异是 mszCards 与 reader 名均为 UTF-16LE；
+  返回 2.2.3.5 与 A 共用（不含名字）。
+- mszCards 的 IDL 是 `[size_is(cBytes)] const byte*`：Length==cBytes、读
+  cBytes 字节；FreeRDP 用 elementSize=2 读 2*cBytes，与其 IDL 矛盾，已记入
+  discover 待抓包验证。
+- 后端 W 版用 ScardReaderStateNativeW + SCardLocateCardsW。
+- M66（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 119/311、
+  smartcard_channel 37/438、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_READCACHEW
+
+- ReadCacheW_Call 与 A 唯一差异是 szLookupName 为 WCHAR [string]；返回
+  ReadCache_Return 2.2.3.1 共用。
+- 后端 W 版用 std::u16string + SCardReadCacheW；长度探测仍走
+  SCARD_AUTOALLOCATE。
+- 脚本批量替换函数指针别名时必须核对结果，避免生成重复/未使用的别名
+  （本批一次 FnReadCacheAUnused，已清理）。
+- M67（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 120/320、
+  smartcard_channel 38/453、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_WRITECACHEW
+
+- WriteCacheW_Call 与 A 唯一差异是 szLookupName 为 WCHAR [string]；返回
+  Long_Return 2.2.3.3 共用。
+- 新增 IOCTL 时必须同时检查三处：IsSupported、Parse 分派、**编码分组**
+  （本批漏了 Long_Return 分组，通道测试以 STATUS_BUFFER_TOO_SMALL 暴露）。
+- 盘点 W 变体时不要只看 plan 列表：LISTREADERGROUPSW 与
+  LOCATECARDSBYATRW 仍在 spec 中未实现。
+- M68（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 121/328、
+  smartcard_channel 39/467、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LISTREADERGROUPSW
+
+- ListReaderGroups_Call 对 A/W 完全相同；返回 2.2.3.4 与 ListReaders_Return
+  共用，W 时宽字符多字符串、cBytes 偶数。
+- 后端 W 版用 SCardListReaderGroupsW（cch 字符数 × 2）。
+- 新增支持会推翻既有 unsupported 断言（本批 0x00090024 → 0x000900EC）。
+- M69（注释分派）→ 1 test/2 checks 红；恢复后 smartcard 123/331、
+  smartcard_channel 40/481、影响面 6/6 全绿。
+## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSBYATRW
+
+- LocateCardsByATRW_Call 与 A 唯一差异是 rgReaderStates 的 reader 名宽
+  字符；ATR mask 数组（cbAtr + rgbAtr[36] + rgbMask[36]）完全相同。
+- 后端 W 版用 ScardReaderStateNativeW + SCardLocateCardsByATRW。
+- 至此服务端→客户端 [MS-RDPESC] IOCTL（含全部 W 变体）已实现；剩余
+  未支持代码仅为客户端→服务端 Introduce/Forget/Add/Remove 与
+  RELEASESTARTEDEVENT。
+- M70（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 124/342、
+  smartcard_channel 41/493、影响面 6/6 全绿。
+## 教训（2026-11-07）：GetStatusChange 超时与输出缓冲审计
+
+- GetStatusChange/LocateCards_Return 在 SCARD_E_TIMEOUT 时必须保留
+  reader_states（FreeRDP 仅对“非超时失败”清空 cReaders）；只修 handler
+  回填而漏编码器会导致超时状态仍被丢弃。
+- OutputBufferLength=0 不豁免 STATUS_BUFFER_TOO_SMALL（FreeRDP 同）。
+- kStatusChangeStepMs=1s 只限制单次 WinSCard 调用；GetStatusChange 会循环
+  到完整超时，GUI 在 UI 线程同步处理 rdpdr，长超时/INFINITE 会冻结界面；
+  正确修复是智能卡 IOCTL 异步化。
+- M71（去掉超时豁免）→ 3 checks 红；恢复后 smartcard 126/348、
+  smartcard_channel 42/500、影响面 6/6 全绿。
+## 教训（2026-11-07）：智能卡执行/发送解耦
+
+- 异步化的正确前置是把“解析+后端+编码+限长”抽成纯函数
+  （BuildSmartCardCompletion），发送只写 status/output；这样工作线程永远
+  不碰传输层。
+- OutputBufferLength 比较必须是 `>`（相等即成功）；`>=` 的变异由精确匹配
+  测试捕获（M72）。
+- 关停风险：工作线程可能卡在 GetStatusChange 长超时，join 会阻塞 UI；
+  异步化落地时必须处理（共享控制块或可取消等待），不能简单 detach。
+- M72 → 1 test/2 checks 红；恢复后 smartcard 126/348、smartcard_channel
+  43/504、rdpdr 62/899、影响面 6/6 全绿。
+## 教训（2026-11-07）：智能卡 IOCTL 异步执行
+
+- 异步化落点：OnChannelData 只入队；工作线程跑纯函数 Build；传输线程
+  PollSmartCard 排空并发送。锁外发送、锁外后端调用，单锁无嵌套。
+- 关停用 join（队列中请求仍执行，join 后排空）；join 可能阻塞到后端调用
+  返回，必须文档化，不能 detach 后让 worker 触碰已亡对象。
+- 后端必须比 handler 长寿；GUI 目前 scard_backend 声明在 rdpdr 之后
+  （先析构），接线时必须调整声明顺序。
+- Windows 睡眠粒度约 15.6ms：测试轮询上限要按实际粒度估算，否则进程超时
+  （discover 例85）。
+- M73（PollSmartCard 不写回）→ 2 tests/2 checks 红；恢复后 smartcard
+  126/348、smartcard_channel 46/519、rdpdr 62/899、影响面 6/6 全绿。
+## 教训（2026-11-07）：GUI 异步接线与跨会话过期响应
+
+- 异步 handler 的后端必须比 handler 长寿：C++ 反向析构，声明顺序必须
+  backend 在前、handler 在后；否则 ~handler 的 join 会调用已析构后端。
+- 传输替换（Reset/重连）时，在途异步调用的结果必须带单调 generation，
+  收方拒绝旧 generation（D18）；只清队列不够，worker 可能已取走请求。
+- 测试阻塞后端要用 atomic entered/release 钩子，等待进入后再 Reset，
+  才能确定性地覆盖“在途返回”路径。
+- 变异禁用检查不要写 `if (false && ...)`：C4127 被视为错误，变异体编译失败
+  （discover 例86）；应整行注释/删除。
+- M74 → 1 test/1 check 红；恢复后 smartcard 126/348、smartcard_channel
+  47/521、rdpdr 62/899、影响面 6/6 全绿。
+## 教训（2026-11-07）：剪贴板位图格式
+
+- 剪贴板格式里 CF_BITMAP/CF_PALETTE/CF_METAFILEPICT/CF_ENHMETAFILE 是 GDI
+  句柄，不能按 GlobalSize 复制；广播前必须映射为可序列化格式或丢弃。
+- CF_BITMAP→CF_DIB 映射必须与读路径配对：Win32 read(CF_DIB) 在无 DIB 时
+  用 GetDIBits 从 HBITMAP 合成 packed DIB（32bpp BI_RGB，bottom-up）。
+- 映射后要按映射结果去重，避免 CF_BITMAP+CF_DIB 同时存在时重复广播。
+- 测试常量注意命名空间：kCfPalette/kCfMetafilepict 只在
+  rtsc::clipboard，不在 rtsc::proto。
+- M75 → 1 test/1 check 红；恢复后 cliprdr 109/578、clipboard 30/93、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：DR_DEVICELIST_REMOVE
+
+- [MS-RDPEFS] 2.2.3.2 的 DR_DEVICELIST_REMOVE 是**客户端→服务器**消息
+  （PacketId 0x444D，Header 4B + DeviceCount + DeviceIds）；客户端此前只在
+  extendedPdu 声明支持却无发送路径，属能力虚报。
+- 移除设备必须同时：从 devices_ 删除、关闭该设备所有打开文件、清
+  file_writable_/device_replies_、发送 PDU；否则服务器仍认为设备可用。
+- 智能卡设备移除前必须先 SetAsyncSmartCard(false)（worker 在另一线程读
+  scard_），再清 scard_。
+- 编辑以注释行为锚点时，newString 必须显式保留换行（discover 例87）。
+- M76 → 1 test/3 checks 红；恢复后 rdpdr 66/923、smartcard_channel
+  47/521、影响面 6/6 全绿。
+## 教训（2026-11-07）：RDP 连接文件（.rdp）
+
+- .rdp 是 `key:type:value`（s/i）的 INI 风格文本；键名可含空格、值可含
+  冒号，切分必须按前两个冒号，不能按任意冒号。
+- 键名大小写不敏感；重复键后者胜（mstsc 行为）；未知/畸形/越界整数忽略并
+  保留默认值，比钳制更可预测。
+- 写入必须拒绝含 CR/LF/NUL 的字符串值，否则可注入额外键行。
+- 改 CMakeLists 后 MSBuild 不会自动重跑 CMake：必须显式
+  `cmake -S -B` 并确认新目标产物存在（discover 例88）。
+- M77 → 1 test/3 checks 红；恢复后 rdp_file 9/54、影响面 4/4 全绿。
+## 教训（2026-11-07）：.rdp 导入的优先级
+
+- mstsc 语义：显式命令行参数覆盖 .rdp 文件。显式主机存在时端口取显式值或
+  默认 3389，不继承文件端口。
+- 优先级逻辑必须抽成纯函数（ResolveEndpoint）才能单测；散落在 main.cpp
+  三元表达式里的规则不可验证。
+- 预扫描 --rdp-file 后主参数循环必须跳过该选项及其值，否则值会被当成
+  位置参数（主机）。
+- PowerShell `Select-Object -First` 会干扰 `$LASTEXITCODE` 读取；先捕获
+  输出再读退出码。
+- M78 → 1 test/5 checks 红；恢复后 mstsc_args 10/61、rdp_file 9/54、
+  影响面 4/4 全绿。
+## 教训（2026-11-07）：.rdp 导出
+
+- `full address` 导出：裸 IPv6 主机必须加方括号，默认端口 3389 省略；
+  已带方括号的主机不得重复加括号。
+- 导出字段必须反映“生效值”而不是原始输入：显式 zoom 会关闭 fit，
+  smart sizing 应写 0；screen mode 用生效的全屏状态。
+- 命令行导出（--save-rdp）比 Win32 菜单更易验证且可脚本化；菜单项可后续补。
+- PowerShell 会把空字符串参数丢弃，位置参数会整体前移；验证多参数命令时
+  用非空占位值。
+- M79 → 2 tests/3 checks 红；恢复后 mstsc_args 12/66、rdp_file 9/54、
+  影响面 4/4 全绿。
+## 教训（2026-11-07）：.rdp 重定向属性 → 静态通道
+
+- redirectclipboard 控制 cliprdr 通道；audiomode 0（本地播放）才需要
+  rdpsnd，1/2 都不广播。无 .rdp 文件时保持历史默认（全开）。
+- 通道列表生成抽成纯函数（BuildStaticChannelNames）才能单测组合与顺序。
+- 变异实现若让参数未引用会触发 C4100（视为错误），需显式 (void) 或换一种
+  仍使用参数的变异写法。
+- M80 → 1 test/4 checks 红；恢复后 mstsc_args 13/81、rdp_file 9/54、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：.rdp drivestoredirect
+
+- .rdp drivestoredirect 的记号是 "C:\;E:\;"、通配 "*"、DynamicDrives；转换
+  到既有 SelectDrives 规格（""/"ALL"/"C,E"）可复用选择策略不重复逻辑。
+- 显式环境变量应优先于 .rdp 文件（进程级显式配置覆盖文件）。
+- 空值 = 不重定向（与 opt-in 策略一致），非驱动器根记号不得扩大范围。
+- 本机端到端验证可用 rtsc_server_host + rtsc_gui --rdp；注意不要先用
+  Test-NetConnection 探测，否则会抢先建立并结束会话导致服务器退出。
+- M81 → 1 test/1 check 红；恢复后 drive_enum 6/26、影响面 6/6 全绿。
+## 教训（2026-11-07）：GUI 菜单导出与测试数据掩蔽
+
+- 多条导出路径（--save-rdp、菜单）必须共用同一个构建函数
+  （BuildSessionRdpFile），否则字段映射会漂移。
+- 新增 UI 命令 id 必须并入 kCmd* 唯一性 static_assert，否则菜单项可能
+  静默映射到别的命令。
+- 变异测试的输入必须让被变异字段取不同值：multimon==fit 时交换不可见
+  （与 discover 例82 同类）；补 (true,false) 独立用例后 M82 立即红。
+- M82 → 1 test/2 checks 红；恢复后 rdp_file 10/76、mstsc_args 13/81、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：保存凭据
+
+- mstsc 的保存密码在 Windows 凭据管理器，泛型目标名 TERMSRV/<host>，
+  blob 是无终止符 UTF-16；读取必须按 CredentialBlobSize 构造 wstring，
+  不能依赖 NUL 终止。
+- 用 CredWriteW 而不是 cmdkey，避免密码出现在命令行/进程列表。
+- 显式 user/password 优先于凭据管理器；--use-credential 只补缺失字段，
+  且绝不打印密码。
+- M83 → 1 test/3 checks 红；恢复后 rdp_file 11/79、影响面 4/4 全绿。
+## 教训（2026-11-07）：rdpdr QUERY_VOLUME_INFORMATION
+
+- 请求 = DeviceIoRequest(20B) + FsInformationClass + Length + 24B Padding +
+  buffer；Length 超过剩余字节必须拒绝。
+- 响应 = DeviceIoReply + Length + Buffer，与设备控制完成同构，可复用
+  SendControlCompletion；失败完成只有 12B（无 Length 字段）。
+- FileFsSizeInformation 24B（Total/Available units、SPC、BPS）；
+  FileFsFullSizeInformation 32B（Total/CallerAvailable/ActualAvailable、
+  SPC、BPS）；空间来自 GetDiskFreeSpaceExW，几何来自 GetDiskFreeSpaceW。
+- 不支持的信息类返回 STATUS_NOT_SUPPORTED（0xC00000BB），未知句柄
+  STATUS_INVALID_HANDLE（0xC0000008）。
+- M84 → 1 test/3 checks 红；恢复后 rdpdr 70/949、影响面 5/5 全绿。
+## 教训（2026-11-07）：卷信息结构（Volume/Attribute/Device）
+
+- [MS-RDPEFS] 2.2.3.3.6 明确 FileFsVolumeInformation 的 Reserved 字节
+  MUST NOT be present，与 MS-FSCC 原生结构不同；标签长度含结尾 NUL。
+- FileFsAttributeInformation 的 FileSystemName 无 NUL，长度按字节。
+- FileFsDeviceInformation：CD-ROM DeviceType=2，其余=7；Characteristics 按
+  GetDriveTypeW 映射（可移动 0x1、只读 0x2、远程 0x10、已挂载 0x20）。
+- 编码逻辑必须放在公开命名空间（匿名命名空间内会与声明形成重载歧义）。
+- 编辑以注释行为锚点时 newString 必须保留换行（再次踩中 discover 例87）。
+- M85 → 1 test/4 checks 红；恢复后 rdpdr 74/973、影响面 5/5 全绿。
+## 教训（2026-11-07）：rdpdr SET_INFORMATION
+
+- DR_DRIVE_SET_INFORMATION_REQ 与 QUERY_VOLUME 请求同构（20+4+4+24 +
+  buffer），可复用解析；响应 = DeviceIoReply + Length + Buffer。
+- FileDispositionInformation = 1 字节 DeleteFile；FileRenameInformation =
+  ReplaceIfExists(1)+Reserved(7)+RootDirectory(8)+FileNameLength(4)+UTF-16
+  名称（无 NUL）。
+- Windows 上打开的 std::fstream 无法删除/改名（共享冲突）：删除与重命名必须
+  延迟到 Close 应用；RemoveDevice 关闭句柄时同样应用；Reset 丢弃（传输重置
+  不是成功关闭）。
+- 目标存在且 ReplaceIfExists=FALSE → STATUS_OBJECT_NAME_COLLISION；同名 →
+  无操作成功；RootDirectory≠0 → STATUS_NOT_SUPPORTED。
+- CHECK_EQ 不支持 std::string（to_string 无重载），字符串断言用 CHECK(a==b)。
+- M86 → 1 test/2 checks 红；恢复后 rdpdr 83/1033、影响面 5/5 全绿。
+## 教训（2026-11-07）：rdpdr 目录控制 minor 分发
+
+- IRP_MJ_DIRECTORY_CONTROL 必须按 MinorFunction 分发：0x01 QUERY_DIRECTORY、
+  0x02 NOTIFY_CHANGE_DIRECTORY；其他 → STATUS_INVALID_DEVICE_REQUEST
+  （0xC0000010）。不检查 minor 会把 notify 请求误当查询解析并静默丢弃。
+- DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ 固定部分（剥 RDPDR 头后）=
+  WatchTree(1)+CompletionFilter(4)+Padding(27)=32，总 kFixedSize=52。
+- MS Learn 图中 DeviceIoRequest(24B) 含 4B RDPDR_HEADER；本代码库 body 已
+  剥头，RdpdrDeviceIoRequest::kFixedSize=20，换算时勿混用。
+- 变更通知未实现时用 STATUS_NOT_SUPPORTED fail-closed，避免服务器等待。
+- M87 → notify 1 test/4 checks 红、query_directory 1 test/8 checks 红；
+  恢复后 rdpdr 87/1054、影响面 5/5 全绿。
+## 教训（2026-11-07）：rdpdr QUERY_INFORMATION
+
+- [MS-RDPEFS] 2.2.3.3.8 明确 FileBasicInformation（0x04）与
+  FileStandardInformation（0x05）的 Reserved 字段 MUST NOT be present：
+  RDPEFS 编码为 36B / 22B（MS-FSCC 原生 40B / 24B）。
+- FileBasicInformation = 4×时间(8B)+FileAttributes(4)；
+  FileStandardInformation = AllocationSize(8)+EndOfFile(8)+NumberOfLinks(4)
+  +DeletePending(1)+Directory(1)；FileAttributeTagInformation = 属性(4)+Tag(4)。
+- 请求与 QUERY_VOLUME 同构（20+4+4+24+QueryBuffer）；响应 =
+  DeviceIoReply+Length+Buffer，可复用 SendControlCompletion。
+- HostFileSystem 用 GetFileAttributesExW 取时间/属性；change_time 取
+  last_write_time；allocation_size 近似为逻辑大小（簇大小未暴露）。
+- M88 → 1 test/2 checks 红；恢复后 rdpdr 95/1101、影响面 5/5 全绿。
+## 教训（2026-11-07）：rdpdr LOCK_CONTROL
+
+- [MS-RDPEFS] RDP_LOCK_INFO.Length=0 是合法的“零长度区域”（非“到文件尾”）：
+  永不冲突，但仍记录以支持精确解锁。
+- 冲突规则：重叠且任一方独占 → 冲突；共享+共享允许。解锁必须与已持有范围
+  精确匹配（含句柄）。响应恒为 DeviceIoReply + 5B Padding = 17B。
+- Operation 白名单 2/3/4/5；其他 → fail immediately；NumLocks=0 → 非法。
+- C++ 嵌套类型名不得与成员函数名相同（`Lock` 结构 vs `Lock()` 方法）→
+  MSVC 报 vector<Lock> 无效类型；改结构名为 Entry。
+- 新增源文件到库后必须显式重跑 cmake（discover 例88）。
+- M89（仅独占对独占冲突）→ 2 tests/3 checks 红；恢复后 rdpdr 107/1158、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：rdpdr SET_VOLUME_INFORMATION
+
+- DR_DRIVE_SET_VOLUME_INFORMATION_RSP 只有 DeviceIoReply + Length（16B），
+  Length 必须回显请求的 Length；不能复用 SendControlCompletion（它写
+  output 长度）。失败响应也用同一布局。
+- FileFsLabelInformation = VolumeLabelLength(4，含结尾 NUL 若存在) + 标签
+  UTF-16；标签可为 NUL 结尾或空格填充，解码后去尾部空格。
+- Windows SDK 把 SetVolumeLabel 定义为宏（→SetVolumeLabelW/A）：成员函数
+  禁止同名，否则定义名被宏展开；本库用 SetVolumeName。
+- 全局字符串替换会把 Win32 API 名一起改掉（SetVolumeLabelW→
+  SetVolumeNameW），改后必须逐处核对 API 调用。
+- M90（响应 Length 改为 0）→ 2 tests/2 checks 红；恢复后 rdpdr 113/1191、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：串口重定向第一层
+
+- 串口设备以 RDPDR_DTYP_SERIAL(0x1) 通告，DosName 为端口名；能力集需
+  PORT_CAPS_SET(0x0003, 版本1, 仅 8B 头)。
+- 串口 CREATE 无设备专有缓冲；句柄 id 必须与文件系统 id 分域（0x40000000
+  起），否则 open_files_ 冲突。
+- READ/WRITE/CONTROL 按句柄路由到 ISerialBackend；CONTROL 响应 =
+  DeviceIoReply+Length+OutputBuffer（复用 SendControlCompletion）。
+- CLOSE/RemoveDevice/Reset 必须关闭串口句柄；Reset 先关文件系统句柄
+  （跳过串口 id）再关串口句柄，避免清表后无法判断类型。
+- 变异禁用 `false &&`（C4127 视为错误，discover 例86）；用等价的类型判断。
+- M91 → 3 tests/22 checks 红；恢复后 rdpdr 118/1234、影响面 5/5 全绿。
+## 教训（2026-11-07）：Win32 串口后端
+
+- 串口句柄用非重叠 CreateFileW + COMMTIMEOUTS 短读超时（100ms），避免
+  通道线程无限阻塞；重叠 I/O 需要事件循环集成，不适合本层。
+- DCB 只设置真实字段（fBinary/fParity/fOutxCtsFlow/fDtrControl/fRtsControl/
+  fOutX/fInX/XonLim/XoffLim/ByteSize/Parity/StopBits）；不存在的字段
+  （如 fXonXoffControl）会编译失败。
+- DeviceIoControl 的输出缓冲必须由后端分配（客户端传空 vector）。
+- 端口枚举用 QueryDosDeviceW 过滤 COM+数字，避免 advapi32 依赖。
+- M92（失败仍返回句柄 id）→ 1 test/1 check 红；恢复后 rdpdr 120/1239、
+  影响面 5/5 全绿。
+## 教训（2026-11-07）：redirectcomports 接线
+
+- mstsc 的 redirectcomports 是整数开关（i:1），不是端口列表；越界值保留
+  默认。导出（--save-rdp/菜单）必须反映生效状态。
+- 串口设备 id 必须接在驱动器之后（devices.size()+1），且后端 unique_ptr
+  必须声明在 RdpdrClient 之前（生命周期）。
+- 显式 CLI/环境变量优先于 .rdp 文件（与驱动器一致）。
+- MSVC C4456（局部变量遮蔽）视为错误：循环变量不得与外层同名（port →
+  com_port）。
+
+## 教训（2026-11-07）：打印机重定向与 FileId 复用
+
+- 结构体字段先按设备类型赋值、末尾统一清零会覆盖先前赋值：清零必须条件化。
+- 通告 DeviceData 由客户端自写长度与字节；测试须同时断言 caps 与 DeviceData 头。
+- 字符集转换（UTF-8↔UTF-16）在客户端/后端本地实现，名称结尾 NUL 由编码器补。
+- FileId 复用：[MS-RDPEFS] 2.2.1.5.1 MUST reuse after Close。I/O 保留 0x40000000、
+  打印机 0x50000000；HostFileSystem 在目录/打印机上维护空闲 id 栈，Close/
+  RemoveDevice 归还，Create 优先复用，Reset 清空并重置计数器（按会话隔离）。
+- Win32 打印走 spooler：OpenPrinterW→StartDocPrinterW(level 1, RAW)→
+  StartPagePrinter→WritePrinter→EndPage/EndDoc/ClosePrinter；任一步失败逆序
+  回滚，析构清理；rtsc_rdpdr 必须显式链接 winspool。
+- EnumPrintersW level 2 两段式缓冲可同时取 pPrinterName 与 pDriverName。
+## 教训（2026-11-07）：drdynvc 服务端发起通道与 W3 纪律
+
+- DYNVC_CREATE_REQ 与 DYNVC_CREATE_RSP 共用 Cmd=0x01：入站必须按本端是否
+  pending 区分（pending→4B HRESULT；否则→NUL 结尾 ANSI 名称），否则 bundle
+  边界解析错位。
+- CREATE_RSP 的 CreationStatus 是 32 位有符号 HRESULT：>=0 成功；拒绝用
+  0xC0000001；失败 id 不得进入活动集（服务端可不发 CLOSE 直接复用）。
+- listener 新增钩子必须默认拒绝（fail-closed）；接受后才允许 DATA 路由。
++“结构快照”，重构移动代码后必须同步改为行为断言
+  （discover 例92：BuildStaticChannelNames 重构致旧 grep 测试陈旧失败）。
+- W3 备份必须是每批第一个写动作，与读四文件同批完成；不得以“改动小/新文件
+  为主”跳过（discover 例93）。
+- 变异 M97-M104 各 1 test 红；恢复后 rdpusb 87/480、display_control 15/70、client 13/80、影响面 5/5 全绿。
+- DYNVC_CLOSE 兼作关闭请求与响应（[MS-RDPEDYC] 2.2.4）：本地关闭后立即停止
+  投递并记 closing_，服务端 CLOSE 只作响应；禁止在 CloseChannel 内同步回调
+  监听器（RemoveDevice 场景堆损坏，discover 例94）——状态迁移与事件通知必须
+  分离。
+- DYNVC_DATA_FIRST_COMPRESSED（0x06）头部位 2-3 是 Len 而非 Sp：Length
+  宽度 1/2/4 字节（Len=3 非法）；DYNVC_DATA_COMPRESSED（0x07）无 Length
+  （[MS-RDPEDYC] 2.2.3.3/2.2.3.4，web 原文核实）。
+- 压缩 DATA 为 RDP 8.0 Bulk（[MS-RDPEGFX] 3.1.9.1，RDP8_LITE、段上限
+  8192），仅 DVC v3 可用；无解压器时必须计数丢弃，禁止按原始数据投递。
+- 依赖解析结果的断言必须先按状态早退；变异测试同时探测测试自身健壮性
+  （discover 例95）。
+- 主屏显示器是坐标原点：[MS-RDPEDISP] 2.2.2.2.1 规定 PRIMARY 显示器
+  left/top 必须为 (0,0)；双主屏由原点规则 + 不重叠规则共同排除，无需独立
+  计数（discover 例96）。
+- caps 面积上限 = MaxNumMonitors x FactorA x FactorB，三因子 64 位乘法会
+  回绕，必须饱和到 UINT64_MAX（[MS-RDPEDISP] 2.2.1.1/2.2.2.1）。
+- 变异存活不等于测试假：可能是规则被其他规则蕴含；先证明蕴含再删冗余
+  规则，禁止为冗余规则编造测试（discover 例96）。
+- DVC 数据发送前必须校验通道处于 open 或 pending：本地 CloseChannel 后 id 已
+  失效且可能被服务端复用，继续发送属协议错误（批187 修 SendChannelData 返回
+  bool + refused_data_count_）。
+- 关闭通道后的通知与发送禁止双路径分叉：关闭只做本地状态迁移，发送必须校验
+  同一状态集合，二者共用 open_channels_/pending_ 口径（D1-D3）。
+- printer WRITE 完成报文长度必须为实际成功写入的字节数，禁止回填请求大小
+  （[MS-RDPEPC] 3.2.5.1.10）：spooler 短写属“成功但部分”，后端返回
+  written 出参，客户端据此填 DR_WRITE_RSP.Length（批188，M105）。
+- RDP8 bulk 解压（[MS-RDPEGFX] 3.1.9.1 / [MS-RDPEDYC] 2.2.3.3）：SINGLE=0xE0、MULTIPART=0xE1；
+  段头 = PACKET_COMPRESSED(0x20) | 类型(低4位)，RDP8=0x04、Lite=0x06（Lite 单段、历史与段上限均 8192）。
+  压缩段：末字节低 3 位=未用位数；40 项前缀码令牌表；长度=连续 N 个 1 + 0 + (N+1) 位值
+  （N=0 → 3）；距离 0 表示 15 位长度 + 字节对齐的未编码直传。所有畸形输入必须失败关闭
+  且不得越界（例100：变异会让测试红并崩溃，故必须配确定性模糊扫描）。
+- 构建系统以文件 mtime 判定重编：用 Copy-Item/旧时间戳恢复源文件不会触发重编，
+  必须用 WriteAllText/touch 刷新时间戳，否则“恢复后仍红/仍绿”的结论无效（例99）。
+- DVC 压缩数据（[MS-RDPEDYC] 2.2.3.3/2.2.3.4）：DYNVC_DATA_FIRST_COMPRESSED 的 Length 是
+  整条消息的未压缩总长，载荷是 RDP_SEGMENTED_DATA（Lite 0x06）；DYNVC_DATA_COMPRESSED 是
+  整条短消息或后续分块。每个通道必须有独立解压上下文（历史只引用该通道先前数据）。
+  解压失败必须丢弃该通道上下文与半重组状态，禁止用脏历史继续解码。
+  压缩 PDU 仅在双方协商 VERSION3 且可靠传输时出现（本客户端仍只发 VERSION1）。
+- 手工构造位流向量必须写出位段→字节推导并单独验算；trailer 低 3 位是未用位数（例101）。
+- DVC 能力协商（[MS-RDPEDYC] 2.2.1 / 3.2.3.1.4）：客户端收到 CAPS_VERSION1/2/3 必须回
+  DYNVC_CAPS_RSP（Cmd 0x05、Pad=0、Version=自身最高）。能力位是"必须回"，不是可选。
+  Version 3 才允许压缩 DATA；协商结果取 min(客户端最高, 服务端声明)。
+- 引入新的前置门控（版本/能力/状态）时必须审计全部既有用例并补前置，禁止为迁就旧测试
+  放宽门控（例102）。

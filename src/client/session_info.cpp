@@ -136,8 +136,21 @@ SessionInfo CollectSessionInfo(const SessionInfoInput& in, std::time_t now) {
 
     // [Remote computer details]. The gateway fields report the real tunnel
     // when one is in use (--gateway / RTSC_GATEWAY); empty input keeps the
-    // "no gateway in use" text a direct connection shows.
+    // "no gateway in use" text a direct connection shows. When the server sent
+    // a logon notification, name the session and account: that is how a user
+    // tells an /admin console session from a normal one.
     si.remote_session_type = "远程桌面 (RDP)";
+    if (in.has_logon) {
+        si.remote_session_type +=
+            " - 会话 " + std::to_string(in.session_id);
+        if (!in.logon_user.empty()) {
+            si.remote_session_type += " - 用户 ";
+            if (!in.logon_domain.empty()) {
+                si.remote_session_type += in.logon_domain + "\\";
+            }
+            si.remote_session_type += in.logon_user;
+        }
+    }
     si.gateway_name =
         in.gateway_name.empty() ? "没有在使用中" : in.gateway_name;
     si.gateway_logon_method =

@@ -48,17 +48,34 @@ enum class ScardIoctl : uint32_t {
     kListReaderGroupsW = 0x00090024,  // 3.1.4.6
     kListReadersA = 0x00090028,       // 3.1.4.7
     kListReadersW = 0x0009002C,       // 3.1.4.8
+    kLocateCardsA = 0x00090098,       // 3.1.4.21
+    kLocateCardsW = 0x0009009C,       // 3.1.4.22
     kGetStatusChangeA = 0x000900A0,   // 3.1.4.23
     kGetStatusChangeW = 0x000900A4,   // 3.1.4.24
+    kCancel = 0x000900A8,             // 3.1.4.27
     kConnectA = 0x000900AC,           // 3.1.4.28
     kConnectW = 0x000900B0,           // 3.1.4.29
+    kReconnect = 0x000900B4,          // 3.1.4.36
     kDisconnect = 0x000900B8,         // 3.1.4.30
     kBeginTransaction = 0x000900BC,   // 3.1.4.31
     kEndTransaction = 0x000900C0,     // 3.1.4.32
+    kState = 0x000900C4,              // 3.1.4.40
     kStatusA = 0x000900C8,            // 3.1.4.33
     kStatusW = 0x000900CC,            // 3.1.4.34
     kTransmit = 0x000900D0,           // 3.1.4.35
     kControl = 0x000900D4,            // 3.1.4.37
+    kGetAttrib = 0x000900D8,          // 3.1.4.38
+    kSetAttrib = 0x000900DC,          // 3.1.4.39
+    kAccessStartedEvent = 0x000900E0,  // 3.1.4.4
+    kLocateCardsByAtrA = 0x000900E8,  // 3.1.4.25
+    kLocateCardsByAtrW = 0x000900EC,  // 3.1.4.26
+    kReadCacheA = 0x000900F0,         // 3.1.4.42
+    kReadCacheW = 0x000900F4,         // 3.1.4.43
+    kWriteCacheA = 0x000900F8,        // 3.1.4.44
+    kWriteCacheW = 0x000900FC,        // 3.1.4.45
+    kGetTransmitCount = 0x00090100,   // 3.1.4.41
+    kGetReaderIcon = 0x00090104,      // 3.1.4.47
+    kGetDeviceTypeId = 0x00090108,    // 3.1.4.48
 };
 
 // Range limits from the IDL in [MS-RDPESC] 6 Appendix A.
@@ -67,8 +84,14 @@ constexpr size_t kScardMaxExtraBytes = 1024;      // SCardIO_Request cbExtraByte
 constexpr size_t kScardMaxTransmitBytes = 66560;  // cbSendLength/cbRecvLength
 constexpr size_t kScardMaxMultiStringBytes = 65536;  // cBytes 0..65536
 constexpr size_t kScardMaxReaders = 11;           // GetStatusChange cReaders
+constexpr size_t kScardMaxAtrMasks = 1000;        // LocateCardsByATR cAtrs
+
+// SCARD_E_TIMEOUT: GetStatusChange/LocateCards_Return keeps cReaders on
+// timeout (FreeRDP smartcard_pack_get_status_change_return).
+constexpr uint32_t kScardETimeout = 0x8010000A;
 constexpr size_t kScardMaxAtr = 36;               // ReaderState_Common rgbAtr
 constexpr size_t kScardMaxStatusAtr = 32;         // Status_Return pbAtr
+constexpr size_t kScardMaxIconBytes = 4194304;    // GetReaderIcon_Return cbDataLen
 // Upper bound on the NDR object buffer a single smart card IRP may declare.
 // The enclosing rdpdr channel message is smaller, but checking here rejects a
 // malformed length before any large allocation happens.
@@ -103,11 +126,26 @@ struct ScardReaderStateA {
     std::vector<uint8_t> atr;  // at most kScardMaxAtr bytes
 };
 
+// ReaderStateW ([MS-RDPESC] 2.2.1.7): reader name is UTF-16LE.
+struct ScardReaderStateW {
+    std::u16string reader;
+    uint32_t current_state = 0;
+    uint32_t event_state = 0;
+    std::vector<uint8_t> atr;  // at most kScardMaxAtr bytes
+};
+
 // ReaderState_Return ([MS-RDPESC] 2.2.1.11).
 struct ScardReaderStateReturn {
     uint32_t current_state = 0;
     uint32_t event_state = 0;
     std::vector<uint8_t> atr;  // at most kScardMaxAtr bytes
+};
+
+// LocateCards_ATRMask ([MS-RDPESC] 2.2.1.6).
+struct ScardAtrMask {
+    uint32_t cb_atr = 0;
+    std::vector<uint8_t> atr;   // cb_atr bytes
+    std::vector<uint8_t> mask;  // cb_atr bytes
 };
 
 // A decoded SCARD_IOCTL call (TS server -> TS client). Only the fields that
@@ -134,6 +172,15 @@ struct ScardCall {
     uint32_t timeout = 0;
     std::vector<ScardReaderStateA> reader_states;
 
+    // GetStatusChangeW_Call 2.2.2.12 (reader names are UTF-16LE).
+    std::vector<ScardReaderStateW> reader_states_w;
+
+    // LocateCardsA_Call 2.2.2.9. `cards_msz` is the raw ANSI multistring.
+    std::vector<uint8_t> cards_msz;
+
+    // LocateCardsByATRA_Call 2.2.2.23.
+    std::vector<ScardAtrMask> atr_masks;
+
     // ConnectA_Call 2.2.2.13 (Connect_Common 2.2.1.3).
     std::string reader;
     uint32_t share_mode = 0;
@@ -142,6 +189,13 @@ struct ScardCall {
     // HCardAndDisposition_Call 2.2.2.16 (Disconnect/Begin/EndTransaction).
     ScardHandle handle;
     uint32_t disposition = 0;
+
+    // State_Call 2.2.2.17.
+    uint32_t atr_is_null = 0;
+    uint32_t atr_capacity = 0;
+
+    // Reconnect_Call 2.2.2.15 (reuses handle/share_mode/preferred_protocols).
+    uint32_t initialization = 0;
 
     // Transmit_Call 2.2.2.19.
     ScardIoRequest send_pci;
@@ -160,6 +214,30 @@ struct ScardCall {
     uint32_t reader_names_is_null = 0;
     uint32_t reader_names_cch = 0;
     uint32_t atr_length = 0;
+
+    // GetAttrib_Call 2.2.2.21.
+    uint32_t attr_id = 0;
+    uint32_t attr_is_null = 0;
+    uint32_t attr_capacity = 0;
+
+    // SetAttrib_Call 2.2.2.22.
+    uint32_t set_attr_length = 0;
+    std::vector<uint8_t> set_attr_value;
+
+    // ReadCacheA_Call 2.2.2.25 / ReadCache_Common 2.2.1.9.
+    std::string lookup_name;
+    // ReadCacheW_Call 2.2.2.26 uses a UTF-16LE [string] lookup name.
+    std::u16string lookup_name_w;
+    std::vector<uint8_t> card_id;  // UUID, 16 bytes
+    uint32_t freshness = 0;
+    uint32_t cache_is_null = 0;
+    uint32_t cache_capacity = 0;
+
+    // WriteCacheA_Call 2.2.2.27 / WriteCache_Common 2.2.1.10.
+    std::vector<uint8_t> write_cache_data;
+
+    // GetReaderIcon_Call 2.2.2.31: [string] wchar_t* szReaderName.
+    std::u16string reader_name;
 };
 
 // A SCARD_IOCTL return (TS client -> TS server). Only the fields that belong to
@@ -199,6 +277,30 @@ struct ScardReturn {
     uint32_t state = 0;
     uint32_t protocol = 0;
     std::vector<uint8_t> atr;  // at most kScardMaxStatusAtr bytes
+
+    // State_Return 2.2.3.9. `nullopt` means a NULL rgAtr (probe reply) and
+    // `state_atr_length` supplies cbAtrLen.
+    std::optional<std::vector<uint8_t>> state_atr;
+    uint32_t state_atr_length = 0;
+
+    // GetAttrib_Return 2.2.3.12. `nullopt` means a NULL pbAttr (length-probe
+    // reply) and `attr_length` supplies cbAttrLen.
+    std::optional<std::vector<uint8_t>> attr;
+    uint32_t attr_length = 0;
+
+    // ReadCache_Return 2.2.3.1. Same NULL-data convention.
+    std::optional<std::vector<uint8_t>> cache;
+    uint32_t cache_length = 0;
+
+    // GetReaderIcon_Return 2.2.3.14. `nullopt` means a NULL pbData.
+    std::optional<std::vector<uint8_t>> icon;
+    uint32_t icon_length = 0;
+
+    // GetDeviceTypeId_Return 2.2.3.13.
+    uint32_t device_type_id = 0;
+
+    // GetTransmitCount_Return 2.2.3.13.
+    uint32_t transmit_count = 0;
 };
 
 // NDR common type header ([MS-RPCE] 2.2.6.1), 8 bytes:

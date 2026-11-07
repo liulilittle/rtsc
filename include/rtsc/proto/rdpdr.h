@@ -72,6 +72,14 @@ enum RdpdrMinorFunction : uint32_t {
     kIrpMnNotifyChangeDirectory = 0x00000002,
 };
 
+// DR_DRIVE_LOCK_REQ.Operation ([MS-RDPEFS] 2.2.3.3.12).
+enum RdpdrLockOperation : uint32_t {
+    kRdpLowioOpSharedLock = 0x00000002,
+    kRdpLowioOpExclusiveLock = 0x00000003,
+    kRdpLowioOpUnlock = 0x00000004,
+    kRdpLowioOpUnlockMultiple = 0x00000005,
+};
+
 // NTSTATUS codes used by the drive redirection protocol ([MS-ERREF] 2.3).
 enum RdpdrStatus : uint32_t {
     kStatusSuccess = 0x00000000,
@@ -80,8 +88,15 @@ enum RdpdrStatus : uint32_t {
     kStatusAccessDenied = 0xC0000022,
     kStatusObjectNameNotFound = 0xC0000034,
     kStatusInvalidParameter = 0xC000000D,
+    // [MS-ERREF] 2.3: byte-range lock failures.
+    kStatusLockNotGranted = 0xC0000055,
+    kStatusRangeNotLocked = 0xC000007E,
     kStatusNotADirectory = 0xC0000103,
     kStatusUnsuccessful = 0xC0000001,
+    kStatusNotSupported = 0xC00000BB,
+    // [MS-ERREF] 2.3 STATUS_INVALID_DEVICE_REQUEST: a directory-control request
+    // with an unknown MinorFunction.
+    kStatusInvalidDeviceRequest = 0xC0000010,
     // [MS-ERREF] 2.3 STATUS_BUFFER_TOO_SMALL: the client's output buffer is
     // smaller than the encoded smart card return; the server retries with a
     // larger OutputBufferLength ([MS-RDPESC] 3.2.5.2).
@@ -104,6 +119,10 @@ enum RdpdrCapabilityVersion : uint32_t {
     kGeneralCapabilityVersion02 = 0x00000002,
     kDriveCapabilityVersion01 = 0x00000001,
     kDriveCapabilityVersion02 = 0x00000002,
+    // PORT_CAPS_SET ([MS-RDPEFS] 2.2.2.7.3; empty body, header only).
+    kPortCapabilityVersion01 = 0x00000001,
+    // PRINTER_CAPS_SET ([MS-RDPEFS] 2.2.2.7.2; empty body, header only).
+    kPrinterCapabilityVersion01 = 0x00000001,
     // SMARTCARD_CAPABILITY_VERSION_01 ([MS-RDPEFS] 2.2.2.7.5; FreeRDP
     // include/freerdp/channels/rdpdr.h: SMARTCARD_CAPABILITY_VERSION_01).
     kSmartcardCapabilityVersion01 = 0x00000001,
@@ -289,6 +308,14 @@ struct RdpdrDeviceAnnounce {
     std::string dos_name() const;
 };
 
+// RDPDR_PRINTER_ANNOUNCE ([MS-RDPEPC] 2.2.2.3): the DeviceData of a printer
+// DEVICE_ANNOUNCE. `driver_name` and `printer_name` are UTF-16 with a trailing
+// NUL; `pnp_name` may be empty (length 0) and `cached_data` may be empty.
+std::vector<uint8_t> EncodePrinterAnnounce(
+    uint32_t flags, const std::u16string& driver_name,
+    const std::u16string& printer_name, const std::u16string& pnp_name = {},
+    const std::vector<uint8_t>& cached_data = {});
+
 // DR_CORE_DEVICELIST_ANNOUNCE_REQ ([MS-RDPEFS] 2.2.2.9).
 struct RdpdrDeviceListAnnounce {
     uint32_t device_count = 0;
@@ -296,6 +323,17 @@ struct RdpdrDeviceListAnnounce {
 
     static Status parse(const std::vector<uint8_t>& data,
                         RdpdrDeviceListAnnounce& out);
+    std::vector<uint8_t> encode() const;
+};
+
+// DR_DEVICELIST_REMOVE ([MS-RDPEFS] 2.2.3.2): DeviceCount followed by the
+// 32-bit device ids the client no longer serves.
+struct RdpdrDeviceListRemove {
+    uint32_t device_count = 0;
+    std::vector<uint32_t> device_ids;
+
+    static Status parse(const std::vector<uint8_t>& data,
+                        RdpdrDeviceListRemove& out);
     std::vector<uint8_t> encode() const;
 };
 
@@ -401,6 +439,36 @@ struct RdpdrCloseReq {
     static Status parse(const std::vector<uint8_t>& data, RdpdrCloseReq& out);
 };
 
+// DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ ([MS-RDPEFS] 2.2.3.3.6): the
+// DeviceIoRequest header, the [MS-FSCC] 2.5 information class, the buffer
+// length, 24 bytes of padding and the (normally empty) query buffer.
+struct RdpdrQueryVolumeReq {
+    static constexpr size_t kFixedSize = RdpdrDeviceIoRequest::kFixedSize + 4 + 4 + 24;
+
+    RdpdrDeviceIoRequest request;
+    uint32_t fs_information_class = 0;
+    uint32_t length = 0;
+    std::vector<uint8_t> buffer;
+
+    static Status parse(const std::vector<uint8_t>& data,
+                        RdpdrQueryVolumeReq& out);
+};
+
+// DR_DRIVE_SET_INFORMATION_REQ ([MS-RDPEFS] 2.2.3.3.5): the same layout as
+// DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ (DeviceIoRequest + FsInformationClass
+// + Length + 24 bytes padding + SetBuffer).
+struct RdpdrSetInformationReq : RdpdrQueryVolumeReq {};
+
+// DR_DRIVE_QUERY_INFORMATION_REQ ([MS-RDPEFS] 2.2.3.3.8): the same layout as
+// DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ (DeviceIoRequest + FsInformationClass
+// + Length + 24 bytes padding + QueryBuffer).
+struct RdpdrQueryInformationReq : RdpdrQueryVolumeReq {};
+
+// DR_DRIVE_SET_VOLUME_INFORMATION_REQ ([MS-RDPEFS] 2.2.3.3.7): the same
+// layout as DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ (DeviceIoRequest +
+// FsInformationClass + Length + 24 bytes padding + SetVolumeBuffer).
+struct RdpdrSetVolumeReq : RdpdrQueryVolumeReq {};
+
 // DR_CLOSE_RSP ([MS-RDPEFS] 2.2.1.5.2).
 struct RdpdrCloseRsp {
     RdpdrDeviceIoCompletion completion;
@@ -420,6 +488,42 @@ struct RdpdrQueryDirectoryReq {
     static Status parse(const std::vector<uint8_t>& data,
                         RdpdrQueryDirectoryReq& out);
     std::string path_string() const;
+};
+
+// DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ ([MS-RDPEFS] 2.2.3.3.11): the
+// DeviceIoRequest header, WatchTree (1), CompletionFilter (4) and 27 bytes of
+// padding.
+struct RdpdrNotifyChangeDirectoryReq {
+    static constexpr size_t kFixedSize =
+        RdpdrDeviceIoRequest::kFixedSize + 1 + 4 + 27;
+
+    RdpdrDeviceIoRequest request;
+    uint8_t watch_tree = 0;
+    uint32_t completion_filter = 0;
+
+    static Status parse(const std::vector<uint8_t>& data,
+                        RdpdrNotifyChangeDirectoryReq& out);
+};
+
+// RDP_LOCK_INFO ([MS-RDPEFS] 2.2.1.6): one byte range.
+struct RdpdrLockInfo {
+    uint64_t length = 0;
+    uint64_t offset = 0;
+};
+
+// DR_DRIVE_LOCK_REQ ([MS-RDPEFS] 2.2.3.3.12): DeviceIoRequest + Operation(4) +
+// Flags(4) + NumLocks(4) + Padding2(20) + Locks (NumLocks * 16).
+struct RdpdrLockReq {
+    static constexpr size_t kFixedSize =
+        RdpdrDeviceIoRequest::kFixedSize + 4 + 4 + 4 + 20;
+
+    RdpdrDeviceIoRequest request;
+    uint32_t operation = 0;
+    uint32_t flags = 0;
+    uint32_t num_locks = 0;
+    std::vector<RdpdrLockInfo> locks;
+
+    static Status parse(const std::vector<uint8_t>& data, RdpdrLockReq& out);
 };
 
 // DR_CONTROL_REQ ([MS-RDPEFS] 2.2.1.4.5).

@@ -1,4 +1,4 @@
-﻿// RDP USB redirection (URBDRC) wire structures ([MS-RDPEUSB] 2.2) and the
+// RDP USB redirection (URBDRC) wire structures ([MS-RDPEUSB] 2.2) and the
 // drdynvc transport ([MS-RDPEDYC] 2.2).
 
 #include <cstdint>
@@ -601,7 +601,35 @@ std::vector<uint8_t> DvcPayload(const std::vector<uint8_t>& chunk) {
 struct CapturedSend {
     std::vector<std::vector<uint8_t>> chunks;
     void Add(const std::vector<uint8_t>& c) { chunks.push_back(c); }
+    const std::vector<uint8_t>* Last() const {
+        return chunks.empty() ? nullptr : &chunks.back();
+    }
 };
+
+// RDP 8.0 Lite "unencoded run" segment ([MS-RDPEGFX] 3.1.9.1.2.4): match prefix
+// 10001, 5-bit distance 0, 15-bit length, padding, then the raw bytes.
+std::vector<uint8_t> BulkRawRun(const std::vector<uint8_t>& raw) {
+    // Bits: match prefix 10001 (5), distance 00000 (5), 15-bit length, then
+    // padding to the byte boundary; the raw bytes follow; trailer = 0.
+    const uint32_t length = static_cast<uint32_t>(raw.size());
+    std::vector<uint8_t> out{0xE0, 0x26};
+    out.push_back(0x88);
+    out.push_back(static_cast<uint8_t>((length >> 9) & 0x3F));
+    out.push_back(static_cast<uint8_t>((length >> 1) & 0xFF));
+    out.push_back(static_cast<uint8_t>((length & 0x01) << 7));
+    out.insert(out.end(), raw.begin(), raw.end());
+    out.push_back(0x00);  // trailer: every bit used
+    return out;
+}
+
+struct CountingListener final : rtsc::channel::IDrdynvcListener {
+    unsigned data = 0;
+    std::vector<uint8_t> last;
+    void OnChannelData(uint32_t, const std::vector<uint8_t>& message) override {
+        ++data;
+        last = message;
+    }
+};;
 
 // Source-level regression helpers (W11 repair batch): a pure in-memory scan
 // that locates a source line by substring, mirroring the guard pattern in
@@ -658,6 +686,95 @@ RTSC_TEST(drdynvc_caps_response_version_read_at_offset_2) {
     CHECK(t.ready());
 }
 
+// [MS-RDPEDYC] 2.2.1 / 3.2.3.1.4: the client MUST answer a DYNVC_CAPS_VERSION1/2/3
+// PDU with a DYNVC_CAPS_RSP carrying the highest version the client supports
+// (capped by what the server announced).
+RTSC_TEST(drdynvc_caps_request_is_answered_with_caps_response) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    const std::vector<uint8_t> server_caps_v1 = {0x50, 0x00, 0x01, 0x00};
+    FeedDvc(t, server_caps_v1);
+    const std::vector<uint8_t>* response = cap.Last();
+    CHECK(response != nullptr);
+    if (response != nullptr) {
+        const std::vector<uint8_t> dvc(
+            response->begin() + rtsc::proto::ChannelPduHeader::kSize,
+            response->end());
+        CHECK_EQ(dvc.size(), static_cast<size_t>(4));
+        CHECK_EQ(dvc[0], static_cast<uint8_t>(0x50));  // Cmd=CAPABILITY, cbId=0
+        CHECK_EQ(dvc[1], static_cast<uint8_t>(0x00));  // Pad MUST be 0
+        CHECK_EQ(static_cast<uint16_t>(dvc[2] | (dvc[3] << 8)),
+                 static_cast<uint16_t>(0x0001));
+    }
+    CHECK_EQ(t.negotiated_version(), static_cast<uint16_t>(1));
+}
+
+RTSC_TEST(drdynvc_caps_response_is_capped_by_client_maximum) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    // VERSION3 request (12 bytes) from a server that supports version 3: the
+    // client now implements RDP 8.0 Lite decompression, so it answers 3.
+    const std::vector<uint8_t> server_caps_v3 = {0x50, 0x00, 0x03, 0x00,
+                                                 0x01, 0x00, 0x02, 0x00,
+                                                 0x03, 0x00, 0x04, 0x00};
+    FeedDvc(t, server_caps_v3);
+    const std::vector<uint8_t>* response = cap.Last();
+    CHECK(response != nullptr);
+    if (response != nullptr) {
+        const std::vector<uint8_t> dvc(
+            response->begin() + rtsc::proto::ChannelPduHeader::kSize,
+            response->end());
+        CHECK_EQ(dvc.size(), static_cast<size_t>(4));
+        CHECK_EQ(static_cast<uint16_t>(dvc[2] | (dvc[3] << 8)),
+                 static_cast<uint16_t>(0x0003));
+    }
+    CHECK_EQ(t.negotiated_version(), static_cast<uint16_t>(3));
+}
+
+RTSC_TEST(drdynvc_compressed_data_requires_version3) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    // VERSION1 negotiation: compressed PDUs are not allowed on this transport
+    // ([MS-RDPEDYC] 2.2.3.3/2.2.3.4), so they must be rejected rather than
+    // decoded.
+    FeedDvc(t, {0x50, 0x00, 0x01, 0x00});
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kCreate, 0,
+                                          id, {0, 0, 0, 0}));
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, id,
+                   BulkRawRun({0x41, 0x42})));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_compressed_data_runs_after_version3) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener, [&](const std::vector<uint8_t>& c) {
+        cap.Add(c);
+    });
+    FeedDvc(t, {0x50, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
+                0x04, 0x00});
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kCreate, 0,
+                                          id, {0, 0, 0, 0}));
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, id,
+                   BulkRawRun({0x41, 0x42})));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(1));
+    CHECK_EQ(listener.data, static_cast<unsigned>(1));
+    CHECK(listener.last == std::vector<uint8_t>({0x41, 0x42}));
+}
 RTSC_TEST(drdynvc_create_response_opens_channel) {
     CapturedSend cap;
     rtsc::channel::DrdynvcClient t(nullptr, [&](const std::vector<uint8_t>& c) {
@@ -671,6 +788,384 @@ RTSC_TEST(drdynvc_create_response_opens_channel) {
     FeedDvc(t, rsp);
     CHECK_EQ(t.pending_channels(), static_cast<size_t>(0));
     CHECK_EQ(t.create_response_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_server_initiated_create_accepted) {
+    struct Listener final : rtsc::channel::IDrdynvcListener {
+        std::string requested;
+        unsigned data = 0;
+        bool OnChannelCreateRequest(const std::string& name) override {
+            requested = name;
+            return true;
+        }
+        void OnChannelData(uint32_t, const std::vector<uint8_t>&) override {
+            ++data;
+        }
+    } listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    // DYNVC_CREATE_REQ: Cmd=Create, cbId=0, ChannelId=7, "URBDRC\0".
+    std::vector<uint8_t> req = {0x10, 0x07};
+    for (char c : std::string("URBDRC")) {
+        req.push_back(static_cast<uint8_t>(c));
+    }
+    req.push_back(0);
+    FeedDvc(t, req);
+    CHECK(listener.requested == "URBDRC");
+    CHECK_EQ(t.server_create_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), static_cast<size_t>(1));
+    if (!cap.chunks.empty()) {
+        rtsc::proto::DynvcPdu rsp;
+        const std::vector<uint8_t>& chunk = cap.chunks[0];
+        CHECK(rtsc::proto::DynvcPdu::parse(
+                  chunk.data() + rtsc::proto::ChannelPduHeader::kSize,
+                  chunk.size() - rtsc::proto::ChannelPduHeader::kSize,
+                  rsp) == rtsc::proto::Status::Ok);
+        CHECK_EQ(rsp.channel_id, static_cast<uint32_t>(7));
+        CHECK_EQ(rsp.data.size(), static_cast<size_t>(4));
+        if (rsp.data.size() == 4) {
+            const uint32_t status =
+                static_cast<uint32_t>(rsp.data[0]) |
+                (static_cast<uint32_t>(rsp.data[1]) << 8) |
+                (static_cast<uint32_t>(rsp.data[2]) << 16) |
+                (static_cast<uint32_t>(rsp.data[3]) << 24);
+            CHECK_EQ(status, static_cast<uint32_t>(0));
+        }
+    }
+    // Data on the accepted server-created channel reaches the listener.
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataFirst, 0, 7, {9, 9}));
+    CHECK_EQ(listener.data, static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_server_initiated_create_rejected) {
+    struct Listener final : rtsc::channel::IDrdynvcListener {
+        unsigned data = 0;
+        bool OnChannelCreateRequest(const std::string&) override {
+            return false;
+        }
+        void OnChannelData(uint32_t, const std::vector<uint8_t>&) override {
+            ++data;
+        }
+    } listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    std::vector<uint8_t> req = {0x10, 0x09};
+    for (char c : std::string("NOPE")) {
+        req.push_back(static_cast<uint8_t>(c));
+    }
+    req.push_back(0);
+    FeedDvc(t, req);
+    CHECK_EQ(t.server_create_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), static_cast<size_t>(1));
+    if (!cap.chunks.empty()) {
+        rtsc::proto::DynvcPdu rsp;
+        const std::vector<uint8_t>& chunk = cap.chunks[0];
+        CHECK(rtsc::proto::DynvcPdu::parse(
+                  chunk.data() + rtsc::proto::ChannelPduHeader::kSize,
+                  chunk.size() - rtsc::proto::ChannelPduHeader::kSize,
+                  rsp) == rtsc::proto::Status::Ok);
+        CHECK_EQ(rsp.channel_id, static_cast<uint32_t>(9));
+        if (rsp.data.size() == 4) {
+            const uint32_t status =
+                static_cast<uint32_t>(rsp.data[0]) |
+                (static_cast<uint32_t>(rsp.data[1]) << 8) |
+                (static_cast<uint32_t>(rsp.data[2]) << 16) |
+                (static_cast<uint32_t>(rsp.data[3]) << 24);
+            CHECK_EQ(status, static_cast<uint32_t>(0xC0000001u));
+        }
+    }
+    // A rejected id is not active: data is dropped without a callback.
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataFirst, 0, 9, {1, 2}));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+}
+
+RTSC_TEST(drdynvc_client_close_stops_delivery) {
+    struct Listener final : rtsc::channel::IDrdynvcListener {
+        unsigned data = 0;
+        unsigned closed = 0;
+        void OnChannelData(uint32_t, const std::vector<uint8_t>&) override {
+            ++data;
+        }
+        void OnChannelClosed(uint32_t) override { ++closed; }
+    } listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+    t.CloseChannel(id);
+    // Closing locally stops delivery at once; the listener is told when the
+    // server answers with its CLOSE.
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataFirst, 0, id, {1, 2}));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+    CHECK_EQ(listener.closed, static_cast<unsigned>(0));
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kClose, 0,
+                                          id, {}));
+    CHECK_EQ(listener.closed, static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_close_unknown_channel_is_ignored) {
+    struct Listener final : rtsc::channel::IDrdynvcListener {
+        unsigned closed = 0;
+        void OnChannelClosed(uint32_t) override { ++closed; }
+    } listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kClose, 0,
+                                          99, {}));
+    CHECK_EQ(listener.closed, static_cast<unsigned>(0));
+}
+
+// [MS-RDPEDYC] 2.2.3.3: DYNVC_DATA_FIRST_COMPRESSED header bits 2-3 are Len,
+// not Sp; Len selects a 1-, 2- or 4-byte Length field.
+RTSC_TEST(drdynvc_parse_data_first_compressed_len2) {
+    const std::vector<uint8_t> raw{0x64, 0x05, 0xD2, 0x04, 0xAA};
+    rtsc::proto::DynvcPdu pdu;
+    const rtsc::proto::Status st =
+        rtsc::proto::DynvcPdu::parse(raw.data(), raw.size(), pdu);
+    CHECK(st == rtsc::proto::Status::Ok);
+    if (st != rtsc::proto::Status::Ok) return;
+    CHECK_EQ(pdu.channel_id, static_cast<uint32_t>(5));
+    CHECK_EQ(pdu.length, static_cast<uint32_t>(1234));
+    CHECK_EQ(pdu.data.size(), static_cast<size_t>(1));
+    CHECK_EQ(pdu.data[0], 0xAA);
+}
+
+RTSC_TEST(drdynvc_parse_data_first_compressed_len1) {
+    const std::vector<uint8_t> raw{0x60, 0x05, 0x07, 0xBB};
+    rtsc::proto::DynvcPdu pdu;
+    const rtsc::proto::Status st =
+        rtsc::proto::DynvcPdu::parse(raw.data(), raw.size(), pdu);
+    CHECK(st == rtsc::proto::Status::Ok);
+    if (st != rtsc::proto::Status::Ok) return;
+    CHECK_EQ(pdu.length, static_cast<uint32_t>(7));
+    CHECK_EQ(pdu.data.size(), static_cast<size_t>(1));
+    CHECK_EQ(pdu.data[0], 0xBB);
+}
+
+RTSC_TEST(drdynvc_parse_data_first_compressed_len3_invalid) {
+    const std::vector<uint8_t> raw{0x6C, 0x05, 0x00, 0x00, 0x00, 0x00};
+    rtsc::proto::DynvcPdu pdu;
+    CHECK(rtsc::proto::DynvcPdu::parse(raw.data(), raw.size(), pdu) ==
+          rtsc::proto::Status::InvalidField);
+}
+
+RTSC_TEST(drdynvc_build_data_first_compressed_round_trip) {
+    const std::vector<uint8_t> raw =
+        rtsc::proto::BuildDynvcDataFirstCompressedPdu(1, 5, 1234, {0xAA});
+    const std::vector<uint8_t> expected{0x64, 0x05, 0xD2, 0x04, 0xAA};
+    CHECK(raw == expected);
+    rtsc::proto::DynvcPdu pdu;
+    const rtsc::proto::Status st =
+        rtsc::proto::DynvcPdu::parse(raw.data(), raw.size(), pdu);
+    CHECK(st == rtsc::proto::Status::Ok);
+    if (st != rtsc::proto::Status::Ok) return;
+    CHECK_EQ(pdu.length, static_cast<uint32_t>(1234));
+    CHECK_EQ(pdu.data.size(), static_cast<size_t>(1));
+}
+
+RTSC_TEST(drdynvc_client_decompresses_compressed_data) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    // Compressed DVC data requires version 3 ([MS-RDPEDYC] 2.2.1).
+    FeedDvc(t, {0x50, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
+                0x04, 0x00});
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(0));
+
+    const std::vector<uint8_t> payload = BulkRawRun({0x41, 0x42, 0x43});
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, id, payload));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(1));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(0));
+    CHECK_EQ(listener.data, static_cast<unsigned>(1));
+    CHECK(listener.last == std::vector<uint8_t>({0x41, 0x42, 0x43}));
+}
+
+RTSC_TEST(drdynvc_client_reassembles_compressed_fragments) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    // Compressed DVC data requires version 3 ([MS-RDPEDYC] 2.2.1).
+    FeedDvc(t, {0x50, 0x00, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
+                0x04, 0x00});
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+
+    const std::vector<uint8_t> first_half(30, 0x41);
+    FeedDvc(t, rtsc::proto::BuildDynvcDataFirstCompressedPdu(
+                   1, id, 60, BulkRawRun(first_half)));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+
+    // Second block: a match at distance 1 with length 30, taken from the
+    // history the first block left in this channel's dedicated context.
+    const std::vector<uint8_t> second_payload = {0xE0, 0x26, 0x88,
+                                                0x7B, 0x80, 0x06};
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, id,
+                   second_payload));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(0));
+    CHECK_EQ(listener.data, static_cast<unsigned>(1));
+    CHECK_EQ(listener.last.size(), static_cast<size_t>(60));
+    bool all_a = true;
+    for (const uint8_t byte : listener.last) {
+        if (byte != 0x41) all_a = false;
+    }
+    CHECK(all_a);
+}
+
+RTSC_TEST(drdynvc_client_corrupt_compressed_data_fails_closed) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, id, {0xDE, 0xAD}));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(1));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+
+    // A rejected block must not poison later uncompressed reassembly.
+    FeedDvc(t, rtsc::proto::BuildDynvcDataFirstPdu(0, id, 2, {0x41, 0x42}));
+    CHECK_EQ(listener.data, static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_client_compressed_unknown_channel_ignored) {
+    CountingListener listener;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(&listener,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    const std::vector<uint8_t> payload = BulkRawRun({0x41});
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataCompressed, 0, 77, payload));
+    CHECK_EQ(listener.data, static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_data_count(), static_cast<unsigned>(0));
+    CHECK_EQ(t.compressed_failure_count(), static_cast<unsigned>(0));
+}
+RTSC_TEST(drdynvc_send_refused_for_unknown_channel) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    CHECK(!t.SendChannelData(99, {1, 2}));
+    CHECK_EQ(cap.chunks.size(), static_cast<size_t>(0));
+    CHECK_EQ(t.refused_data_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(drdynvc_send_refused_after_local_close) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    const uint32_t id = t.CreateChannel("URBDRC");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+    CHECK(t.SendChannelData(id, {0x41}));  // open: allowed
+    const size_t after_open = cap.chunks.size();
+    t.CloseChannel(id);
+    const size_t after_close = cap.chunks.size();
+    CHECK(after_close > after_open);
+    CHECK(!t.SendChannelData(id, {0x42}));
+    CHECK_EQ(cap.chunks.size(), after_close);
+    CHECK_EQ(t.refused_data_count(), static_cast<unsigned>(1));
+    // The server's CLOSE only answers ours: the id stays unusable.
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(rtsc::proto::DynvcCmd::kClose, 0,
+                                          id, {}));
+    CHECK(!t.SendChannelData(id, {0x43}));
+    CHECK_EQ(t.refused_data_count(), static_cast<unsigned>(2));
+}
+
+RTSC_TEST(drdynvc_send_allowed_while_pending) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient t(nullptr,
+                                   [&](const std::vector<uint8_t>& c) {
+                                       cap.Add(c);
+                                   });
+    const uint32_t id = t.CreateChannel("URBDRC");
+    CHECK(t.SendChannelData(id, {0x41}));
+    CHECK_EQ(t.refused_data_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(drdynvc_fans_out_to_all_listeners) {
+    struct Listener final : rtsc::channel::IDrdynvcListener {
+        unsigned caps = 0;
+        unsigned created = 0;
+        unsigned data = 0;
+        unsigned closed = 0;
+        void OnCapsResponse(uint16_t) override { ++caps; }
+        void OnChannelCreated(uint32_t) override { ++created; }
+        void OnChannelData(uint32_t, const std::vector<uint8_t>&) override {
+            ++data;
+        }
+        void OnChannelClosed(uint32_t) override { ++closed; }
+    } a, b;
+    rtsc::channel::DrdynvcClient t(nullptr,
+                                   [](const std::vector<uint8_t>&) {});
+    t.AddListener(&a);
+    t.AddListener(&b);
+    // A second AddListener of the same pointer must not double-deliver.
+    t.AddListener(&a);
+
+    FeedDvc(t, {0x50, 0x00, 0x02, 0x00, 0x01, 0x00,
+                0x02, 0x00, 0x03, 0x00, 0x04, 0x00});
+    const uint32_t id = t.CreateChannel("DISP");
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kCreate, 0, id, {0, 0, 0, 0}));
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataFirst, 0, id, {1, 2, 3}));
+
+    CHECK_EQ(a.caps, static_cast<unsigned>(1));
+    CHECK_EQ(b.caps, static_cast<unsigned>(1));
+    CHECK_EQ(a.created, static_cast<unsigned>(1));
+    CHECK_EQ(b.created, static_cast<unsigned>(1));
+    CHECK_EQ(a.data, static_cast<unsigned>(1));
+    CHECK_EQ(b.data, static_cast<unsigned>(1));
+
+    // Removing one listener stops its delivery without affecting the other.
+    t.RemoveListener(&b);
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kDataFirst, 0, id, {4, 5, 6}));
+    CHECK_EQ(a.data, static_cast<unsigned>(2));
+    CHECK_EQ(b.data, static_cast<unsigned>(1));
+
+    FeedDvc(t, rtsc::proto::BuildDynvcPdu(
+                   rtsc::proto::DynvcCmd::kClose, 0, id, {}));
+    CHECK_EQ(a.closed, static_cast<unsigned>(1));
+    CHECK_EQ(b.closed, static_cast<unsigned>(0));
 }
 
 RTSC_TEST(drdynvc_data_delivered_to_listener) {
@@ -791,6 +1286,17 @@ class RecordingUsbDevice final : public rtsc::usb::UsbDevice {
     }
     bool ResetPipe(uint32_t) override { return true; }
     bool CancelRequest(uint32_t) override { return true; }
+    bool IoControl(uint32_t io_control_code, const std::vector<uint8_t>& input,
+                   uint32_t output_buffer_size, std::vector<uint8_t>& output,
+                   uint32_t& information, uint32_t& hresult) override {
+        io_control_codes_.push_back(io_control_code);
+        io_control_inputs_.push_back(input);
+        io_control_output_sizes_.push_back(output_buffer_size);
+        output = io_control_output_;
+        information = io_control_information_;
+        hresult = io_control_hresult_;
+        return io_control_ok_;
+    }
 
     rtsc::usb::UsbDeviceInfo info_;
     std::vector<std::vector<uint8_t>> control_setups_;
@@ -799,6 +1305,13 @@ class RecordingUsbDevice final : public rtsc::usb::UsbDevice {
     uint32_t last_max_read_ = 0;
     std::vector<uint8_t> control_output_;
     std::vector<uint8_t> bulk_output_;
+    std::vector<uint32_t> io_control_codes_;
+    std::vector<std::vector<uint8_t>> io_control_inputs_;
+    std::vector<uint32_t> io_control_output_sizes_;
+    std::vector<uint8_t> io_control_output_;
+    uint32_t io_control_information_ = 0;
+    uint32_t io_control_hresult_ = 0;
+    bool io_control_ok_ = true;
 };
 
 class RecordingEnumerator final : public rtsc::usb::UsbDeviceEnumerator {
@@ -835,6 +1348,70 @@ void MakeUsbClientReady(rtsc::channel::DrdynvcClient& transport,
                            rtsc::proto::DynvcCmd::kCreate, 0, control,
                            {0, 0, 0, 0}));
     CHECK(client.ready());
+}
+
+// Announces one device and opens its device DVC; returns the channel id.
+uint32_t OpenRecordingDevice(rtsc::channel::DrdynvcClient& transport,
+                             rtsc::channel::RdpUsbClient& client,
+                             const char* instance_id) {
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = instance_id;
+    CHECK(client.AddDevice(info));
+    const uint32_t channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, channel,
+                           {0, 0, 0, 0}));
+    return channel;
+}
+
+// Sends one TRANSFER_OUT_REQUEST carrying `function`/`body` and returns the
+// completion payload (DYNVC header stripped).
+std::vector<uint8_t> SendTransferOut(rtsc::channel::DrdynvcClient& transport,
+                                     CapturedSend& cap, uint32_t channel,
+                                     rtsc::proto::RdpUsbUrbFunction function,
+                                     const std::vector<uint8_t>& body,
+                                     uint32_t output_buffer_size,
+                                     const std::vector<uint8_t>& data) {
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function = function;
+    urb.body = body;
+    rtsc::proto::RdpUsbTransferOutRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferOutRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = output_buffer_size;
+    req.output_buffer = data;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0, channel,
+                           req.encode()));
+    return DvcPayload(cap.chunks.back());
+}
+
+// Sends one TRANSFER_IN_REQUEST carrying `function`/`body` and returns the
+// completion payload (DYNVC header stripped).
+std::vector<uint8_t> SendTransferIn(rtsc::channel::DrdynvcClient& transport,
+                                    CapturedSend& cap, uint32_t channel,
+                                    rtsc::proto::RdpUsbUrbFunction function,
+                                    const std::vector<uint8_t>& body,
+                                    uint32_t output_buffer_size) {
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function = function;
+    urb.body = body;
+    rtsc::proto::RdpUsbTransferInRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferInRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = output_buffer_size;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0, channel,
+                           req.encode()));
+    return DvcPayload(cap.chunks.back());
 }
 
 }  // namespace
@@ -1146,6 +1723,580 @@ RTSC_TEST(rdpusb_client_out_bulk_payload_reaches_backend) {
     }
 }
 
+// [MS-RDPEUSB] 2.2.9.1.1: when TS_URB_HEADER.NoAck is set on a
+// TRANSFER_OUT_REQUEST the client must not send a URB_COMPLETION. The transfer
+// itself still runs: NoAck suppresses the reply, not the write.
+RTSC_TEST(rdpusb_client_no_ack_transfer_out_sends_no_completion) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+
+    rtsc::proto::RdpUsbTsUrbBulkOrInterruptTransfer blk;
+    blk.pipe_handle = 9;
+    blk.transfer_flags = 0;  // OUT
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function =
+        rtsc::proto::RdpUsbUrbFunction::kBulkOrInterruptTransfer;
+    urb.header.no_ack = true;
+    urb.body = blk.encode();
+    rtsc::proto::RdpUsbTransferOutRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferOutRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 4;
+    req.output_buffer = {0x11, 0x22, 0x33, 0x44};
+    const size_t before = cap.chunks.size();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_out_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.urb_completion_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.no_ack_urb_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), before);  // no completion frame left the client
+    // The write still reached the device backend.
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device != nullptr) {
+        CHECK(!enumerator.last_device->bulk_inputs_.empty());
+        if (!enumerator.last_device->bulk_inputs_.empty()) {
+            CHECK_BYTES(enumerator.last_device->bulk_inputs_[0], 0x11, 0x22,
+                        0x33, 0x44);
+        }
+    }
+}
+
+// The paired control case: without NoAck the same request must complete.
+RTSC_TEST(rdpusb_client_ack_transfer_out_still_completes) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0B";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+
+    rtsc::proto::RdpUsbTsUrbBulkOrInterruptTransfer blk;
+    blk.pipe_handle = 9;
+    blk.transfer_flags = 0;
+    rtsc::proto::RdpUsbTsUrb urb;
+    urb.header.urb_function =
+        rtsc::proto::RdpUsbUrbFunction::kBulkOrInterruptTransfer;
+    urb.header.no_ack = false;
+    urb.body = blk.encode();
+    rtsc::proto::RdpUsbTransferOutRequest req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kTransferOutRequest);
+    req.ts_urb = urb;
+    req.output_buffer_size = 2;
+    req.output_buffer = {0x55, 0x66};
+    const size_t before = cap.chunks.size();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.transfer_out_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.urb_completion_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.no_ack_urb_count(), static_cast<unsigned>(0));
+    CHECK_EQ(cap.chunks.size(), before + 1);  // exactly one completion frame
+}
+
+// [MS-RDPEUSB] 2.2.6.3/2.2.7.1: IO_CONTROL and INTERNAL_IO_CONTROL are
+// forwarded to the device and answered with IOCONTROL_COMPLETION carrying the
+// same RequestId, the backend HResult/Information and its output bytes.
+RTSC_TEST(rdpusb_client_io_control_completes_with_backend_result) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_2&PID_2\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->io_control_output_ = {0xAB, 0xCD};
+    enumerator.last_device->io_control_information_ = 2;
+
+    const auto make_request = [&](rtsc::proto::RdpUsbFunction function,
+                                  uint32_t request_id) {
+        rtsc::proto::RdpUsbIoControl req;
+        req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+            rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+            rtsc::proto::RdpUsbStreamId::kProxy);
+        req.header.function_id = static_cast<uint32_t>(function);
+        req.io_control_code = 0x00220004;
+        req.input_buffer = {0x01, 0x02};
+        req.output_buffer_size = 4;
+        req.request_id = request_id;
+        return req;
+    };
+
+    const size_t before = cap.chunks.size();
+    const auto io = make_request(rtsc::proto::RdpUsbFunction::kIoControl, 77);
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, io.encode()));
+    CHECK_EQ(client.io_control_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.io_control_completion_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), before + 1);
+    rtsc::proto::RdpUsbIoControlCompletion done;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    CHECK(rtsc::proto::RdpUsbIoControlCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK_EQ(done.request_id, static_cast<uint32_t>(77));
+    CHECK_EQ(done.hresult, static_cast<uint32_t>(0));
+    CHECK_EQ(done.information, static_cast<uint32_t>(2));
+    CHECK(done.output_buffer == std::vector<uint8_t>({0xAB, 0xCD}));
+    // The backend saw the IOCTL code, input buffer and output size.
+    CHECK_EQ(enumerator.last_device->io_control_codes_.size(),
+             static_cast<size_t>(1));
+    if (!enumerator.last_device->io_control_codes_.empty()) {
+        CHECK_EQ(enumerator.last_device->io_control_codes_[0],
+                 static_cast<uint32_t>(0x00220004));
+    }
+    CHECK(!enumerator.last_device->io_control_inputs_.empty());
+    if (!enumerator.last_device->io_control_inputs_.empty()) {
+        CHECK(enumerator.last_device->io_control_inputs_[0] ==
+              std::vector<uint8_t>({0x01, 0x02}));
+    }
+    CHECK(!enumerator.last_device->io_control_output_sizes_.empty());
+    if (!enumerator.last_device->io_control_output_sizes_.empty()) {
+        CHECK_EQ(enumerator.last_device->io_control_output_sizes_[0],
+                 static_cast<uint32_t>(4));
+    }
+
+    // INTERNAL_IO_CONTROL takes the same path and gets its own completion.
+    const auto internal = make_request(
+        rtsc::proto::RdpUsbFunction::kInternalIoControl, 78);
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, internal.encode()));
+    CHECK_EQ(client.io_control_count(), static_cast<unsigned>(2));
+    CHECK_EQ(client.io_control_completion_count(), static_cast<unsigned>(2));
+    rtsc::proto::RdpUsbIoControlCompletion done2;
+    const std::vector<uint8_t> payload2 = DvcPayload(cap.chunks.back());
+    CHECK(rtsc::proto::RdpUsbIoControlCompletion::parse(
+              payload2.data(), payload2.size(), done2) == Status::Ok);
+    CHECK_EQ(done2.request_id, static_cast<uint32_t>(78));
+}
+
+// An unknown device cannot be serviced, but the server must still get a
+// completion or it waits forever.
+RTSC_TEST(rdpusb_client_io_control_unknown_device_reports_failure) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    // Open a real device DVC so the message reaches the device dispatcher, but
+    // address the IO_CONTROL to a different (unknown) UsbDevice id.
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_5&PID_5\\01");
+
+    rtsc::proto::RdpUsbIoControl req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        static_cast<rtsc::proto::RdpUsbInterface>(99),
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kIoControl);
+    req.io_control_code = 0x00220004;
+    req.output_buffer_size = 4;
+    req.request_id = 5;
+    const size_t before = cap.chunks.size();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.io_control_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.io_control_completion_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), before + 1);
+    rtsc::proto::RdpUsbIoControlCompletion done;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    CHECK(rtsc::proto::RdpUsbIoControlCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK_EQ(done.request_id, static_cast<uint32_t>(5));
+    CHECK(done.hresult != 0);
+    CHECK_EQ(done.information, static_cast<uint32_t>(0));
+    CHECK(done.output_buffer.empty());
+}
+
+// A backend that does not implement device IOCTLs still answers (E_NOTIMPL)
+// instead of leaving the server waiting.
+RTSC_TEST(rdpusb_client_io_control_default_backend_reports_not_implemented) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    FakeEnumerator enumerator;  // FakeUsbDevice: no IoControl override
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_3&PID_3\\01";
+    CHECK(client.AddDevice(info));
+    const uint32_t device_channel = client.last_device_channel();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, device_channel,
+                           {0, 0, 0, 0}));
+
+    rtsc::proto::RdpUsbIoControl req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kIoControl);
+    req.io_control_code = 0x00220004;
+    req.output_buffer_size = 4;
+    req.request_id = 6;
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.io_control_completion_count(), static_cast<unsigned>(1));
+    rtsc::proto::RdpUsbIoControlCompletion done;
+    const std::vector<uint8_t> payload = DvcPayload(cap.chunks.back());
+    CHECK(rtsc::proto::RdpUsbIoControlCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK_EQ(done.hresult, static_cast<uint32_t>(0x80004001));  // E_NOTIMPL
+    CHECK(done.output_buffer.empty());
+}
+
+// [MS-RDPEUSB] 2.2.6.3: more data than OutputBufferSize terminates the DVC.
+RTSC_TEST(rdpusb_client_io_control_overflow_terminates_channel) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_4&PID_4\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->io_control_output_ = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    rtsc::proto::RdpUsbIoControl req;
+    req.header.interface_id = rtsc::proto::RdpUsbHeader::MakeInterfaceId(
+        rtsc::proto::RdpUsbInterface::kClientDeviceSink,
+        rtsc::proto::RdpUsbStreamId::kProxy);
+    req.header.function_id =
+        static_cast<uint32_t>(rtsc::proto::RdpUsbFunction::kIoControl);
+    req.io_control_code = 0x00220004;
+    req.output_buffer_size = 4;
+    req.request_id = 7;
+    const size_t before = cap.chunks.size();
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kDataFirst, 0,
+                           device_channel, req.encode()));
+
+    CHECK_EQ(client.io_control_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.io_control_completion_count(), static_cast<unsigned>(0));
+    CHECK_EQ(client.io_control_overflow_count(), static_cast<unsigned>(1));
+    CHECK_EQ(cap.chunks.size(), before + 1);  // the DYNVC_CLOSE, no completion
+    rtsc::proto::DynvcPdu close;
+    const std::vector<uint8_t> pdu = cap.chunks.back();
+    CHECK(pdu.size() > rtsc::proto::ChannelPduHeader::kSize);
+    CHECK(rtsc::proto::DynvcPdu::parse(
+              pdu.data() + rtsc::proto::ChannelPduHeader::kSize,
+              pdu.size() - rtsc::proto::ChannelPduHeader::kSize,
+              close) == Status::Ok);
+    CHECK(close.header.cmd == rtsc::proto::DynvcCmd::kClose);
+    CHECK_EQ(close.channel_id, device_channel);
+}
+
+// [MS-RDPEUSB] 2.2.9.9: GET_DESCRIPTOR is synthesized as
+// 0x80/0x06/(type<<8|index)/langId/length and sent through ControlTransfer.
+RTSC_TEST(rdpusb_client_control_descriptor_synthesizes_setup) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_6&PID_6\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->control_output_ = {0x04, 0x03, 0x09, 0x04};
+
+    rtsc::proto::RdpUsbTsUrbControlDescriptorRequest desc;
+    desc.index = 2;            // string descriptor index (distinct from type)
+    desc.descriptor_type = 3;  // USB_STRING_DESCRIPTOR_TYPE
+    desc.language_id = 0x0409; // en-US
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlDescriptorRequest,
+        desc.encode(), 255);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x80, 0x06,
+                    0x02, 0x03, 0x09, 0x04, 0xFF, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK(done.output_buffer == std::vector<uint8_t>({0x04, 0x03, 0x09, 0x04}));
+    CHECK_EQ(done.hresult, static_cast<uint32_t>(0));
+    CHECK_EQ(done.ts_urb_result.size(), static_cast<size_t>(8));
+    if (done.ts_urb_result.size() >= 8) {
+        CHECK_EQ(done.ts_urb_result[4], static_cast<uint8_t>(0));
+        CHECK_EQ(done.ts_urb_result[7], static_cast<uint8_t>(0));
+    }
+}
+
+// [MS-RDPEUSB] 2.2.9.11: GET_STATUS from the device.
+RTSC_TEST(rdpusb_client_control_get_status_synthesizes_setup) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_7&PID_7\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->control_output_ = {0x01, 0x00};
+
+    rtsc::proto::RdpUsbTsUrbControlGetStatusRequest status;
+    status.index = 0;
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlGetStatusRequest,
+        status.encode(), 2);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x80, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x02, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK(done.output_buffer == std::vector<uint8_t>({0x01, 0x00}));
+}
+
+// [MS-RDPEUSB] 2.2.9.13: GET_CONFIGURATION has no URB body; the length comes
+// from the TRANSFER_IN_REQUEST OutputBufferSize.
+RTSC_TEST(rdpusb_client_control_get_configuration_synthesizes_setup) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_8&PID_8\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->control_output_ = {0x01};
+
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlGetConfigurationRequest, {}, 1);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x80, 0x08,
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK(done.output_buffer == std::vector<uint8_t>({0x01}));
+}
+
+// [MS-RDPEUSB] 2.2.9.14: GET_INTERFACE uses bmRequestType 0x81 and wIndex=the
+// interface number.
+RTSC_TEST(rdpusb_client_control_get_interface_synthesizes_setup) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_9&PID_9\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->control_output_ = {0x02};
+
+    rtsc::proto::RdpUsbTsUrbControlGetInterfaceRequest get_iface;
+    get_iface.interface = 2;
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlGetInterfaceRequest,
+        get_iface.encode(), 1);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x81, 0x0A,
+                    0x00, 0x00, 0x02, 0x00, 0x01, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK(done.output_buffer == std::vector<uint8_t>({0x02}));
+}
+
+// [MS-RDPEUSB] 2.2.9.10: SET_FEATURE_TO_DEVICE (0x000D) is a device-recipient
+// standard request with no data stage.
+RTSC_TEST(rdpusb_client_control_set_feature_synthesizes_setup) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_10&PID_10\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+
+    rtsc::proto::RdpUsbTsUrbControlFeatureRequest feat;
+    feat.feature_selector = 1;  // DEVICE_REMOTE_WAKEUP
+    feat.index = 0;
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlFeatureRequest, feat.encode(),
+        0);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x00, 0x03,
+                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletionNoData done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletionNoData::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK_EQ(done.ts_urb_result.size(), static_cast<size_t>(8));
+    if (done.ts_urb_result.size() >= 8) {
+        CHECK_EQ(done.ts_urb_result[7], static_cast<uint8_t>(0));
+    }
+}
+
+// [MS-RDPEUSB] 2.2.9.12: vendor/class request, OUT direction (TransferFlags
+// bit 0 clear). The data stage comes from the TRANSFER_OUT_REQUEST buffer.
+RTSC_TEST(rdpusb_client_control_vendor_out_uses_data_stage) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_11&PID_11\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+
+    rtsc::proto::RdpUsbTsUrbControlVendorOrClassRequest vendor;
+    vendor.transfer_flags = 0;  // OUT
+    vendor.request = 0x42;
+    vendor.value = 0x1234;
+    vendor.index = 0x5678;
+    const std::vector<uint8_t> payload = SendTransferOut(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlVendorOrClassRequest,
+        vendor.encode(), 2, {0xAA, 0xBB});
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0x40, 0x42,
+                    0x34, 0x12, 0x78, 0x56, 0x02, 0x00);
+    }
+    CHECK(!enumerator.last_device->control_inputs_.empty());
+    if (!enumerator.last_device->control_inputs_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_inputs_.back(), 0xAA, 0xBB);
+    }
+    rtsc::proto::RdpUsbUrbCompletionNoData done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletionNoData::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+}
+
+// [MS-RDPEUSB] 2.2.9.12: vendor/class request, IN direction (TransferFlags
+// bit 0 set) adds 0x80 to bmRequestType and returns the device data.
+RTSC_TEST(rdpusb_client_control_vendor_in_sets_direction_bit) {
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    RecordingEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport);
+    MakeUsbClientReady(transport, client);
+    const uint32_t device_channel =
+        OpenRecordingDevice(transport, client, "USB\\VID_12&PID_12\\01");
+    CHECK(enumerator.last_device != nullptr);
+    if (enumerator.last_device == nullptr) return;
+    enumerator.last_device->control_output_ = {0x99};
+
+    rtsc::proto::RdpUsbTsUrbControlVendorOrClassRequest vendor;
+    vendor.transfer_flags = 1;  // IN
+    vendor.request = 0x43;
+    vendor.value = 0x0001;
+    vendor.index = 0;
+    const std::vector<uint8_t> payload = SendTransferIn(
+        transport, cap, device_channel,
+        rtsc::proto::RdpUsbUrbFunction::kControlVendorOrClassRequest,
+        vendor.encode(), 1);
+
+    CHECK(!enumerator.last_device->control_setups_.empty());
+    if (!enumerator.last_device->control_setups_.empty()) {
+        CHECK_BYTES(enumerator.last_device->control_setups_.back(), 0xC0, 0x43,
+                    0x01, 0x00, 0x00, 0x00, 0x01, 0x00);
+    }
+    rtsc::proto::RdpUsbUrbCompletion done;
+    CHECK(rtsc::proto::RdpUsbUrbCompletion::parse(
+              payload.data(), payload.size(), done) == Status::Ok);
+    CHECK(done.output_buffer == std::vector<uint8_t>({0x99}));
+}
+
 RTSC_TEST(rdpusb_client_in_truncated_to_output_buffer_size) {
     CapturedSend cap;
     rtsc::channel::DrdynvcClient transport(nullptr,
@@ -1444,12 +2595,12 @@ RTSC_TEST(rdpusb_win32_control_transfer_copies_out_input) {
 #endif
 }
 
-RTSC_TEST(gui_main_advertises_drdynvc_only_under_usb_gate) {
-    // W11 repair batch: the GUI must not advertise the "drdynvc" static
-    // virtual channel unless RTSC_REDIRECT_USB enables USB redirection (an
-    // unconditional advertisement wastes a channel and widens the attack
-    // surface for no benefit). The drdynvc name may only appear in a
-    // channel_names assignment that is gated behind the usb_redirect flag.
+RTSC_TEST(gui_main_advertises_drdynvc_only_when_needed) {
+    // The GUI must not advertise the "drdynvc" static virtual channel unless
+    // something needs the dynamic-channel transport: USB redirection
+    // (RTSC_REDIRECT_USB) or dynamic display resize (--disp). The drdynvc
+    // name may only appear in a channel_names assignment that is gated behind
+    // those two flags.
 #ifdef RTSC_SOURCE_DIR
     const std::filesystem::path src =
         std::filesystem::path(RTSC_SOURCE_DIR) / "tools" / "rtsc_gui" /
@@ -1471,15 +2622,15 @@ RTSC_TEST(gui_main_advertises_drdynvc_only_under_usb_gate) {
             assignment_has_drdynvc = true;
         }
     }
-    const size_t gate = FindLineIn(lines, "if (usb_redirect)");
-    const size_t push = FindLineIn(lines, "channels.push_back(\"drdynvc\");");
+    const size_t call = FindLineIn(lines, "BuildStaticChannelNames(");
+    const size_t gate = FindLineIn(lines, "usb_redirect || disp_enabled");
     CHECK(!assignment_has_drdynvc);
+    CHECK(call != std::string::npos);
     CHECK(gate != std::string::npos);
-    CHECK(push != std::string::npos);
-    if (gate != std::string::npos && push != std::string::npos) {
-        // The push_back must sit at or after the gate line (a one-line
-        // `if (usb_redirect) channels.push_back("drdynvc");` satisfies this).
-        CHECK(push >= gate);
+    if (call != std::string::npos && gate != std::string::npos) {
+        // The dynamic-channel argument must sit at or after the builder call
+        // (the list itself is assembled in BuildStaticChannelNames).
+        CHECK(gate >= call);
     }
 #else
     std::printf("  FAIL: RTSC_SOURCE_DIR not defined; cannot locate main.cpp\n");
@@ -1697,6 +2848,52 @@ RTSC_TEST(rdpusb_select_configuration_without_descriptor_parses) {
     if (!out.interfaces.empty()) {
         CHECK_EQ(out.interfaces[0].pipes.size(), static_cast<size_t>(1));
     }
+}
+
+// After a reconnect the dynamic channels are gone. Reset() must drop the
+// capability state, channel ids and announced devices, and notify the provider;
+// a later Start() runs the capability exchange again.
+RTSC_TEST(rdpusb_client_reset_drops_session_state) {
+    struct Provider final : rtsc::channel::ITvcProvider {
+        unsigned removed = 0;
+        uint32_t last_removed = 0;
+        void OnDeviceRemoved(uint32_t usb_device) override {
+            ++removed;
+            last_removed = usb_device;
+        }
+    } provider;
+    CapturedSend cap;
+    rtsc::channel::DrdynvcClient transport(nullptr,
+                                           [&](const std::vector<uint8_t>& c) {
+                                               cap.Add(c);
+                                           });
+    FakeEnumerator enumerator;
+    rtsc::channel::RdpUsbClient client(&enumerator, &transport, &provider);
+    MakeUsbClientReady(transport, client);
+    rtsc::usb::UsbDeviceInfo info;
+    info.instance_id = "USB\\VID_1&PID_1\\0A";
+    CHECK(client.AddDevice(info));
+    CHECK_EQ(client.device_count(), static_cast<size_t>(1));
+
+    client.Reset();
+    CHECK(!client.started());
+    CHECK(!client.ready());
+    CHECK_EQ(client.control_channel(), static_cast<uint32_t>(0));
+    CHECK_EQ(client.device_count(), static_cast<size_t>(0));
+    CHECK_EQ(provider.removed, static_cast<unsigned>(1));
+    CHECK_EQ(provider.last_removed, static_cast<uint32_t>(1));
+
+    // The new session re-runs the capability exchange.
+    cap.chunks.clear();
+    client.Start();
+    CHECK(client.started());
+    CHECK_EQ(cap.chunks.size(), static_cast<size_t>(1));
+    const uint32_t control = client.control_channel();
+    CHECK(control != 0);
+    FeedDvc(transport, rtsc::proto::BuildDynvcPdu(
+                           rtsc::proto::DynvcCmd::kCreate, 0, control,
+                           {0, 0, 0, 0}));
+    CHECK(client.ready());
 }
 
 int main() { return ::rtsc::test::run_all("rtsc_rdpusb_tests"); }

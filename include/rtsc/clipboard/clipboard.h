@@ -57,6 +57,14 @@ class Clipboard {
     virtual uint64_t sequence_number() const { return 0; }
 };
 
+// Maps a local clipboard format to the format this client can carry on the
+// wire. Handle-based formats have no byte form: CF_BITMAP is advertised as
+// CF_DIB (the Win32 backend converts the HBITMAP on read) and the formats that
+// only exist as GDI handles (CF_PALETTE, CF_METAFILEPICT, CF_ENHMETAFILE) are
+// dropped (returns 0) instead of being promised and then failing the data
+// request ([MS-RDPECLIP] 1.3.1.2).
+uint32_t MapAdvertisedFormat(uint32_t format);
+
 // No-op clipboard for platforms without a backend (and as a test double).
 class NullClipboard final : public Clipboard {
  public:

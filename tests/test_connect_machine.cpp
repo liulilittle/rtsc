@@ -485,6 +485,50 @@ RTSC_TEST(machine_client_info_requests_true_image_quality) {
     CHECK((pdu.info.flags & info::kEnableWindowsKey) != 0);
 }
 
+RTSC_TEST(machine_client_info_carries_auto_reconnect_cookie) {
+    ConnectMachine::Config cfg = MakeConfig();
+    cfg.auto_reconnect_cookie.resize(ArcCsPrivatePacket::kWireSize);
+    for (size_t i = 0; i < cfg.auto_reconnect_cookie.size(); ++i) {
+        cfg.auto_reconnect_cookie[i] = static_cast<uint8_t>(0x40 + i);
+    }
+    ConnectMachine m(cfg, MakeCredentials());
+    m.Start();
+    Feed(m, hex(kCcfRdp));
+    Feed(m, hex(kConnectResponseHex));
+    Feed(m, hex(kAttachUserConfirm));
+    const char* confirms[] = {kJoinConfirmUser, kJoinConfirmIo, kJoinConfirmVc1,
+                              kJoinConfirmVc2, kJoinConfirmVc3};
+    ConnectStep last;
+    for (int i = 0; i < 5; ++i) last = Feed(m, hex(confirms[i]));
+
+    McsSendData sd;
+    CHECK(McsSendData::parse(last.output.data(), last.output.size(), sd) ==
+          Status::Ok);
+    ClientInfoPdu pdu;
+    CHECK(ClientInfoPdu::parse(sd.user_data.data(), sd.user_data.size(), pdu) ==
+          Status::Ok);
+    CHECK(pdu.info.extended_info.has_auto_reconnect);
+    CHECK(pdu.info.extended_info.auto_reconnect_cookie.bytes ==
+          cfg.auto_reconnect_cookie);
+
+    // A wrong-sized cookie is not emitted at all (the field must be exactly
+    // ARC_CS_PRIVATE_PACKET::kWireSize bytes).
+    ConnectMachine::Config bad = MakeConfig();
+    bad.auto_reconnect_cookie.assign(ArcCsPrivatePacket::kWireSize - 1, 0x11);
+    ConnectMachine m2(bad, MakeCredentials());
+    m2.Start();
+    Feed(m2, hex(kCcfRdp));
+    Feed(m2, hex(kConnectResponseHex));
+    Feed(m2, hex(kAttachUserConfirm));
+    for (int i = 0; i < 5; ++i) last = Feed(m2, hex(confirms[i]));
+    CHECK(McsSendData::parse(last.output.data(), last.output.size(), sd) ==
+          Status::Ok);
+    ClientInfoPdu pdu2;  // parse does not clear an existing object
+    CHECK(ClientInfoPdu::parse(sd.user_data.data(), sd.user_data.size(), pdu2) ==
+          Status::Ok);
+    CHECK(!pdu2.info.extended_info.has_auto_reconnect);
+}
+
 RTSC_TEST(machine_message_channel_joined_when_server_assigns_one) {
     // Append an SC_MCS_MSGCHANNEL (0x0C04) block assigning channel 1008 to the
     // official 337-byte Connect Response, then verify the join queue inserts it
@@ -584,6 +628,140 @@ RTSC_TEST(machine_client_core_declares_spec_color_depth_combo) {
     CHECK_EQ(rd16(138), static_cast<uint16_t>(0x0009));  // 24bpp | 32bpp
     CHECK((rd16(140) & 0x0002) != 0);                    // WANT_32BPP_SESSION
     CHECK((rd16(140) & 0x0001) != 0);                    // ERRINFO PDU kept
+}
+
+// ---- mstsc /admin: Client Cluster Data ------------------------------------
+
+namespace {
+
+// Walks the GCC payload to the user data blocks, same layout walk used by the
+// color-depth test above.
+bool ParseConnectInitialUserData(const ConnectStep& step, GccUserData& ud) {
+    McsConnectInitial ci;
+    if (McsConnectInitial::parse(step.output.data(), step.output.size(), ci) !=
+        Status::Ok) {
+        return false;
+    }
+    const auto& gcc = ci.gcc_conference_create_request;
+    if (gcc.size() <= 21) return false;
+    size_t off = 7;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    off += 8 + 4;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    return GccUserData::parse(gcc.data() + off, gcc.size() - off, ud) ==
+           Status::Ok;
+}
+
+}  // namespace
+
+RTSC_TEST(machine_admin_session_emits_console_cluster_block) {
+    ConnectMachine::Config cfg = MakeConfig();
+    cfg.admin_session = true;
+    ConnectMachine m(cfg, MakeCredentials());
+    m.Start();
+    const auto step = Feed(m, hex(kCcfRdp));
+
+    GccUserData ud;
+    CHECK(ParseConnectInitialUserData(step, ud));
+    const auto* cluster = ud.find(0xC004);
+    CHECK(cluster != nullptr);
+    if (cluster != nullptr) {
+        CHECK_EQ(cluster->payload.size(), static_cast<size_t>(8));
+        const auto rd32 = [&cluster](size_t o) {
+            return static_cast<uint32_t>(cluster->payload[o]) |
+                   (static_cast<uint32_t>(cluster->payload[o + 1]) << 8) |
+                   (static_cast<uint32_t>(cluster->payload[o + 2]) << 16) |
+                   (static_cast<uint32_t>(cluster->payload[o + 3]) << 24);
+        };
+        CHECK_EQ(rd32(0), static_cast<uint32_t>(0x00000002));
+        CHECK_EQ(rd32(4), static_cast<uint32_t>(0));
+    }
+}
+
+RTSC_TEST(machine_normal_session_omits_cluster_block) {
+    ConnectMachine m(MakeConfig(), MakeCredentials());
+    m.Start();
+    const auto step = Feed(m, hex(kCcfRdp));
+
+    GccUserData ud;
+    CHECK(ParseConnectInitialUserData(step, ud));
+    CHECK(ud.find(0xC004) == nullptr);
+}
+
+// ---- Color depth selection ------------------------------------------------
+
+RTSC_TEST(machine_apply_color_depth_accepts_supported_values) {
+    struct Case {
+        int bpp;
+        uint16_t high;
+        uint16_t supported;
+        bool want32;
+    };
+    const Case cases[] = {
+        {4, 0x0004, 0x0000, false},
+        {8, 0x0008, 0x0000, false},
+        {15, 0x000F, 0x0004, false},
+        {16, 0x0010, 0x0002, false},
+        {24, 0x0018, 0x0001, false},
+        {32, 0x0018, 0x0009, true},
+    };
+    for (const Case& c : cases) {
+        uint16_t high = 0xFFFF;
+        uint16_t supported = 0xFFFF;
+        uint16_t flags = 0x0001;  // ERRINFO must be preserved
+        CHECK(ApplyClientColorDepth(c.bpp, high, supported, flags));
+        CHECK_EQ(high, c.high);
+        CHECK_EQ(supported, c.supported);
+        CHECK_EQ((flags & 0x0002) != 0, c.want32);
+        CHECK((flags & 0x0001) != 0);
+    }
+}
+
+RTSC_TEST(machine_apply_color_depth_rejects_unsupported_values) {
+    const int bad[] = {0, 1, 7, 10, 20, 25, 31, 33, 64, -1};
+    for (int bpp : bad) {
+        uint16_t high = 0x1234;
+        uint16_t supported = 0x5678;
+        uint16_t flags = 0x0003;
+        CHECK(!ApplyClientColorDepth(bpp, high, supported, flags));
+        // Fail-closed: the outputs must be untouched.
+        CHECK_EQ(high, static_cast<uint16_t>(0x1234));
+        CHECK_EQ(supported, static_cast<uint16_t>(0x5678));
+        CHECK_EQ(flags, static_cast<uint16_t>(0x0003));
+    }
+}
+
+RTSC_TEST(machine_client_core_uses_configured_16bpp) {
+    ConnectMachine::Config cfg = MakeConfig();
+    CHECK(ApplyClientColorDepth(16, cfg.high_color_depth,
+                                cfg.supported_color_depths,
+                                cfg.early_capability_flags));
+    ConnectMachine m(cfg, MakeCredentials());
+    m.Start();
+    const auto step = Feed(m, hex(kCcfRdp));
+    McsConnectInitial ci;
+    CHECK(McsConnectInitial::parse(step.output.data(), step.output.size(), ci) ==
+          Status::Ok);
+    const auto& gcc = ci.gcc_conference_create_request;
+    CHECK(gcc.size() > 21);
+    size_t off = 7;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    off += 8 + 4;
+    off += (gcc[off] & 0x80) == 0 ? 1 : 2;
+    GccUserData ud;
+    CHECK(GccUserData::parse(gcc.data() + off, gcc.size() - off, ud) ==
+          Status::Ok);
+    const auto* core = ud.find(0xC001);
+    CHECK(core != nullptr);
+    CHECK(core->payload.size() >= 142);
+    const auto rd16 = [&core](size_t o) {
+        return static_cast<uint16_t>(core->payload[o] |
+                                     (core->payload[o + 1] << 8));
+    };
+    CHECK_EQ(rd16(136), static_cast<uint16_t>(0x0010));  // 16bpp
+    CHECK_EQ(rd16(138), static_cast<uint16_t>(0x0002));  // 16bpp support
+    CHECK((rd16(140) & 0x0002) == 0);                    // no WANT_32BPP
+    CHECK((rd16(140) & 0x0001) != 0);                    // ERRINFO kept
 }
 
 // ---- Guard rails ----------------------------------------------------------

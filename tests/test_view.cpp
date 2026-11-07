@@ -1200,6 +1200,23 @@ RTSC_TEST(zoom_ignores_non_view_events) {
     CHECK(!zs.fit);
 }
 
+RTSC_TEST(window_title_includes_endpoint_and_zoom) {
+    ZoomState zs;
+    CHECK(WindowTitleText("10.0.0.5", 3389, zs) ==
+          "10.0.0.5:3389 - RTSC - zoom 100%");
+    zs.zoom = 1.5;
+    CHECK(WindowTitleText("host", 13389, zs) ==
+          "host:13389 - RTSC - zoom 150%");
+    zs.fit = true;
+    CHECK(WindowTitleText("host", 3389, zs) ==
+          "host:3389 - RTSC - fit to window");
+    // Port 0 means "not specified": no ":0" suffix.
+    zs.fit = false;
+    zs.zoom = 1.0;
+    CHECK(WindowTitleText("host", 0, zs) == "host - RTSC - zoom 100%");
+    CHECK(WindowTitleText("", 0, zs) == " - RTSC - zoom 100%");
+}
+
 RTSC_TEST(graphics_defaults_to_1to1) {
     GraphicsPipeline g(8, 8);
     CHECK_EQ(g.zoom(), 1.0);
@@ -1598,4 +1615,29 @@ RTSC_TEST(view_scale_benchmark_budget) {
     std::printf("  skipped: timing budgets require an optimized build (NDEBUG)\n");
 #endif  // NDEBUG
 }
+// The reconnect schedule bounds both the attempt count and the wait, so a
+// permanently dead host cannot spin the UI loop. A success resets it.
+RTSC_TEST(reconnect_schedule_backs_off_and_gives_up) {
+    rtsc::client::ReconnectSchedule s;
+    CHECK_EQ(s.NextDelayMs(), 0);  // the first attempt is immediate
+    CHECK_EQ(s.NextDelayMs(), 1000);
+    CHECK_EQ(s.NextDelayMs(), 2000);
+    CHECK_EQ(s.NextDelayMs(), 4000);
+    CHECK_EQ(s.NextDelayMs(), 8000);
+    CHECK_EQ(s.NextDelayMs(), rtsc::client::ReconnectSchedule::kMaxDelayMs);
+    // The delay is flat from here, never growing without bound.
+    for (unsigned i = s.attempts();
+         i < rtsc::client::ReconnectSchedule::kMaxAttempts; ++i) {
+        CHECK_EQ(s.NextDelayMs(), rtsc::client::ReconnectSchedule::kMaxDelayMs);
+    }
+    CHECK(s.exhausted());
+    CHECK_EQ(s.NextDelayMs(), -1);  // no attempt, no delay
+    CHECK_EQ(s.attempts(),
+             rtsc::client::ReconnectSchedule::kMaxAttempts);  // not consumed
+    s.Reset();
+    CHECK(!s.exhausted());
+    CHECK_EQ(s.attempts(), 0u);
+    CHECK_EQ(s.NextDelayMs(), 0);
+}
+
 int main() { return ::rtsc::test::run_all("rtsc_view_tests"); }

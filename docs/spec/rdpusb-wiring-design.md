@@ -137,3 +137,111 @@ batch 2 四项必修全部 PASS，无 FAIL。构建 0err/0warn（/W4 /WX）；rd
 ### 小注 2（P3）：early-exit 泄漏
 - `usb_spec_storage` 分配于 `:374`，释放于 `:1004`；`:530`（connect 失败）与 `:641`（多窗创建失败）在此之间 `return 1` → 进程退出级泄漏。
 - 修复：改用 `std::unique_ptr<char, decltype(&std::free)>` 或 RAII 包装。
+
+## 4. 批130：NoAck 抑制（[MS-RDPEUSB] 2.2.9.1.1）
+
+**规范依据**（权威，2026-11-07 复核 Microsoft Learn）：
+`TS_URB_HEADER.RequestIdAndNoAck` 是 32 位小端字段，最高位（bit 31）为 NoAck。
+- 若 NoAck 非零，客户端**不得**为该 `TRANSFER_OUT_REQUEST` 发送
+  `URB_COMPLETION`。
+- 该位只允许在 `NoAckIsochWriteJitterBufferSizeInMs` 非零且 URB Function 为
+  `URB_FUNCTION_ISOCH_TRANSFER` 时置位；`TRANSFER_IN_REQUEST` 中必须为 0。
+
+**当前实现缺口**：`src/channel/rdpusb_client.cpp` 的 `HandleTransferOut`
+无条件调用 `CompleteUrb`，未检查 `req.ts_urb.header.no_ack`；`RdpUsbClient`
+也没有可观察的抑制计数。
+
+**本批改动**：
+- `HandleTransferOut`：执行完 URB 后若 `no_ack` 为真，只递增
+  `no_ack_urb_count_` 并返回，不发送完成帧；传输本身仍执行（NoAck 只抑制回复）。
+- `HandleTransferIn`：按规范忽略该位（IN 请求必须为 0），仍发完成帧。
+- 新增诊断计数 `no_ack_urb_count()`。
+
+**验收**：`rdpusb_client_no_ack_transfer_out_sends_no_completion`（无完成帧、
+后端仍收到载荷、计数=1）与 `rdpusb_client_ack_transfer_out_still_completes`
+（no_ack=false 仍发完成帧）；变异 M44（删除早退）必须转红。
+## 5. 批131：IO_CONTROL / INTERNAL_IO_CONTROL 完成帧（[MS-RDPEUSB] 2.2.6.3/2.2.6.4/2.2.7.1）
+
+**规范依据**（权威，2026-11-07 复核 Microsoft Learn）：
+- 服务器发 `IO_CONTROL`（FunctionId 0x00000102）或 `INTERNAL_IO_CONTROL`
+  （0x00000103），字段：IoControlCode、InputBufferSize、InputBuffer、
+  OutputBufferSize、RequestId。
+- 客户端必须把请求转发给物理设备，完成后回 `IOCONTROL_COMPLETION`
+  （0x00000100）：RequestId 必须匹配；HResult 为操作结果；成功时
+  OutputBufferSize 与 Information 必须相等；失败时 OutputBufferSize 必须为 0
+  （ERROR_INSUFFICIENT_BUFFER 特例除外：OutputBufferSize 取请求值，
+  Information 为期望大小）。
+- 若物理设备返回的数据超过 OutputBufferSize，客户端必须终止该动态虚拟通道。
+
+**当前实现缺口**：`src/channel/rdpusb_client.cpp` 的 `OnDeviceMessage`
+对 kIoControl/kInternalIoControl 无 case（default break），服务器永远等不到
+完成帧；`usb::UsbDevice` 也没有 IOCTL 接口。
+
+**本批改动**：
+- `usb::UsbDevice` 新增带默认实现的 `IoControl(...)`：默认返回 E_NOTIMPL
+  （0x80004001），让未实现设备 IOCTL 的后端也能回完成帧而不是悬挂。
+- `RdpUsbClient` 新增 `HandleIoControl`：查找设备 → 调用后端 → 按规范构造
+  IOCONTROL_COMPLETION；未知设备回 E_FAIL；输出超限时 `CloseChannel` 终止
+  DVC；新增 `io_control_count()`/`io_control_completion_count()`/
+  `io_control_overflow_count()` 诊断计数（Reset 清零）。
+
+**验收**：后端成功（字节、Information）、未知设备失败帧、超限终止通道、
+默认 E_NOTIMPL、INTERNAL_IO_CONTROL 同路径；变异 M45（删除 completion 发送）
+必须转红。
+## 6. 批132：控制类 URB 合成 setup packet（[MS-RDPEUSB] 2.2.9.9/2.2.9.11/2.2.9.13/2.2.9.14）
+
+**规范依据**（权威）：
+- `TS_URB_CONTROL_DESCRIPTOR_REQUEST`（0x000B）：Index、DescriptorType、
+  LanguageId；以 TRANSFER_IN_REQUEST 发送，OutputBufferSize=TransferBufferLength。
+- `TS_URB_CONTROL_GET_STATUS_REQUEST`（0x0013，URB_FUNCTION_GET_STATUS_FROM_DEVICE）：
+  Index；TRANSFER_IN_REQUEST。
+- `TS_URB_CONTROL_GET_CONFIGURATION_REQUEST`（0x0026）：无 URB 体；
+  TRANSFER_IN_REQUEST，OutputBufferSize=TransferBufferLength（USB 要求为 1）。
+- `TS_URB_CONTROL_GET_INTERFACE_REQUEST`（0x0027）：Interface + Padding；
+  TRANSFER_IN_REQUEST。
+
+**交叉依据**（成熟实现，FreeRDP 3.x `channels/urbdrc/client/data_transfer.c`）：
+- Descriptor：`bmRequestType = recipient | 0x80`（设备=0x80）、`bRequest=0x06`、
+  `wValue=(DescriptorType<<8)|Index`、`wIndex=LanguageId`、`wLength=OutputBufferSize`。
+- GetStatus：`bmRequestType = recipient | 0x80`（设备=0x80）、`bRequest=0x00`、
+  `wValue=0`、`wIndex=Index`、`wLength=OutputBufferSize`。
+- GetConfiguration：`0x80, 0x08, 0, 0, 0, 0, len`。
+- GetInterface：`0x81, 0x0A, 0, 0, Interface, 0, len`。
+- 上述 URB 的完成帧 HResult 在 FreeRDP 中恒为 0，真实状态在
+  `TS_URB_RESULT_HEADER.UsbdStatus`；因此本项目保持 HResult=0 与参考实现一致，
+  “hresult 精确映射”不作为缺陷处理。
+
+**当前实现缺口**：`ExecuteUrb` 对这四个函数落到 `kInvalidUrbFunction`。
+
+**本批改动**：抽出 `ExecuteControlTransfer` 复用控制传输路径；为四个函数合成
+8 字节 setup packet 并调用后端 `ControlTransfer`；结果按既有
+`TS_URB_RESULT_HEADER` 返回。
+
+**验收**：四个 URB 各一个用例，断言 setup 逐字节与完成输出；变异 M46
+（Descriptor 的 wValue 高低字节颠倒）必须转红。
+## 7. 批133：Feature / VendorOrClass URB 合成（[MS-RDPEUSB] 2.2.9.10/2.2.9.12）
+
+**规范依据**：
+- `TS_URB_CONTROL_FEATURE_REQUEST`（0x000D = URB_FUNCTION_SET_FEATURE_TO_DEVICE）：
+  FeatureSelector、Index；以 TRANSFER_IN_REQUEST 发送、OutputBufferSize=0。
+- `TS_URB_CONTROL_VENDOR_OR_CLASS_REQUEST`（0x0017 = URB_FUNCTION_VENDOR_DEVICE）：
+  TransferFlags、ReqTypeReservedBits、Request、Value、Index、Padding；
+  OutputBufferSize 来自 TRANSFER_*_REQUEST。
+
+**交叉依据**（FreeRDP 3.x `channels/urbdrc/client/data_transfer.c`）：
+- Feature：`bmRequestType = recipient (0x00) | (IN ? 0x80 : 0)`，
+  `bRequest = SET_FEATURE (0x03)`，`wValue=FeatureSelector`、`wIndex=Index`、
+  `wLength=OutputBufferSize`。
+- VendorOrClass：`bmRequestType = func_type | func_recipient`；
+  0x0017 为 vendor + device = `0x40`；`TransferFlags & USBD_TRANSFER_DIRECTION`
+  置位时再 `| 0x80`；`bRequest=Request`、`wValue=Value`、`wIndex=Index`、
+  `wLength=OutputBufferSize`；OUT 时数据阶段取 TRANSFER_OUT_REQUEST 的
+  OutputBuffer。
+- 两者完成帧 HResult 仍为 0（与 FreeRDP 一致）。
+
+**本批改动**：`run_control` 增加数据阶段参数；新增
+kControlFeatureRequest（SET_FEATURE_TO_DEVICE，OUT）与
+kControlVendorOrClassRequest（方向由 TransferFlags bit0 决定）两个分支。
+
+**验收**：SET_FEATURE setup、vendor OUT 数据阶段、vendor IN 方向位三个用例；
+变异 M47（忽略 TransferFlags 方向位）必须转红。

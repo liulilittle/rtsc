@@ -8,11 +8,14 @@
 #include "rtsc/channel/rdpdr_client.h"
 #include "rtsc/rdpdr/file_system.h"
 #include "rtsc/rdpdr/path_guard.h"
+#include "rtsc/rdpdr/printer_win32.h"
+#include "rtsc/rdpdr/serial_win32.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "rtsc/proto/channel.h"
@@ -149,6 +152,81 @@ std::vector<uint8_t> QueryDirBody(uint32_t device_id, uint32_t file_id,
     return w.take();
 }
 
+std::vector<uint8_t> NotifyChangeBody(uint32_t device_id, uint32_t file_id,
+                                      uint32_t completion_id,
+                                      uint32_t minor_function =
+                                          proto::kIrpMnNotifyChangeDirectory) {
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id, proto::kIrpMjDirectoryControl,
+        minor_function);
+    w.bytes(req.data(), req.size());
+    w.u8(1);              // WatchTree
+    w.u32le(0x00000001);  // CompletionFilter (FILE_NAME)
+    for (int i = 0; i < 27; ++i) w.u8(0);  // Padding
+    return w.take();
+}
+
+std::vector<uint8_t> LockBody(
+    uint32_t device_id, uint32_t file_id, uint32_t completion_id,
+    uint32_t operation,
+    const std::vector<std::pair<uint64_t, uint64_t>>& ranges) {
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id, proto::kIrpMjLockControl, 0);
+    w.bytes(req.data(), req.size());
+    w.u32le(operation);
+    w.u32le(0);  // Flags
+    w.u32le(static_cast<uint32_t>(ranges.size()));
+    for (int i = 0; i < 20; ++i) w.u8(0);  // Padding2
+    // RDP_LOCK_INFO is Length then Offset.
+    for (const auto& range : ranges) {
+        w.u32le(static_cast<uint32_t>(range.first & 0xFFFFFFFFu));
+        w.u32le(static_cast<uint32_t>(range.first >> 32));
+        w.u32le(static_cast<uint32_t>(range.second & 0xFFFFFFFFu));
+        w.u32le(static_cast<uint32_t>(range.second >> 32));
+    }
+    return w.take();
+}
+
+std::vector<uint8_t> SetVolumeBody(uint32_t device_id, uint32_t file_id,
+                                   uint32_t completion_id, uint32_t info_class,
+                                   const std::u16string& label) {
+    std::vector<uint8_t> buffer;
+    const uint32_t label_bytes = static_cast<uint32_t>(label.size() * 2);
+    buffer.push_back(static_cast<uint8_t>(label_bytes & 0xFF));
+    buffer.push_back(static_cast<uint8_t>((label_bytes >> 8) & 0xFF));
+    buffer.push_back(static_cast<uint8_t>((label_bytes >> 16) & 0xFF));
+    buffer.push_back(static_cast<uint8_t>((label_bytes >> 24) & 0xFF));
+    for (const char16_t c : label) {
+        buffer.push_back(static_cast<uint8_t>(c & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((c >> 8) & 0xFF));
+    }
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id, proto::kIrpMjSetVolumeInformation, 0);
+    w.bytes(req.data(), req.size());
+    w.u32le(info_class);
+    w.u32le(static_cast<uint32_t>(buffer.size()));
+    for (int i = 0; i < 24; ++i) w.u8(0);  // Padding
+    w.bytes(buffer.data(), buffer.size());
+    return w.take();
+}
+
+uint32_t CreateFileForTest(RdpdrClient& client,
+                           std::vector<std::vector<uint8_t>>& sent,
+                           const std::string& remote_path) {
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        remote_path));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    sent.clear();
+    return file_id;
+}
+
 std::vector<uint8_t> ControlBody(uint32_t device_id, uint32_t file_id,
                                  uint32_t completion_id, uint32_t ioctl,
                                  const std::vector<uint8_t>& input) {
@@ -227,20 +305,74 @@ class MockFs final : public IFileSystem {
         return stat_result;
     }
 
+    bool QueryVolume(uint32_t file_id, uint32_t fs_information_class,
+                     std::vector<uint8_t>& out) override {
+        ++query_volume_calls;
+        last_query_volume_id = file_id;
+        last_query_volume_class = fs_information_class;
+        out = query_volume_data;
+        return query_volume_result;
+    }
+
+    bool Rename(const std::string& local_path, const std::string& new_path,
+                bool replace) override {
+        ++rename_calls;
+        last_rename_from = local_path;
+        last_rename_to = new_path;
+        last_rename_replace = replace;
+        return rename_result;
+    }
+
+    bool Delete(const std::string& local_path) override {
+        ++delete_calls;
+        last_delete_path = local_path;
+        return delete_result;
+    }
+
+    bool QueryInformation(uint32_t file_id, uint32_t fs_information_class,
+                          std::vector<uint8_t>& out) override {
+        ++query_information_calls;
+        last_query_information_id = file_id;
+        last_query_information_class = fs_information_class;
+        out = query_information_data;
+        return query_information_result;
+    }
+
+    bool SetVolumeName(uint32_t file_id, const std::string& label) override {
+        ++set_volume_label_calls;
+        last_volume_label_id = file_id;
+        last_volume_label = label;
+        return set_volume_label_result;
+    }
+
     unsigned open_calls = 0;
     unsigned read_calls = 0;
     unsigned write_calls = 0;
     unsigned close_calls = 0;
     unsigned query_calls = 0;
+    unsigned query_volume_calls = 0;
+    unsigned query_information_calls = 0;
+    unsigned set_volume_label_calls = 0;
+    unsigned rename_calls = 0;
+    unsigned delete_calls = 0;
     unsigned stat_calls = 0;
     bool fail_open_once = false;
     bool read_result = true;
     bool write_result = true;
     bool close_result = true;
     bool query_result = true;
+    bool query_volume_result = true;
+    bool query_information_result = true;
+    bool set_volume_label_result = true;
+    bool rename_result = true;
+    bool delete_result = true;
     bool stat_result = true;
     std::string last_open_path;
     std::string last_stat_path;
+    std::string last_rename_from;
+    std::string last_rename_to;
+    std::string last_delete_path;
+    bool last_rename_replace = false;
     bool last_for_write = false;
     bool last_create = false;
     bool last_truncate = false;
@@ -251,6 +383,14 @@ class MockFs final : public IFileSystem {
     uint64_t last_write_offset = 0;
     uint32_t last_close_id = 0;
     uint32_t last_query_id = 0;
+    uint32_t last_query_volume_id = 0;
+    uint32_t last_query_volume_class = 0;
+    uint32_t last_query_information_id = 0;
+    uint32_t last_query_information_class = 0;
+    uint32_t last_volume_label_id = 0;
+    std::string last_volume_label;
+    std::vector<uint8_t> query_volume_data;
+    std::vector<uint8_t> query_information_data;
     bool last_query_initial = false;
     uint32_t last_query_class = 0;
     std::vector<uint8_t> read_data;
@@ -260,6 +400,111 @@ class MockFs final : public IFileSystem {
  private:
     uint32_t next_id_ = 1;
 };
+
+class FakeSerial final : public rtsc::rdpdr::ISerialBackend {
+ public:
+    uint32_t Open(const std::string& port) override {
+        ++open_calls;
+        last_open_port = port;
+        if (fail_open) return 0;
+        return next_handle_++;
+    }
+    bool Read(uint32_t handle, uint32_t length,
+              std::vector<uint8_t>& out) override {
+        ++read_calls;
+        last_read_handle = handle;
+        last_read_length = length;
+        out = read_data;
+        return read_result;
+    }
+    bool Write(uint32_t handle, const std::vector<uint8_t>& data,
+               uint32_t& written) override {
+        ++write_calls;
+        last_write_handle = handle;
+        last_write_data = data;
+        written = static_cast<uint32_t>(data.size());
+        return write_result;
+    }
+    bool Close(uint32_t handle) override {
+        ++close_calls;
+        last_close_handle = handle;
+        return true;
+    }
+    bool Control(uint32_t handle, uint32_t ioctl,
+                 const std::vector<uint8_t>& input,
+                 std::vector<uint8_t>& output) override {
+        ++control_calls;
+        last_control_handle = handle;
+        last_ioctl = ioctl;
+        last_control_input = input;
+        output = control_output;
+        return control_result;
+    }
+
+    unsigned open_calls = 0;
+    unsigned read_calls = 0;
+    unsigned write_calls = 0;
+    unsigned close_calls = 0;
+    unsigned control_calls = 0;
+    bool fail_open = false;
+    bool read_result = true;
+    bool write_result = true;
+    bool control_result = true;
+    std::string last_open_port;
+    uint32_t last_read_handle = 0;
+    uint32_t last_read_length = 0;
+    uint32_t last_write_handle = 0;
+    uint32_t last_close_handle = 0;
+    uint32_t last_control_handle = 0;
+    uint32_t last_ioctl = 0;
+    std::vector<uint8_t> read_data;
+    std::vector<uint8_t> last_write_data;
+    std::vector<uint8_t> last_control_input;
+    std::vector<uint8_t> control_output;
+
+ private:
+    uint32_t next_handle_ = 0x100;
+};
+
+class FakePrinter final : public rtsc::rdpdr::IPrinterBackend {
+ public:
+    uint32_t OpenJob(const std::string& printer_name) override {
+        ++open_calls;
+        last_printer_name = printer_name;
+        if (fail_open) return 0;
+        return next_job_++;
+    }
+    bool Write(uint32_t job, const std::vector<uint8_t>& data,
+               uint32_t& written) override {
+        ++write_calls;
+        last_job = job;
+        last_data = data;
+        written = (write_written == 0xFFFFFFFFu)
+                      ? static_cast<uint32_t>(data.size())
+                      : write_written;
+        return write_result;
+    }
+    bool CloseJob(uint32_t job) override {
+        ++close_calls;
+        last_close_job = job;
+        return true;
+    }
+
+    unsigned open_calls = 0;
+    unsigned write_calls = 0;
+    unsigned close_calls = 0;
+    bool fail_open = false;
+    bool write_result = true;
+    uint32_t write_written = 0xFFFFFFFFu;  // bytes accepted; sentinel = all
+    std::string last_printer_name;
+    uint32_t last_job = 0;
+    uint32_t last_close_job = 0;
+    std::vector<uint8_t> last_data;
+
+ private:
+    uint32_t next_job_ = 0x200;
+};
+
 
 // ---- filesystem temp helpers ----------------------------------------------
 
@@ -2178,6 +2423,2038 @@ RTSC_TEST(rdpdr_path_guard_is_portable) {
     CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "dir\\..\\..\\escape", out));
     CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "\\\\server\\share", out));
     CHECK(!rtsc::rdpdr::ResolvePathUnderRoot("/tmp/root", "C:\\Windows", out));
+}
+
+// After a reconnect the server restarts the rdpdr handshake from its Server
+// Announce. Reset() must drop the old session's negotiated state and close the
+// file handles it still owns, while the configuration (devices) survives.
+RTSC_TEST(rdpdr_client_reset_returns_to_await_announce) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                      [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    CHECK(client.phase() == RdpdrClient::Phase::kReady);
+
+    // Open one file so Reset() has a handle to close.
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 9, 0x00000003 /* kFileOpenIf */,
+                        "\\tsclient\\C\\dir\\file.txt"));
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(1));
+
+    client.Reset();
+    CHECK(client.phase() == RdpdrClient::Phase::kAwaitServerAnnounce);
+    CHECK_EQ(client.client_id(), static_cast<uint32_t>(0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(1));
+
+    // The new session re-runs the same handshake.
+    FeedMessage(client, announce.encode());
+    CHECK(client.phase() == RdpdrClient::Phase::kAwaitClientIdConfirm);
+    CHECK_EQ(client.server_announce_count(), static_cast<unsigned>(1));
+    CHECK_EQ(client.devices().size(), static_cast<size_t>(1));
+}
+
+RTSC_TEST(rdpdr_client_remove_device_sends_and_stops_serving) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    CHECK(client.RemoveDevice(kDeviceId));
+    CHECK_EQ(client.devices().size(), static_cast<size_t>(0));
+    CHECK_EQ(client.device_remove_count(), static_cast<unsigned>(1));
+    const std::vector<uint8_t>* remove =
+        FindSent(sent, proto::kPakidCoreDevicelistRemove);
+    CHECK(remove != nullptr);
+    if (remove != nullptr) {
+        CHECK_EQ(U32At(*remove, proto::ChannelPduHeader::kSize + 4),
+                 static_cast<uint32_t>(1));  // DeviceCount
+        CHECK_EQ(U32At(*remove, proto::ChannelPduHeader::kSize + 8),
+                 static_cast<uint32_t>(kDeviceId));
+    }
+
+    // The removed device is no longer served: the create fails before the
+    // filesystem is touched.
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 12, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    CHECK_EQ(fs.open_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+}
+
+RTSC_TEST(rdpdr_client_remove_unknown_device_is_rejected) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    CHECK(!client.RemoveDevice(kDeviceId + 1));
+    CHECK_EQ(client.devices().size(), static_cast<size_t>(1));
+    CHECK_EQ(client.device_remove_count(), static_cast<unsigned>(0));
+    CHECK(sent.empty());
+}
+
+std::vector<uint8_t> QueryVolumeBody(uint32_t device_id, uint32_t file_id,
+                                     uint32_t completion_id,
+                                     uint32_t info_class) {
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id,
+        proto::kIrpMjQueryVolumeInformation, 0);
+    w.bytes(req.data(), req.size());
+    w.u32le(info_class);
+    w.u32le(0);  // Length
+    for (int i = 0; i < 24; ++i) w.u8(0);  // Padding
+    return w.take();
+}
+
+std::vector<uint8_t> QueryInformationBody(uint32_t device_id, uint32_t file_id,
+                                          uint32_t completion_id,
+                                          uint32_t info_class) {
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id, proto::kIrpMjQueryInformation, 0);
+    w.bytes(req.data(), req.size());
+    w.u32le(info_class);
+    w.u32le(0);  // Length
+    for (int i = 0; i < 24; ++i) w.u8(0);  // Padding
+    return w.take();
+}
+
+std::vector<uint8_t> SetInformationBody(uint32_t device_id, uint32_t file_id,
+                                        uint32_t completion_id,
+                                        uint32_t info_class,
+                                        const std::vector<uint8_t>& buffer) {
+    proto::ByteWriter w;
+    const std::vector<uint8_t> req = IoRequestBody(
+        device_id, file_id, completion_id, proto::kIrpMjSetInformation, 0);
+    w.bytes(req.data(), req.size());
+    w.u32le(info_class);
+    w.u32le(static_cast<uint32_t>(buffer.size()));
+    for (int i = 0; i < 24; ++i) w.u8(0);  // Padding
+    w.bytes(buffer.data(), buffer.size());
+    return w.take();
+}
+
+// FileRenameInformation: ReplaceIfExists(1) + Reserved(7) + RootDirectory(8)
+// + FileNameLength(4) + FileName (UTF-16LE, no terminator).
+std::vector<uint8_t> RenameBuffer(bool replace, const std::string& path) {
+    proto::ByteWriter w;
+    w.u8(replace ? 1 : 0);
+    for (int i = 0; i < 7; ++i) w.u8(0);
+    w.u32le(0);
+    w.u32le(0);  // RootDirectory
+    std::vector<uint8_t> name;
+    for (const char c : path) {
+        name.push_back(static_cast<uint8_t>(c));
+        name.push_back(0);
+    }
+    w.u32le(static_cast<uint32_t>(name.size()));
+    w.bytes(name.data(), name.size());
+    return w.take();
+}
+
+RTSC_TEST(rdpdr_client_query_volume_returns_the_structure) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    fs.query_volume_data = {1, 2, 3, 4, 5, 6, 7, 8,
+                            9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24};
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryVolumeBody(kDeviceId, file_id, 11, 0x03));
+    CHECK_EQ(fs.query_volume_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_query_volume_id, file_id);
+    CHECK_EQ(fs.last_query_volume_class, static_cast<uint32_t>(0x03));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(24));
+        CHECK_EQ((*rsp)[28], static_cast<uint8_t>(1));
+        CHECK_EQ((*rsp)[51], static_cast<uint8_t>(24));
+    }
+    CHECK_EQ(client.query_volume_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_query_volume_unsupported_class_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    fs.query_volume_result = false;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryVolumeBody(kDeviceId, file_id, 12, 0x05));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+        // A failed completion carries only DeviceIoReply (12 bytes); there is
+        // no Length/Buffer.
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 12);
+    }
+    CHECK_EQ(client.query_volume_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_query_volume_unknown_handle_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryVolumeBody(kDeviceId, 99, 13, 0x03));
+    CHECK_EQ(fs.query_volume_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_query_information_returns_the_structure) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    fs.query_information_data.clear();
+    for (int i = 1; i <= 36; ++i) {
+        fs.query_information_data.push_back(static_cast<uint8_t>(i));
+    }
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryInformationBody(kDeviceId, file_id, 11, 0x04));
+    CHECK_EQ(fs.query_information_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_query_information_id, file_id);
+    CHECK_EQ(fs.last_query_information_class, static_cast<uint32_t>(0x04));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(36));
+        CHECK_EQ((*rsp)[28], static_cast<uint8_t>(1));
+        CHECK_EQ((*rsp)[63], static_cast<uint8_t>(36));
+    }
+    CHECK_EQ(client.query_information_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_query_information_unsupported_class_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    fs.query_information_result = false;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryInformationBody(kDeviceId, file_id, 11, 0x09));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 12);
+    }
+    CHECK_EQ(client.query_information_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_query_information_unknown_handle_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             QueryInformationBody(kDeviceId, 99, 13, 0x04));
+    CHECK_EQ(fs.query_information_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_set_information_delete_is_applied_on_close) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, file_id, 11, 0x0D, {1}));
+    CHECK_EQ(fs.delete_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(0));  // Length
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 16);
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(1));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, file_id, 12, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.delete_calls, static_cast<unsigned>(1));
+    CHECK(fs.last_delete_path == "C:\\data.bin");
+}
+
+RTSC_TEST(rdpdr_client_set_information_delete_can_be_cancelled) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, file_id, 11, 0x0D, {1}));
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, file_id, 12, 0x0D, {0}));
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(2));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, file_id, 13, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.delete_calls, static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_information_rename_is_applied_on_close) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    fs.stat_result = false;  // the target name does not exist
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\old.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(
+                 kDeviceId, file_id, 11, 0x0A,
+                 RenameBuffer(false, "\\tsclient\\C\\new.bin")));
+    CHECK_EQ(fs.rename_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(1));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, file_id, 12, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.rename_calls, static_cast<unsigned>(1));
+    CHECK(fs.last_rename_from == "C:\\old.bin");
+    CHECK(fs.last_rename_to == "C:\\new.bin");
+    CHECK(!fs.last_rename_replace);
+}
+
+RTSC_TEST(rdpdr_client_set_information_rename_collision_is_rejected) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    fs.stat_result = true;  // the target name exists
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\old.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(
+                 kDeviceId, file_id, 11, 0x0A,
+                 RenameBuffer(false, "\\tsclient\\C\\new.bin")));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000035));
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(0));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, file_id, 12, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.rename_calls, static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_information_rename_to_same_name_is_noop) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\old.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(
+                 kDeviceId, file_id, 11, 0x0A,
+                 RenameBuffer(false, "\\tsclient\\C\\old.bin")));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(1));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, file_id, 12, proto::kIrpMjClose, 0));
+    CHECK_EQ(fs.rename_calls, static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_information_unsupported_class_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\data.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, file_id, 11, 0x0E, {0, 0, 0, 0}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_information_rename_with_root_is_unsupported) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\old.bin"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    std::vector<uint8_t> buffer =
+        RenameBuffer(false, "\\tsclient\\C\\new.bin");
+    buffer[8] = 1;  // RootDirectory != 0
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, file_id, 11, 0x0A, buffer));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+    }
+    CHECK_EQ(client.set_information_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_information_unknown_handle_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetInformationBody(kDeviceId, 99, 11, 0x0D, {1}));
+    CHECK_EQ(fs.delete_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_notify_change_directory_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\dir"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             NotifyChangeBody(kDeviceId, file_id, 11));
+    CHECK_EQ(fs.query_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+        // A failed completion carries only the DeviceIoReply (12 bytes).
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 12);
+    }
+    CHECK_EQ(client.notify_change_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_notify_change_directory_unknown_handle_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             NotifyChangeBody(kDeviceId, 99, 11));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+    CHECK_EQ(client.notify_change_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_directory_control_unknown_minor_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(kDeviceId, 10, 0x00000001 /* FILE_OPEN */,
+                        "\\tsclient\\C\\dir"));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             NotifyChangeBody(kDeviceId, file_id, 11, 0x7 /* unknown minor */));
+    CHECK_EQ(fs.query_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000010));
+    }
+}
+
+RTSC_TEST(rdpdr_client_lock_control_succeeds) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, file_id, 11,
+                      proto::kRdpLowioOpExclusiveLock, {{10, 0}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        // DeviceIoReply (12) + 5 bytes of padding.
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 17);
+    }
+    CHECK_EQ(client.lock_control_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_lock_control_conflict_is_not_granted) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, file_id, 11,
+                      proto::kRdpLowioOpExclusiveLock, {{10, 0}}));
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, file_id, 12,
+                      proto::kRdpLowioOpSharedLock, {{10, 5}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusLockNotGranted));
+    }
+    CHECK_EQ(client.lock_control_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_lock_control_unlock_not_locked) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, file_id, 11, proto::kRdpLowioOpUnlock,
+                      {{10, 0}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusRangeNotLocked));
+    }
+    CHECK_EQ(client.lock_control_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_lock_control_unknown_operation_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, file_id, 11, 0x1, {{10, 0}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusInvalidParameter));
+    }
+}
+
+RTSC_TEST(rdpdr_client_lock_control_unknown_handle_is_invalid) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, 99, 11, proto::kRdpLowioOpExclusiveLock,
+                      {{10, 0}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_close_releases_locks) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t first =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(first != 0);
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, first, 11,
+                      proto::kRdpLowioOpExclusiveLock, {{10, 0}}));
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(kDeviceId, first, 12, proto::kIrpMjClose, 0));
+    sent.clear();
+
+    const uint32_t second =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(second != 0);
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             LockBody(kDeviceId, second, 13,
+                      proto::kRdpLowioOpExclusiveLock, {{10, 0}}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+    }
+}
+
+RTSC_TEST(rdpdr_lock_table_shared_and_exclusive_conflicts) {
+    rtsc::rdpdr::LockTable table;
+    CHECK(table.Lock(1, {0, 10}, false) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Lock(2, {5, 10}, false) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Lock(3, {5, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kConflict);
+    CHECK(table.Lock(3, {20, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    // A zero-length region is valid and never conflicts.
+    CHECK(table.Lock(4, {0, 0}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+}
+
+RTSC_TEST(rdpdr_lock_table_unlock_requires_exact_match) {
+    rtsc::rdpdr::LockTable table;
+    CHECK(table.Lock(1, {0, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Unlock(1, {0, 5}) ==
+          rtsc::rdpdr::LockTable::Result::kNotLocked);
+    CHECK(table.Unlock(2, {0, 10}) ==
+          rtsc::rdpdr::LockTable::Result::kNotLocked);
+    CHECK(table.Unlock(1, {0, 10}) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK_EQ(table.size(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(rdpdr_lock_table_lock_many_is_atomic) {
+    rtsc::rdpdr::LockTable table;
+    CHECK(table.LockMany(1, {{0, 10}, {20, 10}}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    const size_t before = table.size();
+    CHECK(table.LockMany(2, {{5, 10}, {100, 10}}, true) ==
+          rtsc::rdpdr::LockTable::Result::kConflict);
+    CHECK_EQ(table.size(), before);
+    // The non-conflicting second range of the failed request was not added.
+    CHECK(table.Lock(2, {100, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+}
+
+RTSC_TEST(rdpdr_lock_table_unlock_many_is_atomic) {
+    rtsc::rdpdr::LockTable table;
+    CHECK(table.Lock(1, {0, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Lock(1, {20, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.UnlockMany(1, {{0, 10}, {30, 10}}) ==
+          rtsc::rdpdr::LockTable::Result::kNotLocked);
+    CHECK_EQ(table.size(), static_cast<size_t>(2));
+    CHECK(table.UnlockMany(1, {{0, 10}, {20, 10}}) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK_EQ(table.size(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(rdpdr_lock_table_release_file_drops_only_its_locks) {
+    rtsc::rdpdr::LockTable table;
+    CHECK(table.Lock(1, {0, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Lock(2, {20, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    table.ReleaseFile(1);
+    CHECK_EQ(table.size(), static_cast<size_t>(1));
+    // The released range is free again, the other handle still holds its own.
+    CHECK(table.Lock(3, {0, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kOk);
+    CHECK(table.Lock(3, {20, 10}, true) ==
+          rtsc::rdpdr::LockTable::Result::kConflict);
+}
+
+RTSC_TEST(rdpdr_client_set_volume_information_sets_label) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetVolumeBody(kDeviceId, file_id, 11, 0x02, u"NEWLABEL"));
+    CHECK_EQ(fs.set_volume_label_calls, static_cast<unsigned>(1));
+    CHECK_EQ(fs.last_volume_label_id, file_id);
+    CHECK(fs.last_volume_label == "NEWLABEL");
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        // Length MUST match the request: 4 + 8 chars * 2.
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(20));
+        CHECK_EQ(rsp->size(), proto::ChannelPduHeader::kSize +
+                                  proto::RdpdrHeader::kSize + 16);
+    }
+    CHECK_EQ(client.set_volume_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_client_set_volume_information_unsupported_class) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetVolumeBody(kDeviceId, file_id, 11, 0x01, u"NEWLABEL"));
+    CHECK_EQ(fs.set_volume_label_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(20));
+    }
+    CHECK_EQ(client.set_volume_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_client_set_volume_information_label_length_mismatch) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    std::vector<uint8_t> body =
+        SetVolumeBody(kDeviceId, file_id, 11, 0x02, u"");
+    // The buffer starts after DeviceIoRequest(20) + class(4) + length(4) +
+    // padding(24); claim a label longer than the buffer.
+    body[52] = 100;
+    FeedBody(client, proto::kPakidCoreDeviceIorequest, body);
+    CHECK_EQ(fs.set_volume_label_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusInvalidParameter));
+    }
+}
+
+RTSC_TEST(rdpdr_client_set_volume_information_unknown_handle) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetVolumeBody(kDeviceId, 99, 11, 0x02, u"NEWLABEL"));
+    CHECK_EQ(fs.set_volume_label_calls, static_cast<unsigned>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(0xC0000008));
+    }
+}
+
+RTSC_TEST(rdpdr_client_set_volume_information_access_denied) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    fs.set_volume_label_result = false;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(&fs, {{kDeviceId, "C:", "C:\\"}}, "HOST",
+                       [&](const std::vector<uint8_t>& m) {
+                           sent.push_back(m);
+                       });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    const uint32_t file_id =
+        CreateFileForTest(client, sent, "\\tsclient\\C\\data.bin");
+    CHECK(file_id != 0);
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             SetVolumeBody(kDeviceId, file_id, 11, 0x02, u"NEWLABEL"));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+    CHECK_EQ(client.set_volume_count(), static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpdr_serial_device_is_announced_with_port_capability) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakeSerial serial;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{kDeviceId, "C:", "C:\\"},
+         {2, "COM1", "", RdpdrClient::DeviceType::kSerial}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableSerial(&serial);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+
+    const std::vector<uint8_t>* caps =
+        FindSent(sent, proto::kPakidCoreClientCapability);
+    CHECK(caps != nullptr);
+    // ChannelPduHeader(8) + RdpdrHeader(4) + NumCapabilities(2) + padding(2).
+    bool port_found = false;
+    if (caps != nullptr) {
+        size_t offset = 16;
+        while (offset + 8 <= caps->size()) {
+            const uint16_t type =
+                static_cast<uint16_t>((*caps)[offset]) |
+                (static_cast<uint16_t>((*caps)[offset + 1]) << 8);
+            const uint16_t len =
+                static_cast<uint16_t>((*caps)[offset + 2]) |
+                (static_cast<uint16_t>((*caps)[offset + 3]) << 8);
+            if (type == 0x0003) {  // CAP_PORT_TYPE
+                port_found = true;
+                CHECK_EQ(U32At(*caps, offset + 4), 1u);
+            }
+            if (len < 8) break;
+            offset += len;
+        }
+    }
+    CHECK(port_found);
+
+    const std::vector<uint8_t>* list =
+        FindSent(sent, proto::kPakidCoreDevicelistAnnounce);
+    CHECK(list != nullptr);
+    if (list != nullptr) {
+        // DeviceCount @12; each DEVICE_ANNOUNCE is 20 bytes.
+        CHECK_EQ(U32At(*list, 12), 2u);
+        CHECK_EQ(U32At(*list, 36), static_cast<uint32_t>(0x00000001));
+        CHECK_EQ((*list)[44], static_cast<uint8_t>('C'));
+        CHECK_EQ((*list)[45], static_cast<uint8_t>('O'));
+    }
+}
+
+RTSC_TEST(rdpdr_serial_create_read_write_close) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakeSerial serial;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs, {{2, "COM1", "", RdpdrClient::DeviceType::kSerial}}, "HOST",
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableSerial(&serial);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001 /* FILE_OPEN */, ""));
+    CHECK_EQ(serial.open_calls, static_cast<unsigned>(1));
+    CHECK(serial.last_open_port == "COM1");
+    CHECK_EQ(client.open_serial_count(), static_cast<size_t>(1));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    serial.read_data = {0x41, 0x42};
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ReadBody(2, file_id, 11, 16, 0));
+    CHECK_EQ(serial.read_calls, static_cast<unsigned>(1));
+    CHECK_EQ(serial.last_read_length, static_cast<uint32_t>(16));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(2));
+        CHECK_EQ((*rsp)[28], static_cast<uint8_t>(0x41));
+    }
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(2, file_id, 12, 0, {1, 2, 3}));
+    CHECK_EQ(serial.write_calls, static_cast<unsigned>(1));
+    CHECK(serial.last_write_data == std::vector<uint8_t>({1, 2, 3}));
+    rsp = FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(3));
+    }
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(2, file_id, 13, proto::kIrpMjClose, 0));
+    CHECK_EQ(serial.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(client.open_serial_count(), static_cast<size_t>(0));
+    CHECK_EQ(client.serial_io_count(), static_cast<unsigned>(2));
+}
+
+RTSC_TEST(rdpdr_serial_create_without_backend_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs, {{2, "COM1", "", RdpdrClient::DeviceType::kSerial}}, "HOST",
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    CHECK_EQ(client.open_serial_count(), static_cast<size_t>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+}
+
+RTSC_TEST(rdpdr_serial_control_routes_to_backend) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakeSerial serial;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs, {{2, "COM1", "", RdpdrClient::DeviceType::kSerial}}, "HOST",
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableSerial(&serial);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    serial.control_output = {0xAA};
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ControlBody(2, file_id, 11, 0x001B0008, {0x01}));
+    CHECK_EQ(serial.control_calls, static_cast<unsigned>(1));
+    CHECK_EQ(serial.last_ioctl, static_cast<uint32_t>(0x001B0008));
+    CHECK(serial.last_control_input == std::vector<uint8_t>({0x01}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(1));
+        CHECK_EQ((*rsp)[28], static_cast<uint8_t>(0xAA));
+    }
+}
+
+RTSC_TEST(rdpdr_serial_remove_device_closes_handles) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakeSerial serial;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs, {{2, "COM1", "", RdpdrClient::DeviceType::kSerial}}, "HOST",
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableSerial(&serial);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    CHECK_EQ(client.open_serial_count(), static_cast<size_t>(1));
+
+    CHECK(client.RemoveDevice(2));
+    CHECK_EQ(serial.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(client.open_serial_count(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(rdpdr_win32_serial_open_missing_port_fails) {
+    rtsc::rdpdr::Win32SerialBackend backend;
+    CHECK_EQ(backend.Open("COM_DOES_NOT_EXIST_9999"),
+             static_cast<uint32_t>(0));
+}
+
+RTSC_TEST(rdpdr_win32_serial_unknown_handle_operations_fail) {
+    rtsc::rdpdr::Win32SerialBackend backend;
+    std::vector<uint8_t> data;
+    CHECK(!backend.Read(0xDEAD, 4, data));
+    uint32_t written = 0;
+    CHECK(!backend.Write(0xDEAD, {1, 2}, written));
+    CHECK(!backend.Close(0xDEAD));
+    std::vector<uint8_t> output;
+    CHECK(!backend.Control(0xDEAD, 0x1B, {}, output));
+}
+
+RTSC_TEST(rdpdr_printer_device_is_announced) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakePrinter printer;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{kDeviceId, "C:", "C:\\"},
+         {2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnablePrinter(&printer);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+
+    const std::vector<uint8_t>* caps =
+        FindSent(sent, proto::kPakidCoreClientCapability);
+    CHECK(caps != nullptr);
+    bool printer_cap_found = false;
+    if (caps != nullptr) {
+        size_t offset = 16;
+        while (offset + 8 <= caps->size()) {
+            const uint16_t type =
+                static_cast<uint16_t>((*caps)[offset]) |
+                (static_cast<uint16_t>((*caps)[offset + 1]) << 8);
+            const uint16_t len =
+                static_cast<uint16_t>((*caps)[offset + 2]) |
+                (static_cast<uint16_t>((*caps)[offset + 3]) << 8);
+            if (type == 0x0002) {  // CAP_PRINTER_TYPE
+                printer_cap_found = true;
+                CHECK_EQ(U32At(*caps, offset + 4), 1u);
+            }
+            if (len < 8) break;
+            offset += len;
+        }
+    }
+    CHECK(printer_cap_found);
+
+    const std::vector<uint8_t>* list =
+        FindSent(sent, proto::kPakidCoreDevicelistAnnounce);
+    CHECK(list != nullptr);
+    if (list != nullptr) {
+        CHECK_EQ(U32At(*list, 12), 2u);
+        // Second DEVICE_ANNOUNCE starts at 36: type, id, dos name, data len.
+        CHECK_EQ(U32At(*list, 36), static_cast<uint32_t>(0x00000004));
+        CHECK_EQ((*list)[44], static_cast<uint8_t>('P'));
+        CHECK_EQ((*list)[45], static_cast<uint8_t>('R'));
+        const uint32_t data_len = U32At(*list, 52);
+        CHECK(data_len > 24);
+        // RDPDR_PRINTER_ANNOUNCE starts at 56: Flags, CodePage, PnPNameLen,
+        // DriverNameLen, PrintNameLen, CachedFieldsLen.
+        CHECK_EQ(U32At(*list, 56), 0u);
+        CHECK_EQ(U32At(*list, 60), 0u);
+        CHECK_EQ(U32At(*list, 64), 0u);
+        CHECK(U32At(*list, 68) > 0u);
+        CHECK(U32At(*list, 72) > 0u);
+        CHECK_EQ(U32At(*list, 76), 0u);
+    }
+}
+
+RTSC_TEST(rdpdr_printer_create_write_close) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakePrinter printer;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnablePrinter(&printer);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    CHECK_EQ(printer.open_calls, static_cast<unsigned>(1));
+    CHECK(printer.last_printer_name == "Office Printer");
+    CHECK_EQ(client.open_printer_count(), static_cast<size_t>(1));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(2, file_id, 11, 0, {0x25, 0x50, 0x44, 0x46}));
+    CHECK_EQ(printer.write_calls, static_cast<unsigned>(1));
+    CHECK(printer.last_data == std::vector<uint8_t>({0x25, 0x50, 0x44, 0x46}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(4));
+    }
+    CHECK_EQ(client.printer_io_count(), static_cast<unsigned>(1));
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(2, file_id, 12, proto::kIrpMjClose, 0));
+    CHECK_EQ(printer.close_calls, static_cast<unsigned>(1));
+    CHECK_EQ(client.open_printer_count(), static_cast<size_t>(0));
+}
+
+RTSC_TEST(rdpdr_printer_write_reports_bytes_written) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakePrinter printer;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnablePrinter(&printer);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    uint32_t file_id = 0;
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    // The spooler accepts only 2 of the 4 bytes (short write).
+    printer.write_written = 2;
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             WriteBody(2, file_id, 11, 0, {0x25, 0x50, 0x44, 0x46}));
+    CHECK_EQ(printer.write_calls, static_cast<unsigned>(1));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20), static_cast<uint32_t>(proto::kStatusSuccess));
+        // [MS-RDPEPC] 3.2.5.1.10: DR_WRITE_RSP.Length MUST be the bytes
+        // written successfully, not the requested size.
+        CHECK_EQ(U32At(*rsp, 24), static_cast<uint32_t>(2));
+    }
+    CHECK_EQ(client.printer_io_count(), static_cast<unsigned>(1));
+}
+
+RTSC_TEST(rdpdr_printer_create_without_backend_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    CHECK_EQ(client.open_printer_count(), static_cast<size_t>(0));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusAccessDenied));
+    }
+}
+
+RTSC_TEST(rdpdr_printer_control_fails_closed) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakePrinter printer;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnablePrinter(&printer);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    const std::vector<uint8_t>* crsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(crsp != nullptr);
+    uint32_t file_id = 0;
+    if (crsp != nullptr) file_id = U32At(*crsp, 24);
+    CHECK(file_id != 0);
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             ControlBody(2, file_id, 11, 0x00000001, {}));
+    const std::vector<uint8_t>* rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(rsp != nullptr);
+    if (rsp != nullptr) {
+        CHECK_EQ(U32At(*rsp, 20),
+                 static_cast<uint32_t>(proto::kStatusNotSupported));
+    }
+}
+
+RTSC_TEST(rdpdr_win32_printer_backend_rejects_unknown_jobs) {
+    rtsc::rdpdr::Win32PrinterBackend backend;
+    CHECK_EQ(backend.OpenJob(""), static_cast<uint32_t>(0));
+    uint32_t written = 0xFFFFFFFFu;
+    CHECK(!backend.Write(0xDEAD, {1, 2, 3}, written));
+    CHECK_EQ(written, static_cast<uint32_t>(0));
+    CHECK(!backend.CloseJob(0xDEAD));
+    // Enumeration must not crash even when the spooler has no queues.
+    const std::vector<rtsc::rdpdr::LocalPrinter> printers =
+        rtsc::rdpdr::EnumeratePrinters();
+    for (const auto& printer : printers) {
+        CHECK(!printer.name.empty());
+    }
+}
+
+RTSC_TEST(rdpdr_host_file_system_reuses_closed_file_ids) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    HostFileSystem fs;
+    const std::filesystem::path dir = MakeTempDir("idreuse");
+    const std::string a = (dir / "a.txt").string();
+    const std::string b = (dir / "b.txt").string();
+    uint32_t id1 = 0;
+    uint32_t id2 = 0;
+    uint32_t id3 = 0;
+    CHECK(fs.Open(a, true, true, false, id1));
+    CHECK(fs.Open(b, true, true, false, id2));
+    CHECK(id1 != 0);
+    CHECK(id2 != 0);
+    CHECK(id1 != id2);
+    CHECK(fs.Close(id1));
+    CHECK(fs.Open(a, true, false, false, id3));
+    // [MS-RDPEFS] 2.2.1.5.1: the id is reused after a close response.
+    CHECK_EQ(id3, id1);
+    CHECK(fs.Close(id2));
+    CHECK(fs.Close(id3));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+RTSC_TEST(rdpdr_serial_reuses_closed_file_ids) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakeSerial serial;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs, {{2, "COM1", "", RdpdrClient::DeviceType::kSerial}}, "HOST",
+        [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnableSerial(&serial);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    const std::vector<uint8_t>* first_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(first_rsp != nullptr);
+    const uint32_t first = first_rsp != nullptr ? U32At(*first_rsp, 24) : 0;
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 11, 0x00000001, ""));
+    const std::vector<uint8_t>* second_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(second_rsp != nullptr);
+    const uint32_t second = second_rsp != nullptr ? U32At(*second_rsp, 24) : 0;
+    CHECK(first != 0);
+    CHECK(second != 0);
+    CHECK(first != second);
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(2, first, 12, proto::kIrpMjClose, 0));
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 13, 0x00000001, ""));
+    const std::vector<uint8_t>* third_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(third_rsp != nullptr);
+    if (third_rsp != nullptr) CHECK_EQ(U32At(*third_rsp, 24), first);
+}
+
+RTSC_TEST(rdpdr_printer_reuses_closed_file_ids) {
+    if (!RTSC_RDPDR_DRIVE_TESTS) return;  // Windows path semantics
+    MockFs fs;
+    FakePrinter printer;
+    std::vector<std::vector<uint8_t>> sent;
+    RdpdrClient client(
+        &fs,
+        {{2, "PRN1", "", RdpdrClient::DeviceType::kPrinter, "Office Printer",
+          "MS Publisher Imagesetter"}},
+        "HOST", [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+    client.EnablePrinter(&printer);
+    proto::RdpdrServerAnnounce announce;
+    announce.version_major = 1;
+    announce.version_minor = 0x000C;
+    announce.client_id = 1;
+    FeedMessage(client, announce.encode());
+    proto::RdpdrServerClientIdConfirm confirm;
+    confirm.client_id = 1;
+    FeedMessage(client, confirm.encode());
+    sent.clear();
+
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 10, 0x00000001, ""));
+    const std::vector<uint8_t>* first_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(first_rsp != nullptr);
+    const uint32_t first = first_rsp != nullptr ? U32At(*first_rsp, 24) : 0;
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 11, 0x00000001, ""));
+    const std::vector<uint8_t>* second_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(second_rsp != nullptr);
+    const uint32_t second = second_rsp != nullptr ? U32At(*second_rsp, 24) : 0;
+    CHECK(first != 0);
+    CHECK(second != 0);
+    CHECK(first != second);
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             IoRequestBody(2, first, 12, proto::kIrpMjClose, 0));
+    sent.clear();
+    FeedBody(client, proto::kPakidCoreDeviceIorequest,
+             CreateBody(2, 13, 0x00000001, ""));
+    const std::vector<uint8_t>* third_rsp =
+        FindSent(sent, proto::kPakidCoreDeviceIocompletion);
+    CHECK(third_rsp != nullptr);
+    if (third_rsp != nullptr) CHECK_EQ(U32At(*third_rsp, 24), first);
+}
+
+RTSC_TEST(rdpdr_volume_info_encodes_volume_information) {
+    rtsc::rdpdr::VolumeInfo info;
+    info.serial = 0x12345678;
+    info.label = u"DATA";
+    info.supports_objects = false;
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeVolumeInfo(0x01, info, out));
+    // 8 (time) + 4 (serial) + 4 (label length) + 1 (supports objects)
+    // + 4 chars * 2 + 2 (NUL). No Reserved byte ([MS-RDPEFS] 2.2.3.3.6).
+    CHECK_EQ(out.size(), static_cast<size_t>(27));
+    if (out.size() < 27) return;
+    CHECK_EQ(U32At(out, 0), 0u);
+    CHECK_EQ(U32At(out, 8), 0x12345678u);
+    CHECK_EQ(U32At(out, 12), 10u);  // includes the trailing NUL
+    CHECK_EQ(out[16], static_cast<uint8_t>(0));
+    CHECK_EQ(out[17], static_cast<uint8_t>('D'));
+    CHECK_EQ(out[18], static_cast<uint8_t>(0));
+    CHECK_EQ(out[19], static_cast<uint8_t>('A'));
+    CHECK_EQ(out[25], static_cast<uint8_t>(0));
+    CHECK_EQ(out[26], static_cast<uint8_t>(0));
+}
+
+RTSC_TEST(rdpdr_volume_info_encodes_device_information) {
+    rtsc::rdpdr::VolumeInfo info;
+    info.device_type = 0x00000007;
+    info.characteristics = 0x00000021;
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeVolumeInfo(0x04, info, out));
+    CHECK_EQ(out.size(), static_cast<size_t>(8));
+    if (out.size() < 8) return;
+    CHECK_EQ(U32At(out, 0), 0x00000007u);
+    CHECK_EQ(U32At(out, 4), 0x00000021u);
+}
+
+RTSC_TEST(rdpdr_volume_info_encodes_attribute_information) {
+    rtsc::rdpdr::VolumeInfo info;
+    info.file_system_attributes = 0x00000003;
+    info.max_component_length = 255;
+    info.file_system_name = u"NTFS";
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeVolumeInfo(0x05, info, out));
+    // 4 + 4 + 4 + 4 chars * 2; the name is not NUL-terminated.
+    CHECK_EQ(out.size(), static_cast<size_t>(20));
+    if (out.size() < 20) return;
+    CHECK_EQ(U32At(out, 0), 0x00000003u);
+    CHECK_EQ(U32At(out, 4), 255u);
+    CHECK_EQ(U32At(out, 8), 8u);
+    CHECK_EQ(out[12], static_cast<uint8_t>('N'));
+    CHECK_EQ(out[19], static_cast<uint8_t>(0));
+}
+
+RTSC_TEST(rdpdr_volume_info_rejects_unknown_class) {
+    rtsc::rdpdr::VolumeInfo info;
+    std::vector<uint8_t> out = {1, 2, 3};
+    CHECK(!rtsc::rdpdr::EncodeVolumeInfo(0x03, info, out));
+    CHECK(out.empty());
+}
+
+RTSC_TEST(rdpdr_file_information_encodes_basic_information) {
+    rtsc::rdpdr::FileInfo info;
+    info.creation_time = 0x0102030405060708ULL;
+    info.last_access_time = 0x1112131415161718ULL;
+    info.last_write_time = 0x2122232425262728ULL;
+    info.change_time = 0x3132333435363738ULL;
+    info.attributes = 0x20;
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeFileInformation(0x04, info, out));
+    // 4 * 8 + 4 attributes; the Reserved field MUST NOT be present.
+    CHECK_EQ(out.size(), static_cast<size_t>(36));
+    if (out.size() < 36) return;
+    CHECK_EQ(U32At(out, 0), 0x05060708u);
+    CHECK_EQ(U32At(out, 4), 0x01020304u);
+    CHECK_EQ(U32At(out, 8), 0x15161718u);
+    CHECK_EQ(U32At(out, 16), 0x25262728u);
+    CHECK_EQ(U32At(out, 24), 0x35363738u);
+    CHECK_EQ(U32At(out, 32), 0x00000020u);
+}
+
+RTSC_TEST(rdpdr_file_information_encodes_standard_information) {
+    rtsc::rdpdr::FileInfo info;
+    info.allocation_size = 4096;
+    info.end_of_file = 1000;
+    info.number_of_links = 2;
+    info.delete_pending = false;
+    info.is_directory = true;
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeFileInformation(0x05, info, out));
+    // 8 + 8 + 4 + 1 + 1; the Reserved field MUST NOT be present.
+    CHECK_EQ(out.size(), static_cast<size_t>(22));
+    if (out.size() < 22) return;
+    CHECK_EQ(U32At(out, 0), 4096u);
+    CHECK_EQ(U32At(out, 8), 1000u);
+    CHECK_EQ(U32At(out, 16), 2u);
+    CHECK_EQ(out[20], static_cast<uint8_t>(0));  // DeletePending
+    CHECK_EQ(out[21], static_cast<uint8_t>(1));  // Directory
+}
+
+RTSC_TEST(rdpdr_file_information_encodes_attribute_tag_information) {
+    rtsc::rdpdr::FileInfo info;
+    info.attributes = 0x400;  // FILE_ATTRIBUTE_REPARSE_POINT
+    info.reparse_tag = 0xA000000C;
+    std::vector<uint8_t> out;
+    CHECK(rtsc::rdpdr::EncodeFileInformation(0x23, info, out));
+    CHECK_EQ(out.size(), static_cast<size_t>(8));
+    if (out.size() < 8) return;
+    CHECK_EQ(U32At(out, 0), 0x400u);
+    CHECK_EQ(U32At(out, 4), 0xA000000Cu);
+}
+
+RTSC_TEST(rdpdr_file_information_rejects_unknown_class) {
+    rtsc::rdpdr::FileInfo info;
+    std::vector<uint8_t> out = {9, 9};
+    CHECK(!rtsc::rdpdr::EncodeFileInformation(0x09, info, out));
+    CHECK(out.empty());
 }
 
 }  // namespace

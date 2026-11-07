@@ -333,6 +333,40 @@ Status RdpdrDeviceAnnounce::parse(const uint8_t* data, size_t size,
     return Status::Ok;
 }
 
+std::vector<uint8_t> EncodePrinterAnnounce(
+    uint32_t flags, const std::u16string& driver_name,
+    const std::u16string& printer_name, const std::u16string& pnp_name,
+    const std::vector<uint8_t>& cached_data) {
+    const auto utf16z = [](const std::u16string& text, bool with_nul) {
+        std::vector<uint8_t> out;
+        out.reserve((text.size() + 1) * 2);
+        for (const char16_t c : text) {
+            out.push_back(static_cast<uint8_t>(c & 0xFF));
+            out.push_back(static_cast<uint8_t>((c >> 8) & 0xFF));
+        }
+        if (with_nul) {
+            out.push_back(0);
+            out.push_back(0);
+        }
+        return out;
+    };
+    const std::vector<uint8_t> pnp = utf16z(pnp_name, !pnp_name.empty());
+    const std::vector<uint8_t> driver = utf16z(driver_name, true);
+    const std::vector<uint8_t> printer = utf16z(printer_name, true);
+    ByteWriter w;
+    w.u32le(flags);
+    w.u32le(0);  // CodePage MUST be 0
+    w.u32le(static_cast<uint32_t>(pnp.size()));
+    w.u32le(static_cast<uint32_t>(driver.size()));
+    w.u32le(static_cast<uint32_t>(printer.size()));
+    w.u32le(static_cast<uint32_t>(cached_data.size()));
+    w.bytes(pnp.data(), pnp.size());
+    w.bytes(driver.data(), driver.size());
+    w.bytes(printer.data(), printer.size());
+    w.bytes(cached_data.data(), cached_data.size());
+    return w.take();
+}
+
 std::vector<uint8_t> RdpdrDeviceAnnounce::encode() const {
     ByteWriter w;
     w.u32le(device_type);
@@ -388,6 +422,44 @@ std::vector<uint8_t> RdpdrDeviceListAnnounce::encode() const {
         const std::vector<uint8_t> encoded = device.encode();
         w.bytes(encoded.data(), encoded.size());
     }
+    return w.take();
+}
+
+Status RdpdrDeviceListRemove::parse(const std::vector<uint8_t>& data,
+                                    RdpdrDeviceListRemove& out) {
+    out.device_ids.clear();
+    if (data.size() < RdpdrHeader::kSize + 4) return Status::NeedMoreData;
+    RdpdrHeader header;
+    if (!ReadCoreHeader(data.data(), data.size(),
+                        kPakidCoreDevicelistRemove, header)) {
+        return Status::InvalidType;
+    }
+    ByteReader r(data.data() + RdpdrHeader::kSize,
+                 data.size() - RdpdrHeader::kSize);
+    r.u32le(out.device_count);
+    // Each id is 4 bytes; a count that cannot fit the remaining body is a
+    // truncated message, not a reason to read past the buffer.
+    const size_t remaining = data.size() - RdpdrHeader::kSize - 4;
+    if (static_cast<uint64_t>(out.device_count) * 4 > remaining) {
+        return Status::NeedMoreData;
+    }
+    out.device_ids.reserve(out.device_count);
+    for (uint32_t i = 0; i < out.device_count; ++i) {
+        uint32_t id = 0;
+        r.u32le(id);
+        out.device_ids.push_back(id);
+    }
+    return Status::Ok;
+}
+
+std::vector<uint8_t> RdpdrDeviceListRemove::encode() const {
+    RdpdrHeader header;
+    header.component = kRdpdrCtypCore;
+    header.packet_id = kPakidCoreDevicelistRemove;
+    ByteWriter w;
+    header.write(w);
+    w.u32le(static_cast<uint32_t>(device_ids.size()));
+    for (const uint32_t id : device_ids) w.u32le(id);
     return w.take();
 }
 
@@ -565,6 +637,26 @@ Status RdpdrCloseReq::parse(const std::vector<uint8_t>& data,
     return Status::Ok;
 }
 
+Status RdpdrQueryVolumeReq::parse(const std::vector<uint8_t>& data,
+                                  RdpdrQueryVolumeReq& out) {
+    out.buffer.clear();
+    if (data.size() < kFixedSize) return Status::NeedMoreData;
+    if (RdpdrDeviceIoRequest::parse(data, out.request) != Status::Ok) {
+        return Status::NeedMoreData;
+    }
+    ByteReader r(data.data() + RdpdrDeviceIoRequest::kFixedSize,
+                 data.size() - RdpdrDeviceIoRequest::kFixedSize);
+    if (!r.u32le(out.fs_information_class)) return Status::NeedMoreData;
+    if (!r.u32le(out.length)) return Status::NeedMoreData;
+    // 24 bytes of padding follow; the buffer starts after them.
+    const size_t available = data.size() - kFixedSize;
+    if (out.length > available) return Status::NeedMoreData;
+    out.buffer.assign(data.begin() + static_cast<ptrdiff_t>(kFixedSize),
+                      data.begin() +
+                          static_cast<ptrdiff_t>(kFixedSize + out.length));
+    return Status::Ok;
+}
+
 std::vector<uint8_t> RdpdrCloseRsp::encode() const {
     RdpdrHeader header;
     header.component = kRdpdrCtypCore;
@@ -600,6 +692,55 @@ Status RdpdrQueryDirectoryReq::parse(const std::vector<uint8_t>& data,
 
 std::string RdpdrQueryDirectoryReq::path_string() const {
     return RdpdrDecodeUtf16(path.data(), path.size());
+}
+
+Status RdpdrNotifyChangeDirectoryReq::parse(
+    const std::vector<uint8_t>& data, RdpdrNotifyChangeDirectoryReq& out) {
+    if (data.size() < kFixedSize) return Status::NeedMoreData;
+    if (RdpdrDeviceIoRequest::parse(data, out.request) != Status::Ok) {
+        return Status::NeedMoreData;
+    }
+    ByteReader r(data.data() + RdpdrDeviceIoRequest::kFixedSize,
+                 data.size() - RdpdrDeviceIoRequest::kFixedSize);
+    if (!r.u8(out.watch_tree)) return Status::NeedMoreData;
+    if (!r.u32le(out.completion_filter)) return Status::NeedMoreData;
+    // Padding (27 bytes): unused and ignored.
+    return Status::Ok;
+}
+
+Status RdpdrLockReq::parse(const std::vector<uint8_t>& data,
+                           RdpdrLockReq& out) {
+    out.locks.clear();
+    if (data.size() < kFixedSize) return Status::NeedMoreData;
+    if (RdpdrDeviceIoRequest::parse(data, out.request) != Status::Ok) {
+        return Status::NeedMoreData;
+    }
+    ByteReader r(data.data() + RdpdrDeviceIoRequest::kFixedSize,
+                 data.size() - RdpdrDeviceIoRequest::kFixedSize);
+    if (!r.u32le(out.operation)) return Status::NeedMoreData;
+    if (!r.u32le(out.flags)) return Status::NeedMoreData;
+    if (!r.u32le(out.num_locks)) return Status::NeedMoreData;
+    if (r.remaining() < 20) return Status::NeedMoreData;
+    r.skip(20);  // Padding2
+    if (out.num_locks > r.remaining() / 16) return Status::NeedMoreData;
+    out.locks.reserve(out.num_locks);
+    for (uint32_t i = 0; i < out.num_locks; ++i) {
+        uint32_t length_lo = 0;
+        uint32_t length_hi = 0;
+        uint32_t offset_lo = 0;
+        uint32_t offset_hi = 0;
+        if (!r.u32le(length_lo) || !r.u32le(length_hi)) {
+            return Status::NeedMoreData;
+        }
+        if (!r.u32le(offset_lo) || !r.u32le(offset_hi)) {
+            return Status::NeedMoreData;
+        }
+        RdpdrLockInfo lock;
+        lock.length = (static_cast<uint64_t>(length_hi) << 32) | length_lo;
+        lock.offset = (static_cast<uint64_t>(offset_hi) << 32) | offset_lo;
+        out.locks.push_back(lock);
+    }
+    return Status::Ok;
 }
 
 Status RdpdrControlReq::parse(const std::vector<uint8_t>& data,

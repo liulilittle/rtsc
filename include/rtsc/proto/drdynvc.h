@@ -34,12 +34,21 @@ enum class DynvcCmd : uint8_t {
 
 const char* to_string(DynvcCmd cmd);
 
-// DYNVC_HEADER (1 byte): cbId (2 bits, low) | Sp (2 bits) | Cmd (4 bits).
+// DYNVC_CREATE_RSP CreationStatus ([MS-RDPEDYC] 2.2.2.2): a signed HRESULT
+// where zero or positive means success and negative means failure.
+constexpr uint32_t kDynvcCreationStatusOk = 0x00000000u;
+// STATUS_UNSUCCESSFUL: no client listener accepted the requested channel name.
+constexpr uint32_t kDynvcCreationStatusNoListener = 0xC0000001u;
+
+// DYNVC_HEADER (1 byte): cbId (2 bits, low) | Sp/Len (2 bits) | Cmd (4 bits).
+// Bits 2-3 are Sp for most commands but Len for DYNVC_DATA_FIRST_COMPRESSED
+// ([MS-RDPEDYC] 2.2.3.3): Len selects a 1-, 2- or 4-byte Length field.
 struct DynvcHeader {
     static constexpr size_t kSize = 1;
 
     DynvcCmd cmd = DynvcCmd::kData;
     uint8_t sp = 0;
+    uint8_t len_bits = 0;  // same wire bits as sp; meaningful for 0x06
     uint8_t cb_id = 0;  // 0 -> 1 byte, 1 -> 2 bytes, 2 -> 4 bytes
 
     static Status parse(const uint8_t* data, size_t size, DynvcHeader& out);
@@ -47,6 +56,8 @@ struct DynvcHeader {
 
     // Width of the ChannelId field in bytes (1, 2 or 4).
     size_t channel_id_size() const { return static_cast<size_t>(1) << cb_id; }
+    // Width of the Length field of DYNVC_DATA_FIRST_COMPRESSED (1, 2 or 4).
+    size_t length_size() const { return static_cast<size_t>(1) << len_bits; }
     bool valid() const { return cb_id <= 2; }
 };
 
@@ -83,6 +94,14 @@ std::vector<uint8_t> BuildDynvcPdu(DynvcCmd cmd, uint8_t sp, uint32_t channel_id
 std::vector<uint8_t> BuildDynvcDataFirstPdu(uint8_t sp, uint32_t channel_id,
                                             uint32_t total_length,
                                             const std::vector<uint8_t>& data);
+
+// Builds a DYNVC_DATA_FIRST_COMPRESSED PDU ([MS-RDPEDYC] 2.2.3.3). `len_bits`
+// is the Len field (0 -> 1-byte Length, 1 -> 2-byte, 2 -> 4-byte) and
+// `total_length` is the UNCOMPRESSED message length. BuildDynvcPdu must not be
+// used for this command: it would omit the Length field.
+std::vector<uint8_t> BuildDynvcDataFirstCompressedPdu(
+    uint8_t len_bits, uint32_t channel_id, uint32_t total_length,
+    const std::vector<uint8_t>& data);
 
 // Largest message payload sent as a single DYNVC_DATA PDU ([MS-RDPEDYC]
 // 2.2.3.2 / 3.1.5.2).

@@ -17,6 +17,7 @@ namespace {
 constexpr uint16_t kCsCore = 0xC001;
 constexpr uint16_t kCsSecurity = 0xC002;
 constexpr uint16_t kCsNetwork = 0xC003;
+constexpr uint16_t kCsCluster = 0xC004;
 constexpr uint16_t kScCore = 0x0C01;
 constexpr uint16_t kScSecurity = 0x0C02;
 constexpr uint16_t kScNetwork = 0x0C03;
@@ -131,6 +132,18 @@ std::vector<uint8_t> BuildClientNetworkData(const ConnectMachine::Config& c) {
     return out.take();
 }
 
+// Client Cluster Data (TS_UD_CS_CLUSTER, 0xC004). Only emitted for /admin:
+// REDIRECTED_SESSIONID_FIELD_VALID (0x00000002) with a zero session id asks the
+// server for the console/admin session ([MS-RDPBCGR] 2.2.1.3.5).
+std::vector<uint8_t> BuildClientClusterData() {
+    ByteWriter body;
+    body.u32le(0x00000002);  // REDIRECTED_SESSIONID_FIELD_VALID
+    body.u32le(0);           // RedirectedSessionID = 0 => console session
+    ByteWriter out;
+    GccUserData::write_block(out, kCsCluster, body.data());
+    return out.take();
+}
+
 // Client Monitor Data (TS_UD_CS_MONITOR, 0xC005). Empty when the client has no
 // monitor layout, so a single-monitor client sends no block at all.
 std::vector<uint8_t> BuildClientMonitorData(
@@ -232,6 +245,15 @@ ConnectStep ConnectMachine::SendChannelJoin() {
             ext.has_performance_flags = true;
             ext.performance_flags = perf::kEnableFontSmoothing |
                                     perf::kEnableDesktopComposition;
+            // Auto-reconnect ([MS-RDPBCGR] 2.2.1.11.1.1.1): the cookie comes
+            // from the previous session's Save Session Info PDU. The extended
+            // block is chained, so all earlier fields above are already set.
+            if (config_.auto_reconnect_cookie.size() ==
+                ArcCsPrivatePacket::kWireSize) {
+                ext.has_auto_reconnect = true;
+                ext.auto_reconnect_cookie.bytes =
+                    config_.auto_reconnect_cookie;
+            }
         }
         // [MS-RDPBCGR] 2.2.1.11.1.1 INFO_RAIL: the client supports the RAIL
         // (Remote Programs) protocol. It is set when the client advertised the
@@ -460,6 +482,10 @@ ConnectStep ConnectMachine::SendConnectInitial() {
         blocks.bytes(core.data(), core.size());
         blocks.bytes(sec.data(), sec.size());
         blocks.bytes(net.data(), net.size());
+        if (config_.admin_session) {
+            const auto cluster = BuildClientClusterData();
+            blocks.bytes(cluster.data(), cluster.size());
+        }
         if (!config_.monitors.empty()) {
             const auto mon = BuildClientMonitorData(config_.monitors);
             blocks.bytes(mon.data(), mon.size());
@@ -485,6 +511,51 @@ ConnectStep ConnectMachine::SendConnectInitial() {
     s.needs_input = true;
     state_.phase = ConnectPhase::kAwaitConnectResponse;
     return s;
+}
+
+bool ApplyClientColorDepth(int bpp, uint16_t& high_color_depth,
+                           uint16_t& supported_color_depths,
+                           uint16_t& early_capability_flags) {
+    uint16_t high = 0;
+    uint16_t supported = 0;
+    bool want_32 = false;
+    switch (bpp) {
+        case 4:
+            high = 0x0004;  // HIGH_COLOR_4BPP
+            break;
+        case 8:
+            high = 0x0008;  // HIGH_COLOR_8BPP
+            break;
+        case 15:
+            high = 0x000F;  // HIGH_COLOR_15BPP
+            supported = 0x0004;
+            break;
+        case 16:
+            high = 0x0010;  // HIGH_COLOR_16BPP
+            supported = 0x0002;
+            break;
+        case 24:
+            high = 0x0018;  // HIGH_COLOR_24BPP
+            supported = 0x0001;
+            break;
+        case 32:
+            // highColorDepth has no 32 value; request 24 with the explicit
+            // "want 32bpp" flag and advertise 24 as the fallback.
+            high = 0x0018;
+            supported = 0x0009;  // 24bpp | 32bpp
+            want_32 = true;
+            break;
+        default:
+            return false;
+    }
+    high_color_depth = high;
+    supported_color_depths = supported;
+    if (want_32) {
+        early_capability_flags |= 0x0002;  // RNS_UD_CS_WANT_32BPP_SESSION
+    } else {
+        early_capability_flags &= static_cast<uint16_t>(~0x0002);
+    }
+    return true;
 }
 
 }  // namespace rtsc::proto

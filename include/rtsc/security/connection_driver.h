@@ -159,6 +159,31 @@ class ConnectionDriver {
         return session_ != nullptr && session_->state().has_monitor_layout;
     }
 
+    // Logon identity / auto-reconnect cookie from the server's Save Session
+    // Info PDU ([MS-RDPBCGR] 2.2.10.1.1). Empty until that PDU arrives.
+    const proto::SaveSessionInfo& logon_info() const {
+        static const proto::SaveSessionInfo kEmpty;
+        return session_ != nullptr ? session_->state().logon_info : kEmpty;
+    }
+
+    // Last Set Error Info code from the server ([MS-RDPBCGR] 2.2.5.1.1). It
+    // explains a disconnect the transport alone cannot describe.
+    bool has_error_info() const {
+        return session_ != nullptr && session_->state().has_error_info;
+    }
+    uint32_t error_info() const {
+        return session_ != nullptr ? session_->state().error_info : 0;
+    }
+
+    // Prepares this driver for a reconnect attempt ([MS-RDPBCGR] 1.3.1.5).
+    // Rebuilds the connection machine (a fresh join queue and channel ids) and
+    // drops the per-session security/licensing/setup state. Static virtual
+    // channel handlers and the session PDU handler stay registered: channel ids
+    // are derived from the advertised name order and are stable across
+    // reconnects. `cookie` is the 28-byte ARC_CS_PRIVATE_PACKET from the
+    // previous session (empty for a plain retry).
+    void ResetForReconnect(std::vector<uint8_t> cookie = {});
+
  private:
     DriverStep Fail(const std::string& reason);
     // Runs the security handshake with the buffered ciphertext; returns the

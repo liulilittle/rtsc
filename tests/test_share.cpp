@@ -506,4 +506,18 @@ RTSC_TEST(fastpath_official_mouse_event_decodes) {
     CHECK_EQ(y, static_cast<uint16_t>(367));
 }
 
+RTSC_TEST(set_error_info_text_is_readable) {
+    CHECK(rtsc::proto::SetErrorInfoText(0x00000000) == std::string("no error"));
+    CHECK(rtsc::proto::SetErrorInfoText(0x00000003) ==
+          std::string("disconnected after the idle session limit"));
+    CHECK(rtsc::proto::SetErrorInfoText(0x00000005) ==
+          std::string("disconnected because another user connected to the session"));
+    CHECK(rtsc::proto::SetErrorInfoText(0x0000000C) ==
+          std::string("the user logged off"));
+    CHECK(rtsc::proto::SetErrorInfoText(0x0000001A) ==
+          std::string("the remote server is rebooting"));
+    CHECK(rtsc::proto::SetErrorInfoText(0xDEADBEEF) ==
+          std::string("unknown error"));
+}
+
 int main() { return rtsc::test::run_all("rtsc_share_tests"); }

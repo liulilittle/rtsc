@@ -92,6 +92,12 @@ constexpr uint8_t kCmdHelp = 21;
 // Pause/Break. A bare 0x45 is NumLock's scancode, not Pause: the protocol layer
 // must send EncodePauseKey()'s CTRL(EXTENDED1) + NUMLOCK sequence instead.
 constexpr uint8_t kCmdSendPause = 22;
+// Save the remote desktop as a 32bpp BMP. The front-end supplies the path and
+// writes the file; the window backend only raises the command.
+constexpr uint8_t kCmdSaveScreenshot = 23;
+// Save the current connection settings as an .rdp file. The front-end supplies
+// the path and writes the file.
+constexpr uint8_t kCmdSaveConnectionFile = 24;
 
 namespace detail {
 // Compile-time guard: every client-side command id must be distinct. A
@@ -101,7 +107,8 @@ constexpr bool UiCommandIdsAreUnique() {
     constexpr uint8_t kSingles[] = {
         kCmdFit,          kCmdToggleSmartSizing, kCmdToggleFullscreen,
         kCmdConnectionInfo, kCmdToggleSmartCard, kCmdSendCtrlAltDel,
-        kCmdToggleWinKeyRemote, kCmdHelp, kCmdSendPause,
+        kCmdToggleWinKeyRemote, kCmdHelp, kCmdSendPause, kCmdSaveScreenshot,
+        kCmdSaveConnectionFile,
     };
     for (uint8_t id = kCmdZoomPresetFirst; id <= kCmdZoomPresetLast; ++id) {
         for (uint8_t single : kSingles) {
@@ -132,6 +139,14 @@ enum class WinKeyMode : uint8_t {
     kFullscreenOnly = 2,
 };
 
+// True when the Windows keys (LWIN/RWIN) belong to the remote session.
+// mstsc "Apply Windows key combinations": kRemote always forwards, kLocal never
+// does, and kFullscreenOnly forwards only while the window is fullscreen.
+constexpr bool ForwardWinKey(WinKeyMode mode, bool fullscreen) {
+    return mode == WinKeyMode::kRemote ||
+           (mode == WinKeyMode::kFullscreenOnly && fullscreen);
+}
+
 // The state the window needs in order to label and tick its view menu items.
 // Kept platform neutral so rtsc::ui does not depend on rtsc::client.
 struct ViewMenuState {
@@ -154,6 +169,7 @@ struct InputEvent {
         kMouseWheel,
         kClose,
         kUiCommand,  // client-side UI command (not forwarded to the server)
+        kUnicode,    // one UTF-16 code unit typed as text (debug injection)
     };
 
     Kind kind = Kind::kNone;
@@ -179,6 +195,10 @@ struct InputEvent {
     // kUiCommand: one of the kCmd* ids above (zoom preset index, fit, smart
     // sizing, fullscreen, connection info, smart card).
     uint8_t command = 0;
+
+    // kUnicode: one UTF-16 code unit (TS_FP_UNICODE_KEYBOARD_EVENT). The
+    // release flag is key_release, shared with kKey.
+    uint16_t unicode_code = 0;
 };
 
 #if defined(_WIN32)
@@ -215,13 +235,14 @@ inline constexpr uint32_t kWin32WmSysKeyUp = 0x0105;
 // 0x38 with the extended flag. A real right Ctrl (VK_RCONTROL) is unaffected.
 //
 // Only the four WM_KEYDOWN/UP and WM_SYSKEYDOWN/UP ids are keyboard transitions;
-// anything else is dropped. `win_key_mode` gates the Windows keys (LWIN/RWIN):
-// kRemote forwards them, kLocal and (for now) kFullscreenOnly keep them local.
+// anything else is dropped. `win_key_mode` and `fullscreen` gate the Windows
+// keys (LWIN/RWIN) through ForwardWinKey(): kRemote forwards them, kLocal keeps
+// them local, and kFullscreenOnly forwards them only in fullscreen.
 // The default is kRemote to match mstsc (docs/spec/input-evidence.md E5).
 KeyTranslation TranslateWin32KeyMessage(
     uint32_t msg, uint32_t vk, uint32_t lparam,
     uint32_t (*vk_to_scancode)(uint32_t vk) = nullptr,
-    WinKeyMode win_key_mode = WinKeyMode::kRemote);
+    WinKeyMode win_key_mode = WinKeyMode::kRemote, bool fullscreen = false);
 
 // Set-1 scancodes the backend reasons about. They mirror rtsc::proto's named
 // scancodes; window.h stays free of the protocol header.
@@ -308,6 +329,12 @@ class Window {
     // X11/Wayland backends, which manage the surface themselves, keep working.
     virtual void SetFullscreen(bool on) { (void)on; }
     virtual bool fullscreen() const { return false; }
+
+    // True while the fullscreen connection bar is shown (Win32). The bar is a
+    // client-side overlay: it reveals at the top edge, auto-hides, and its
+    // buttons (pin/minimize/close) are handled locally. The default is false
+    // for backends without the overlay.
+    virtual bool connection_bar_visible() const { return false; }
 
     // Selects where the Windows key is applied (see WinKeyMode). The default is
     // a no-op so backends without Win-key handling (headless, X11, Wayland)

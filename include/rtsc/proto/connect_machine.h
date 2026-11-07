@@ -58,6 +58,15 @@ struct ConnectState {
     std::string error;  // populated when phase == kFailed
 };
 
+// Applies a requested session color depth to the Client Core Data fields.
+// `bpp` must be 4, 8, 15, 16, 24, or 32. A 32bpp session is requested as
+// highColorDepth=24 plus RNS_UD_CS_WANT_32BPP_SESSION, because highColorDepth
+// has no 32 value ([MS-RDPBCGR] 2.2.1.3.2). Returns false and leaves the
+// outputs untouched for any other value.
+bool ApplyClientColorDepth(int bpp, uint16_t& high_color_depth,
+                           uint16_t& supported_color_depths,
+                           uint16_t& early_capability_flags);
+
 // Drives the client half of the connection sequence.
 //
 // Usage:
@@ -105,6 +114,17 @@ public:
         // Client Network Data: channel names to request, in order.
         std::vector<std::string> channel_names;
 
+        // [MS-RDPBCGR] 2.2.1.3.5: request the console/admin session by setting
+        // REDIRECTED_SESSIONID_FIELD_VALID (0x00000002) with a zero
+        // RedirectedSessionID. This is the encoding mstsc /admin uses.
+        bool admin_session = false;
+
+        // Auto-reconnect cookie from a previous session (ARC_CS_PRIVATE_PACKET,
+        // exactly 28 bytes). When set, it is carried in the Client Info
+        // extended block so the server can resume the session. Empty means a
+        // fresh connection (no cookie field on the wire).
+        std::vector<uint8_t> auto_reconnect_cookie;
+
         // Client Security Data encryption methods bitmap.
         uint32_t encryption_methods = 0x0000001B;
     };
@@ -133,6 +153,9 @@ public:
     ConnectStep OnExternalSecurityComplete();
 
     const ConnectState& state() const { return state_; }
+    // The configuration this machine was built with (including the reconnect
+    // cookie). Exposed so a reconnect can be verified to carry the cookie.
+    const Config& config() const { return config_; }
     bool failed() const { return state_.phase == ConnectPhase::kFailed; }
     bool done() const { return state_.phase == ConnectPhase::kAwaitClientInfoAck; }
 

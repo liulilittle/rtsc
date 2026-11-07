@@ -85,6 +85,38 @@ RdpUsbClient::~RdpUsbClient() {
     if (transport_ != nullptr) transport_->RemoveListener(this);
 }
 
+void RdpUsbClient::Reset() {
+    // The previous session's dynamic channels are gone. Erasing the devices
+    // closes their usb::UsbDevice handles; the GUI re-announces them after the
+    // new session is ready.
+    if (provider_ != nullptr) {
+        for (const auto& entry : devices_) provider_->OnDeviceRemoved(entry.first);
+    }
+    devices_.clear();
+    channel_to_device_.clear();
+    state_ = State::kIdle;
+    started_ = false;
+    version_ = 0;
+    control_channel_ = 0;
+    last_device_channel_ = 0;
+    request_completion_ = 0;
+    request_completion_valid_ = false;
+    next_usb_device_ = 1;
+    // The counters are diagnostics for one session; a reconnect starts a new
+    // one, so they restart with it.
+    channel_created_count_ = 0;
+    add_virtual_channel_count_ = 0;
+    add_device_count_ = 0;
+    transfer_in_count_ = 0;
+    transfer_out_count_ = 0;
+    urb_completion_count_ = 0;
+    no_ack_urb_count_ = 0;
+    io_control_count_ = 0;
+    io_control_completion_count_ = 0;
+    io_control_overflow_count_ = 0;
+    retract_device_count_ = 0;
+}
+
 void RdpUsbClient::Start() {
     if (started_ || transport_ == nullptr) return;
     started_ = true;
@@ -241,6 +273,19 @@ void RdpUsbClient::OnDeviceMessage(uint32_t channel_id,
             break;
         }
         case static_cast<uint32_t>(
+            rtsc::proto::RdpUsbFunction::kIoControl):
+        case static_cast<uint32_t>(
+            rtsc::proto::RdpUsbFunction::kInternalIoControl): {
+            rtsc::proto::RdpUsbIoControl io;
+            if (rtsc::proto::RdpUsbIoControl::parse(msg.data(), msg.size(),
+                                                    io) ==
+                rtsc::proto::Status::Ok) {
+                ++io_control_count_;
+                HandleIoControl(channel_id, usb_device, io);
+            }
+            break;
+        }
+        case static_cast<uint32_t>(
             rtsc::proto::RdpUsbFunction::kRetractDevice): {
             ++retract_device_count_;
             RemoveDevice(usb_device);
@@ -349,10 +394,66 @@ void RdpUsbClient::HandleTransferOut(
             8, static_cast<uint32_t>(
                    rtsc::proto::RdpUsbUsbdStatus::kRequestFailed));
     }
+    // [MS-RDPEUSB] 2.2.9.1.1: the NoAck bit of a TRANSFER_OUT_REQUEST means
+    // the server does not expect a completion. The transfer itself still runs
+    // (the write must happen); only the reply is suppressed.
+    if (req.ts_urb.header.no_ack) {
+        ++no_ack_urb_count_;
+        return;
+    }
     CompleteUrb(channel_id, req.header.interface_id,
                 req.ts_urb.header.request_id,
                 static_cast<uint16_t>(req.ts_urb.header.urb_function),
                 usbd_status, result, output);
+}
+
+void RdpUsbClient::HandleIoControl(
+    uint32_t channel_id, uint32_t usb_device,
+    const rtsc::proto::RdpUsbIoControl& req) {
+    constexpr uint32_t kE_FAIL = 0x80004005u;
+    constexpr uint32_t kErrorInsufficientBuffer = 0x8007007Au;
+    Device* d = FindDevice(usb_device);
+    std::vector<uint8_t> output;
+    uint32_t information = 0;
+    uint32_t hresult = kE_FAIL;  // unknown or unopened device
+    bool ok = false;
+    if (d != nullptr && d->device != nullptr) {
+        ok = d->device->IoControl(req.io_control_code, req.input_buffer,
+                                  req.output_buffer_size, output, information,
+                                  hresult);
+    }
+    if (output.size() > req.output_buffer_size) {
+        // [MS-RDPEUSB] 2.2.6.3: the device returned more data than the server
+        // allowed, so the client MUST terminate the dynamic virtual channel.
+        ++io_control_overflow_count_;
+        if (transport_ != nullptr) transport_->CloseChannel(channel_id);
+        return;
+    }
+    if (ok) {
+        hresult = 0;
+        // Success: OutputBufferSize and Information MUST be equal
+        // ([MS-RDPEUSB] 2.2.7.1).
+        information = static_cast<uint32_t>(output.size());
+    } else if (hresult == kErrorInsufficientBuffer) {
+        // The special case keeps the requested size in OutputBufferSize and
+        // reports the expected size in Information.
+        output.assign(req.output_buffer_size, 0);
+    } else {
+        // Any other failure: OutputBufferSize MUST be 0 and Information is
+        // ignored.
+        output.clear();
+        information = 0;
+    }
+    rtsc::proto::RdpUsbIoControlCompletion c;
+    c.header.interface_id = req.header.interface_id;
+    c.header.function_id = static_cast<uint32_t>(
+        rtsc::proto::RdpUsbFunction::kIoControlCompletion);
+    c.request_id = req.request_id;
+    c.hresult = hresult;
+    c.information = information;
+    c.output_buffer = output;
+    SendOnChannel(channel_id, c.encode());
+    ++io_control_completion_count_;
 }
 
 void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
@@ -496,6 +597,138 @@ void RdpUsbClient::ExecuteUrb(Device& d, const rtsc::proto::RdpUsbTsUrb& urb,
             result.output_buffer.resize(output_buffer_size);
         }
         result_body = BuildResultHeader(8, result.usbd_status);
+        return;
+    }
+
+    // Standard control requests that the server sends as dedicated URB
+    // functions ([MS-RDPEUSB] 2.2.9.9/2.2.9.11/2.2.9.13/2.2.9.14). Each one
+    // is the same control transfer with a synthesised 8-byte setup packet; the
+    // byte layout follows the USB 2.0 standard requests and FreeRDP's
+    // urbdrc client (channels/urbdrc/client/data_transfer.c).
+    const auto make_setup = [](uint8_t bm_request_type, uint8_t request,
+                               uint16_t value, uint16_t index,
+                               uint32_t length) {
+        const uint16_t len =
+            static_cast<uint16_t>(length > 0xFFFFu ? 0xFFFFu : length);
+        return std::vector<uint8_t>{
+            bm_request_type,
+            request,
+            static_cast<uint8_t>(value & 0xFF),
+            static_cast<uint8_t>((value >> 8) & 0xFF),
+            static_cast<uint8_t>(index & 0xFF),
+            static_cast<uint8_t>((index >> 8) & 0xFF),
+            static_cast<uint8_t>(len & 0xFF),
+            static_cast<uint8_t>((len >> 8) & 0xFF)};
+    };
+    const auto run_control = [&](uint32_t transfer_flags,
+                                 const std::vector<uint8_t>& setup,
+                                 const std::vector<uint8_t>& input) {
+        const bool ok =
+            d.device != nullptr &&
+            d.device->ControlTransfer(0, transfer_flags, setup, input, result);
+        if (!ok) result.usbd_status = static_cast<uint32_t>(
+            rtsc::proto::RdpUsbUsbdStatus::kRequestFailed);
+        if (result.output_buffer.size() > output_buffer_size) {
+            result.output_buffer.resize(output_buffer_size);
+        }
+        result_body = BuildResultHeader(8, result.usbd_status);
+    };
+    // USBD_TRANSFER_DIRECTION_IN: the backend's ControlTransfer treats bit 0
+    // as the IN direction.
+    constexpr uint32_t kTransferIn = 0x1;
+
+    if (fn == RdpUsbUrbFunction::kControlDescriptorRequest) {
+        rtsc::proto::RdpUsbTsUrbControlDescriptorRequest desc;
+        if (rtsc::proto::RdpUsbTsUrbControlDescriptorRequest::parse(
+                body.data(), body.size(), desc) != rtsc::proto::Status::Ok) {
+            result_body = BuildResultHeader(8, result.usbd_status);
+            return;
+        }
+        // URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE: recipient 0 (device).
+        const uint16_t value = static_cast<uint16_t>(
+            (static_cast<uint16_t>(desc.descriptor_type) << 8) | desc.index);
+        run_control(kTransferIn,
+                    make_setup(0x80, 0x06, value, desc.language_id,
+                               output_buffer_size),
+                    {});
+        return;
+    }
+
+    if (fn == RdpUsbUrbFunction::kControlGetStatusRequest) {
+        rtsc::proto::RdpUsbTsUrbControlGetStatusRequest status;
+        if (rtsc::proto::RdpUsbTsUrbControlGetStatusRequest::parse(
+                body.data(), body.size(), status) != rtsc::proto::Status::Ok) {
+            result_body = BuildResultHeader(8, result.usbd_status);
+            return;
+        }
+        // URB_FUNCTION_GET_STATUS_FROM_DEVICE: recipient 0 (device).
+        run_control(kTransferIn,
+                    make_setup(0x80, 0x00, 0, status.index,
+                               output_buffer_size),
+                    {});
+        return;
+    }
+
+    if (fn == RdpUsbUrbFunction::kControlGetConfigurationRequest) {
+        // TS_URB_CONTROL_GET_CONFIGURATION_REQUEST has no URB body; the length
+        // comes from the TRANSFER_IN_REQUEST OutputBufferSize.
+        run_control(kTransferIn,
+                    make_setup(0x80, 0x08, 0, 0, output_buffer_size),
+                    {});
+        return;
+    }
+
+    if (fn == RdpUsbUrbFunction::kControlGetInterfaceRequest) {
+        rtsc::proto::RdpUsbTsUrbControlGetInterfaceRequest get_iface;
+        if (rtsc::proto::RdpUsbTsUrbControlGetInterfaceRequest::parse(
+                body.data(), body.size(), get_iface) !=
+            rtsc::proto::Status::Ok) {
+            result_body = BuildResultHeader(8, result.usbd_status);
+            return;
+        }
+        // GET_INTERFACE: standard, interface recipient (0x81), wIndex is the
+        // interface number.
+        run_control(kTransferIn,
+                    make_setup(0x81, 0x0A, 0, get_iface.interface,
+                               output_buffer_size),
+                    {});
+        return;
+    }
+
+    if (fn == RdpUsbUrbFunction::kControlFeatureRequest) {
+        rtsc::proto::RdpUsbTsUrbControlFeatureRequest feat;
+        if (rtsc::proto::RdpUsbTsUrbControlFeatureRequest::parse(
+                body.data(), body.size(), feat) != rtsc::proto::Status::Ok) {
+            result_body = BuildResultHeader(8, result.usbd_status);
+            return;
+        }
+        // 0x000D = URB_FUNCTION_SET_FEATURE_TO_DEVICE: device recipient,
+        // standard, host-to-device (no data stage).
+        run_control(0x0,
+                    make_setup(0x00, 0x03, feat.feature_selector, feat.index,
+                               output_buffer_size),
+                    {});
+        return;
+    }
+
+    if (fn == RdpUsbUrbFunction::kControlVendorOrClassRequest) {
+        rtsc::proto::RdpUsbTsUrbControlVendorOrClassRequest vendor;
+        if (rtsc::proto::RdpUsbTsUrbControlVendorOrClassRequest::parse(
+                body.data(), body.size(), vendor) !=
+            rtsc::proto::Status::Ok) {
+            result_body = BuildResultHeader(8, result.usbd_status);
+            return;
+        }
+        // 0x0017 = URB_FUNCTION_VENDOR_DEVICE: type vendor (0x40), recipient
+        // device (0x00). TransferFlags bit 0 selects the IN direction and adds
+        // 0x80; an OUT transfer carries its data stage in `output`.
+        const bool in = (vendor.transfer_flags & 0x1) != 0;
+        const uint8_t bm_request_type =
+            static_cast<uint8_t>(0x40 | (in ? 0x80 : 0x00));
+        run_control(vendor.transfer_flags,
+                    make_setup(bm_request_type, vendor.request, vendor.value,
+                               vendor.index, output_buffer_size),
+                    in ? std::vector<uint8_t>{} : output);
         return;
     }
 
