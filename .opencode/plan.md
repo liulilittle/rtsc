@@ -1790,3 +1790,9 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
 验证：Linux gate PASS 67/67（日志目录 5 个）；Win Release 69/69；Win Debug 69/69；MUT- 0。
 
       [批74 复核关闭] D1-D4 全部已在源码修复，实测：D1 order_engine.cpp:189-195 kNoOp 单独计 noop 不再计入 unsupported；:253 中止条件为 truncated||failed>0||unknown_order_type（不含 unsupported）；集成测试 test_order_engine.cpp:199 order_engine_patblt_bsnull_does_not_stop 断言 noop==1 && applied==1 && unsupported==0 且后续 BS_SOLID 订单仍绘制；:239 order_engine_patblt_zero_size_noop 覆盖零尺寸。D2 计数注释 order_engine.h:48-53 与语义一致。D3 :242-251 default 注释与计数一致。D4 拼写 greps 在 render 与 test_order_engine 中 0 命中。
+### 批192 后：仓库发布（2026-11-08）
+- 目标：把本地全部工作发布到 GitHub（用户指令：新建公开仓库并推送）。
+- 步骤：本地提交 → 备份 bundle → 从全历史移除 224MB 的 `rea-ghidra-*`
+  缓存（filter-branch）→ 推送 master → 校验远端。
+- 验证：`git ls-remote origin master` == 本地 HEAD；`gh api contents/<缓存目录>`
+  返回 404；`.gitignore` 含 `/rea-ghidra-*/`。状态 [x]

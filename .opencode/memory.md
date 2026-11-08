@@ -1505,247 +1505,30 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
   URB 函数码决定，request_type_reserved_bits 忽略（与 FreeRDP 一致）。
 - M47（忽略方向位）→ 1 test/1 check 红（want C0 got 40）；恢复后
   rdpusb 75/430、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_ISVALIDCONTEXT
+## 教训（2026-11-07）：[MS-RDPESC] 服务端→客户端 IOCTL 全集（已实现）
 
-- [MS-RDPESC] 3.1.4.3：ISVALIDCONTEXT 与 RELEASECONTEXT 共用 Context_Call
-  （2.2.2.2），返回 Long_Return（2.2.3.3，仅 Result）。
-- 后端新增纯虚方法时，三处实现（null/win32/test fake）必须同步；Null 后端
-  无服务时任何上下文都不存在 → SCARD_E_INVALID_HANDLE。
-- 功能新增会推翻既有“不支持”断言；必须把断言改到仍未支持的 IOCTL
-  （ACCESSSTARTEDEVENT/GETSTATUSCHANGEW），不得直接删除。
-- M48（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 60/156、
-  smartcard_channel 19/124、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_GETATTRIB
-
-- [MS-RDPESC] 2.2.2.21/2.2.3.12：GetAttrib_Call{hCard, dwAttrId, fpbAttrIsNULL,
-  cbAttrLen}；GetAttrib_Return{ReturnCode, cbAttrLen, [unique] pbAttr}。
-- 三态：is_null=1 或 capacity=0 → 只回长度 + NULL；数据超容量 →
-  SCARD_E_INSUFFICIENT_BUFFER；否则回数据。capacity=0xFFFFFFFF 为
-  SCARD_AUTOALLOCATE。
-- 变异输入必须隔离条件：`is_null=1 && capacity=0` 会让“忽略 is_null”的变异
-  存活；改为 `is_null=1 && capacity=16` 才能证伪。
-- M49 修正后 → 1 test/2 checks 红；恢复后 smartcard 63/166、
-  smartcard_channel 20/154、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_SETATTRIB
-
-- [MS-RDPESC] 2.2.2.22：SetAttrib_Call{hCard, dwAttrId, cbAttrLen, pbAttr}；
-  返回 Long_Return（2.2.3.3）。
-- NDR 数组长度必须等于 cbAttrLen；不一致必须拒绝（FreeRDP 3.20.1 的堆越界
-  修复即此不变量）。
-- GETATTRIB 的 capacity 与 SETATTRIB 的 cbAttrLen 语义不同，必须用独立字段。
-- `LPCBYTE` 在部分 TU 未定义，Win32 函数指针用 `const BYTE*`。
-- M50（注释分派）→ 1 test/9 checks 红；恢复后 smartcard 65/177、
-  smartcard_channel 21/167、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSA
-
-- [MS-RDPESC] 2.2.2.9：LocateCardsA_Call{Context, cBytes, mszCards, cReaders,
-  rgReaderStates}；线上只有 Context，没有 hCard（FreeRDP 的 IDL 声明
-  Handles_Call 与实现不符）。
-- mszCards 的 NDR 长度必须等于 cBytes；cReaders ≤ 10；数组 MaxCount 必须等于
-  cReaders；返回 LocateCards_Return 与 GetStatusChange_Return 同构。
-- ReaderStateA 数组解析必须共用（`ReadReaderStateArray`），避免两份知识。
-- 返回编码在 ReturnCode != 0 时写 cReaders=0 + NULL（FreeRDP 同）。
-- 测试线格式必须逐字段核对：漏写 rgbAtr[36] 会让解析在数组元素处失败；
-  小端 u32 的字节序不等于书写顺序（0x0BADF00D → 0D F0 AD 0B）。
-- M51（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 70/188、
-  smartcard_channel 22/190、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_READCACHEA
-
-- [MS-RDPESC] 2.2.2.25：ReadCacheA_Call{[string] szLookupName 在最前,
-  Context, UUID* CardIdentifier, FreshnessCounter, fPbDataIsNULL, cbDataLen}；
-  UUID referent 是 16 字节定长（无长度前缀）。
-- 返回 ReadCache_Return{ReturnCode, cbDataLen≤65536, [unique] pbData}；
-  ReturnCode != 0 时写 0 + NULL。
-- 长度探测用 SCARD_AUTOALLOCATE（规范允许 cbDataLen=0xFFFFFFFF），
-  不要依赖 NULL 缓冲区时 API 的返回码语义。
-- 非 unique 指针（[string]/UUID*）为空必须拒绝（fail closed）。
-- 测试辅助函数按文件而异：test_smartcard.cpp 有 Bytes/Zeros，
-  test_smartcard_channel.cpp 没有 Bytes，必须用 std::vector<uint8_t>{...}。
-- M52（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 76/203、
-  smartcard_channel 23/220、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_WRITECACHEA
-
-- [MS-RDPESC] 2.2.2.27：WriteCacheA_Call{[string] szLookupName 在最前,
-  Context, UUID* CardIdentifier, FreshnessCounter, cbDataLen≤65536,
-  [unique] pbData}；返回 Long_Return。
-- pbData 是 [unique]：空指针合法但 cbDataLen 必须为 0；非空时 NDR 长度必须
-  等于 cbDataLen。
-- UUID referent 仍是 16 字节定长。
-- 不要把 WriteCache 与 ReadCache 的解析合并：字段集合不同，合并会引入
-  错误条件分支。
-- M53（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 81/216、
-  smartcard_channel 24/235、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_GETREADERICON
-
-- [MS-RDPESC] 2.2.2.31：GetReaderIcon_Call{Context, [string] wchar_t*
-  szReaderName}；WCHAR [string] 的 Length/Offset/ActualCount 以字符为单位，
-  数据 UTF-16LE，按 4 字节对齐，末字符必须为 NUL。
-- 返回 GetReaderIcon_Return{ReturnCode, cbDataLen≤4194304, [unique] pbData}；
-  ReturnCode != 0 时写 0 + NULL。
-- Win32 用 SCardGetReaderIconW + SCARD_AUTOALLOCATE + SCardFreeMemory。
-- 代码库的 UTF-16 表示统一用 std::u16string（与 clipboard/file_list 一致）。
-- M54（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 87/225、
-  smartcard_channel 25/254、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_GETDEVICETYPEID
-
-- [MS-RDPESC] 2.2.2.32：GetDeviceTypeId_Call 与 GetReaderIcon_Call 线上
-  同构（Context + [string] wchar_t* szReaderName），可复用解析。
-- 返回 GetDeviceTypeId_Return{ReturnCode, dwDeviceId}；FreeRDP 在失败时
-  也写 dwDeviceId（0），编码器必须无条件写。
-- Win32 用 SCardGetDeviceTypeIdW。
-- M55（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 90/231、
-  smartcard_channel 26/268、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_GETTRANSMITCOUNT + 规范引用纪律
-
-- [MS-RDPESC] 2.2.2.29：GetTransmitCount_Call{REDIR_SCARDHANDLE hCard}；
-  返回 2.2.3.13 GetTransmitCount_Return{ReturnCode, cTransmitCount}，
-  失败也写 cTransmitCount。
-- Win32 用 SCardGetTransmitCount(hCard, &count)，参数是卡句柄。
-- 引用规范必须区分“章节号”和 IOCTL 表 Function number：READCACHEA 是
-  3.1.4.42（Function 60）、WRITECACHEA 3.1.4.44（62）、GETREADERICON
-  3.1.4.47（65）、GETDEVICETYPEID 3.1.4.48（66）、GETTRANSMITCOUNT
-  3.1.4.41（64）、GetDeviceTypeId_Return 2.2.3.15。
-- FakeBackend 字段命名必须避开既有方法字段（transmit_status 已存在）。
-- M56（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 93/237、
-  smartcard_channel 27/282、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSBYATRA
-
-- [MS-RDPESC] 2.2.2.23：LocateCardsByATRA_Call{Context, cAtrs≤1000,
-  rgAtrMasks, cReaders≤10, rgReaderStates}；返回 LocateCards_Return。
-- LocateCards_ATRMask 每元素 76 字节（cbAtr + rgbAtr[36] + rgbMask[36]）；
-  数组 NDR Length 是元素个数；cbAtr≤36 必须拒绝。
-- 掩码指针与 cAtrs 必须同时为零或同时非零（FreeRDP 同）。
-- Win32 用 SCardLocateCardsByATRA；后端把 atr/mask 截到 cbAtr 长度。
-- M57（注释分派）→ 1 test/6 checks 红；恢复后 smartcard 99/252、
-  smartcard_channel 28/305、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_ACCESSSTARTEDEVENT
-
-- [MS-RDPESC] 2.2.2.30：ScardAccessStartedEvent_Call 不是 NDR 结构，只是
-  4 字节未初始化缓冲区；接收方必须忽略内容。返回 2.2.3.3 Long_Return
-  （3.1.4.4 正文明确）。
-- FreeRDP 对该 IOCTL 不写输出缓冲区（dispatcher 跳过 8 字节对齐），与规范
-  不一致；本项目按规范返回 NDR 包装的 Long_Return。
-- Win32 用 SCardAccessStartedEvent + SCardReleaseStartedEvent，取到句柄后
-  立即释放（1:1 配对）。
-- 非 NDR 载荷必须在 ParseScardCall 入口特判，不能走 NdrHeader::parse。
-- M58（注释分派）→ 1 test/3 checks 红；恢复后 smartcard 101/259、
-  smartcard_channel 29/315、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_CANCEL
-
-- [MS-RDPESC] 2.2.2.2 Context_Call + 2.2.3.3 Long_Return；Win32 用
-  SCardCancel(hContext)。
-- CANCEL/RELEASE/ISVALIDCONTEXT 共用 Context_Call，解析可直接复用。
-- 枚举按 IOCTL 值升序维护，追加时不要破坏可读性。
-- M59（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 102/264、
-  smartcard_channel 30/326、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_STATE
-
-- [MS-RDPESC] 2.2.2.17：State_Call{REDIR_SCARDHANDLE, fpbAtrIsNULL,
-  cbAtrLen}；返回 2.2.3.9 State_Return{ReturnCode, dwState, dwProtocol,
-  cbAtrLen≤36, [unique] rgAtr}。
-- 三态：fpbAtrIsNULL=1 或 cbAtrLen=0 → 成功 + 长度 + NULL；数据超容量 →
-  SCARD_E_INSUFFICIENT_BUFFER；否则回数据。cbAtrLen=0xFFFFFFFF 表示
-  SCARD_AUTOALLOCATE。
-- FreeRDP 忽略调用方参数、总是回 ATR，与规范不一致；本项目按规范实现。
-- Win32 用 SCardState(hCard, &state, &protocol, buf36, &len)。
-- M60（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 106/273、
-  smartcard_channel 31/360、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_RECONNECT
-
-- [MS-RDPESC] 2.2.2.15：Reconnect_Call{REDIR_SCARDHANDLE, dwShareMode,
-  dwPreferredProtocols, dwInitialization}；返回 2.2.3.7
-  Reconnect_Return{ReturnCode, dwActiveProtocol}，失败也写 dwActiveProtocol。
-- Win32 用 SCardReconnect(hCard, share, preferred, init, &active)。
-- 修改既有分支附近代码时必须先读上下文，避免误删相邻语句（本批一次误删
-  State 的 protocol 局部变量，已立即恢复）。
-- M61（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 109/282、
-  smartcard_channel 32/377、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LISTREADERSW
-
-- ListReadersW_Call 与 ListReadersA_Call 完全同构（Context_Call）；仅返回
-  msz 为 UTF-16LE 多字符串，cBytes 为字节数且必须偶数（FreeRDP 校验）。
-- 后端 W 方法返回宽字节（SCardListReadersW 的 cch 是字符数，字节数 = cch*2）。
-- NDR 简单 referent = Length(4) + 数据 + 4 字节对齐填充；写精确字节测试必须
-  计入 Length 前缀与填充（本批两处预期漏算，已修正）。
-- 新增支持会推翻既有“不支持”断言：本批把 kListReadersW 换成 kConnectW。
-- M62（注释分派）→ 1 test/3 checks 红；恢复后 smartcard 113/289、
-  smartcard_channel 33/393、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_CONNECTW
-
-- ConnectW_Call 与 ConnectA_Call 同构，仅 szReader 为 WCHAR [string]；
-  返回共用 Connect_Return（2.2.3.8）。
-- 本协议 NDR [string] 的 Length/Offset/ActualCount 口径：Length ==
-  Offset + ActualCount，且计数含 NUL（FreeRDP smartcard_ndr_read 同）；
-  测试按“ActualCount 不含 NUL”写会解析失败。
-- 宽字符 reader 在后端用 std::u16string（与 GetReaderIcon 一致），
-  Win32 可直接 reinterpret_cast<const wchar_t*>(c_str())。
-- M63（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 115/297、
-  smartcard_channel 34/400、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_STATUSW
-
-- Status_Call 2.2.2.18 对 A/W 完全相同；返回 2.2.3.10 的 mszReaderNames
-  在 W 时为 UTF-16LE，cBytes 为字节数（失败置 0、指针 NULL）。
-- 宽字符多字符串必须双 NUL 终止（4 个零字节）；单 NUL 会被
-  WideMultiStringFits 拒绝（本批 fake 初版即此错误）。
-- Win32 用 SCardStatusW（cch 字符数 × 2 字节）。
-- M64（注释分派）→ 1 test/2 checks 红（尺寸检查提前返回）；恢复后
-  smartcard 117/300、smartcard_channel 35/419、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_GETSTATUSCHANGEW
-
-- GetStatusChangeW_Call 与 A 唯一差异是 reader 名宽字符；返回 2.2.3.5
-  完全共用（不含名字），编码直接复用 A 分支。
-- Win32 宽状态结构（LPCWSTR szReader）与 A 结构不能混用；后端用
-  ScardReaderStateNativeW + SCardGetStatusChangeW。
-- 1 秒步进轮询抽成模板助手（A/W 共用），避免两套超时逻辑漂移。
-- M65（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 118/306、
-  smartcard_channel 36/429、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSW
-
-- LocateCardsW_Call 与 A 同形，差异是 mszCards 与 reader 名均为 UTF-16LE；
-  返回 2.2.3.5 与 A 共用（不含名字）。
-- mszCards 的 IDL 是 `[size_is(cBytes)] const byte*`：Length==cBytes、读
-  cBytes 字节；FreeRDP 用 elementSize=2 读 2*cBytes，与其 IDL 矛盾，已记入
-  discover 待抓包验证。
-- 后端 W 版用 ScardReaderStateNativeW + SCardLocateCardsW。
-- M66（注释分派）→ 1 test/4 checks 红；恢复后 smartcard 119/311、
-  smartcard_channel 37/438、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_READCACHEW
-
-- ReadCacheW_Call 与 A 唯一差异是 szLookupName 为 WCHAR [string]；返回
-  ReadCache_Return 2.2.3.1 共用。
-- 后端 W 版用 std::u16string + SCardReadCacheW；长度探测仍走
-  SCARD_AUTOALLOCATE。
-- 脚本批量替换函数指针别名时必须核对结果，避免生成重复/未使用的别名
-  （本批一次 FnReadCacheAUnused，已清理）。
-- M67（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 120/320、
-  smartcard_channel 38/453、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_WRITECACHEW
-
-- WriteCacheW_Call 与 A 唯一差异是 szLookupName 为 WCHAR [string]；返回
-  Long_Return 2.2.3.3 共用。
-- 新增 IOCTL 时必须同时检查三处：IsSupported、Parse 分派、**编码分组**
-  （本批漏了 Long_Return 分组，通道测试以 STATUS_BUFFER_TOO_SMALL 暴露）。
-- 盘点 W 变体时不要只看 plan 列表：LISTREADERGROUPSW 与
-  LOCATECARDSBYATRW 仍在 spec 中未实现。
-- M68（注释分派）→ 1 test/8 checks 红；恢复后 smartcard 121/328、
-  smartcard_channel 39/467、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LISTREADERGROUPSW
-
-- ListReaderGroups_Call 对 A/W 完全相同；返回 2.2.3.4 与 ListReaders_Return
-  共用，W 时宽字符多字符串、cBytes 偶数。
-- 后端 W 版用 SCardListReaderGroupsW（cch 字符数 × 2）。
-- 新增支持会推翻既有 unsupported 断言（本批 0x00090024 → 0x000900EC）。
-- M69（注释分派）→ 1 test/2 checks 红；恢复后 smartcard 123/331、
-  smartcard_channel 40/481、影响面 6/6 全绿。
-## 教训（2026-11-07）：SCARD_IOCTL_LOCATECARDSBYATRW
-
-- LocateCardsByATRW_Call 与 A 唯一差异是 rgReaderStates 的 reader 名宽
-  字符；ATR mask 数组（cbAtr + rgbAtr[36] + rgbMask[36]）完全相同。
-- 后端 W 版用 ScardReaderStateNativeW + SCardLocateCardsByATRW。
-- 至此服务端→客户端 [MS-RDPESC] IOCTL（含全部 W 变体）已实现；剩余
-  未支持代码仅为客户端→服务端 Introduce/Forget/Add/Remove 与
-  RELEASESTARTEDEVENT。
-- M70（注释分派）→ 1 test/5 checks 红；恢复后 smartcard 124/342、
+- 共用体：ISVALIDCONTEXT/RELEASECONTEXT/CANCEL 走 Context_Call（2.2.2.2）、返回
+  Long_Return（2.2.3.3）；ListReadersW/ListReaderGroupsW 与 A 同构（W 为 UTF-16LE
+  多字符串，cBytes 为字节数且必须偶数）。
+- 三态输出（is_null=1 或容量 0 → 只回长度；超容量 → SCARD_E_INSUFFICIENT_BUFFER；
+  否则回数据）：GETATTRIB、STATE；容量 0xFFFFFFFF = SCARD_AUTOALLOCATE。
+- 关键字段/长度：GetAttrib 2.2.2.21；SetAttrib 2.2.2.22（NDR 长度须等于 cbAttrLen）；
+  LocateCardsA 2.2.2.9（mszCards 长度==cBytes，cReaders<=10）；ReadCacheA 2.2.2.25
+  （szLookupName 在最前，UUID 16 字节定长，<=65536）；WriteCacheA 2.2.2.27（unique
+  pbData 为空则 cbDataLen=0）；GetReaderIcon 2.2.2.31（WCHAR 计数含 NUL，4MB 上限）；
+  GetDeviceTypeId 2.2.2.32（与 ReaderIcon 同构，失败也写 dwDeviceId）；
+  GetTransmitCount 2.2.2.29；LocateCardsByATRA 2.2.2.23（ATRMask 76 字节，cAtrs<=1000）；
+  AccessStartedEvent 2.2.2.30（非 NDR，4 字节忽略内容）；Reconnect 2.2.2.15（失败也写
+  dwActiveProtocol）；ConnectW 的 [string] Length==Offset+ActualCount 且含 NUL；
+  StatusW/GetStatusChangeW/LocateCardsW 宽多字符串必须双 NUL；LocateCardsW 的
+  mszCards 是 [size_is(cBytes)] byte*（Length==cBytes）；GetStatusChangeW 返回 2.2.3.5。
+- NDR 简单 referent = Length(4)+数据+4 字节对齐填充；写精确字节预期必须计入。
+- 新增支持会推翻既有“不支持”断言：把断言改指仍未支持的 IOCTL，禁止直接删除。
+- 后端新增纯虚方法必须同步 null/win32/test fake 三处；W 变体用 std::u16string +
+  SCard*W；FakeBackend 字段名不得与既有方法字段冲突。
+- 引用规范必须区分“章节号”和 IOCTL 表 Function number（如 READCACHEA 3.1.4.42/60、
+  WRITECACHEA 3.1.4.44/62、GETREADERICON 3.1.4.47/65、GETDEVICETYPEID 3.1.4.48/66）。
+- M48-M70（注释分派变异）各 1 test 红；恢复后 smartcard 124/342、
   smartcard_channel 41/493、影响面 6/6 全绿。
 ## 教训（2026-11-07）：GetStatusChange 超时与输出缓冲审计
 
@@ -2072,3 +1855,6 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
   Version 3 才允许压缩 DATA；协商结果取 min(客户端最高, 服务端声明)。
 - 引入新的前置门控（版本/能力/状态）时必须审计全部既有用例并补前置，禁止为迁就旧测试
   放宽门控（例102）。
+- 仓库体积纪律：REA/Ghidra 等工具缓存（数百 MB）必须在首次提交前加入 .gitignore；
+  若已进入历史，须 git bundle 备份后用 filter-branch 全历史移除，随后删 refs/original、
+  reflog expire --expire=now --all 再推送；历史重写必须在后台进程跑并轮询（例103）。

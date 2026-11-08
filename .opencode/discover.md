@@ -2947,3 +2947,17 @@ Length==cBytes、读 cBytes 字节、校验 UTF-16LE 双 NUL。
 [下一步] 在旧用例中补 VERSION3 协商前置（不得为迁就旧测试而放宽门控）；补齐后 94/508 全绿。
 [教训] 引入新的前置条件（版本/能力/状态门）时必须审计全部既有用例，把前置补齐；
       门控本身不能为了"让旧测试通过"而删除或放宽。
+
+## [2026-11-08][例103] 仓库历史夹带 REA/Ghidra 缓存导致推送被 GitHub 拒绝
+
+[尝试] `gh repo create liulilittle/rtsc --public --source . --push`。
+[错误] pre-receive hook 拒绝：根提交 `21860b2` 含
+      `rea-ghidra-.../tmp/.../ghidra16663739977024277765.cache` 156.22MB
+      （目录共 224MB/183 文件），超 100MB 单文件上限；filter-branch 首次
+      以 60s 工具时限运行被中止，仅改写 22/756 提交。
+[下一步] 先 `git bundle --all` 备份；用后台进程跑 `git filter-branch
+      --index-filter "git rm -r --cached"` 全历史移除；完成后删
+      `refs/original`、`reflog expire --expire=now --all`；再推送并核对
+      `git ls-remote origin master` 与 `gh api contents/<path>`（应 404）。
+[教训] 大型工具缓存必须在首次提交前加入 .gitignore，事后清理要重写全历史；
+      长时历史重写必须在后台进程执行并轮询进度，禁止用单次 60s 工具调用硬跑。

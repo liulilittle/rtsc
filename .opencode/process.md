@@ -1,19 +1,10 @@
 # RTSC 进度（process.md）
 
-## 2026-10-22 第1轮 环境与基线
-- OS Windows 11 10.0.26200；MSVC 14.44.35207；CMake 3.31.6 / Ninja 1.12.1（VS 内置，不在 PATH）
-- Git 2.55.0、Python 3.14、Node 24.21.0；无 IDA / Hopper / jadx / tshark；无 OpenSSL / vcpkg
-- 逆向工具链（用户提供，只读）：G:\sre\ghidra 12.1.4、G:\sre\java\jdk-21.0.12.1+1
-- 目标二进制：mstsc.exe 1,114,112 B；mstscax.dll 9,166,848 B（均 10.0.26100.8875）
-- 本地 RDP 服务停止，fDenyTSConnections=1，3389 未监听
-- 已建目录：include/ src/ tests/ tools/ docs/spec/ evidence/ captures/ .opencode/backups/
-
-## 2026-10-22 第2轮 规范取证 + 协议第一层
-- [MS-RDPBCGR] 2.2.1.1/2.2.1.2 原文入库 `docs/spec/connection-initiation.md`
-  - CRQ = tpktHeader(4) + x224Crq(7) + [cookie] + [rdpNegReq(8)] + [correlationInfo(36)]
-  - RDP_NEG_REQ: type=0x01, flags, length=0x0008, requestedProtocols(LE32)
-  - protocols: RDP 0x0 / SSL 0x1 / HYBRID 0x2 / RDSTLS 0x4 / HYBRID_EX 0x8 / RDSAAD 0x10
-- 二进制常量扫描 `evidence/mstscax/constants.txt`：GCC 前缀 0x6C3338、`Duca` 0x161EE8
+## 环境（2026-10-22）
+- OS Windows 11 10.0.26200；MSVC 14.44.35207；CMake 3.31.6/Ninja 1.12.1；Git 2.55.0；Python 3.14；Node 24.21.0；工具 G:\sre\ghidra 12.1.4、G:\sre\java\jdk-21.0.12.1+1（IDA/Hopper/jadx/tshark 无）。
+- 目标：mstsc.exe 1,114,112B、mstscax.dll 9,166,848B（10.0.26100.8875）；本机 RDP 服务停止（3389 未监听）。
+- 目录：include/ src/ tests/ tools/ docs/spec/ evidence/ captures/ .opencode/backups/
+- 协议常量与取证见 docs/spec/connection-initiation.md 与 evidence/mstscax/constants.txt。
 
 ## 【历史归档】
 第1~602阶段台账已裁剪（原 8547 行→现 ~452 行）。
@@ -6816,3 +6807,13 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 ### 教训（批192）
 - 新增能力门控会让旧用例失效，必须同步为旧用例补前置条件，而不是放宽门控。
 - 同一文件可能混用 LF/CRLF：替换锚点必须先探测实际行尾（例99 的同类问题再次出现）。
+### 批192 收尾：GitHub 发布
+- 本地提交：`57c4968`（批189-192 代码/测试/文档）+ `5042195`（W8 收尾）。
+- 首次推送被拒：历史根提交 `21860b2` 含 `rea-ghidra-*/tmp/.../*.cache` 156MB，
+  超过 GitHub 100MB 单文件上限（224MB 共 183 个文件，均为 REA/Ghidra 缓存）。
+- 处置：`git bundle` 全量备份（73.9MB）→ `git filter-branch --index-filter`
+  移除 `rea-ghidra-6919b561a4f39e774562a886b1cf6474` 全历史 → 清 `refs/original`
+  + `reflog expire --expire=now --all`；.gitignore 已含 `/rea-ghidra-*/`。
+- 推送：[BASH:git push -u origin master EXIT=0]；远端 master = 本地 HEAD
+  = `50421950c2f921b2401d2d46cdf963964d9601cd`；`gh repo view` visibility=PUBLIC。
+- 远端校验：[BASH:gh api contents/rea-ghidra-... → HTTP 404]（目录未上传）。
