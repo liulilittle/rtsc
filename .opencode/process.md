@@ -6815,5 +6815,11 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   移除 `rea-ghidra-6919b561a4f39e774562a886b1cf6474` 全历史 → 清 `refs/original`
   + `reflog expire --expire=now --all`；.gitignore 已含 `/rea-ghidra-*/`。
 - 推送：[BASH:git push -u origin master EXIT=0]；远端 master = 本地 HEAD
-  = `50421950c2f921b2401d2d46cdf963964d9601cd`；`gh repo view` visibility=PUBLIC。
+  = `4606021624c4871a8663895b785529a65f0b6199` (final HEAD incl. W8 trim commit)；`gh repo view` visibility=PUBLIC。
 - 远端校验：[BASH:gh api contents/rea-ghidra-... → HTTP 404]（目录未上传）。
+- 2nd push `5042195..4606021` (W8 trim: memory 2077->1860 lines, process 6828->6819 lines);
+  `git log --all -- rea-ghidra-*` = 0 hits; worktree clean; remote master == local HEAD.
+- Reflection: backing up before history rewrite was correct; shortfall was running
+  filter-branch under the 60s tool limit at first (wasted a turn) and not scanning
+  largest blobs before cloning. Correction: measure `git ls-files` by size first,
+  run rewrite in a background process and poll the log.
