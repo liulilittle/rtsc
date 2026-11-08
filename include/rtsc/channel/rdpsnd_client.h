@@ -63,6 +63,9 @@ class RdpsndClient {
     unsigned wave_confirm_count() const { return wave_confirm_count_; }
     unsigned training_confirm_count() const { return training_confirm_count_; }
     unsigned close_count() const { return close_count_; }
+    // Wave/Wave2 samples dropped because wFormatNo indexed outside the
+    // client format list (malformed server input).
+    unsigned format_reject_count() const { return format_reject_count_; }
     size_t bytes_played() const { return bytes_played_; }
     bool audio_received() const { return audio_received_; }
     uint16_t server_version() const { return server_version_; }
@@ -86,6 +89,7 @@ class RdpsndClient {
     void OnWave2(const std::vector<uint8_t>& body);
     void OnTraining(const std::vector<uint8_t>& body);
     void OnSetVolume(const std::vector<uint8_t>& body);
+    bool CheckWaveFormat(uint16_t format_no);
     void OnClose();
 
     static const rtsc::proto::SndAudioFormat* SelectFormat(
@@ -103,6 +107,9 @@ class RdpsndClient {
 
     rtsc::proto::ChannelReassembler reassembler_;
     std::optional<PendingWave> pending_wave_;
+    // A rejected WaveInfo still has a Wave continuation PDU on the wire; that
+    // payload must be swallowed, not parsed as a fresh WaveInfo.
+    bool skip_wave_continuation_ = false;
 
     std::vector<rtsc::proto::SndAudioFormat> server_formats_;
     std::vector<rtsc::proto::SndAudioFormat> client_formats_;
@@ -116,6 +123,7 @@ class RdpsndClient {
     unsigned wave_confirm_count_ = 0;
     unsigned training_confirm_count_ = 0;
     unsigned close_count_ = 0;
+    unsigned format_reject_count_ = 0;
     size_t bytes_played_ = 0;
     bool audio_received_ = false;
 };

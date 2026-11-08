@@ -25,6 +25,7 @@ RdpsndClient::~RdpsndClient() = default;
 void RdpsndClient::Reset() {
     reassembler_.Reset();
     pending_wave_.reset();
+    skip_wave_continuation_ = false;
     server_formats_.clear();
     client_formats_.clear();
     selected_format_ = {};
@@ -38,6 +39,7 @@ void RdpsndClient::Reset() {
     wave_confirm_count_ = 0;
     training_confirm_count_ = 0;
     close_count_ = 0;
+    format_reject_count_ = 0;
     bytes_played_ = 0;
     audio_received_ = false;
 }
@@ -136,11 +138,21 @@ void RdpsndClient::OnWavePdu(const std::vector<uint8_t>& message, size_t offset)
         PlaySample(wave.data, wave.format_no, wave.time_stamp, wave.block_no);
         return;
     }
+    if (skip_wave_continuation_) {
+        // The WaveInfo this PDU continues was rejected, so its payload must be
+        // swallowed instead of being parsed as a new WaveInfo.
+        skip_wave_continuation_ = false;
+        return;
+    }
 
     rtsc::proto::SndWaveInfo info;
     const std::vector<uint8_t> info_body(body, body + body_size);
     if (rtsc::proto::SndWaveInfo::parse(info_body, info) !=
         rtsc::proto::Status::Ok) {
+        return;
+    }
+    if (!CheckWaveFormat(info.format_no)) {
+        skip_wave_continuation_ = true;
         return;
     }
     PendingWave wave;
@@ -181,8 +193,19 @@ void RdpsndClient::OnWave2(const std::vector<uint8_t>& body) {
     if (rtsc::proto::SndWave2::parse(body, wave) != rtsc::proto::Status::Ok) {
         return;
     }
+    if (!CheckWaveFormat(wave.format_no)) return;
     ++wave2_count_;
     PlaySample(wave.data, wave.format_no, wave.time_stamp, wave.block_no);
+}
+
+bool RdpsndClient::CheckWaveFormat(uint16_t format_no) {
+    // wFormatNo is a zero-based index into the list this client sent in its
+    // Client Audio Formats and Version PDU ([MS-RDPEA] 2.2.3.3/2.2.3.4 and
+    // 3.1.1.2). An out-of-range index is malformed input: the sample is dropped
+    // and not acknowledged, never played with a substituted format.
+    if (format_no < client_formats_.size()) return true;
+    ++format_reject_count_;
+    return false;
 }
 
 void RdpsndClient::OnTraining(const std::vector<uint8_t>& body) {
@@ -213,6 +236,7 @@ void RdpsndClient::OnSetVolume(const std::vector<uint8_t>& body) {
 void RdpsndClient::OnClose() {
     ++close_count_;
     pending_wave_.reset();
+    skip_wave_continuation_ = false;
 }
 
 const rtsc::proto::SndAudioFormat* RdpsndClient::SelectFormat(
@@ -278,10 +302,10 @@ void RdpsndClient::SendWaveConfirm(uint16_t time_stamp, uint8_t block_no) {
 void RdpsndClient::PlaySample(const std::vector<uint8_t>& data,
                               uint16_t format_no, uint16_t time_stamp,
                               uint8_t block_no) {
-    if (sink_ != nullptr && !client_formats_.empty() && !data.empty()) {
-        const size_t index =
-            std::min<size_t>(format_no, client_formats_.size() - 1);
-        const rtsc::proto::SndAudioFormat& format = client_formats_[index];
+    // Callers validate format_no against the advertised list first
+    // (CheckWaveFormat); this is the single owner of that rule.
+    const rtsc::proto::SndAudioFormat& format = client_formats_[format_no];
+    if (sink_ != nullptr && !data.empty()) {
         rtsc::audio::PcmFormat pcm_format;
         pcm_format.channels = format.channels;
         pcm_format.samples_per_sec = format.samples_per_sec;

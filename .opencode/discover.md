@@ -2961,3 +2961,15 @@ Length==cBytes、读 cBytes 字节、校验 UTF-16LE 双 NUL。
       `git ls-remote origin master` 与 `gh api contents/<path>`（应 404）。
 [教训] 大型工具缓存必须在首次提交前加入 .gitignore，事后清理要重写全历史；
       长时历史重写必须在后台进程执行并轮询进度，禁止用单次 60s 工具调用硬跑。
+
+## [2026-11-08][例104] 远端可控索引被 clamp 而非拒绝，畸形样本被当成合法播放
+
+[尝试] 审计 rdpsnd 客户端对 Wave/Wave2 的 wFormatNo 处理。
+[错误] `PlaySample` 用 `std::min(format_no, client_formats_.size()-1)` 夹取索引：
+      越界索引会用最后一个已通告格式静默播放，并照常回 Wave Confirm（等于向服务器
+      确认“已消费”一个从未合法存在的样本）。同类问题见 FreeRDP CVE-2020-11041。
+[下一步] 新增 CheckWaveFormat 作为唯一规则所有者；越界 → 计数并丢弃、不回 Confirm；
+      被拒 WaveInfo 必须同时吞掉其无头续包（skip_wave_continuation_），否则续包会被
+      误解析成新的 WaveInfo。M110/M111 分别验证两条规则。
+[教训] 对远端可控的数组索引，“夹到边界”不是容错而是把畸形输入洗白；必须 fail-closed。
+      成对 PDU 拒绝首包时，必须显式处置后续无头载荷（本批 M111）。

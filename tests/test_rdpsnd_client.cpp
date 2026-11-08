@@ -106,10 +106,11 @@ std::vector<uint8_t> ServerFormatsBody(const std::vector<SndAudioFormat>& format
 }
 
 std::vector<uint8_t> Wave2Body(uint16_t time_stamp, uint8_t block_no,
-                               const std::vector<uint8_t>& data) {
+                               const std::vector<uint8_t>& data,
+                               uint16_t format_no = 0) {
     ByteWriter w;
     w.u16le(time_stamp);
-    w.u16le(0);  // format index into the client's list
+    w.u16le(format_no);  // index into the client's format list
     w.u8(block_no);
     w.u8(0); w.u8(0); w.u8(0);
     w.u32le(0x11223344);
@@ -297,6 +298,87 @@ RTSC_TEST(rdpsnd_unknown_format_is_ignored) {
 
     CHECK_EQ(client.client_formats_count(), static_cast<unsigned>(0));
     CHECK_EQ(player.plays, static_cast<unsigned>(0));
+}
+
+RTSC_TEST(rdpsnd_wave2_out_of_range_format_is_rejected) {
+    MockPlayer player;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RdpsndClient client(&player, [&](const std::vector<uint8_t>& m) {
+        sent.push_back(m);
+    });
+    FeedPdu(client, SndMsgType::kFormats,
+            ServerFormatsBody({PcmFormat(2, 44100)}, 8));
+    CHECK_EQ(client.client_formats_count(), static_cast<unsigned>(1));
+
+    // wFormatNo indexes the client's own format list ([MS-RDPEA] 2.2.3.4 and
+    // 3.1.1.2). Index 1 does not exist when the client advertised one format:
+    // the sample must be dropped, not silently played with format 0.
+    const std::vector<uint8_t> pcm = {1, 2, 3, 4};
+    FeedPdu(client, SndMsgType::kWave2, Wave2Body(7, 3, pcm, 1));
+
+    CHECK_EQ(player.plays, static_cast<unsigned>(0));
+    CHECK_EQ(client.bytes_played(), static_cast<size_t>(0));
+    CHECK(!client.audio_received());
+    CHECK_EQ(client.format_reject_count(), static_cast<unsigned>(1));
+    // A rejected sample was never consumed, so no Wave Confirm is owed.
+    CHECK(!FindSentBody(sent, SndMsgType::kWaveConfirm).has_value());
+}
+
+RTSC_TEST(rdpsnd_wave_info_out_of_range_format_is_rejected) {
+    MockPlayer player;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RdpsndClient client(&player, [&](const std::vector<uint8_t>& m) {
+        sent.push_back(m);
+    });
+    FeedPdu(client, SndMsgType::kFormats,
+            ServerFormatsBody({PcmFormat(2, 44100)}, 8));
+
+    ByteWriter info;
+    info.u16le(0x2222);
+    info.u16le(1);  // out-of-range wFormatNo
+    info.u8(4);
+    info.u8(0); info.u8(0); info.u8(0);
+    info.u8(0x10); info.u8(0x20); info.u8(0x30); info.u8(0x40);
+    FeedPdu(client, SndMsgType::kWave, info.take());
+
+    // The Wave continuation that follows a rejected WaveInfo must be swallowed:
+    // it carries no header of its own, so parsing it as a fresh WaveInfo would
+    // resurrect the sample under format 0. The payload below is deliberately
+    // shaped so a misparse would produce a valid format-0 WaveInfo.
+    ByteWriter cont;
+    cont.u16le(0x3333);  // would-be wTimeStamp
+    cont.u16le(0);       // would-be wFormatNo (valid index)
+    cont.u8(7);          // would-be cBlockNo
+    cont.u8(0); cont.u8(0); cont.u8(0);
+    cont.u8(0x50); cont.u8(0x60); cont.u8(0x70); cont.u8(0x80);
+    FeedPdu(client, SndMsgType::kWave, cont.take());
+
+    // A further Wave PDU would complete that bogus sample if it had been kept.
+    ByteWriter tail;
+    tail.u32le(0);  // bPad
+    tail.u8(0x90); tail.u8(0xA0);
+    FeedPdu(client, SndMsgType::kWave, tail.take());
+
+    CHECK_EQ(player.plays, static_cast<unsigned>(0));
+    CHECK_EQ(client.format_reject_count(), static_cast<unsigned>(1));
+    CHECK(!FindSentBody(sent, SndMsgType::kWaveConfirm).has_value());
+}
+
+// A Wave2 PDU before any format exchange has no format list at all: the index
+// is necessarily out of range and must be rejected.
+RTSC_TEST(rdpsnd_wave2_without_format_exchange_is_rejected) {
+    MockPlayer player;
+    std::vector<std::vector<uint8_t>> sent;
+    rtsc::channel::RdpsndClient client(&player, [&](const std::vector<uint8_t>& m) {
+        sent.push_back(m);
+    });
+
+    const std::vector<uint8_t> pcm = {9, 9};
+    FeedPdu(client, SndMsgType::kWave2, Wave2Body(1, 0, pcm));
+
+    CHECK_EQ(player.plays, static_cast<unsigned>(0));
+    CHECK_EQ(client.format_reject_count(), static_cast<unsigned>(1));
+    CHECK(!FindSentBody(sent, SndMsgType::kWaveConfirm).has_value());
 }
 
 // After a reconnect the server re-runs the format exchange. Reset() must drop

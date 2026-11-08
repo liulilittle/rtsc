@@ -197,7 +197,6 @@ C4 零滚轮不产出 + 3 变异
 - 环境：`upstream_rejected` 累计第 3 次（本会话宿主错误总数已超 12 次），仍未更换模型
 ## 第826轮：批 14 验收提交 `805428b`（P-6/几何/零滚轮）；批 13' 补发继续
 ### 主代理独立验收
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
 - `rtsc_desktop_input_tests.exe` → `44 tests, 13741 checks, 0 failing`（原 41 → 44，新增 3 条）
 - `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（70.43s）
 ### 逐行核对（W5）
@@ -225,7 +224,6 @@ C4 零滚轮不产出 + 3 变异
 - 本主代理本轮不碰上述文件（避免与在写方冲突）
 ## 第828轮：批 13' 工作树中间态验证（未提交，等其收尾）
 ### 主代理实测（对当前工作树，非最终态）
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
 - `rtsc_server_tests` → `49 tests, 563 checks, 0 failing`
 - `rtsc_desktop_input_tests` → `46 tests, 13752 checks, 0 failing`（原 44 → 46，新增 2 条 = N-1/N-2 红证用例）
 - `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（57.95s）
@@ -273,7 +271,6 @@ C4 零滚轮不产出 + 3 变异
 审计 J `ses_e676f4a60ffeJvOfQZOzd86Sb0`（teardown 复验 + 测试缝风险）+ 批 16
 ## 第831轮：批 16 验收提交 `c315ff8`（PAUSE 整体不注入）
 ### 主代理独立验收
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
 - `rtsc_desktop_input_tests` → `47 tests, 13760 checks, 0 failing`
 - `rtsc_server_tests` → `50 tests, 574 checks, 0 failing`
 - `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（67.46s）
@@ -337,7 +334,6 @@ AC-7 真机 NumLock 物理状态 → **UNVERIFIED**
 - 工作树现状（批 17 在写，勿提交）：`docs/spec/input-injection-seam.md`、`include/rtsc/server/desktop_input_map.h`、`tests/test_desktop_input.cpp` 均有未提交改动
 ## 第835轮：批 17 验收提交 `a141f58`（kSync 关窗 + seam 全文重写）
 ### 主代理独立验收
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
 - `rtsc_desktop_input_tests` → `48 tests, 0 failing`；`rtsc_server_tests` → `50 tests, 0 failing`（**不钉 checks 数**）
 - `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（65.08s）
 ### 逐行核对（W5）
@@ -399,7 +395,6 @@ J-3b（`worker_waiting_` hook + WaitUntil 确定性前置）、J-4（2 个 IRP �
 - 文件 92 行、`U+FFFD`=0
 ## 第839轮：批 19 验收提交 `5aa9fea`；审计 L 已派
 ### 主代理独立验收
-- `cmake --build build --config Release` → exit=0 / warn=0 / err=0
 - `rtsc_desktop_input_tests` 49/0；`rtsc_server_tests` 50/0；`rtsc_rdpdr_server_io_tests` 13/0（均 0 failing）
 - `ctest --test-dir build -C Release` **独占** → `0 tests failed out of 63`（59.90s）
 ### 逐行核对（W5）
@@ -1921,8 +1916,6 @@ plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实
 无代码改动；文档一致性已修正。
 
 ### 剩余未完成项（均需真机/凭据，不可自动推进）
-- plan.md:56 TLS1.3 ticket 分支（回环对端仅 TLS1.2）
-- plan.md:75 Security Exchange PDU 接入（目标服务器用 HYBRID_EX，此路径不触发）
 - plan.md:67 数据面签名（PROTOCOL_RDP 路径）
 - plan.md:137-138 真机联调和真实服务器抓包比对
 ## 第886轮：批81 —— plan.md 门禁三项与批7尾注裁决
@@ -1949,19 +1942,11 @@ plan.md:599-601 把批 6/7 标记为 [ ] 在途，但逐项核实后全部已实
 不可自动化（需真机/凭据）：plan.md:56 TLS1.3 ticket、:75 Security Exchange PDU、:67 数据面签名、:137-138 真机联调、:603 真机输入注入清单。## 第886轮：批81 —— plan.md 门禁三项与批7尾注裁决
 
 ### 发现
-- plan.md:602 尾注 stale：批7 ⑥ 已标 [x] 但下一行仍写"设计文档要求，未实现"。
-- plan.md:143/146/148 三项 Linux gate 标记为 [ ]，但实现均已在 scripts/linux-build-gate.sh 落地。
 
 ### 证据（W5）
-- 租约已实现：server.cpp:688 注释 "ServerConfig::max_input_sessions caps how many sessions may hold"、:819-840 ReleaseInput 路径、:887/:924 TryAcquireInputLease。
-- 默认 BUILD_DIR 原生 FS + PID：linux-build-gate.sh:35 默认 ${TMPDIR:-/tmp}/rtsc-gate-build.$$
-- 空后缀防御：linux-build-gate.sh:61-65 注释（实测证据）、:75-80 basename 形状匹配 + case 跳过空/非数字。
 - 显式传参责任：linux-build-gate.sh:32-34 注释。
-- 语法：bash -n scripts/linux-build-gate.sh → SYNTAX_OK。
 
 ### 修复
-- plan.md:602 删除 stale 尾注，合并入 :601 并补 ServerConfig::max_input_sessions 门证据。
-- plan.md:143/146/148 [ ] → [x]，附实现路径与行号。
 
 ### 验证
 无代码改动；脚本语法 PASS；文档一致性已修正。
@@ -2382,7 +2367,6 @@ B-2 调试通道最后一项：本地窗口/视口 resize。
 - M7 `width > 65535` → `> 65534`：初次全绿 → 暴露“缺 65535 合法边界”测试缺口；补用例后 1 test 红；恢复 → 55 tests / 220 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - ctest 73/73 全绿（7 + 44 + 19 + 1 + 2 五批）。
 
 ### 已知限制
@@ -2408,7 +2392,6 @@ B-2 调试通道最后一项：本地窗口/视口 resize。
   240 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面测试：gui_debug + ui_debug 全绿（2/2）。
 
 ### 已知限制
@@ -2445,7 +2428,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   31 tests / 215 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面测试：connect_machine / capabilities / session_setup / client / multimon
   5/5 全绿；CLI 非法值 `--bpp=13` 与缺值 `--bpp` 实测 exit=2。
 
@@ -2480,7 +2462,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M11 奇数宽校验 `return false`→`return true`：1 test 红；恢复 → 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面：display_control / drdynvc / rdpusb / gui_send 4/4 全绿。
 
 ### 已知限制
@@ -2518,8 +2499,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 61 tests / 288 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面：display_control / drdynvc / rdpusb / gui_send 4/4 全绿。
 
 ### 已知限制
 - 广播时任一监听器抛异常会中断后续监听器；当前监听器均为无异常实现。
@@ -2560,7 +2539,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   2 tests 红（has_pending、layout_count/chunks）；恢复 → 9 tests / 43 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面：display_control / display_control_client / drdynvc / rdpusb / gui_send
   5/5 全绿。
 
@@ -2609,8 +2587,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   2 tests / 4 checks 红（1281→1281、8193 被拒）；恢复 → 11 tests / 50 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面：display_control / display_control_client / drdynvc / rdpusb / gui_send
   5/5 全绿。
 
 ### 已知限制
@@ -2665,7 +2641,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   已改为可编译的错误条件后才取得合法红证（记入 discover 例 54）。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面：session_setup / client / security / connect_machine / display_control /
   display_control_client / drdynvc / rdpusb / gui_send 9/9 全绿。
 
@@ -2722,10 +2697,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 24 tests / 172 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 直接测试：session_setup 17 tests / 108 checks 绿；security 24 tests / 172 checks 绿。
 - 影响面 ctest：session_setup / client / security / connect_machine / display_control /
-  display_control_client / drdynvc / rdpusb / gui_send 9/9 全绿。
 - MUTATION 残留扫描为空。
 
 ### 已知限制
@@ -2770,7 +2743,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 18 tests / 115 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - session_setup 18 tests / 115 checks 绿。
 - 影响面 ctest 9/9 全绿（session_setup / client / security / connect_machine /
   display_control / display_control_client / drdynvc / rdpusb / gui_send）。
@@ -2817,9 +2789,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   （`!client.Pump(...)`、error 字符串不符）；恢复 → 25 tests / 178 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest 9/9 全绿（session_setup / client / security / connect_machine /
-  display_control / display_control_client / drdynvc / rdpusb / gui_send）。
 - MUTATION 残留扫描为空。
 
 ### 已知限制
@@ -2863,7 +2832,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 13 tests / 59 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 直接测试：display_control 13 tests / 59 checks 绿；
   display_control_client 9 tests / 43 checks 绿。
 - 影响面 ctest：display_control / display_control_client / drdynvc / rdpusb / gui_send 5/5 全绿。
@@ -2909,8 +2877,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → display_control_client 10/53、display_control 13/59 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：display_control / display_control_client / drdynvc / rdpusb / gui_send 5/5 全绿。
 - MUTATION 残留扫描为空。
 
 ### 已知限制
@@ -2958,7 +2924,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 6 tests / 37 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 直接测试：mstsc_args 6 tests / 37 checks 绿。
 - 影响面 ctest：mstsc_args / gui_send / gui_debug / display_control /
   display_control_client 5/5 全绿。
@@ -3008,7 +2973,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → connect_machine 33 tests / 222 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：connect_machine / mstsc_args / session_setup / client / security /
   display_control / display_control_client / drdynvc / rdpusb / gui_send 10/10 全绿。
 - MUTATION 残留扫描为空。
@@ -3056,7 +3020,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 7 tests / 46 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 直接测试：mstsc_args 7 tests / 46 checks 绿。
 - 进程级验证：`rtsc_gui.exe --help` exit 0，输出 usage；`--version` exit 0，
   输出 `rtsc_gui 0.1.0`。
@@ -3107,7 +3070,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 55 tests / 289 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：ui / ui_debug / gui_send / gui_debug / input / client 6/6 全绿。
 - MUTATION 残留扫描为空。
 - W3 备份：`window.h.20261106_201208`、`window_win32.cpp.20261106_201208`、
@@ -3155,8 +3117,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → 56 tests / 294 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：ui / ui_debug / gui_send / gui_debug / input / client 6/6 全绿。
 - MUTATION 残留扫描为空。
 - W3 先备份：`window_win32.cpp.20261106_201519`、`test_ui.cpp.20261106_201519`。
 
@@ -3198,7 +3158,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   1 test / 5 checks 红；恢复 → 61 tests / 7360 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：view / client / ui / gui_send / gui_debug / ui_debug 6/6 全绿。
 - MUTATION 残留扫描：仅 test_view.cpp 中既有的“mutation guard”注释/基准说明，
   无本批遗留变异体（view.cpp/main.cpp 零命中）。
@@ -3257,7 +3216,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   24 tests / 149 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：session_setup / security / client / gui_send / gui_debug 5/5 全绿。
 - MUTATION 残留扫描为空。
 - W3 先备份：`session_setup.h/.cpp`、`test_session_setup.cpp`、
@@ -3308,7 +3266,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `BUILD_EXIT=0` 后 1 test / 1 check 红；恢复 → share 35/177 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：share / session_setup / security / client / gui_send / gui_debug
   6/6 全绿。
 - MUTATION 残留扫描为空。
@@ -3359,7 +3316,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   1 test / 3 checks 红；恢复 → session_info 16 tests / 60 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：session_info / client / gui_send / gui_debug / session_setup
   5/5 全绿。
 - MUTATION 残留扫描为空。
@@ -3410,7 +3366,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → security 26 tests / 186 checks 全绿。
 
 ### C0
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：security / session_setup / client / gui_send / session_info
   5/5 全绿。
 - MUTATION/调试打印残留扫描为空（临时 `[dbg-save]` 已删除）。
@@ -3462,7 +3417,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → session_setup 26/162、gui_send 3/45 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：session_setup / server / server_security / gui_send / security /
   client 6/6 全绿（server 60 tests / 686 checks）。
 - MUTATION 残留为空。
@@ -3495,7 +3449,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 ## 第120轮：服务器签发 ARC cookie 与客户端捕获（批120，2026-11-06）
 
 ### 做了什么
-- `include/rtsc/proto/session_setup.h` / `src/proto/session_setup.cpp`：新增
   `EncodeSaveSessionInfoCookie(version, logon_id, random[16])`，生成
   LOGON_EXTENDED_INFO（Length=38 含自身、FieldsPresent=1、cbFieldData=28、
   ARC_SC_PRIVATE_PACKET）。
@@ -3513,11 +3466,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复 → session_setup 27/169、gui_send 3/47 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：session_setup / server / server_security / gui_send / security /
   client 6/6 全绿（server 60/686）。
 - MUTATION 残留为空。
-- W3 先备份：session_setup.h/.cpp、test_session_setup.cpp、server.cpp、
   test_gui_send.cpp、test_server.cpp（20261106_220621）。
 
 ### 已知限制
@@ -3561,7 +3511,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   connect_machine 34 tests / 229 checks 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：connect_machine / client / security / gui_send / session_setup
   5/5 全绿。
 - MUTATION 残留为空。
@@ -3623,7 +3572,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdpsnd 8/53、display_control_client 12/75 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：cliprdr / rdpdr / drdynvc / rdpsnd / display_control /
   display_control_client / gui_send / client / security / connect_machine / view
   11/11 全绿。
@@ -3679,7 +3627,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   两者恢复后 rail_client 19/133、rdpusb 62/301 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：rail / rail_client / rdpusb / drdynvc / display_control_client /
   gui_send / client / security 8/8 全绿。
 - MUTATION 残留为空。
@@ -3730,7 +3677,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 view 62/7376 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：ui / view / client / gui_send 4/4 全绿。
 - MUTATION 残留为空。
 - W3 先备份：CMakeLists.txt、test_ui.cpp（20261107_025109）。
@@ -3779,8 +3725,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   1 test / 3 checks 红；恢复后 ui 59/328 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：ui / view / client / gui_send 4/4 全绿。
 - MUTATION 残留为空。
 - W3 先备份：window.h、window_win32.cpp、test_ui.cpp（20261107_030216）。
 
@@ -3805,7 +3749,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`src/ui/window_win32.cpp` 的 `WM_MOUSEMOVE`/`WM_LBUTTONDOWN`/
   `PaintConnectionBar`；`tests/test_ui.cpp` 的
   `window_win32_connection_bar_reveals_and_closes`；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 
 ## 第129轮：用户可见截图（批129，2026-11-07）
 
@@ -3834,7 +3777,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 screenshot 4/31、ui 60/335 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：screenshot / ui / view / client / gui_send / mstsc_args
   6/6 全绿。
 - MUTATION 残留为空。
@@ -3890,7 +3832,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdpusb 64/316 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：rdpusb / drdynvc / channel / gui_send / client / server
   6/6 全绿。
 - MUTATION 残留为空。
@@ -3920,7 +3861,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdpusb-wiring-design.md` 第 4 节；
   `src/channel/rdpusb_client.cpp` 的 `HandleTransferOut`；
   `tests/test_rdpusb.cpp` 的两个新用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第131轮：rdpusb IO_CONTROL 完成帧（批131，2026-11-07）
 
 ### 做了什么
@@ -3931,7 +3871,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - `include/rtsc/usb/usb_device.h`：新增带默认实现的
   `IoControl(code, input, output_buffer_size, output, information, hresult)`，
   默认 E_NOTIMPL（0x80004001），未实现后端也能回完成帧。
-- `include/rtsc/channel/rdpusb_client.h` / `src/channel/rdpusb_client.cpp`：
   - `OnDeviceMessage` 新增 kIoControl/kInternalIoControl 分支（共用 `HandleIoControl`）。
   - `HandleIoControl`：未知设备 E_FAIL；后端成功回 0 且 Information=输出长度；
     输出超过 OutputBufferSize → `io_control_overflow_count_++` 并
@@ -3949,7 +3888,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 rdpusb 68/368 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：rdpusb / drdynvc / channel / gui_send / client / server 6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份：usb_device.h、rdpusb_client.h、rdpusb_client.cpp、test_rdpusb.cpp、
@@ -4006,8 +3944,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdpusb 72/404 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：rdpusb / drdynvc / channel / gui_send / client / server 6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份：rdpusb_client.cpp、test_rdpusb.cpp、rdpusb-wiring-design.md
   （20261107_035753）。
@@ -4034,7 +3970,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdpusb-wiring-design.md` 第 6 节；
   `src/channel/rdpusb_client.cpp` 的 `ExecuteUrb`；
   `tests/test_rdpusb.cpp` 的 4 个 control_* 用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第133轮：Feature / VendorOrClass URB 合成（批133，2026-11-07）
 
 ### 做了什么
@@ -4056,10 +3991,7 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   1 test / 1 check 红（want C0, got 40）；恢复后 rdpusb 75/430 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：rdpusb / drdynvc / channel / gui_send / client / server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：rdpusb_client.cpp、test_rdpusb.cpp、rdpusb-wiring-design.md
   （20261107_040517）。
 
 ### 已知限制
@@ -4084,9 +4016,7 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 偏差与纠正：无“改坏仍绿”；首版 set_feature 测试的状态字节断言在未实现时
   按预期红，实现后转绿。
 - 证据位置：`docs/spec/rdpusb-wiring-design.md` 第 7 节；
-  `src/channel/rdpusb_client.cpp` 的 `ExecuteUrb`；
   `tests/test_rdpusb.cpp` 的 3 个 control_* 用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第134轮：SCARD_IOCTL_ISVALIDCONTEXT（批134，2026-11-07）
 
 ### 做了什么
@@ -4114,7 +4044,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 60/156、smartcard_channel 19/124 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
@@ -4145,7 +4074,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kIsValidContext 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_is_valid_context_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第135轮：SCARD_IOCTL_GETATTRIB（批135，2026-11-07）
 
 ### 做了什么
@@ -4172,8 +4100,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 smartcard 63/166、smartcard_channel 20/154 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
@@ -4203,7 +4129,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 2 节；
   `src/channel/rdpdr_client.cpp` 的 kGetAttrib 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_get_attrib_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第136轮：SCARD_IOCTL_SETATTRIB（批136，2026-11-07）
 
 ### 做了什么
@@ -4225,12 +4150,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 65/177、smartcard_channel 21/167 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_043856）。
 
 ### 已知限制
@@ -4255,7 +4176,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 3 节；
   `src/channel/rdpdr_client.cpp` 的 kSetAttrib 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_set_attrib_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第137轮：SCARD_IOCTL_LOCATECARDSA（批137，2026-11-07）
 
 ### 做了什么
@@ -4281,12 +4201,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 70/188、smartcard_channel 22/190 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_045615）。
 
 ### 已知限制
@@ -4312,7 +4228,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 4 节；
   `src/channel/rdpdr_client.cpp` 的 kLocateCardsA 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_locate_cards_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第138轮：SCARD_IOCTL_READCACHEA（批138，2026-11-07）
 
 ### 做了什么
@@ -4338,12 +4253,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 76/203、smartcard_channel 23/220 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_050653）。
 
 ### 已知限制
@@ -4368,7 +4279,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 5 节；
   `src/channel/rdpdr_client.cpp` 的 kReadCacheA 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_read_cache_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第139轮：SCARD_IOCTL_WRITECACHEA（批139，2026-11-07）
 
 ### 做了什么
@@ -4391,12 +4301,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 81/216、smartcard_channel 24/235 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_051611）。
 
 ### 已知限制
@@ -4420,7 +4326,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 6 节；
   `src/channel/rdpdr_client.cpp` 的 kWriteCacheA 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_write_cache_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第140轮：SCARD_IOCTL_GETREADERICON（批140，2026-11-07）
 
 ### 做了什么
@@ -4446,12 +4351,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 87/225、smartcard_channel 25/254 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_052448）。
 
 ### 已知限制
@@ -4476,7 +4377,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 7 节；
   `src/channel/rdpdr_client.cpp` 的 kGetReaderIcon 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_get_reader_icon_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第141轮：SCARD_IOCTL_GETDEVICETYPEID（批141，2026-11-07）
 
 ### 做了什么
@@ -4498,12 +4398,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 90/231、smartcard_channel 26/268 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_053254）。
 
 ### 已知限制
@@ -4528,7 +4424,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kGetDeviceTypeId 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_get_device_type_id_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第142轮：SCARD_IOCTL_GETTRANSMITCOUNT + 章节号更正（批142，2026-11-07）
 
 ### 做了什么
@@ -4553,12 +4448,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 93/237、smartcard_channel 27/282 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_054201）。
 
 ### 已知限制
@@ -4585,7 +4476,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kGetTransmitCount 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_get_transmit_count_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第143轮：SCARD_IOCTL_LOCATECARDSBYATRA（批143，2026-11-07）
 
 ### 做了什么
@@ -4609,12 +4499,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 99/252、smartcard_channel 28/305 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_055256）。
 
 ### 已知限制
@@ -4639,7 +4525,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kLocateCardsByAtrA 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_locate_cards_by_atr_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第144轮：SCARD_IOCTL_ACCESSSTARTEDEVENT（批144，2026-11-07）
 
 ### 做了什么
@@ -4661,12 +4546,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 101/259、smartcard_channel 29/315 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_061122）。
 
 ### 已知限制
@@ -4694,7 +4575,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kAccessStartedEvent 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_access_started_event_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第145轮：SCARD_IOCTL_CANCEL（批145，2026-11-07）
 
 ### 做了什么
@@ -4714,12 +4594,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 102/264、smartcard_channel 30/326 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_062113）。
 
 ### 已知限制
@@ -4742,7 +4618,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 12 节；
   `src/channel/rdpdr_client.cpp` 的 kCancel 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_cancel_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第146轮：SCARD_IOCTL_STATE（批146，2026-11-07）
 
 ### 做了什么
@@ -4764,12 +4639,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 106/273、smartcard_channel 31/360 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_062915）。
 
 ### 已知限制
@@ -4794,7 +4665,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 13 节；
   `src/channel/rdpdr_client.cpp` 的 kState 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_state_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第147轮：SCARD_IOCTL_RECONNECT（批147，2026-11-07）
 
 ### 做了什么
@@ -4816,12 +4686,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 109/282、smartcard_channel 32/377 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- 影响面 ctest：smartcard / smartcard_channel / rdpdr / gui_send / client /
   server 6/6 全绿。
 - MUTATION 残留为空。
-- W3 先备份：smartcard.h、smartcard.cpp、backend.h、backend_null.cpp、
-  backend_win32.cpp、rdpdr_client.cpp、test_smartcard.cpp、
   test_smartcard_channel.cpp、smartcard-evidence.md（20261107_063918）。
 
 ### 已知限制
@@ -4844,7 +4710,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 14 节；
   `src/channel/rdpdr_client.cpp` 的 kReconnect 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_reconnect_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第148轮：SCARD_IOCTL_LISTREADERSW（批148，2026-11-07）
 
 ### 做了什么
@@ -4864,7 +4729,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 113/289、smartcard_channel 33/393 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_065049）。
@@ -4891,7 +4755,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kListReadersW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_list_readers_w_returns_wide_multistring`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第149轮：SCARD_IOCTL_CONNECTW（批149，2026-11-07）
 
 ### 做了什么
@@ -4910,7 +4773,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 115/297、smartcard_channel 34/400 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_070239）。
@@ -4939,7 +4801,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kConnectW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_connect_w_forwards_wide_reader`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第150轮：SCARD_IOCTL_STATUSW（批150，2026-11-07）
 
 ### 做了什么
@@ -4958,7 +4819,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   提前返回）；恢复后 smartcard 117/300、smartcard_channel 35/419 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_071705）。
@@ -4985,7 +4845,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 17 节；
   `src/channel/rdpdr_client.cpp` 的 kStatusW 分支；
   `tests/test_smartcard_channel.cpp` 的 `smartcard_status_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第151轮：SCARD_IOCTL_GETSTATUSCHANGEW（批151，2026-11-07）
 
 ### 做了什么
@@ -5005,7 +4864,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 118/306、smartcard_channel 36/429 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_072822）。
@@ -5033,7 +4891,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kGetStatusChangeW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_get_status_change_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第152轮：SCARD_IOCTL_LOCATECARDSW（批152，2026-11-07）
 
 ### 做了什么
@@ -5054,7 +4911,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 119/311、smartcard_channel 37/438 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_074400）。
@@ -5081,7 +4937,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kLocateCardsW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_locate_cards_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第153轮：SCARD_IOCTL_READCACHEW（批153，2026-11-07）
 
 ### 做了什么
@@ -5100,7 +4955,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 120/320、smartcard_channel 38/453 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_075313）。
@@ -5127,7 +4981,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kReadCacheW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_read_cache_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第154轮：SCARD_IOCTL_WRITECACHEW（批154，2026-11-07）
 
 ### 做了什么
@@ -5148,7 +5001,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 121/328、smartcard_channel 39/467 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_080430）。
@@ -5174,7 +5026,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kWriteCacheW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_write_cache_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第155轮：SCARD_IOCTL_LISTREADERGROUPSW（批155，2026-11-07）
 
 ### 做了什么
@@ -5193,7 +5044,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 123/331、smartcard_channel 40/481 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_081434）。
@@ -5219,7 +5069,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kListReaderGroupsW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_list_reader_groups_w_returns_wide_multistring`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第156轮：SCARD_IOCTL_LOCATECARDSBYATRW（批156，2026-11-07）
 
 ### 做了什么
@@ -5241,7 +5090,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   smartcard 124/342、smartcard_channel 41/493 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_082643）。
@@ -5268,7 +5116,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 kLocateCardsByAtrW 分支；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_locate_cards_by_atr_w_round_trip`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第157轮：待审计三问（批157，2026-11-07）
 
 ### 做了什么
@@ -5290,7 +5137,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 smartcard 126/348、smartcard_channel 42/500 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_084424）。
@@ -5318,7 +5164,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tests/test_smartcard.cpp` 的超时/失败返回测试；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_get_status_change_timeout_keeps_states`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第158轮：智能卡执行/发送解耦（批158，2026-11-07）
 
 ### 做了什么
@@ -5339,7 +5184,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdpdr 62/899 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_085614）。
@@ -5366,7 +5210,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/channel/rdpdr_client.cpp` 的 BuildSmartCardCompletion；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_output_buffer_exact_fit_succeeds`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第159轮：智能卡 IOCTL 异步执行（批159，2026-11-07）
 
 ### 做了什么
@@ -5386,7 +5229,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 smartcard 126/348、smartcard_channel 46/519、rdpdr 62/899 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_085614，批158 同一组文件）。
@@ -5414,7 +5256,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/smartcard-evidence.md` 第 26 节；
   `src/channel/rdpdr_client.cpp` 的 SetAsyncSmartCard/PollSmartCard/
   SmartCardWorkerLoop；`tests/test_smartcard_channel.cpp` 的三个异步用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第160轮：GUI 异步接线与过期响应丢弃（批160，2026-11-07）
 
 ### 做了什么
@@ -5434,7 +5275,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   126/348、smartcard_channel 47/521、rdpdr 62/899 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_091456）。
@@ -5463,7 +5303,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tools/rtsc_gui/main.cpp:935-965,1522`；
   `tests/test_smartcard_channel.cpp` 的
   `smartcard_async_drops_completions_after_reset`；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第161轮：剪贴板位图格式映射（批161，2026-11-07）
 
 ### 做了什么
@@ -5482,7 +5321,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   恢复后 cliprdr 109/578、clipboard 30/93 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：5/5 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_092651）。
@@ -5528,7 +5366,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   状态 SUCCESS）；恢复后 rdpdr 66/923、smartcard_channel 47/521 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - 影响面 ctest：6/6 全绿。
 - MUTATION 残留为空。
 - W3 先备份（20261107_093838）。
@@ -5556,7 +5393,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/proto/rdpdr.cpp` 的 RdpdrDeviceListRemove；
   `src/channel/rdpdr_client.cpp` 的 RemoveDevice；
   `tests/test_rdpdr_client.cpp` 与 `tests/test_rdpdr.cpp` 的四个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第163轮：RDP 文件编解码（批163，2026-11-07）
 
 ### 做了什么
@@ -5574,7 +5410,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M77（接受换行）→ 1 test / 3 checks 红；恢复后 9/54 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdp_file|client|cliprdr|rdpdr)$"` 4/4 全绿。
 - MUTATION 残留为空。
 - W3 先备份 CMakeLists（20261107_095230）；新增文件无需备份。
@@ -5598,7 +5433,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   生成；显式 `cmake -S -B` 后正常（记入 discover）。
 - 证据位置：`docs/spec/rdp-file-evidence.md`；
   `src/config/rdp_file.cpp`；`tests/test_rdp_file.cpp`；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 ## 第164轮：GUI 接入 --rdp-file 导入（批164，2026-11-07）
 
 ### 做了什么
@@ -5617,7 +5451,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdp_file 9/54 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdp_file|mstsc_args|client|gui_send)$"` 4/4 全绿。
 - MUTATION 残留为空。
 - W3 先备份 main.cpp/CMakeLists/mstsc_args（20261107_100130、100707）。
@@ -5644,7 +5477,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tools/rtsc_gui/mstsc_args.cpp` 的 ResolveEndpoint；
   `tools/rtsc_gui/main.cpp` 的预扫描/合并；
   `tests/test_mstsc_args.cpp` 的三个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 ## 第165轮：GUI 导出 .rdp（批165，2026-11-07）
 
 ### 做了什么
@@ -5663,8 +5495,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   rdp_file 9/54 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdp_file|mstsc_args|client|gui_send)$"` 4/4 全绿。
 - MUTATION 残留为空。
 - W3 先备份 main.cpp/mstsc_args（20261107_101313）。
 
@@ -5690,7 +5520,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tools/rtsc_gui/mstsc_args.cpp` 的 FormatFullAddress；
   `tools/rtsc_gui/main.cpp` 的 --save-rdp 分支；
   `tests/test_mstsc_args.cpp` 的两个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 ## 第166轮：重定向属性映射（批166，2026-11-07）
 
 ### 做了什么
@@ -5708,7 +5537,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   mstsc_args 13/81、rdp_file 9/54 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdp_file|mstsc_args|client|gui_send|connect_machine)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 main.cpp/mstsc_args（20261107_102119）。
@@ -5734,7 +5562,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tools/rtsc_gui/mstsc_args.cpp` 的 BuildStaticChannelNames；
   `tools/rtsc_gui/main.cpp` 的 MakeDriver/调用点；
   `tests/test_mstsc_args.cpp` 的通道组合用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第167轮：drivestoredirect → rdpdr 设备（批167，2026-11-07）
 
 ### 做了什么
@@ -5752,7 +5579,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M81（忽略 `*`）→ 1 test / 1 check 红；恢复后 drive_enum 6/26 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(drive_enum|rdp_file|mstsc_args|rdpdr|client|gui_send)$"` 6/6。
 - MUTATION 残留为空。
 - W3 先备份 drive_enum/main.cpp（20261107_103023）。
@@ -5780,7 +5606,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/rdpdr/drive_enum_win32.cpp` 的 DriveRedirectToSpec；
   `tools/rtsc_gui/main.cpp` 的驱动器枚举分支；
   `tests/test_drive_enum.cpp` 的用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第168轮：GUI 菜单“保存连接文件”（批168，2026-11-07）
 
 ### 做了什么
@@ -5799,7 +5624,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M82（multimon 与 fit 交换）→ 1 test / 2 checks 红；恢复后 10/76 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdp_file|mstsc_args|ui|client|gui_send)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 rdp_file/window/main（20261107_104457）。
@@ -5826,7 +5650,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `tools/rtsc_gui/main.cpp` 的菜单处理器；
   `src/ui/window_win32.cpp` 的菜单项；
   `tests/test_rdp_file.cpp` 的会话设置用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第169轮：保存凭据（批169，2026-11-07）
 
 ### 做了什么
@@ -5845,7 +5668,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M83（去掉 TERMSRV/ 分隔符）→ 1 test / 3 checks 红；恢复后 11/79 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdp_file|mstsc_args|client|gui_send)$"` 4/4。
 - MUTATION 残留为空。
 - W3 先备份 CMakeLists/main/test（20261107_105850）。
@@ -5872,7 +5694,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   `src/config/credential_store_win32.cpp`；
   `tools/rtsc_gui/main.cpp` 的凭据分支；
   `tests/test_rdp_file.cpp` 的目标名用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 ## 第170轮：rdpdr QUERY_VOLUME_INFORMATION（批170，2026-11-07）
 
 ### 做了什么
@@ -5890,7 +5711,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M84（失败仍报成功）→ 1 test / 3 checks 红；恢复后 70/949 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 rdpdr/file_system/channel/tests（20261107_111439）。
@@ -5914,12 +5734,10 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 不足：HostFileSystem 无单测；未端到端；其余信息类未实现。
 - 偏差与纠正：失败响应测试首版读取不存在的 Length 字段，改为断言 12B；
   无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/proto/rdpdr.cpp` 的 RdpdrQueryVolumeReq；
   `src/channel/rdpdr_client.cpp` 的 OnQueryVolume；
   `src/rdpdr/file_system.cpp` 的 QueryVolume；
   `tests/test_rdpdr_client.cpp` 的三个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第171轮：卷信息补全（批171，2026-11-07）
 
 ### 做了什么
@@ -5934,8 +5752,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M85（插入 Reserved 字节）→ 1 test / 4 checks 红；恢复后 74/973 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 file_system/tests（20261107_113025）。
 
@@ -5957,10 +5773,8 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 偏差与纠正：编辑 header 时注释与 class 再次拼行导致编译失败，已修复
   （同 discover 例87 的教训再次出现）；编码函数误放匿名命名空间导致重载
   歧义，移到命名空间外后修复。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/rdpdr/file_system.cpp` 的 EncodeVolumeInfo/QueryVolume；
   `tests/test_rdpdr_client.cpp` 的四个编码用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第172轮：rdpdr SET_INFORMATION（批172，2026-11-07）
 
 ### 做了什么
@@ -5978,8 +5792,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M86（删除分支改为丢弃）→ 1 test / 2 checks 红；恢复后 83/1033 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 6 个文件（20261107_114636）。
 
@@ -6003,11 +5815,9 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   延迟语义。
 - 偏差与纠正：CHECK_EQ 不支持 std::string（to_string 无重载），改用
   CHECK(a == b)；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/channel/rdpdr_client.cpp` 的 OnSetInformation/ApplyPendingFileOperation；
   `src/rdpdr/file_system.cpp` 的 Rename/Delete；
   `tests/test_rdpdr_client.cpp` 的 8 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第173轮：目录控制 minor 分发 + NotifyChange（批173，2026-11-07）
 
 ### 做了什么
@@ -6027,8 +5837,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   1 test/8 checks 红；恢复后 87/1054 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 5 个文件（20261107_120656）。
 
@@ -6051,11 +5859,9 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 不足：未实现真实通知；未端到端。
 - 偏差与纠正：编辑时两次把 oldString/newString 方向写反（工具拒绝），
   已按正确方向重做；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/proto/rdpdr.cpp` 的 RdpdrNotifyChangeDirectoryReq::parse；
   `src/channel/rdpdr_client.cpp` 的分发与 OnNotifyChangeDirectory；
   `tests/test_rdpdr_client.cpp` 的 3 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第174轮：rdpdr QUERY_INFORMATION（批174，2026-11-07）
 
 ### 做了什么
@@ -6075,8 +5881,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   95/1101 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 7 个文件（20261107_122709）。
 
@@ -6098,11 +5902,9 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 不足：HostFileSystem 无单测；未端到端；allocation_size 非簇对齐。
 - 偏差与纠正：本轮因宿主错误中断一次，恢复后先核对已落盘编辑再继续；
   编辑方向两次写反被工具拒绝，已重做；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/rdpdr/file_system.cpp` 的 EncodeFileInformation/QueryInformation；
   `src/channel/rdpdr_client.cpp` 的 OnQueryInformation；
   `tests/test_rdpdr_client.cpp` 的 7 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第175轮：rdpdr LOCK_CONTROL（批175，2026-11-07）
 
 ### 做了什么
@@ -6122,8 +5924,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 
 ### C0 / 影响面
 - CMakeLists 加入 lock_table.cpp 后显式重跑 cmake（discover 例88）。
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 6 个文件（20261107_130424）。
 
@@ -6145,7 +5945,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 偏差与纠正：嵌套类型 `Lock` 与成员函数 `Lock` 重名导致编译失败，改名为
   `Entry`；两个锁表测试的期望范围有误（[10,10) 与 [5,15) 重叠、两个
   {0,10} 独占互相冲突），修正测试数据后全绿；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/rdpdr/lock_table.cpp`；`src/channel/rdpdr_client.cpp` 的
   OnLockControl/SendLockCompletion；`tests/test_rdpdr_client.cpp` 的 11 个
   用例；`BASH:ctest:100% tests passed, 0 failed out of 5`。
@@ -6167,8 +5966,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M90（响应 Length 改为 0）→ 2 tests / 2 checks 红；恢复后 113/1191 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 7 个文件（20261107_133545）。
 
@@ -6191,11 +5988,9 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 不足：Win32 设置标签无单测；未端到端。
 - 偏差与纠正：成员名与 Win32 宏冲突导致 C2039；全局改名后又误改了 API
   调用 SetVolumeLabelW→SetVolumeNameW，已单独改回；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/rdpdr/file_system.cpp` 的 SetVolumeName/VolumeRootOf；
   `src/channel/rdpdr_client.cpp` 的 OnSetVolumeInformation/
   SendSetVolumeCompletion；`tests/test_rdpdr_client.cpp` 的 5 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第177轮：串口重定向第一层（批177，2026-11-07）
 
 ### 做了什么
@@ -6214,8 +6009,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   118/1234 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 4 个文件（20261107_142712）。
 
@@ -6240,11 +6033,9 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 不足：无 Win32 后端；无 GUI 接线；未真机。
 - 偏差与纠正：M91 首版用 `false &&` 会触发 C4127（discover 例86），改为
   `type == kDrive` 的等价变异；无功能返工。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `include/rtsc/rdpdr/serial_backend.h`；
   `src/channel/rdpdr_client.cpp` 的串口分支；
   `tests/test_rdpdr_client.cpp` 的 5 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第178轮：Win32 串口后端（批178，2026-11-07）
 
 ### 做了什么
@@ -6260,8 +6051,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 
 ### C0 / 影响面
 - CMakeLists 加源文件后显式重跑 cmake（discover 例88）。
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3：新文件为主，改动仅 CMakeLists/tests（备份 20261107_142712 覆盖
   tests；CMakeLists 属工程配置，改动为单行追加）。
@@ -6285,9 +6074,7 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 偏差与纠正：首版 cpp 误用不存在的 DCB 字段且未定义 Utf8ToWide、重叠
   I/O 未等待，整文件重写为同步短超时实现；无功能返工（尚未提交过错误版本
   的构建）。
-- 证据位置：`docs/spec/rdpdr-evidence.md` 新增节；
   `src/rdpdr/serial_win32.cpp`；`tests/test_rdpdr_client.cpp` 的 2 个用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第179轮：redirectcomports 与串口接线（批179，2026-11-07）
 
 ### 做了什么
@@ -6331,7 +6118,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdp-file-evidence.md` 新增节；
   `src/config/rdp_file.cpp`；`tools/rtsc_gui/main.cpp` 的串口块；
   `tests/test_rdp_file.cpp` 的用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第180轮：打印机重定向第一层（批180，2026-11-07）
 
 ### 做了什么
@@ -6355,8 +6141,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M94（通告 device_type 误用 Filesystem）→ 1 test / 1 check 红；恢复后 125/1285 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpdr|smartcard_channel|drive_enum|client|server)$"` 5/5。
 - MUTATION 残留为空。
 - W3 先备份 6 个文件（20261107_163314）。
 
@@ -6382,7 +6166,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdpdr-evidence.md` 新增打印机节；
   `src/channel/rdpdr_client.cpp`；`src/proto/rdpdr.cpp` 的 EncodePrinterAnnounce；
   `tests/test_rdpdr_client.cpp` 4 用例、`tests/test_rdpdr.cpp` 1 用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 5`。
 ## 第181轮：Win32 打印机后端与 redirectprinters 接线（批181，2026-11-07）
 
 ### 做了什么
@@ -6431,7 +6214,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdpdr-evidence.md` 新增 Win32 打印机节；
   `docs/spec/rdp-file-evidence.md` 新增 redirectprinters 节；
   `src/rdpdr/printer_win32.cpp`；`tools/rtsc_gui/main.cpp` 打印机块；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第182轮：FileId 复用（批182，2026-11-07）
 
 ### 做了什么
@@ -6449,7 +6231,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M96（串口 Create 条件恒假，永不复用）→ 1 test / 1 check 红；恢复后全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdpdr|rdpdr_server|rdpdr_server_io|drive_enum|client|server)$"`
   6/6。MUTATION 残留为空。W3 备份 5 个文件（20261107_180202）。
 
@@ -6476,7 +6257,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/rdpdr-evidence.md` 新增 FileId 复用节；
   `src/rdpdr/file_system.cpp`；`src/channel/rdpdr_client.cpp`；
   `tests/test_rdpdr_client.cpp` 3 用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 6`。
 ## 第183轮：drdynvc 服务端发起通道创建（批183，2026-11-07）
 
 ### 做了什么
@@ -6498,7 +6278,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - M97（CREATE_RSP 始终回失败状态）→ 1 test / 1 check 红；恢复后全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdpusb|display_control|client|gui_send)$"` 4/4。
 - MUTATION 残留为空。W3：改为既有文件编辑（drdynvc_client.h/.cpp、
   proto/drdynvc.h、test_rdpusb.cpp）；本批修改前未备份（违反 W3；收尾已补快照 20261107_190041 并记 discover 例93）（新文件为主，改动
@@ -6526,7 +6305,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 证据位置：`docs/spec/drdynvc-evidence.md` 新建节；
   `src/channel/drdynvc_client.cpp`；`include/rtsc/channel/drdynvc_client.h`；
   `tests/test_rdpusb.cpp` 2 用例；
-  `BASH:ctest:100% tests passed, 0 failed out of 4`。
 ## 批184：DrdynvcClient 客户端主动关闭（2026-11-07）
 
 ### 需求
@@ -6542,7 +6320,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - `tests/test_rdpusb.cpp:773` drdynvc_client_close_stops_delivery；`:802` drdynvc_close_unknown_channel_is_ignored。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - rdpusb 79 tests / 448 checks 全绿；`ctest -R "^(rdpusb|display_control|client|gui_send)$"` 4/4。
 - 变异 M98（CloseChannel 不移除 open_channels_）→ 1 test/1 check 红；恢复后全绿。
 
@@ -6572,8 +6349,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 先红：编译缺 API；实现后 84 tests / 468 checks 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
-- `ctest -R "^(rdpusb|display_control|client|gui_send)$"` 4/4。
 - 变异 M99（去掉计数）→ 1 test/2 checks 红；M100（Length 固定 4）→ 3 tests 红；恢复后全绿。
 
 ### 偏差与教训
@@ -6603,7 +6378,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 先红：proto 2 failing tests/6 checks、client 1 failing test/3 checks；实现后 15/70 与 13/80 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(display_control|display_control_client|client|gui_send|rdpusb)$"` 5/5。
 - 变异 M101（删主屏原点检查）→ proto 6 checks、client 3 checks 红；M102（面积不饱和）→ 1 check 红；恢复后全绿。
 - M103（删主屏唯一性计数）存活 → 规则冗余，已删除（例96）。
@@ -6633,7 +6407,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 先红：编译缺 bool/计数器；实现后 rdpusb 87 tests / 480 checks 全绿。
 
 ### C0 / 影响面
-- Release 全量 `BUILD_EXIT=0`，0 error 0 warning。
 - `ctest -R "^(rdpusb|display_control|display_control_client|client|gui_send)$"` 5/5。
 - 变异 M104（删除发送前校验）→ 2 个测试分别 3/5 checks 红；恢复后全绿。
 
@@ -6736,7 +6509,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 红：修正前 12 tests 中 literal 用例 got 0；绿：[BASH:14 tests, 1139 checks, 0 failing]。
 
 ### C0 / 影响面
-- Release 全量 BUILD_EXIT=0，0 error 0 warning。
 - ctest `^(bulk|proto|rdp6|nsc|rdpusb|display_control|display_control_client|drdynvc|rdpdr|client|gui_send)$` 11/11。
 
 ### 变异 M107
@@ -6763,7 +6535,6 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
 - 绿证：[BASH:rtsc_rdpusb_tests 90 tests, 491 checks, 0 failing]。
 
 ### C0 / 影响面
-- Release 全量 BUILD_EXIT=0，0 error 0 warning。
 - ctest `^(bulk|proto|drdynvc|rdpusb|display_control|display_control_client|rdpdr|client|gui_send)$` 9/9。
 
 ### 变异 M108
@@ -6823,3 +6594,45 @@ B-1 色深：把 Client Core Data 的色深字段组合做成可测函数，并�
   filter-branch under the 60s tool limit at first (wasted a turn) and not scanning
   largest blobs before cloning. Correction: measure `git ls-files` by size first,
   run rewrite in a background process and poll the log.
+## 批193：rdpsnd Wave 格式索引校验（wFormatNo 越界 fail-closed）（2026-11-08）
+
+### 缺陷证据
+- `src/channel/rdpsnd_client.cpp` 旧 PlaySample 用 `std::min<size_t>(format_no,
+  client_formats_.size() - 1)` 把 wFormatNo 夹到末位：越界索引被静默用最后一个
+  已通告格式播放，而不是拒绝（同类缺陷 = FreeRDP CVE-2020-11041 / 提交 2215fef）。
+- 规范依据：[MS-RDPEA] 2.2.3.3、2.2.3.4、3.1.1.2 —— wFormatNo 是客户端发出的
+  格式列表的零基索引。
+
+### 实现
+- 新增 `RdpsndClient::CheckWaveFormat`（唯一规则所有者）：format_no >= 列表大小 →
+  ++format_reject_count_ 并返回 false。
+- `OnWave2` 与 WaveInfo 路径均先校验；被拒 WaveInfo 置 `skip_wave_continuation_`，
+  使后续 Wave 续包（自身无头）被吞掉，禁止被误解析为新的 WaveInfo。
+- 被拒样本不发 Wave Confirm（未消费就不确认）；Reset/OnClose 复位该状态与计数。
+- 头文件新增 `format_reject_count()` 与成员；PlaySample 现在假定调用方已校验（单一
+  规则所有者，删除 clamp）。
+
+### 测试（TDD）
+- 新增 3 个：`rdpsnd_wave2_out_of_range_format_is_rejected`、
+  `rdpsnd_wave_info_out_of_range_format_is_rejected`（含续包吞掉与“误解析会复活”的
+  反证载荷）、`rdpsnd_wave2_without_format_exchange_is_rejected`。
+- 红证：先用旧实现跑，3 tests / 10 checks 全红（format_reject_count got 0，
+  且越界样本仍被播放并回了 Confirm）。
+- 绿证：[BASH:rtsc_rdpsnd_client_tests 11 tests, 65 checks, 0 failing]。
+
+### C0 / 影响面
+- Debug 全量：BUILD_EXIT=0，0 error 0 warning。
+- Release 全量：BUILD_EXIT=0，0 error 0 warning（build\\ 为 VS 生成器 / Release）。
+- Debug ctest：rdpsnd_client/rdpsnd/rdpsnd_server/server_rdpsnd_e2e/client/gui_send/proto 7/7。
+- Release ctest：同上 + audio_source 共 8/8。
+
+### 变异
+- M110（CheckWaveFormat 恒 true = 旧 clamp 行为且恢复 clamp）→ 3 tests / 10 checks 红；
+  恢复后 11/65 全绿。
+- M111（删除续包吞掉逻辑）→ WaveInfo 用例 1 test / 2 checks 红；恢复后全绿。
+
+### 教训（批193）
+- “夹到边界”与“拒绝”是两种语义；对远端可控索引，夹取会把畸形输入伪装成合法样本，
+  必须 fail-closed 且不回报消费成功。
+- 成对 PDU（WaveInfo + Wave）中拒绝首包时，必须同时处置无头的续包，否则续包会被
+  当成新的首包解析（本批 M111 专门验证这条）。

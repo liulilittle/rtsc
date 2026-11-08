@@ -39,3 +39,32 @@ mstsc 的 rdpsnd 默认音频格式（wave2 44100/22050、PCM、块对齐）与 
 - **根因结论**：rdpsnd chunks=0 + server_formats=0 = **服务器未发起音频重定向**（会话策略：默认"在远程计算机播放"不向客户端发流；或远程会话禁用音频）。非本仓代码缺陷。
 - **验证手段**（需服务器端配置）：在 192.168.1.7 的会话设置把音频播放改为"在此计算机播放"/"不播放"，或预期场景（有音频播放）再看 server_formats。本机无服务器配置权限，标记"待服务器侧配合"。
 - 关联：rdpsnd client 的 SelectFormat/send ClientAudioFormats/QualityMode 路径在测试网套件（31/32）全绿；缺失的是真机服务器主动发流场景。
+
+## Wave format index validation (batch 193, 2026-11-08)
+
+**Basis**: [MS-RDPEA] 2.2.3.3 (WaveInfo wFormatNo), 2.2.3.4 (Wave2 wFormatNo) and
+3.1.1.2 (Audio Format List and Current Audio Format): wFormatNo is a **zero-based
+index into the list the client sent** in its Client Audio Formats and Version PDU;
+the format at that index is the format of the audio data.
+
+**Defect**: `RdpsndClient::PlaySample` clamped the index to `client_formats_.size()-1`
+(`std::min`), so a malformed or hostile wFormatNo was silently played with the last
+advertised format instead of being rejected. Same class as FreeRDP CVE-2020-11041
+("Fixed oob read in rdpsnd_recv_wave2_pdu", commit 2215fef: `wFormatNo >=
+NumberOfClientFormats` -> ERROR_INVALID_DATA).
+
+**Implementation**: new `CheckWaveFormat` owns the rule; both `OnWave2` and the
+WaveInfo path call it before use. A rejected WaveInfo sets `skip_wave_continuation_`
+so the following Wave PDU payload (which carries no header of its own) is swallowed
+instead of being misparsed as a fresh WaveInfo. Rejections are counted in
+`format_reject_count_` and **no Wave Confirm is sent** (the sample was never consumed).
+
+**Evidence**: 3 new tests (`rdpsnd_wave2_out_of_range_format_is_rejected`,
+`rdpsnd_wave_info_out_of_range_format_is_rejected`,
+`rdpsnd_wave2_without_format_exchange_is_rejected`); rdpsnd_client 11 tests / 65 checks;
+Debug+Release builds 0 error 0 warning; impact ctest 8/8.
+Mutations: M110 (accept any index = old clamp) turned 3 tests / 10 checks red;
+M111 (drop the continuation swallow) turned the WaveInfo test red (2 checks). Both
+restored green.
+
+**Unverified**: not exercised against a real Windows server.

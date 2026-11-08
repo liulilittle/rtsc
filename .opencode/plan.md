@@ -1796,3 +1796,11 @@ Rule 16：删 `gate_waited.store` → 6 值全红；`>= kConnect`→`+1` → 全
   缓存（filter-branch）→ 推送 master → 校验远端。
 - 验证：`git ls-remote origin master` == 本地 HEAD；`gh api contents/<缓存目录>`
   返回 404；`.gitignore` 含 `/rea-ghidra-*/`。状态 [x]
+### 批193：rdpsnd Wave 格式索引校验（2026-11-08）
+- 缺陷：PlaySample 对 wFormatNo 做 clamp，越界索引被静默当最后一个格式播放。
+- 方案：CheckWaveFormat 单一规则所有者 + 被拒 WaveInfo 吞掉续包 + 不回首包 Confirm。
+- 验证：3 新测试；红证 3 tests/10 checks；M110/M111 双变异；
+  Debug/Release 全量 0 error 0 warning；影响面 ctest 8/8。状态 [x]
+- 复核结论：rdpsnd 服务端（src/channel/rdpsnd_server.cpp）不消费客户端 wFormatNo，
+  其格式筛选在 rdpsnd_server.cpp:227 附近的校验内做（16-bit PCM、1..2 ch、与通告格式
+  一致），无同类索引缺陷；剩余 rdpsnd 缺口仍是真机服务器未发流（服务器侧配置）。

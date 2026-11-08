@@ -1858,3 +1858,8 @@ src/net/android/      平台特定（JNI 桥、证书库适配）
 - 仓库体积纪律：REA/Ghidra 等工具缓存（数百 MB）必须在首次提交前加入 .gitignore；
   若已进入历史，须 git bundle 备份后用 filter-branch 全历史移除，随后删 refs/original、
   reflog expire --expire=now --all 再推送；历史重写必须在后台进程跑并轮询（例103）。
+- rdpsnd wFormatNo 是客户端格式列表的零基索引（[MS-RDPEA] 2.2.3.3/2.2.3.4/3.1.1.2）：
+  越界必须拒绝并计数，禁止 clamp 到末位；被拒样本不得回 Wave Confirm（批193，M110）。
+- 成对 PDU（WaveInfo + Wave）拒绝首包后，必须吞掉随后的无头续包，否则续包会被当作
+  新的 WaveInfo 解析（批193，M111）。
+- 一般原则：远端可控索引/句柄类输入，clamp 属于把畸形输入洗白，必须 fail-closed（例104）。
